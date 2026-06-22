@@ -1,0 +1,83 @@
+services:
+  vllm-coder-mid:
+    build:
+      dockerfile: docker/Dockerfile
+    container_name: vllm_coder-service
+    ports:
+      - "${LLM_PORT}:8000"
+    volumes:
+      - ${HF_HOME}:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '${LLM_DEVICE_ID_1}', '${LLM_DEVICE_ID_2}' ]
+              capabilities: [ gpu ]
+    profiles: [ "coder" ]
+    command:
+      - "--model"
+      - "Qwen/Qwen3.6-35B-A3B-FP8"
+      - "--host"
+      - "0.0.0.0"
+      - "--tensor-parallel-size"
+      - "2"
+      - "--enable-chunked-prefill"
+      - "--max-model-len"
+      - "65536"
+      - "--gpu-memory-utilization"
+      - "0.90"
+      - "--reasoning-parser"
+      - "qwen3"
+      - "--enable-auto-tool-choice"
+      - "--tool-call-parser"
+      - "qwen3_coder"
+      - "--speculative-config"
+      - '{"method":"qwen3_next_mtp","num_speculative_tokens":1}'
+      - "--enable-prefix-caching"
+      - "--swap-space"
+      - "6"
+      - "--max-num-seqs"
+      - "1"
+      - "--kv-cache-dtype"
+      - "fp8_e4m3"
+      - "--max-num-batched-tokens"
+      - "32768"
+      - "--disable-custom-all-reduce"
+
+  vllm-coder-indexer:
+    build:
+      dockerfile: docker/Dockerfile
+    container_name: vllm_coder_indexer-service
+    ports:
+      - "${INDEXER_PORT}:8000"
+    volumes:
+      - ${HF_HOME}:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: [ '${INDEXER_STORAGE_DEVICE_ID}' ]
+              capabilities: [ gpu ]
+    profiles: [ "coder" ]
+    command:
+      - "--model"
+      - "nomic-ai/nomic-embed-text-v1.5"
+      - "--host"
+      - "0.0.0.0"
+      - "--max-model-len"
+      - "2048"
+      - "--gpu-memory-utilization"
+      - "0.25"
+      - "--trust-remote-code"
+
+  coder_qdrant:
+    image: qdrant/qdrant:latest
+    container_name: coder_qdrant-service
+    restart: unless-stopped
+    ports:
+      - "6333:6333" # REST API
+      - "6334:6334" # gRPC API (Optional but recommended)
+    volumes:
+      - ${DATA_DIR}/qdrant_storage:/qdrant/storage

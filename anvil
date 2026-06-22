@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+
+# Ensure the script exits immediately if any command fails
+set -e
+
+# Grab the directory where this script lives so it can be run from anywhere
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+cd "$DIR"
+
+# Interactively setup .env if it is missing
+if [ ! -f .env ]; then
+    echo "⚠️  Configuration file (.env) not found."
+    echo "Let's set up your local Anvil backend environment variables now."
+    echo "------------------------------------------------------------"
+
+    # 1. Host Storage Paths
+    default_hf="$HOME/.cache/huggingface"
+    read -p "Enter Hugging Face cache directory [$default_hf]: " hf_home
+    hf_home="${hf_home:-$default_hf}"
+
+    default_data="./"
+    read -p "Enter local data storage directory [$default_data]: " data_dir
+    data_dir="${data_dir:-$default_data}"
+
+    # 2. Networking Ports
+    default_llm_port="8000"
+    read -p "Enter main LLM port [$default_llm_port]: " llm_port
+    llm_port="${llm_port:-$default_llm_port}"
+
+    default_indexer_port="8001"
+    read -p "Enter embedding indexer port [$default_indexer_port]: " indexer_port
+    indexer_port="${indexer_port:-$default_indexer_port}"
+
+    # 3. GPU Device Allocation
+    default_gpu1="0"
+    read -p "Enter main LLM GPU Device ID 1 [$default_gpu1]: " llm_gpu1
+    llm_gpu1="${llm_gpu1:-$default_gpu1}"
+
+    default_gpu2="1"
+    read -p "Enter main LLM GPU Device ID 2 [$default_gpu2]: " llm_gpu2
+    llm_gpu2="${llm_gpu2:-$default_gpu2}"
+
+    default_idx_gpu="2"
+    read -p "Enter Indexer GPU Device ID [$default_idx_gpu]: " idx_gpu
+    idx_gpu="${idx_gpu:-$default_idx_gpu}"
+
+    # Write configurations out to the new .env file
+    cat << EOF > .env
+# --- Host Storage Paths ---
+HF_HOME=$hf_home
+DATA_DIR=$data_dir
+
+# --- Networking Ports ---
+LLM_PORT=$llm_port
+INDEXER_PORT=$indexer_port
+
+# --- GPU Device Allocation ---
+LLM_DEVICE_ID_1=$llm_gpu1
+LLM_DEVICE_ID_2=$llm_gpu2
+INDEXER_STORAGE_DEVICE_ID=$idx_gpu
+EOF
+
+    echo "------------------------------------------------------------"
+    echo "✅ Successfully generated your local .env configuration file!"
+    echo ""
+fi
+
+# Fallback to 'help' if no argument is passed
+cmd="${1:-help}"
+
+# Only shift if an argument actually existed to prevent shell execution errors
+if [ $# -gt 0 ]; then
+    shift
+fi
+
+case "$cmd" in
+    up)
+        echo "🚀 Starting the Anvil local backend services..."
+        docker compose --profile coder up -d "$@"
+        ;;
+    down)
+        echo "🛑 Stopping all Anvil containers..."
+        docker compose --profile coder down "$@"
+        ;;
+    logs)
+        echo "📋 Streaming live logs from your local models..."
+        docker compose --profile coder logs -f "$@"
+        ;;
+    restart)
+        echo "🔄 Restarting the core local backend processes..."
+        docker compose --profile coder restart "$@"
+        ;;
+    help|*)
+        echo "Usage: ./anvil [up|down|logs|restart]"
+        echo "  up      : Start the LLM, Indexer, and Qdrant database"
+        echo "  down    : Stop all backend services"
+        echo "  logs    : Stream active engine outputs"
+        echo "  restart : Quickly bounce the container processes"
+        exit 1
+        ;;
+esac
