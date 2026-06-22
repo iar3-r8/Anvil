@@ -9,7 +9,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install vLLM
 RUN pip3 install --upgrade pip
-RUN pip3 install vllm==0.17.1
+RUN pip3 install "fastapi<0.137" vllm==0.17.1
 
 # Set entrypoint to match the official vLLM server
 ENTRYPOINT ["python3", "-m", "vllm.entrypoints.openai.api_server"]

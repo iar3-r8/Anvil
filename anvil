@@ -3,8 +3,24 @@
 # Ensure the script exits immediately if any command fails
 set -e
 
-# Grab the directory where this script lives so it can be run from anywhere
-DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" >/dev/null 2>&1 && pwd )"
+echo "
+                      _ _ 
+     /\              (_) |
+    /  \   _ ____   ___| |
+   / /\ \ | '_ \ \ / / | |
+  / ____ \| | | \ V /| | |
+ /_/    \_\_| |_|\_/ |_|_| 
+ 
+ "
+
+# Resolve the absolute path of this script file (handles symlinks safely)
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+    DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
+    SOURCE="$(readlink "$SOURCE")"
+    [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+DIR="$( cd -P "$( dirname "$SOURCE" )" >/dev/null 2>&1 && pwd )"
 cd "$DIR"
 
 # Interactively setup .env if it is missing
@@ -65,37 +81,120 @@ EOF
     echo ""
 fi
 
-# Fallback to 'help' if no argument is passed
+# Extract variables from .env to use for local host curl checks
+export $(grep -v '^#' .env | xargs)
+
+desc_up="Start the LLM, Indexer, and Qdrant database"
+cmd_up() {
+    echo "Starting the Anvil local backend services via Docker Compose..."
+    docker compose --profile coder up -d "$@"
+}
+
+desc_build="Force build/rebuild of custom Dockerfile images"
+cmd_build() {
+    echo "Rebuilding container images from local Dockerfile configurations..."
+    docker compose --profile coder build "$@"
+}
+
+desc_status="Verify active engine containers and API endpoints"
+cmd_status() {
+    echo "Container Infrastructure Status:"
+    echo "------------------------------------------------------------"
+    docker compose --profile coder ps
+    echo ""
+    echo "Network Service Health Checks:"
+    echo "------------------------------------------------------------"
+    
+    L_PORT="${LLM_PORT:-8000}"
+    I_PORT="${INDEXER_PORT:-8001}"
+    
+    # 1. Main LLM
+    if [ -z "$(docker compose ps -q --filter "status=running" vllm-coder-mid 2>/dev/null)" ]; then
+        echo "🔴 Main LLM (Port ${L_PORT})     : OFFLINE (Container is stopped)"
+    elif curl -s --max-time 2 "http://localhost:${L_PORT}/health" > /dev/null; then
+        echo "🟢 Main LLM (Port ${L_PORT})     : ONLINE & READY"
+    else
+        echo "🟡 Main LLM (Port ${L_PORT})     : INITIALIZING (Container up, loading model weights...)"
+    fi
+
+    # 2. Indexer
+    if [ -z "$(docker compose ps -q --filter "status=running" vllm-coder-indexer 2>/dev/null)" ]; then
+        echo "🔴 Indexer (Port ${I_PORT})      : OFFLINE (Container is stopped)"
+    elif curl -s --max-time 2 "http://localhost:${I_PORT}/health" > /dev/null; then
+        echo "🟢 Indexer (Port ${I_PORT})      : ONLINE & READY"
+    else
+        echo "🟡 Indexer (Port ${I_PORT})      : INITIALIZING (Container up, spinning up backend...)"
+    fi
+
+    # 3. Qdrant
+    if [ -z "$(docker compose ps -q --filter "status=running" coder_qdrant 2>/dev/null)" ]; then
+        echo "🔴 Qdrant DB (Port 6333)     : OFFLINE (Container is stopped)"
+    elif curl -s --max-time 2 "http://localhost:6333/healthz" > /dev/null; then
+        echo "🟢 Qdrant DB (Port 6333)     : ONLINE & READY"
+    else
+        echo "🟡 Qdrant DB (Port 6333)     : INITIALIZING (Container up, acquiring storage lock...)"
+    fi
+    echo "------------------------------------------------------------"
+}
+
+desc_logs="Stream active engine outputs"
+cmd_logs() {
+    echo "Streaming live logs from your local models..."
+    docker compose --profile coder logs -f "$@"
+}
+
+desc_restart="Quickly bounce the container processes"
+cmd_restart() {
+    echo "Restarting the core local backend processes..."
+    docker compose --profile coder restart "$@"
+}
+
+desc_down="Stop all backend services"
+cmd_down() {
+    echo "🛑 Stopping all Anvil containers..."
+    docker compose --profile coder down "$@"
+}
+
+desc_help="Display this help menu"
+cmd_help() {
+    echo "Usage: ./anvil [command] [options]"
+    echo ""
+    echo "Available Commands:"
+    echo "------------------------------------------------------------"
+    
+    # Dynamically scan this source file to find all defined cmd_ functions in order
+    grep -E '^cmd_[a-zA-Z0-9_-]+\(\)' "$SOURCE" | while read -r line; do
+        func_name=$(echo "$line" | cut -d'(' -f1)
+        cmd_name="${func_name#cmd_}"
+        
+        # Use indirect expansion to pull the matching description text
+        desc_var="desc_${cmd_name}"
+        desc="${!desc_var}"
+        
+        printf "  %-8s : %s\n" "$cmd_name" "$desc"
+    done
+    echo "------------------------------------------------------------"
+}
+
+
+# ==============================================================================
+# AUTOMATIC EXECUTION ROUTER
+# ==============================================================================
+
+# Parse target command name (defaults to help if empty)
 cmd="${1:-help}"
 
-# Only shift if an argument actually existed to prevent shell execution errors
+# Safely shift arguments if an option was supplied
 if [ $# -gt 0 ]; then
     shift
 fi
 
-case "$cmd" in
-    up)
-        echo "🚀 Starting the Anvil local backend services..."
-        docker compose --profile coder up -d "$@"
-        ;;
-    down)
-        echo "🛑 Stopping all Anvil containers..."
-        docker compose --profile coder down "$@"
-        ;;
-    logs)
-        echo "📋 Streaming live logs from your local models..."
-        docker compose --profile coder logs -f "$@"
-        ;;
-    restart)
-        echo "🔄 Restarting the core local backend processes..."
-        docker compose --profile coder restart "$@"
-        ;;
-    help|*)
-        echo "Usage: ./anvil [up|down|logs|restart]"
-        echo "  up      : Start the LLM, Indexer, and Qdrant database"
-        echo "  down    : Stop all backend services"
-        echo "  logs    : Stream active engine outputs"
-        echo "  restart : Quickly bounce the container processes"
-        exit 1
-        ;;
-esac
+# Verify if a corresponding function exists in shell memory
+if declare -F "cmd_$cmd" > /dev/null; then
+    "cmd_$cmd" "$@"
+else
+    echo "❌ Unknown command: '$cmd'"
+    echo ""
+    cmd_help
+    exit 1
+fi
