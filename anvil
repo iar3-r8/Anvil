@@ -155,6 +155,86 @@ cmd_down() {
     docker compose --profile coder down "$@"
 }
 
+desc_setup_repo="Inject template configuration into a target workspace repository"
+cmd_setup_repo() {
+local target_repo="$1"
+    local config_template="$DIR/templates/zoo-code-settings.json.template"
+    local mcp_template="$DIR/templates/mcp.json.template"
+    
+    # 1. Verification and validation safeguards
+    if [ -z "$target_repo" ]; then
+        echo "❌ Error: Please provide the target repository directory path."
+        echo "Usage: ./anvil setup-repo /path/to/your/repo"
+        exit 1
+    fi
+
+    if [ ! -d "$target_repo" ]; then
+        echo "❌ Error: Target directory '$target_repo' does not exist."
+        exit 1
+    fi
+
+    if [ ! -f "$config_template" ]; then
+        echo "❌ Error: Core settings template not found at '$config_template'."
+        exit 1
+    fi
+
+    if [ ! -f "$mcp_template" ]; then
+        echo "❌ Error: MCP context template file not found at '$mcp_template'."
+        exit 1
+    fi
+
+    # Resolve absolute path natively to prevent relative resolution leakage
+    local abs_target_repo
+    abs_target_repo=$(cd "$target_repo" && pwd)
+
+    # 2. Inject core layout configuration (zoo-code-settings.json)
+    local current_llm_port="${LLM_PORT:-8000}"
+    local current_indexer_port="${INDEXER_PORT:-8001}"
+
+    echo "⚙️  Generating zoo-code-settings.json using active environment ports..."
+    sed -e "s/\${LLM_PORT}/${current_llm_port}/g" \
+        -e "s/\${INDEXER_PORT}/${current_indexer_port}/g" \
+        "$config_template" > "$abs_target_repo/zoo-code-settings.json"
+    echo "   ↳ ✅ Injected: $abs_target_repo/zoo-code-settings.json"
+
+    # 3. Dynamic verification and structural setup for the .roo ecosystem
+    echo "📂 Verifying framework directory architectures..."
+    
+    local sub_dirs=(".roo" ".roo/commands" ".roo/skills" ".roo/rules")
+    for dir in "${sub_dirs[@]}"; do
+        if [ ! -d "$abs_target_repo/$dir" ]; then
+            echo "   ↳ 📁 Creating missing directory: $dir"
+            mkdir -p "$abs_target_repo/$dir"
+        fi
+    done
+
+    # 4. GitHub Context Interactive Provisioning Step
+    local github_token=""
+    echo ""
+    read -p "❓ Do you use GitHub and want to map a personal repository token for the agent? (y/N): " use_github
+    echo ""
+
+    if [[ "$use_github" =~ ^[Yy](es)?$ ]]; then
+        read -r -p "🔑 Enter your GitHub Personal Access Token: " github_token
+        echo "⚡ Token accepted."
+    else
+        echo "⚠️  Skipping interactive GitHub integration token."
+        echo "💡 Note: If you wish to set this up later, you must manually edit the"
+        echo "   'mcp.json' configuration file inside your repository's '.roo/' directory"
+        echo "   and populate the GITHUB_PERSONAL_ACCESS_TOKEN variable to allow the agent to access GitHub APIs."
+    fi
+    echo ""
+
+    # 5. Populate and deploy mcp.json context using pipeline delimiters
+    echo "⚙️  Processing MCP context mappings and injecting into workspace..."
+    sed -e "s|\${workspaceFolder}|${abs_target_repo}|g" \
+        -e "s|\${GITHUB_TOKEN}|${github_token}|g" \
+        "$mcp_template" > "$abs_target_repo/.roo/mcp.json"
+    
+    echo "   ↳ ✅ Instantiated: $abs_target_repo/.roo/mcp.json"
+    echo "✨ Workspace setup complete for: $abs_target_repo"
+}
+
 desc_help="Display this help menu"
 cmd_help() {
     echo "Usage: ./anvil [command] [options]"

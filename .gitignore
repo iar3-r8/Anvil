@@ -1,6 +1,8 @@
 # Specifics
 *.zip
 *.env
+.roo/*
+zoo-code-settings.json
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

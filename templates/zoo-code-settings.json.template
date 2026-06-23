@@ -258,7 +258,6 @@
         "reasoningBlockCollapsed": true,
         "enterBehavior": "send",
         "profileThresholds": {},
-        "hasOpenedModeSelector": true,
-        "lastSettingsExportPath": "./zoo-code-settings.json"
+        "hasOpenedModeSelector": true
     }
 }

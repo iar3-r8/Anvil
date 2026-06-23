@@ -9,7 +9,7 @@
 			"disabled": false,
 			"alwaysAllow": [],
 			"env": {
-				"GITHUB_PERSONAL_ACCESS_TOKEN": "<YOUR TOKEN HERE>"
+				"GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
 			},
 			"disabledTools": [
 				"create_or_update_file",
