@@ -155,11 +155,14 @@ cmd_down() {
     docker compose --profile coder down "$@"
 }
 
-desc_setup_repo="Inject template configuration into a target workspace repository"
+desc_setup_repo="Inject template configs, .roo frameworks, VS Code options, and rules into a target repo"
 cmd_setup_repo() {
-local target_repo="$1"
+    local target_repo="$1"
     local config_template="$DIR/templates/zoo-code-settings.json.template"
     local mcp_template="$DIR/templates/mcp.json.template"
+    local extensions_template="$DIR/templates/extensions.json.template"
+    local roo_rules_source="$DIR/templates/update_roo_rules.md"
+    local roo_template_source="$DIR/templates/roo_template"
     
     # 1. Verification and validation safeguards
     if [ -z "$target_repo" ]; then
@@ -183,6 +186,21 @@ local target_repo="$1"
         exit 1
     fi
 
+    if [ ! -f "$extensions_template" ]; then
+        echo "❌ Error: Extensions template file not found at '$extensions_template'."
+        exit 1
+    fi
+
+    if [ ! -f "$roo_rules_source" ]; then
+        echo "❌ Error: Roo rules command file not found at '$roo_rules_source'."
+        exit 1
+    fi
+
+    if [ ! -d "$roo_template_source" ]; then
+        echo "❌ Error: Roo template directory not found at '$roo_template_source'."
+        exit 1
+    fi
+
     # Resolve absolute path natively to prevent relative resolution leakage
     local abs_target_repo
     abs_target_repo=$(cd "$target_repo" && pwd)
@@ -199,7 +217,6 @@ local target_repo="$1"
 
     # 3. Dynamic verification and structural setup for the .roo ecosystem
     echo "📂 Verifying framework directory architectures..."
-    
     local sub_dirs=(".roo" ".roo/commands" ".roo/skills" ".roo/rules")
     for dir in "${sub_dirs[@]}"; do
         if [ ! -d "$abs_target_repo/$dir" ]; then
@@ -221,7 +238,7 @@ local target_repo="$1"
         echo "⚠️  Skipping interactive GitHub integration token."
         echo "💡 Note: If you wish to set this up later, you must manually edit the"
         echo "   'mcp.json' configuration file inside your repository's '.roo/' directory"
-        echo "   and populate the GITHUB_PERSONAL_ACCESS_TOKEN variable to allow the agent to access GitHub APIs."
+        echo "   and populate the GITHUB_TOKEN variable to allow the agent to access GitHub APIs."
     fi
     echo ""
 
@@ -230,9 +247,35 @@ local target_repo="$1"
     sed -e "s|\${workspaceFolder}|${abs_target_repo}|g" \
         -e "s|\${GITHUB_TOKEN}|${github_token}|g" \
         "$mcp_template" > "$abs_target_repo/.roo/mcp.json"
-    
     echo "   ↳ ✅ Instantiated: $abs_target_repo/.roo/mcp.json"
+
+    # 6. Verify and set up .vscode configuration space
+    echo "💻 Verifying IDE configuration space..."
+    if [ ! -d "$abs_target_repo/.vscode" ]; then
+        echo "   ↳ 📁 Creating missing directory: .vscode"
+        mkdir -p "$abs_target_repo/.vscode"
+    fi
+    cp "$extensions_template" "$abs_target_repo/.vscode/extensions.json"
+    echo "   ↳ ✅ Injected: $abs_target_repo/.vscode/extensions.json"
+
+    # 7. Provision the custom rule automation utility
+    echo "🛠️  Deploying core orchestration instructions..."
+    cp "$roo_rules_source" "$abs_target_repo/.roo/commands/update_roo_rules.md"
+    echo "   ↳ ✅ Injected: $abs_target_repo/.roo/commands/update_roo_rules.md"
+
+    # 7.5. Copy roo_template folder to root repository as is
+    echo "📦 Copying roo_template directory to repository root..."
+    cp -r "$roo_template_source" "$abs_target_repo/"
+    echo "   ↳ ✅ Copied: $abs_target_repo/roo_template"
+
+    # 8. Final wrap up and output instructions
+    echo ""
     echo "✨ Workspace setup complete for: $abs_target_repo"
+    echo "----------------------------------------------------------------------"
+    echo "👉 IMPORTANT NEXT STEP:"
+    echo "To update the various rules of the LLM model, open your Zoo chat"
+    echo "interface with the LLM and instruct it to execute the command /update_roo_rules.md"
+    echo "----------------------------------------------------------------------"
 }
 
 desc_help="Display this help menu"

@@ -29,11 +29,13 @@ Learn how to use the interactive `./anvil` helper script to generate your enviro
 👉 **[Read the Backend Setup Guide](doc/1-setting-up-backend.md)**
 
 ### Step 2: Configure Your VS Code Extension
-Once your local backend engines are online, learn how to install the recommended extension workspace and load the pre-configured `zoo-code-settings.json` file to instantly connect your agent.
+Once your local backend engines are online, learn how to install the recommended extension workspace and configure your agentic setup in your own repository.
 
 👉 **[Read the VS Code Plugin Setup Guide](doc/2-setting-up-vscode-plugin.md)**
 
 ---
 
+## Coming up
+- See issues. Vote on whatever feels important to you.
                                                                       
                                                                       

@@ -7,9 +7,9 @@
             },
             "docker_vllm": {
                 "enableReasoningEffort": true,
-                "openAiBaseUrl": "http://host.docker.internal:${LLM_PORT}/v1",
+                "openAiBaseUrl": "http://localhost:${LLM_PORT}/v1",
                 "openAiApiKey": "not-needed",
-                "openAiModelId": "Qwen/Qwen3-Coder-30B-A3B-Instruct-FP8",
+                "openAiModelId": "Qwen/Qwen3.6-35B-A3B-FP8",
                 "openAiCustomModelInfo": {
                     "maxTokens": -1,
                     "contextWindow": 128000,
@@ -236,14 +236,14 @@
         },
         "codebaseIndexConfig": {
             "codebaseIndexEnabled": true,
-            "codebaseIndexQdrantUrl": "http://host.docker.internal:6333",
+            "codebaseIndexQdrantUrl": "http://localhost:6333",
             "codebaseIndexEmbedderProvider": "openai-compatible",
             "codebaseIndexEmbedderBaseUrl": "",
             "codebaseIndexEmbedderModelId": "nomic-ai/nomic-embed-text-v1.5",
             "codebaseIndexEmbedderModelDimension": 768,
             "codebaseIndexSearchMinScore": 0.4,
             "codebaseIndexSearchMaxResults": 50,
-            "codebaseIndexOpenAiCompatibleBaseUrl": "http://host.docker.internal:${INDEXER_PORT}/v1",
+            "codebaseIndexOpenAiCompatibleBaseUrl": "http://localhost:${INDEXER_PORT}/v1",
             "codebaseIndexBedrockRegion": "",
             "codebaseIndexBedrockProfile": "",
             "codebaseIndexOpenRouterSpecificProvider": ""
