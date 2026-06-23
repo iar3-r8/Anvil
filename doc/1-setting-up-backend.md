@@ -35,7 +35,7 @@ Coming up
 
 The anvil script is here to help you manage the project backend. Make sure that it can be executable with the command `chmod +x anvil`
 
-### Available Commands
+### Main command for the backend
 
 | Command | Action | Description |
 | :--- | :--- | :--- |
@@ -47,5 +47,3 @@ The anvil script is here to help you manage the project backend. Make sure that 
 | `./anvil down` | Stop Stack | Safely stops and tears down all running containers. |
 
 ---
-
-### Three-
