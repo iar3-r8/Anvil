@@ -12,7 +12,7 @@
                 "openAiModelId": "Qwen/Qwen3.6-35B-A3B-FP8",
                 "openAiCustomModelInfo": {
                     "maxTokens": -1,
-                    "contextWindow": 128000,
+                    "contextWindow": 65536,
                     "supportsImages": false,
                     "supportsPromptCache": true,
                     "inputPrice": 0,
