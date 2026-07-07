@@ -1,77 +1,4 @@
 services:
-  vllm-coder-mid:
-    build:
-      dockerfile: docker/Dockerfile
-    container_name: vllm_coder-service
-    ports:
-      - "${LLM_PORT}:8000"
-    volumes:
-      - ${HF_HOME}:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '${LLM_DEVICE_ID_1}', '${LLM_DEVICE_ID_2}' ]
-              capabilities: [ gpu ]
-    profiles: [ "coder" ]
-    command:
-      - "--model"
-      - "Qwen/Qwen3.6-35B-A3B-FP8"
-      - "--host"
-      - "0.0.0.0"
-      - "--tensor-parallel-size"
-      - "2"
-      - "--enable-chunked-prefill"
-      - "--max-model-len"
-      - "65536"
-      - "--gpu-memory-utilization"
-      - "0.90"
-      - "--reasoning-parser"
-      - "qwen3"
-      - "--enable-auto-tool-choice"
-      - "--tool-call-parser"
-      - "qwen3_coder"
-      - "--speculative-config"
-      - '{"method":"qwen3_next_mtp","num_speculative_tokens":1}'
-      - "--enable-prefix-caching"
-      - "--swap-space"
-      - "6"
-      - "--max-num-seqs"
-      - "1"
-      - "--kv-cache-dtype"
-      - "fp8_e4m3"
-      - "--max-num-batched-tokens"
-      - "32768"
-      - "--disable-custom-all-reduce"
-
-  vllm-coder-indexer:
-    build:
-      dockerfile: docker/Dockerfile
-    container_name: vllm_coder_indexer-service
-    ports:
-      - "${INDEXER_PORT}:8000"
-    volumes:
-      - ${HF_HOME}:/root/.cache/huggingface
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: [ '${INDEXER_STORAGE_DEVICE_ID}' ]
-              capabilities: [ gpu ]
-    profiles: [ "coder" ]
-    command:
-      - "--model"
-      - "nomic-ai/nomic-embed-text-v1.5"
-      - "--host"
-      - "0.0.0.0"
-      - "--max-model-len"
-      - "2048"
-      - "--gpu-memory-utilization"
-      - "0.25"
-      - "--trust-remote-code"
-
   coder_qdrant:
     image: qdrant/qdrant:latest
     container_name: coder_qdrant-service
@@ -79,5 +6,33 @@ services:
     ports:
       - "6333:6333" # REST API
       - "6334:6334" # gRPC API (Optional but recommended)
+    profiles: [ "coder" ]
     volumes:
       - ${DATA_DIR}/qdrant_storage:/qdrant/storage
+
+  llama-swap:
+    image: ghcr.io/mostlygeek/llama-swap:unified-cuda
+    container_name: llama-swap-service
+    ports:
+      - "${LLM_PORT}:8080"
+    volumes:
+      - ${HF_HOME}:/root/.cache/huggingface
+      - ./config.yaml:/app/config.yaml
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /usr/bin/docker:/usr/bin/docker:ro
+    profiles: [ "coder" ]
+    environment:
+      - HF_HOME=${HF_HOME}
+      - HF_TOKEN=${HF_TOKEN}
+      - LLM_DEVICE_ID_1=${LLM_DEVICE_ID_1}
+      - LLM_DEVICE_ID_2=${LLM_DEVICE_ID_2}
+      - INDEXER_STORAGE_DEVICE_ID=${INDEXER_STORAGE_DEVICE_ID}
+    networks:
+      - llm-network
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: --config /app/config.yaml --listen 0.0.0.0:8080
+
+networks:
+  llm-network:
+    name: llm-network

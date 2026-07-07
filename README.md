@@ -2,7 +2,7 @@
 
 # <img  src="./assets/logo.png" style="vertical-align: bottom;" width="80" height="80"> <img  src="./assets/anvil.png" style="vertical-align: bottom;" height="80">
 
-**Anvil** provides everything teams need to self-host their own agentic coding environment. Eliminate commercial API expenses and secure your code intellectual property and data behind an air-gapped, high-throughput local backend stack powered by vLLM, Docker Compose, and Zoo Code.
+**Anvil** provides everything teams need to self-host their own agentic coding environment. Eliminate commercial API expenses and secure your code intellectual property and data behind an air-gapped, high-throughput local backend stack powered by [llama-swap](https://github.com/mostlygeek/llama-swap), [Docker Compose](https://docs.docker.com/compose/), and [Zoo Code](https://www.zoocode.dev/).
 
 ---
 
@@ -13,8 +13,9 @@ Commercial AI coding assistants are powerful, but they come with two massive dra
 Anvil gives you a turnkey, production-grade alternative that runs completely on your own hardware. 
 
 ### What's Under the Hood?
-* **High-Throughput Inference:** Powered by [`vllm`](https://vllm.ai/) hosting optimized `Qwen3.6-Coder` reasoning models.
-* **Local Workspace RAG:** A dedicated text-embedding indexing container paired with a [`Qdrant`](https://qdrant.tech/) vector database to provide deep codebase context to your agent.
+* **Dynamic Model Routing:** Powered by [llama-swap](https://github.com/mostlygeek/llama-swap), a smart gateway that manages model lifecycles with TTL-based swapping, allowing multiple models to share limited GPU resources efficiently.
+* **High-Throughput Inference:** Child containers run [`vllm`](https://vllm.ai/) hosting optimized `Qwen2.5-Coder-7B` and `Qwen3.6-35B-A3B-FP8` reasoning models on-demand.
+* **Local Workspace RAG:** A dedicated text-embedding container paired with a [`Qdrant`](https://qdrant.tech/) vector database to provide deep codebase context to your agent.
 * **Frictionless UI Integration:** Pre-configured settings to tie the entire infrastructure directly into the [**Zoo Code**](https://www.zoocode.dev/) (formerly Roo Code) VS Code extension.
 
 ---

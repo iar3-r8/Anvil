@@ -1,11 +1,11 @@
 {
     "providerProfiles": {
-        "currentApiConfigName": "docker_vllm",
+        "currentApiConfigName": "llama_swap",
         "apiConfigs": {
             "default": {
                 "id": "o07fawf9h1"
             },
-            "docker_vllm": {
+            "llama_swap": {
                 "enableReasoningEffort": true,
                 "openAiBaseUrl": "http://localhost:${LLM_PORT}/v1",
                 "openAiApiKey": "not-needed",
@@ -243,7 +243,7 @@
             "codebaseIndexEmbedderModelDimension": 768,
             "codebaseIndexSearchMinScore": 0.4,
             "codebaseIndexSearchMaxResults": 50,
-            "codebaseIndexOpenAiCompatibleBaseUrl": "http://localhost:${INDEXER_PORT}/v1",
+            "codebaseIndexOpenAiCompatibleBaseUrl": "http://localhost:${LLM_PORT}/v1",
             "codebaseIndexBedrockRegion": "",
             "codebaseIndexBedrockProfile": "",
             "codebaseIndexOpenRouterSpecificProvider": ""
