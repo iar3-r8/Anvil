@@ -82,13 +82,13 @@ export $(grep -v '^#' .env | xargs)
 desc_up="Start the Llama-Swap router and dependencies"
 cmd_up() {
     echo "Starting the Anvil local backend cluster via Llama-Swap..."
-    docker compose up -d "$@"
+    docker compose --profile coder up -d "$@"
 }
 
 desc_build="Force build/rebuild of custom configurations"
 cmd_build() {
     echo "Rebuilding container configurations..."
-    docker compose build "$@"
+    docker compose --profile coder build "$@"
 }
 
 desc_status="Verify active engine routing layers and API backends"
@@ -140,19 +140,19 @@ cmd_status() {
 desc_logs="Stream dynamic engine controller outputs"
 cmd_logs() {
     echo "Streaming logs from your llama-swap orchestration engine..."
-    docker compose logs -f "$@"
+    docker compose --profile coder logs -f "$@"
 }
 
 desc_restart="Quickly cycle the core proxy daemon"
 cmd_restart() {
     echo "Bouncing the llama-swap manager container..."
-    docker compose restart "$@"
+    docker compose --profile coder restart "$@"
 }
 
 desc_down="Stop all runtime services and child model processes"
 cmd_down() {
     echo "🛑 Destroying active containers and runtime allocations..."
-    docker compose down "$@"
+    docker compose --profile coder down "$@"
     # Safeguard clean up for orphaned on-demand vLLM instances spawned by llama-swap
     echo "🧹 Purging loose runtime on-demand models..."
     docker ps -a --filter "name=vllm-" -q | xargs -r docker stop | xargs -r docker rm || true
