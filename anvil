@@ -43,10 +43,6 @@ if [ ! -f .env ]; then
     read -p "Enter main LLM port [$default_llm_port]: " llm_port
     llm_port="${llm_port:-$default_llm_port}"
 
-    default_indexer_port="8001"
-    read -p "Enter embedding indexer port [$default_indexer_port]: " indexer_port
-    indexer_port="${indexer_port:-$default_indexer_port}"
-
     # 3. GPU Device Allocation
     default_gpu1="0"
     read -p "Enter main LLM GPU Device ID 1 [$default_gpu1]: " llm_gpu1
@@ -68,7 +64,6 @@ DATA_DIR=$data_dir
 
 # --- Networking Ports ---
 LLM_PORT=$llm_port
-INDEXER_PORT=$indexer_port
 
 # --- GPU Device Allocation ---
 LLM_DEVICE_ID_1=$llm_gpu1
@@ -84,75 +79,83 @@ fi
 # Extract variables from .env to use for local host curl checks
 export $(grep -v '^#' .env | xargs)
 
-desc_up="Start the LLM, Indexer, and Qdrant database"
+desc_up="Start the Llama-Swap router and dependencies"
 cmd_up() {
-    echo "Starting the Anvil local backend services via Docker Compose..."
-    docker compose --profile coder up -d "$@"
+    echo "Starting the Anvil local backend cluster via Llama-Swap..."
+    docker compose up -d "$@"
 }
 
-desc_build="Force build/rebuild of custom Dockerfile images"
+desc_build="Force build/rebuild of custom configurations"
 cmd_build() {
-    echo "Rebuilding container images from local Dockerfile configurations..."
-    docker compose --profile coder build "$@"
+    echo "Rebuilding container configurations..."
+    docker compose build "$@"
 }
 
-desc_status="Verify active engine containers and API endpoints"
+desc_status="Verify active engine routing layers and API backends"
 cmd_status() {
-    echo "Container Infrastructure Status:"
+    echo "Llama-Swap Daemon & Infrastructure Status:"
     echo "------------------------------------------------------------"
-    docker compose --profile coder ps
+    docker compose ps
     echo ""
-    echo "Network Service Health Checks:"
+    echo "Dynamic Model Routing Health Checks:"
     echo "------------------------------------------------------------"
     
-    L_PORT="${LLM_PORT:-8000}"
-    I_PORT="${INDEXER_PORT:-8001}"
+    GATEWAY_PORT="${LLM_PORT:-8080}"
     
-    # 1. Main LLM
-    if [ -z "$(docker compose ps -q --filter "status=running" vllm-coder-mid 2>/dev/null)" ]; then
-        echo "🔴 Main LLM (Port ${L_PORT})     : OFFLINE (Container is stopped)"
-    elif curl -s --max-time 2 "http://localhost:${L_PORT}/health" > /dev/null; then
-        echo "🟢 Main LLM (Port ${L_PORT})     : ONLINE & READY"
-    else
-        echo "🟡 Main LLM (Port ${L_PORT})     : INITIALIZING (Container up, loading model weights...)"
+    # 1. Check if the central router gateway is alive
+    if ! curl -s --max-time 2 "http://localhost:${GATEWAY_PORT}/v1/models" > /dev/null; then
+        echo "🔴 Swap Router Gateway (Port ${GATEWAY_PORT}): OFFLINE (Service completely down)"
+        echo "------------------------------------------------------------"
+        return
     fi
 
-    # 2. Indexer
-    if [ -z "$(docker compose ps -q --filter "status=running" vllm-coder-indexer 2>/dev/null)" ]; then
-        echo "🔴 Indexer (Port ${I_PORT})      : OFFLINE (Container is stopped)"
-    elif curl -s --max-time 2 "http://localhost:${I_PORT}/health" > /dev/null; then
-        echo "🟢 Indexer (Port ${I_PORT})      : ONLINE & READY"
-    else
-        echo "🟡 Indexer (Port ${I_PORT})      : INITIALIZING (Container up, spinning up backend...)"
-    fi
+    echo "🟢 Swap Router Gateway (Port ${GATEWAY_PORT}): ONLINE & ROUTING"
+    echo "--- Registered Model Matrix ---"
 
-    # 3. Qdrant
-    if [ -z "$(docker compose ps -q --filter "status=running" coder_qdrant 2>/dev/null)" ]; then
-        echo "🔴 Qdrant DB (Port 6333)     : OFFLINE (Container is stopped)"
-    elif curl -s --max-time 2 "http://localhost:6333/healthz" > /dev/null; then
-        echo "🟢 Qdrant DB (Port 6333)     : ONLINE & READY"
+    # 2. Get the list of ALL configured models from llama-swap
+    models=$(curl -s --max-time 2 "http://localhost:${GATEWAY_PORT}/v1/models" | \
+             grep -o '"id":[^,]*' | \
+             sed 's/"id"://;s/"//g;s/ //g')
+
+    # 3. Get the list of CURRENTLY active/loaded models from llama-swap's live state
+    running_models=$(curl -s --max-time 2 "http://localhost:${GATEWAY_PORT}/running")
+
+    if [ -z "$models" ]; then
+        echo "⚠️  No models returned by the router gateway registry."
     else
-        echo "🟡 Qdrant DB (Port 6333)     : INITIALIZING (Container up, acquiring storage lock...)"
+        # 4. Loop through registered configurations and cross-reference with live running status
+        echo "$models" | while read -r model_name; do
+            if [ -z "$model_name" ]; then continue; fi
+
+            if echo "$running_models" | grep -q "$model_name"; then
+                printf "  \033[32m🟢\033[0m %-45s : ACTIVE & HOT\n" "$model_name"
+            else
+                printf "  \033[33m🟡\033[0m %-45s : COLD / SWAPPED OUT (Lazy-loads on demand)\n" "$model_name"
+            fi
+        done
     fi
     echo "------------------------------------------------------------"
 }
 
-desc_logs="Stream active engine outputs"
+desc_logs="Stream dynamic engine controller outputs"
 cmd_logs() {
-    echo "Streaming live logs from your local models..."
-    docker compose --profile coder logs -f "$@"
+    echo "Streaming logs from your llama-swap orchestration engine..."
+    docker compose logs -f "$@"
 }
 
-desc_restart="Quickly bounce the container processes"
+desc_restart="Quickly cycle the core proxy daemon"
 cmd_restart() {
-    echo "Restarting the core local backend processes..."
-    docker compose --profile coder restart "$@"
+    echo "Bouncing the llama-swap manager container..."
+    docker compose restart "$@"
 }
 
-desc_down="Stop all backend services"
+desc_down="Stop all runtime services and child model processes"
 cmd_down() {
-    echo "🛑 Stopping all Anvil containers..."
-    docker compose --profile coder down "$@"
+    echo "🛑 Destroying active containers and runtime allocations..."
+    docker compose down "$@"
+    # Safeguard clean up for orphaned on-demand vLLM instances spawned by llama-swap
+    echo "🧹 Purging loose runtime on-demand models..."
+    docker ps -a --filter "name=vllm-" -q | xargs -r docker stop | xargs -r docker rm || true
 }
 
 desc_setup_repo="Inject template configs, .roo frameworks, VS Code options, and rules into a target repo"
@@ -205,13 +208,11 @@ cmd_setup_repo() {
     local abs_target_repo
     abs_target_repo=$(cd "$target_repo" && pwd)
 
-    # 2. Inject core layout configuration (zoo-code-settings.json)
-    local current_llm_port="${LLM_PORT:-8000}"
-    local current_indexer_port="${INDEXER_PORT:-8001}"
+    # 2. Inject unified layout configuration pointing everything directly to the unified llama-swap gateway port
+    local current_gateway_port="${LLM_PORT:-8080}"
 
-    echo "⚙️  Generating zoo-code-settings.json using active environment ports..."
-    sed -e "s/\${LLM_PORT}/${current_llm_port}/g" \
-        -e "s/\${INDEXER_PORT}/${current_indexer_port}/g" \
+    echo "⚙️  Generating zoo-code-settings.json unified across a single proxy gate..."
+    sed -e "s/\${LLM_PORT}/${current_gateway_port}/g" \
         "$config_template" > "$abs_target_repo/zoo-code-settings.json"
     echo "   ↳ ✅ Injected: $abs_target_repo/zoo-code-settings.json"
 

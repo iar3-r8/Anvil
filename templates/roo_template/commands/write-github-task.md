@@ -18,7 +18,7 @@ Writes GitHub tasks using a standardized template that can be directly pasted in
 - Follow all guidelines for quality and clarity
 
 ### 3. Publish to GitHub
-- Use the `github` mcp to create the issue in the repository (name and repo found in .roo/rules/agent.md)
+- Use the `github` mcp to create the issue in the repository (name and repo found in .roo/rules/AGENTS.md)
 - If there is any error from the server, return it to the user and wait for instruction on what to do next.
 - **This step should be executed automatically after the task is formatted**
 

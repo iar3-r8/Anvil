@@ -22,7 +22,7 @@ Creates a comprehensive GitHub bug report with structured sections for clear com
 - Include file paths, error messages, and relevant code snippets
 
 ### 3. Publish to GitHub
-- Use the `github` mcp to create the issue in the repository (the repo name and user should be in .roo/rules/agent.md, else ask the user.)
+- Use the `github` mcp to create the issue in the repository (the repo name and user should be in .roo/rules/AGENTS.md, else ask the user.)
 - If there is any error from the server, return it to the user and wait for instruction on what to do next.
 - **This step should be executed automatically after the bug report is formatted**
 
