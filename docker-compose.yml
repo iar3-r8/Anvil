@@ -24,6 +24,7 @@ services:
     environment:
       - HF_HOME=${HF_HOME}
       - HF_TOKEN=${HF_TOKEN}
+      - LLM_DEVICE_ID_0=${LLM_DEVICE_ID_0}
       - LLM_DEVICE_ID_1=${LLM_DEVICE_ID_1}
       - LLM_DEVICE_ID_2=${LLM_DEVICE_ID_2}
       - INDEXER_STORAGE_DEVICE_ID=${INDEXER_STORAGE_DEVICE_ID}

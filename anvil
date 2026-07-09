@@ -44,12 +44,16 @@ if [ ! -f .env ]; then
     llm_port="${llm_port:-$default_llm_port}"
 
     # 3. GPU Device Allocation
+    default_gpu0="0"
+    read -p "Enter Generic LLM GPU Device ID 1 [$default_gpu0]: " llm_gpu0
+    llm_gpu0="${llm_gpu0:-$default_gpu0}"
+
     default_gpu1="0"
-    read -p "Enter main LLM GPU Device ID 1 [$default_gpu1]: " llm_gpu1
+    read -p "Enter Coder LLM GPU Device ID 1 [$default_gpu1]: " llm_gpu1
     llm_gpu1="${llm_gpu1:-$default_gpu1}"
 
     default_gpu2="1"
-    read -p "Enter main LLM GPU Device ID 2 [$default_gpu2]: " llm_gpu2
+    read -p "Enter Coder LLM GPU Device ID 2 [$default_gpu2]: " llm_gpu2
     llm_gpu2="${llm_gpu2:-$default_gpu2}"
 
     default_idx_gpu="2"
@@ -66,6 +70,7 @@ DATA_DIR=$data_dir
 LLM_PORT=$llm_port
 
 # --- GPU Device Allocation ---
+LLM_DEVICE_ID_0=$llm_gpu0
 LLM_DEVICE_ID_1=$llm_gpu1
 LLM_DEVICE_ID_2=$llm_gpu2
 INDEXER_STORAGE_DEVICE_ID=$idx_gpu

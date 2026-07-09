@@ -7,35 +7,43 @@ globalTTL: 1800
 
 matrix:
   vars:
-    qw7: "Qwen/Qwen2.5-Coder-7B-Instruct"
-    qw35: "Qwen/Qwen3.6-35B-A3B-FP8"
+    generic: "lovedheart/Qwen3.5-9B-FP8"
+    coder: "Qwen/Qwen3.6-35B-A3B-FP8"
     nomic: "nomic-ai/nomic-embed-text-v1.5"
 
   evict_costs:
-    qw7: 10
-    qw35: 30
+    generic: 10
+    coder: 30
     nomic: 1
 
   sets:
-    coder_suite: "(qw7 | qw35) & nomic"
+    coder_suite: "generic & coder & nomic"
 
 hooks:
   on_startup:
-    preload: ["nomic-ai/nomic-embed-text-v1.5", "Qwen/Qwen3.6-35B-A3B-FP8"]
+    preload: ["nomic-ai/nomic-embed-text-v1.5", "lovedheart/Qwen3.5-9B-FP8", "Qwen/Qwen3.6-35B-A3B-FP8"]
 
 models:
-  "Qwen/Qwen2.5-Coder-7B-Instruct":
+  "lovedheart/Qwen3.5-9B-FP8":
     checkEndpoint: /v1/models
-    cmd: |
-      docker run --rm --runtime=nvidia \
-      --gpus '"device=0"' \
-      --network llm-network \
-      --name vllm-${PORT} \
-      -v ${env.HF_HOME}:/root/.cache/huggingface \
-      vllm/vllm-openai:latest \
-        --model Qwen/Qwen2.5-Coder-7B-Instruct \
-        --port ${PORT} \
+    cmd: >
+      docker run --rm --runtime=nvidia
+      --gpus '"device=${env.LLM_DEVICE_ID_0}"'
+      --network llm-network
+      --name vllm-${PORT}
+      -v ${env.HF_HOME}:/root/.cache/huggingface
+      vllm/vllm-openai:latest
+        --model lovedheart/Qwen3.5-9B-FP8
+        --port ${PORT}
         --host 0.0.0.0
+        --gpu-memory-utilization 0.95
+        --enable-prefix-caching
+        --max-model-len 248320
+        --kv-cache-dtype auto
+        --attention-backend flashinfer
+        --mamba-cache-mode align
+        --mamba-block-size 8
+
     cmdStop: "docker stop vllm-${PORT} || true"
     proxy: http://vllm-${PORT}:${PORT}
     type: proxy
