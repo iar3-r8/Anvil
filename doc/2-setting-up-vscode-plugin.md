@@ -14,7 +14,7 @@ This guide outlines how to configure your workspace repository to connect with t
 Run the initialization command from your Anvil root directory to generate the required environment profiles, MCP structures, VS Code extensions, and workspace configuration templates inside your project repository (Note that some files will be copied to your repositories):
 
 ```bash
-./anvil setup-repo /path/to/your/target-repo
+./anvil setup_repo /path/to/your/target-repo
 ```
 
 *Follow the interactive prompts to automatically hook up directory paths, copy the `roo_template` folders, and configure optional GitHub tokens.*
