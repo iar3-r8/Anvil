@@ -10,7 +10,7 @@
 
 Commercial AI coding assistants are powerful, but they come with two massive drawbacks for engineering teams: **unpredictable monthly token bills** and **data privacy compliance risks** associated with sending proprietary codebases and sometimes even data to external APIs. 
 
-Anvil gives you a turnkey, production-grade alternative that runs completely on your own hardware. 
+Anvil gives you a turnkey, production-grade alternative that runs completely on your own metal. 
 
 ### What's Under the Hood?
 * **Dynamic Model Routing:** Powered by [llama-swap](https://github.com/mostlygeek/llama-swap), a smart gateway that manages model lifecycles with TTL-based swapping, allowing multiple models to share limited GPU resources efficiently.
