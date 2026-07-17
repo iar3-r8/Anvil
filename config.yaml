@@ -62,7 +62,7 @@ models:
       --port ${PORT}
       --tensor-parallel-size 2
       --enable-chunked-prefill
-      --max-model-len 65536
+      --max-model-len 262144
       --gpu-memory-utilization 0.90
       --reasoning-parser qwen3
       --enable-auto-tool-choice
@@ -72,7 +72,7 @@ models:
       --cpu-offload-gb 6
       --max-num-seqs 1
       --kv-cache-dtype fp8_e4m3
-      --max-num-batched-tokens 32768
+      --max-num-batched-tokens 131072
       --disable-custom-all-reduce
     cmdStop: "docker stop vllm-${PORT} || true"
     proxy: http://vllm-${PORT}:${PORT}

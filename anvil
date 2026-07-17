@@ -216,8 +216,15 @@ cmd_setup_repo() {
     # 2. Inject unified layout configuration pointing everything directly to the unified llama-swap gateway port
     local current_gateway_port="${LLM_PORT:-8080}"
 
+    # Context window for the coder model - extracted from config.yaml (single source of truth)
+    local context_window
+    context_window=$(grep -A50 "^  \"Qwen/Qwen3.6-35B-A3B-FP8\":" config.yaml | grep -- '--max-model-len' | awk '{print $NF}' | head -1)
+    context_window="${context_window:-262144}"
+
     echo "⚙️  Generating zoo-code-settings.json unified across a single proxy gate..."
+    echo "   ↳ 📐 Context window: ${context_window}"
     sed -e "s/\${LLM_PORT}/${current_gateway_port}/g" \
+        -e "s/\${CONTEXT_WINDOW}/${context_window}/g" \
         "$config_template" > "$abs_target_repo/zoo-code-settings.json"
     echo "   ↳ ✅ Injected: $abs_target_repo/zoo-code-settings.json"
 
