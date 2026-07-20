@@ -13,7 +13,7 @@ matrix:
 
   evict_costs:
     generic: 10
-    m: 30
+    coder: 30
     nomic: 1
 
   sets:
