@@ -2,7 +2,7 @@ logLevel: debug
 host: "0.0.0.0"
 port: 8080
 
-healthCheckTimeout: 400
+healthCheckTimeout: 1000
 globalTTL: 1800
 
 matrix:
@@ -21,7 +21,7 @@ matrix:
 
 hooks:
   on_startup:
-    preload: ["nomic-ai/nomic-embed-text-v1.5", "lovedheart/Qwen3.5-9B-FP8", "Qwen/Qwen3.6-35B-A3B-FP8"]
+    preload: ["nomic-ai/nomic-embed-text-v1.5", "Qwen/Qwen3.6-35B-A3B-FP8"]
 
 models:
   "lovedheart/Qwen3.5-9B-FP8":

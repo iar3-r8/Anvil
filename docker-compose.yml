@@ -28,6 +28,13 @@ services:
       - LLM_DEVICE_ID_1=${LLM_DEVICE_ID_1}
       - LLM_DEVICE_ID_2=${LLM_DEVICE_ID_2}
       - INDEXER_STORAGE_DEVICE_ID=${INDEXER_STORAGE_DEVICE_ID}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     networks:
       - llm-network
     extra_hosts:
