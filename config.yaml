@@ -53,6 +53,7 @@ models:
     cmd: >
       docker run --rm --runtime=nvidia
       --gpus '"device=${env.LLM_DEVICE_ID_1},${env.LLM_DEVICE_ID_2}"'
+      -e PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
       --network llm-network
       --name vllm-${PORT}
       -v ${env.HF_HOME}:/root/.cache/huggingface
@@ -63,7 +64,7 @@ models:
       --tensor-parallel-size 2
       --enable-chunked-prefill
       --max-model-len 262144
-      --gpu-memory-utilization 0.93
+      --gpu-memory-utilization 0.90
       --reasoning-parser qwen3
       --enable-auto-tool-choice
       --tool-call-parser qwen3_coder
