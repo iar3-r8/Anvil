@@ -76,9 +76,9 @@ else
     fail "anvil missing extraction grep pattern"
 fi
 
-# ---- Test 6: anvil script passes to sed ----
+# ---- Test 6: anvil script passes to sed (delimiter agnostic) ----
 echo "[Test 6] anvil script passes context_window to sed replacement"
-if echo "$ANVIL" | grep -q 's/.*CONTEXT_WINDOW.*context_window'; then
+if echo "$ANVIL" | grep -qE 's[/|].*CONTEXT_WINDOW.*[/|].*context_window'; then
     pass "anvil has sed replacement for CONTEXT_WINDOW"
 else
     fail "anvil missing sed replacement"

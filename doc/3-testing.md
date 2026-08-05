@@ -47,17 +47,40 @@ Results: 8 passed, 0 failed
 | 7 | Full pipeline produces correct substituted value |
 | 8 | No placeholder remains after substitution |
 
+### Frontier Model Substitution Test
+
+Verifies that the optional Anthropic frontier model binding for architect mode is rendered correctly for both the accepted and declined paths.
+
+```bash
+./tests/test_frontier_model.sh
+```
+
+| Test | Purpose |
+|------|---------|
+| 1-4 | Template exposes the `${LOCAL_PROFILE_ID}`, `${ANTHROPIC_API_KEY}`, `${ANTHROPIC_MODEL_ID}` and `${ARCHITECT_PROFILE_ID}` placeholders |
+| 5-6 | Template carries a dormant `anthropic` profile with `"apiProvider": "anthropic"` |
+| 7 | Accepted path binds `modeApiConfigs.architect` to `anthropic_profile` |
+| 8 | Declined path binds `modeApiConfigs.architect` to the local llama-swap profile id |
+| 9-10 | `code`, `ask`, `debug` and `orchestrator` stay on the local profile id in both paths |
+| 11 | Accepted path injects the API key and selected model id into the `anthropic` profile |
+| 12-13 | No unexpanded placeholders remain in either rendered output |
+| 14-15 | Both rendered outputs parse as valid JSON |
+
 ## CI Integration
 
-To integrate into a CI pipeline, add the test step:
+To integrate into a CI pipeline, add the test steps:
 
 ```yaml
 - name: Run context window tests
   run: ./tests/test_context_window.sh
+
+- name: Run frontier model tests
+  run: ./tests/test_frontier_model.sh
 ```
 
 ## When to Run
 
 - Before committing changes to `config.yaml`
 - After any modification to the `anvil` script's `setup_repo` function
+- After changing `templates/zoo-code-settings.json.template` placeholders or provider profiles
 - As part of CI/CD pipeline pre-deployment checks

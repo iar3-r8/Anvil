@@ -81,6 +81,114 @@ EOF
     echo ""
 fi
 
+# ==============================================================================
+# Frontier Model Prompt for Architect Mode
+# ==============================================================================
+
+# Stable provider profile ids shared between this script and the settings template
+readonly LOCAL_PROFILE_ID="4aj3zc43616"
+readonly ANTHROPIC_PROFILE_ID="anthropic_profile"
+
+readonly DEFAULT_ANTHROPIC_MODEL="claude-opus-5"
+
+# Neutralise characters that carry special meaning in a sed replacement using '|' as delimiter
+escape_sed_replacement() {
+    printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'
+}
+
+# Read the current value of ANTHROPIC_API_KEY from .env, if any
+read_env_anthropic_key() {
+    [[ -f .env ]] || return 0
+    grep '^ANTHROPIC_API_KEY=' .env | tail -1 | cut -d'=' -f2-
+}
+
+# Persist the key to .env, replacing any pre-existing entry rather than duplicating it
+write_env_anthropic_key() {
+    local key="$1"
+
+    if [[ -f .env ]] && grep -q '^ANTHROPIC_API_KEY=' .env; then
+        local escaped_key
+        escaped_key=$(escape_sed_replacement "$key")
+        sed -i "s|^ANTHROPIC_API_KEY=.*|ANTHROPIC_API_KEY=${escaped_key}|" .env
+    else
+        # Guarantee the key lands on its own line even if .env lacks a trailing newline
+        [[ -f .env && -n "$(tail -c 1 .env)" ]] && echo "" >> .env
+        echo "ANTHROPIC_API_KEY=${key}" >> .env
+    fi
+}
+
+# Interactive Anthropic model picker, echoing the resolved model id
+select_anthropic_model() {
+    echo "" >&2
+    echo "   Available Anthropic models:" >&2
+    echo "     1) claude-fable-5   (smartest - most expensive)" >&2
+    echo "     2) claude-opus-5    (balanced)" >&2
+    echo "     3) claude-sonnet-5  (fast)" >&2
+    echo "     4) claude-haiku-4-5 (very fast)" >&2
+    echo "     5) Custom model id" >&2
+    echo "" >&2
+
+    local choice=""
+    local custom_model=""
+    while true; do
+        read -p "   Select model [2]: " choice
+        choice="${choice:-2}"
+
+        case "$choice" in
+            1) echo "claude-fable-5"; return 0 ;;
+            2) echo "claude-opus-5"; return 0 ;;
+            3) echo "claude-sonnet-5"; return 0 ;;
+            4) echo "claude-haiku-4-5"; return 0 ;;
+            5)
+                read -r -p "   Enter custom model id: " custom_model
+                if [[ -n "$custom_model" ]]; then
+                    echo "$custom_model"
+                    return 0
+                fi
+                echo "   ⚠️  Model id cannot be empty." >&2
+                ;;
+            *) echo "   ⚠️  Invalid selection, please choose 1-5." >&2 ;;
+        esac
+    done
+}
+
+# Resolve the architect mode provider, exposing the values consumed by the sed render step
+prompt_frontier_model() {
+    # Declined defaults keep the anthropic profile dormant but the JSON valid
+    FRONTIER_ANTHROPIC_API_KEY="to set"
+    FRONTIER_ANTHROPIC_MODEL_ID="${DEFAULT_ANTHROPIC_MODEL}"
+    FRONTIER_ARCHITECT_PROFILE_ID="${LOCAL_PROFILE_ID}"
+
+    local use_frontier=""
+    read -p "❓ Do you want to use an Anthropic frontier model for architect mode? (y/N): " use_frontier
+
+    if [[ ! "$use_frontier" =~ ^[Yy](es)?$ ]]; then
+        echo "⚠️  Skipping frontier model setup - architect mode will use the local gateway."
+        echo "💡 Note: If you wish to set this up later, you must manually edit the"
+        echo "   'zoo-code-settings.json' file at the root of your repository and point"
+        echo "   modeApiConfigs.architect to the '${ANTHROPIC_PROFILE_ID}' id."
+        return 0
+    fi
+
+    local api_key
+    api_key=$(read_env_anthropic_key)
+
+    if [[ -n "$api_key" ]]; then
+        echo "🔑 Reusing existing ANTHROPIC_API_KEY from .env"
+    else
+        while [[ -z "$api_key" ]]; do
+            read -r -p "🔑 Enter your Anthropic API Key: " api_key
+            [[ -z "$api_key" ]] && echo "   ⚠️  API key cannot be empty."
+        done
+        write_env_anthropic_key "$api_key"
+        echo "⚡ Key accepted and persisted to .env"
+    fi
+
+    FRONTIER_ANTHROPIC_API_KEY="$api_key"
+    FRONTIER_ANTHROPIC_MODEL_ID=$(select_anthropic_model)
+    FRONTIER_ARCHITECT_PROFILE_ID="${ANTHROPIC_PROFILE_ID}"
+}
+
 # Extract variables from .env to use for local host curl checks
 export $(grep -v '^#' .env | xargs)
 
@@ -213,20 +321,13 @@ cmd_setup_repo() {
     local abs_target_repo
     abs_target_repo=$(cd "$target_repo" && pwd)
 
-    # 2. Inject unified layout configuration pointing everything directly to the unified llama-swap gateway port
+    # 2. Resolve the unified llama-swap gateway port and coder context window
     local current_gateway_port="${LLM_PORT:-8080}"
 
     # Context window for the coder model - extracted from config.yaml (single source of truth)
     local context_window
     context_window=$(grep -A50 "^  \"Qwen/Qwen3.6-35B-A3B-FP8\":" config.yaml | grep -- '--max-model-len' | awk '{print $NF}' | head -1)
     context_window="${context_window:-262144}"
-
-    echo "⚙️  Generating zoo-code-settings.json unified across a single proxy gate..."
-    echo "   ↳ 📐 Context window: ${context_window}"
-    sed -e "s/\${LLM_PORT}/${current_gateway_port}/g" \
-        -e "s/\${CONTEXT_WINDOW}/${context_window}/g" \
-        "$config_template" > "$abs_target_repo/zoo-code-settings.json"
-    echo "   ↳ ✅ Injected: $abs_target_repo/zoo-code-settings.json"
 
     # 3. Dynamic verification and structural setup for the .roo ecosystem
     echo "📂 Verifying framework directory architectures..."
@@ -254,6 +355,34 @@ cmd_setup_repo() {
         echo "   and populate the GITHUB_TOKEN variable to allow the agent to access GitHub APIs."
     fi
     echo ""
+
+    # 4.5. Frontier model provisioning for architect mode
+    prompt_frontier_model
+    echo ""
+
+    # 4.6. Inject unified layout configuration pointing everything at the llama-swap gateway
+    echo "⚙️  Generating zoo-code-settings.json unified across a single proxy gate..."
+    echo "   ↳ 📐 Context window: ${context_window}"
+
+    # Secrets may contain sed metacharacters, so neutralise them before substitution
+    local safe_api_key
+    local safe_model_id
+    safe_api_key=$(escape_sed_replacement "$FRONTIER_ANTHROPIC_API_KEY")
+    safe_model_id=$(escape_sed_replacement "$FRONTIER_ANTHROPIC_MODEL_ID")
+
+    sed -e "s|\${LLM_PORT}|${current_gateway_port}|g" \
+        -e "s|\${CONTEXT_WINDOW}|${context_window}|g" \
+        -e "s|\${LOCAL_PROFILE_ID}|${LOCAL_PROFILE_ID}|g" \
+        -e "s|\${ANTHROPIC_API_KEY}|${safe_api_key}|g" \
+        -e "s|\${ANTHROPIC_MODEL_ID}|${safe_model_id}|g" \
+        -e "s|\${ARCHITECT_PROFILE_ID}|${FRONTIER_ARCHITECT_PROFILE_ID}|g" \
+        "$config_template" > "$abs_target_repo/zoo-code-settings.json"
+    if [[ "$FRONTIER_ARCHITECT_PROFILE_ID" == "$ANTHROPIC_PROFILE_ID" ]]; then
+        echo "   ↳ 🧠 Architect mode: ${FRONTIER_ANTHROPIC_MODEL_ID} (Anthropic)"
+    else
+        echo "   ↳ 🧠 Architect mode: local llama-swap gateway"
+    fi
+    echo "   ↳ ✅ Injected: $abs_target_repo/zoo-code-settings.json"
 
     # 5. Populate and deploy mcp.json context using pipeline delimiters
     echo "⚙️  Processing MCP context mappings and injecting into workspace..."

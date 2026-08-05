@@ -21,21 +21,27 @@
                 },
                 "openAiHeaders": {},
                 "apiProvider": "openai",
-                "id": "4aj3zc43616"
+                "id": "${LOCAL_PROFILE_ID}"
             },
             "Gemini": {
                 "apiModelId": "gemini-2.5-flash",
                 "geminiApiKey": "to set",
                 "apiProvider": "gemini",
                 "id": "eevw6joqobb"
+            },
+            "anthropic": {
+                "apiModelId": "${ANTHROPIC_MODEL_ID}",
+                "anthropicApiKey": "${ANTHROPIC_API_KEY}",
+                "apiProvider": "anthropic",
+                "id": "anthropic_profile"
             }
         },
         "modeApiConfigs": {
-            "architect": "4aj3zc43616",
-            "code": "4aj3zc43616",
-            "ask": "4aj3zc43616",
-            "debug": "4aj3zc43616",
-            "orchestrator": "4aj3zc43616"
+            "architect": "${ARCHITECT_PROFILE_ID}",
+            "code": "${LOCAL_PROFILE_ID}",
+            "ask": "${LOCAL_PROFILE_ID}",
+            "debug": "${LOCAL_PROFILE_ID}",
+            "orchestrator": "${LOCAL_PROFILE_ID}"
         }
     },
     "globalSettings": {
