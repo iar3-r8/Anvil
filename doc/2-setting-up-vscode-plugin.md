@@ -14,10 +14,21 @@ This guide outlines how to configure your workspace repository to connect with t
 Run the initialization command from your Anvil root directory to generate the required environment profiles, MCP structures, VS Code extensions, and workspace configuration templates inside your project repository (Note that some files will be copied to your repositories):
 
 ```bash
-./anvil setup_repo /path/to/your/target-repo
+./anvil setup-repo /path/to/your/target-repo
 ```
 
 *Follow the interactive prompts to automatically hook up directory paths, copy the `roo_template` folders, configure optional GitHub tokens, and optionally bind **architect** mode to an Anthropic frontier model (the key is stored in `.env`).*
+
+To run it unattended, supply the answers as flags — for example:
+
+```bash
+./anvil setup-repo /path/to/your/target-repo --yes \
+    --github-token "$GITHUB_TOKEN" --anthropic-key "$ANTHROPIC_API_KEY"
+```
+
+Use `--no-github` and `--no-anthropic` to skip either integration explicitly, and
+`--dry-run` to see exactly which files would be written without writing any of
+them. See the [backend guide](1-setting-up-backend.md) for the full flag list.
 
 ---
 

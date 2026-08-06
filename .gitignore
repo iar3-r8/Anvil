@@ -4,6 +4,10 @@
 .roo/*
 zoo-code-settings.json
 
+# Anvil local overrides (machine-specific, never committed)
+anvil.local.yaml
+.venv/.anvil-requirements-stamp
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]

@@ -22,6 +22,12 @@ Anvil gives you a turnkey, production-grade alternative that runs completely on 
 
 ## Getting Started
 
+### Prerequisites
+* **Python 3.8 or newer**, used by the `./anvil` command itself. Anvil provisions its own virtual environment on first run, so there is **no manual `pip install`** — just clone and run. `.venv/` is disposable and safe to delete; it will be rebuilt.
+* **Docker with Compose v2**, and the **NVIDIA Container Toolkit** on Linux hosts. See the backend guide for versions and hardware sizing.
+
+Run `./anvil doctor` at any point to check what Anvil found on your machine.
+
 To keep the setup process straightforward and clean, the documentation is split into two distinct layers: bringing up your infrastructure and configuring your editor.
 
 ### Step 1: Spin Up Your Infrastructure
@@ -36,7 +42,6 @@ Once your local backend engines are online, learn how to install the recommended
 
 ---
 
-## Coming up
-- See issues. Vote on whatever feels important to you.
-                                                                      
-                                                                      
+## Contribute
+
+Check open issues and vote on features you want. Your feedback helps prioritise what gets built next.

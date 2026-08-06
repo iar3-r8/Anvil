@@ -1,0 +1,11 @@
+# Anvil runtime dependencies.
+# Installed automatically into .venv/ by the ./anvil bootstrap.
+# Changing this file causes the next ./anvil invocation to refresh the venv.
+PyYAML>=5.3,<7
+
+# CLI framework: subcommands, --help, exit codes and prompt primitives.
+# Upper bounds matter: typer >=0.13 and click >=8.2 require Python 3.10, which
+# would silently break the documented Python 3.8 floor. Keep these pinned below
+# those releases for as long as 3.8 is supported.
+typer>=0.12,<0.13
+click>=8.1,<8.2

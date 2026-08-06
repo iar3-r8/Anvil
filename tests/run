@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Run the Anvil test suite inside the managed virtual environment.
+#
+# Usage:
+#   ./tests/run                       # whole suite
+#   ./tests/run tests.test_env        # single module
+#   ./tests/run -k quoted             # filter by name
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# Use the same interpreter ./anvil execs into, via the same bootstrap, so the
+# suite can never pass against an environment the CLI does not actually use.
+python_bin="$("$repo_root/scripts/bootstrap.sh")"
+
+if [[ $# -eq 0 ]]; then
+    exec "$python_bin" -m unittest discover -s tests -t "$repo_root" -v
+fi
+
+exec "$python_bin" -m unittest "$@" -v

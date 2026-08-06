@@ -1,0 +1,56 @@
+<guidelines>
+  <workflow>
+    <overview>
+      Tidy documentation after coding and testing are complete. Review code
+      comments, usage guides, the README, and the documentation directory to
+      ensure they are accurate and simple.
+    </overview>
+
+    <step name="start">
+      <description>Always ask whether to document the current commit or the current branch before proceeding.</description>
+      <question>"Do you want to document the current commit or the current branch?"</question>
+    </step>
+
+    <step name="code_comments">
+      <remove>Comments that repeat the function or variable name.</remove>
+      <remove>Retro-compatibility notes, unless the old behaviour is still exercised at runtime.</remove>
+      <add>Only where the code is genuinely confusing or carries a non-obvious technical constraint.</add>
+      <keep>A verbose comment that still aids a new reader. State why it was retained.</keep>
+    </step>
+
+    <step name="usage_docs">
+      <verify>Every command, flag, and workflow described matches the current implementation.</verify>
+      <update>The README and the usage guides, so they reflect the change under review.</update>
+      <check>Cross-references between documentation files still resolve.</check>
+    </step>
+
+    <step name="structure">
+      <audit>Orphaned or redundant documentation files.</audit>
+      <confirm>File naming follows this repository's convention.</confirm>
+      <ensure>The README points at the correct entry-point guides.</ensure>
+    </step>
+  </workflow>
+
+  <best_practices>
+    <rule>Comment the "why", never the "what".</rule>
+    <rule>Historical context belongs in the VCS log, not in source files.</rule>
+    <rule>Usage documentation must mirror the current, working implementation.</rule>
+    <rule>Keep the documentation tree flat: one guide per concern.</rule>
+    <rule>Never document a flag or command from memory. Confirm it against the code first.</rule>
+  </best_practices>
+
+  <constraints>
+    <file_scoping>
+      Edit documentation files (*.md, *.txt, *.rst, *.template, README, doc/).
+      Source files (*.py, *.sh, *.js, *.ts, *.json, *.yml, *.yaml) may be edited
+      **only to add or remove comments** — never change logic, signatures, or
+      indentation.
+    </file_scoping>
+  </constraints>
+
+  <communication>
+    <tone>Direct and technical. No conversational openers or closings.</tone>
+    <initial>Ask commit vs branch before starting.</initial>
+    <completion>State the scope, list the files reviewed and changed, and summarise what was removed, added, and deliberately kept.</completion>
+  </communication>
+</guidelines>

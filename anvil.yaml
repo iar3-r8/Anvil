@@ -1,0 +1,35 @@
+# Anvil's own configuration.
+#
+# Deliberately small. This file holds ONLY values that belong to Anvil itself -
+# things that were previously hardcoded inside the shell script.
+#
+# Model definitions, GPU allocation and context windows are NOT here: they live
+# in config.yaml, which is owned by llama-swap and read by Anvil. Adding or
+# tuning a model means editing config.yaml only, with no second file to sync.
+#
+# Machine-specific overrides go in anvil.local.yaml (gitignored), which is merged
+# over this file.
+
+version: 1
+
+gateway:
+  # Fallback only. LLM_PORT in .env wins, and --llm-port beats both.
+  default_port: 8000
+
+zoo_code:
+  # Provider profile ids shared between Anvil and the Zoo Code settings template.
+  # These must stay stable: changing them orphans existing profiles in the editor.
+  local_profile_id: "4aj3zc43616"
+  anthropic_profile_id: "anthropic_profile"
+
+  # Offered when setting up a frontier model for architect mode.
+  default_anthropic_model: "claude-opus-5"
+  anthropic_models:
+    - id: claude-fable-5
+      label: "smartest - most expensive"
+    - id: claude-opus-5
+      label: "balanced"
+    - id: claude-sonnet-5
+      label: "fast"
+    - id: claude-haiku-4-5
+      label: "very fast"
