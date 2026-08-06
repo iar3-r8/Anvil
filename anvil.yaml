@@ -22,7 +22,7 @@ zoo_code:
   local_profile_id: "4aj3zc43616"
   anthropic_profile_id: "anthropic_profile"
 
-  # Offered when setting up a frontier model for architect mode.
+  # Offered when setting up a frontier model for architect and orchestrator modes.
   default_anthropic_model: "claude-opus-5"
   anthropic_models:
     - id: claude-fable-5

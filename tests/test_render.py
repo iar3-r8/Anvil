@@ -56,17 +56,17 @@ def anthropic_settings(**overrides):
         anthropic_profile_id=GOLDEN_ANTHROPIC_PROFILE_ID,
         anthropic_api_key=GOLDEN_ANTHROPIC_KEY,
         anthropic_model_id=GOLDEN_ANTHROPIC_MODEL,
-        use_anthropic_for_architect=True,
+        use_anthropic_for_frontier_modes=True,
     )
     params.update(overrides)
     return params
 
 
 def local_settings(**overrides):
-    """Settings for the declined path: architect stays on the local gateway."""
+    """Settings for the declined path: architect and orchestrator stay on the local gateway."""
     return anthropic_settings(
         anthropic_api_key="to set",
-        use_anthropic_for_architect=False,
+        use_anthropic_for_frontier_modes=False,
         **overrides
     )
 
@@ -144,10 +144,20 @@ class TestZooSettingsContent(unittest.TestCase):
 
         self.assertEqual(modes["architect"], GOLDEN_LOCAL_PROFILE_ID)
 
+    def test_accepted_path_binds_orchestrator_to_anthropic_profile(self):
+        modes = self.accepted["providerProfiles"]["modeApiConfigs"]
+
+        self.assertEqual(modes["orchestrator"], GOLDEN_ANTHROPIC_PROFILE_ID)
+
+    def test_declined_path_binds_orchestrator_to_local_profile(self):
+        modes = self.declined["providerProfiles"]["modeApiConfigs"]
+
+        self.assertEqual(modes["orchestrator"], GOLDEN_LOCAL_PROFILE_ID)
+
     def test_other_modes_always_use_the_local_profile(self):
         for settings in (self.accepted, self.declined):
             modes = settings["providerProfiles"]["modeApiConfigs"]
-            for mode in ("code", "ask", "debug", "orchestrator"):
+            for mode in ("code", "ask", "debug"):
                 self.assertEqual(modes[mode], GOLDEN_LOCAL_PROFILE_ID, mode)
 
     def test_anthropic_profile_carries_key_and_model(self):

@@ -814,7 +814,7 @@ def _resolve_frontier(
     enabled = want_anthropic or anthropic_key is not None
     if not enabled:
         enabled = prompts.confirm(
-            "❓ Do you want to use an Anthropic frontier model for architect mode?",
+            "❓ Do you want to use an Anthropic frontier model for architect and orchestrator modes?",
             default=False,
             assume_yes=shared.assume_yes,
             interactive=shared.interactive(),
@@ -822,12 +822,13 @@ def _resolve_frontier(
 
     if not enabled:
         shared.echo(
-            "⚠️  Skipping frontier model setup - architect mode will use the local "
-            "gateway."
+            "⚠️  Skipping frontier model setup - architect and orchestrator modes "
+            "will use the local gateway."
         )
         shared.echo("💡 Note: If you wish to set this up later, edit")
         shared.echo("   'zoo-code-settings.json' and point modeApiConfigs.architect")
-        shared.echo("   at the '{}' id.".format(settings.anthropic_profile_id))
+        shared.echo("   and modeApiConfigs.orchestrator at the '{}' id.".format(
+            settings.anthropic_profile_id))
         return declined
 
     api_key = anthropic_key
@@ -887,10 +888,10 @@ def setup_repo(
     want_anthropic: bool = typer.Option(
         False,
         "--anthropic",
-        help="Use Anthropic for architect mode, taking the key from .env.",
+        help="Use Anthropic for architect and orchestrator modes, taking the key from .env.",
     ),
     no_anthropic: bool = typer.Option(
-        False, "--no-anthropic", help="Keep architect mode on the local gateway."
+        False, "--no-anthropic", help="Keep architect and orchestrator modes on the local gateway."
     ),
     anthropic_model: Optional[str] = typer.Option(
         None, "--anthropic-model", help="Any model id, including an unlisted one."
@@ -938,7 +939,7 @@ def setup_repo(
         anthropic_profile_id=settings.anthropic_profile_id,
         anthropic_api_key=frontier.api_key,
         anthropic_model_id=frontier.model_id,
-        use_anthropic_for_architect=frontier.use_anthropic,
+        use_anthropic_for_frontier_modes=frontier.use_anthropic,
         github_token=token,
     )
 

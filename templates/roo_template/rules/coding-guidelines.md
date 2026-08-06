@@ -28,5 +28,9 @@ trigger: always_on
 - Use explicit imports over wildcard imports
 - Follow naming conventions: snake_case for variables/functions, PascalCase for classes>
 
+## Documentation Finalisation
+- Once all tests are written and passing, ask the user whether to switch to **Docs Manager** mode to finalize documentation (README, doc/ directory, usage guides).
+- Always ask the user whether to document the current commit or the current branch before starting documentation work.
+
 
 

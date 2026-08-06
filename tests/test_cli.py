@@ -1188,7 +1188,7 @@ class TestSetupRepo(CliCase):
     def test_declining_everything_matches_the_bash_defaults(self):
         # anvil:158-160: declined keeps the anthropic profile dormant but valid.
         plan = self.captured_plan(["setup-repo", self.target, "--yes"])
-        self.assertFalse(plan.use_anthropic_for_architect)
+        self.assertFalse(plan.use_anthropic_for_frontier_modes)
         self.assertEqual("to set", plan.anthropic_api_key)
         self.assertEqual("", plan.github_token)
 
@@ -1209,11 +1209,11 @@ class TestSetupRepo(CliCase):
         plan = self.captured_plan(["setup-repo", self.target, "--yes", "--no-github"])
         self.assertEqual("", plan.github_token)
 
-    def test_anthropic_key_flag_enables_anthropic_for_architect(self):
+    def test_anthropic_key_flag_enables_anthropic_for_frontier_modes(self):
         plan = self.captured_plan(
             ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-live"]
         )
-        self.assertTrue(plan.use_anthropic_for_architect)
+        self.assertTrue(plan.use_anthropic_for_frontier_modes)
         self.assertEqual("sk-live", plan.anthropic_api_key)
 
     def test_no_anthropic_overrides_a_supplied_key(self):
@@ -1227,7 +1227,7 @@ class TestSetupRepo(CliCase):
                 "sk-live",
             ]
         )
-        self.assertFalse(plan.use_anthropic_for_architect)
+        self.assertFalse(plan.use_anthropic_for_frontier_modes)
 
     def test_anthropic_model_flag_is_honoured(self):
         plan = self.captured_plan(

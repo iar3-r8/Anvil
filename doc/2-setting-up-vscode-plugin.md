@@ -17,7 +17,7 @@ Run the initialization command from your Anvil root directory to generate the re
 ./anvil setup-repo /path/to/your/target-repo
 ```
 
-*Follow the interactive prompts to automatically hook up directory paths, copy the `roo_template` folders, configure optional GitHub tokens, and optionally bind **architect** mode to an Anthropic frontier model (the key is stored in `.env`).*
+*Follow the interactive prompts to automatically hook up directory paths, copy the `roo_template` folders, configure optional GitHub tokens, and optionally bind **architect** and **orchestrator** modes to an Anthropic frontier model (the key is stored in `.env`).*
 
 To run it unattended, supply the answers as flags — for example:
 

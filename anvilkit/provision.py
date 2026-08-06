@@ -47,7 +47,7 @@ class RepoPlan:
         anthropic_profile_id: str,
         anthropic_api_key: str,
         anthropic_model_id: str,
-        use_anthropic_for_architect: bool,
+        use_anthropic_for_frontier_modes: bool,
         github_token: str = "",
     ) -> None:
         self.port = port
@@ -58,7 +58,7 @@ class RepoPlan:
         self.anthropic_profile_id = anthropic_profile_id
         self.anthropic_api_key = anthropic_api_key
         self.anthropic_model_id = anthropic_model_id
-        self.use_anthropic_for_architect = use_anthropic_for_architect
+        self.use_anthropic_for_frontier_modes = use_anthropic_for_frontier_modes
         self.github_token = github_token
 
 
@@ -203,17 +203,23 @@ def _write_zoo_settings(
         anthropic_profile_id=repo_plan.anthropic_profile_id,
         anthropic_api_key=repo_plan.anthropic_api_key,
         anthropic_model_id=repo_plan.anthropic_model_id,
-        use_anthropic_for_architect=repo_plan.use_anthropic_for_architect,
+        use_anthropic_for_frontier_modes=repo_plan.use_anthropic_for_frontier_modes,
     )
 
-    if repo_plan.use_anthropic_for_architect:
+    if repo_plan.use_anthropic_for_frontier_modes:
         report(
             "   ↳ 🧠 Architect mode: {} (Anthropic)".format(
                 repo_plan.anthropic_model_id
             )
         )
+        report(
+            "   ↳ 🧠 Orchestrator mode: {} (Anthropic)".format(
+                repo_plan.anthropic_model_id
+            )
+        )
     else:
         report("   ↳ 🧠 Architect mode: local llama-swap gateway")
+        report("   ↳ 🧠 Orchestrator mode: local llama-swap gateway")
 
     _write(destination, content, dry_run, report)
 

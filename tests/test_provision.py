@@ -47,7 +47,7 @@ def plan(**overrides):
         anthropic_profile_id=ANTHROPIC_PROFILE_ID,
         anthropic_api_key="to set",
         anthropic_model_id="claude-opus-5",
-        use_anthropic_for_architect=False,
+        use_anthropic_for_frontier_modes=False,
         github_token="",
     )
     params.update(overrides)
@@ -194,7 +194,7 @@ class ArtifactTests(ProvisionCase):
     def test_accepted_anthropic_points_architect_at_the_anthropic_profile(self):
         self.provision(
             repo_plan=plan(
-                use_anthropic_for_architect=True,
+                use_anthropic_for_frontier_modes=True,
                 anthropic_api_key="sk-ant-secret",
                 anthropic_model_id="claude-fable-5",
             )
@@ -284,7 +284,7 @@ class SecretHandlingTests(ProvisionCase):
     def test_hostile_api_key_survives_intact(self):
         self.provision(
             repo_plan=plan(
-                use_anthropic_for_architect=True,
+                use_anthropic_for_frontier_modes=True,
                 anthropic_api_key=self.HOSTILE_KEY,
             )
         )
@@ -301,7 +301,7 @@ class SecretHandlingTests(ProvisionCase):
     def test_hostile_api_key_still_yields_valid_json(self):
         self.provision(
             repo_plan=plan(
-                use_anthropic_for_architect=True,
+                use_anthropic_for_frontier_modes=True,
                 anthropic_api_key=self.HOSTILE_KEY,
             )
         )
@@ -323,7 +323,7 @@ class SecretHandlingTests(ProvisionCase):
     def test_secrets_are_not_echoed_to_the_console(self):
         self.provision(
             repo_plan=plan(
-                use_anthropic_for_architect=True,
+                use_anthropic_for_frontier_modes=True,
                 anthropic_api_key="sk-ant-topsecret",
                 github_token="ghp_topsecret",
             )
@@ -354,7 +354,7 @@ class GuidanceTests(ProvisionCase):
     def test_reports_the_anthropic_architect_choice_with_the_model(self):
         self.provision(
             repo_plan=plan(
-                use_anthropic_for_architect=True,
+                use_anthropic_for_frontier_modes=True,
                 anthropic_api_key="k",
                 anthropic_model_id="claude-fable-5",
             )

@@ -43,7 +43,7 @@ def zoo_code_settings(
     anthropic_profile_id: str,
     anthropic_api_key: str,
     anthropic_model_id: str,
-    use_anthropic_for_architect: bool,
+    use_anthropic_for_frontier_modes: bool,
 ) -> str:
     """Render ``zoo-code-settings.json`` as a JSON string."""
     settings = _load_zoo_template(context_window)
@@ -64,15 +64,15 @@ def zoo_code_settings(
     anthropic["apiModelId"] = anthropic_model_id
     anthropic["id"] = anthropic_profile_id
 
-    architect_profile_id = (
-        anthropic_profile_id if use_anthropic_for_architect else local_profile_id
+    frontier_profile_id = (
+        anthropic_profile_id if use_anthropic_for_frontier_modes else local_profile_id
     )
     profiles["modeApiConfigs"] = {
-        "architect": architect_profile_id,
+        "architect": frontier_profile_id,
         "code": local_profile_id,
         "ask": local_profile_id,
         "debug": local_profile_id,
-        "orchestrator": local_profile_id,
+        "orchestrator": frontier_profile_id,
     }
 
     index_config = settings["globalSettings"]["codebaseIndexConfig"]
