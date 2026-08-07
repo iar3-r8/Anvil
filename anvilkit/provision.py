@@ -100,6 +100,10 @@ def setup_repo(
     report("📦 Copying roo_template directory to repository root...")
     _copy_roo_template(resolved, templates, dry_run, report)
 
+    report("🧩 Deploying mode definitions and rules...")
+    _copy_root_roomodes(resolved, templates, dry_run, report)
+    _deploy_mode_rules(resolved, templates, dry_run, report)
+
     _report_completion(resolved, report)
 
     return str(resolved)
@@ -274,6 +278,45 @@ def _write(destination: Path, content: str, dry_run: bool, report) -> None:
         render.write_text(destination, content)
 
     report("   ↳ ✅ Injected: {}".format(destination))
+
+
+def _copy_root_roomodes(
+    target: Path, templates: "_Templates", dry_run: bool, report
+) -> None:
+    """Copy .roomodes from inside roo_template to the repo root."""
+    source = templates.roo_template / ".roomodes"
+    destination = target / ".roomodes"
+
+    if source.is_file():
+        if not dry_run:
+            render.write_text(destination, source.read_text(encoding="utf-8"))
+        report("   ↳ ✅ Deployed: {}".format(destination))
+    else:
+        report("   ↳ ⏭️  Skipped .roomodes (source not found at {})".format(source))
+
+
+def _deploy_mode_rules(
+    target: Path, templates: "_Templates", dry_run: bool, report
+) -> None:
+    """Move rules-* directories from roo_template into .roo/.
+
+    Template layout places mode-specific rule directories inside roo_template/
+    (e.g. roo_template/rules-qna-tester/, roo_template/rules-docs-manager/) so
+    they travel with the scaffold.  At provision time we move them into .roo/
+    where Roo-Code resolves them.
+    """
+    roo_root = target / ".roo"
+    if not dry_run:
+        roo_root.mkdir(parents=True, exist_ok=True)
+
+    for entry in sorted(templates.roo_template.iterdir()):
+        if entry.is_dir() and entry.name.startswith("rules-"):
+            destination = roo_root / entry.name
+            if not dry_run:
+                if destination.exists():
+                    shutil.rmtree(str(destination))
+                shutil.copytree(str(entry), str(destination))
+            report("   ↳ ✅ Deployed: {}".format(destination))
 
 
 def _report_completion(target: Path, report) -> None:

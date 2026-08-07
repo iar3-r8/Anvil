@@ -436,5 +436,169 @@ class TemplateAvailabilityTests(ProvisionCase):
         self.assertEqual(list(self.target.iterdir()), [])
 
 
+class RoomodesDeploymentTests(ProvisionCase):
+    """The .roomodes file is deployed to the repo root during provisioning."""
+
+    def test_roomodes_is_deployed_to_repo_root(self):
+        self.provision()
+
+        roomodes_path = self.target / ".roomodes"
+        self.assertTrue(roomodes_path.is_file())
+
+    def test_roomodes_contains_docs_manager_mode(self):
+        self.provision()
+
+        content = (self.target / ".roomodes").read_text(encoding="utf-8")
+
+        self.assertIn("slug: docs-manager", content)
+
+    def test_roomodes_contains_qna_tester_mode(self):
+        self.provision()
+
+        content = (self.target / ".roomodes").read_text(encoding="utf-8")
+
+        self.assertIn("slug: qna-tester", content)
+
+    def test_roomodes_contains_qna_tester_name(self):
+        self.provision()
+
+        content = (self.target / ".roomodes").read_text(encoding="utf-8")
+
+        self.assertIn("Q&A Tester", content)
+
+    def test_dry_run_does_not_write_roomodes(self):
+        self.provision(dry_run=True)
+
+        self.assertFalse((self.target / ".roomodes").is_file())
+
+    def test_roomodes_content_matches_template(self):
+        self.provision()
+
+        template_content = (
+            REPO_ROOT / "templates" / "roo_template" / ".roomodes"
+        ).read_text(encoding="utf-8")
+        deployed_content = (self.target / ".roomodes").read_text(encoding="utf-8")
+
+        self.assertEqual(deployed_content, template_content)
+
+
+class ModeRulesDeploymentTests(ProvisionCase):
+    """Mode-specific rules-* directories are deployed into .roo/."""
+
+    def test_rules_qna_tester_is_deployed(self):
+        self.provision()
+
+        qna_rules = self.target / ".roo" / "rules-qna-tester"
+        self.assertTrue(qna_rules.is_dir())
+
+    def test_rules_qna_tester_contains_instructions(self):
+        self.provision()
+
+        instructions = (
+            self.target / ".roo" / "rules-qna-tester" / "instructions.xml"
+        )
+        self.assertTrue(instructions.is_file())
+
+    def test_rules_qna_tester_content_matches_template(self):
+        self.provision()
+
+        template_content = (
+            REPO_ROOT
+            / "templates"
+            / "roo_template"
+            / "rules-qna-tester"
+            / "instructions.xml"
+        ).read_text(encoding="utf-8")
+        deployed_content = (
+            self.target / ".roo" / "rules-qna-tester" / "instructions.xml"
+        ).read_text(encoding="utf-8")
+
+        self.assertEqual(deployed_content, template_content)
+
+    def test_rules_docs_manager_is_deployed(self):
+        self.provision()
+
+        docs_rules = self.target / ".roo" / "rules-docs-manager"
+        self.assertTrue(docs_rules.is_dir())
+
+    def test_rules_docs_manager_contains_guidelines(self):
+        self.provision()
+
+        guidelines = (
+            self.target / ".roo" / "rules-docs-manager" / "guidelines.xml"
+        )
+        self.assertTrue(guidelines.is_file())
+
+    def test_dry_run_does_not_deploy_mode_rules(self):
+        self.provision(dry_run=True)
+
+        self.assertFalse(
+            (self.target / ".roo" / "rules-qna-tester").exists()
+        )
+        self.assertFalse(
+            (self.target / ".roo" / "rules-docs-manager").exists()
+        )
+
+    def test_existing_mode_rules_are_overwritten(self):
+        existing = (
+            self.target / ".roo" / "rules-qna-tester" / "instructions.xml"
+        )
+        existing.parent.mkdir(parents=True, exist_ok=True)
+        existing.write_text("old content", encoding="utf-8")
+
+        self.provision()
+
+        new_content = (
+            self.target / ".roo" / "rules-qna-tester" / "instructions.xml"
+        ).read_text(encoding="utf-8")
+        self.assertNotEqual(new_content, "old content")
+        self.assertIn("<instructions>", new_content)
+
+
+class FullDeploymentIntegrationTests(ProvisionCase):
+    """End-to-end: the full provisioned tree has all expected files."""
+
+    def test_complete_tree_structure(self):
+        self.provision()
+
+        expected = [
+            ".roomodes",
+            ".roo",
+            ".roo/commands",
+            ".roo/skills",
+            ".roo/rules",
+            ".roo/mcp.json",
+            ".roo/rules-qna-tester",
+            ".roo/rules-qna-tester/instructions.xml",
+            ".roo/rules-docs-manager",
+            ".roo/rules-docs-manager/guidelines.xml",
+            ".vscode/extensions.json",
+            "roo_template",
+            "zoo-code-settings.json",
+        ]
+
+        for relative in expected:
+            self.assertTrue(
+                (self.target / relative).exists(),
+                "missing {}".format(relative),
+            )
+
+    def test_deployed_roomodes_and_qna_rules_both_present(self):
+        self.provision()
+
+        self.assertTrue((self.target / ".roomodes").is_file())
+        self.assertTrue(
+            (self.target / ".roo" / "rules-qna-tester" / "instructions.xml").is_file()
+        )
+
+    def test_deployed_roomodes_mentions_both_modes(self):
+        self.provision()
+
+        content = (self.target / ".roomodes").read_text(encoding="utf-8")
+
+        self.assertIn("docs-manager", content)
+        self.assertIn("qna-tester", content)
+
+
 if __name__ == "__main__":
     unittest.main()
