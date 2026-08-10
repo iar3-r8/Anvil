@@ -201,6 +201,19 @@ class TestZooSettingsContent(unittest.TestCase):
                     f"{label}: globalSettings['{key}'] must be true, got {global_settings.get(key)!r}",
                 )
 
+    def test_followup_auto_approve_timeout(self):
+        """Verify followupAutoApproveTimeoutMs is 20000 in both accepted and declined paths."""
+        expected_timeout = 20000
+
+        for label, settings in (("accepted", self.accepted), ("declined", self.declined)):
+            global_settings = settings["globalSettings"]
+            self.assertEqual(
+                global_settings.get("followupAutoApproveTimeoutMs"),
+                expected_timeout,
+                f"{label}: globalSettings['followupAutoApproveTimeoutMs'] must be {expected_timeout}, "
+                f"got {global_settings.get('followupAutoApproveTimeoutMs')!r}",
+            )
+
 
 class TestSecretsAreNotCorrupted(unittest.TestCase):
     """Regression tests for the escape_sed_replacement() class of bug."""
