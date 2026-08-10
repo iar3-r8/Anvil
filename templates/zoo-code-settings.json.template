@@ -65,7 +65,10 @@
             "git diff",
             "git show"
         ],
-        "deniedCommands": [],
+        "deniedCommands": [
+            "git reset --hard",
+            "git push --force"
+        ],
         "allowedMaxRequests": null,
         "allowedMaxCost": null,
         "autoCondenseContext": true,
