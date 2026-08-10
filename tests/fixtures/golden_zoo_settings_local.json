@@ -59,7 +59,7 @@
         "alwaysAllowSubtasks": true,
         "alwaysAllowExecute": true,
         "alwaysAllowFollowupQuestions": true,
-        "followupAutoApproveTimeoutMs": 60000,
+        "followupAutoApproveTimeoutMs": 20000,
         "allowedCommands": [
             "git log",
             "git diff",
