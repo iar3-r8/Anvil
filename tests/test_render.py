@@ -178,6 +178,29 @@ class TestZooSettingsContent(unittest.TestCase):
 
         self.assertEqual(profile["id"], GOLDEN_LOCAL_PROFILE_ID)
 
+    def test_always_allow_global_settings_are_true(self):
+        """Verify every alwaysAllow* global setting is true in the rendered output."""
+        always_allow_keys = (
+            "alwaysAllowReadOnly",
+            "alwaysAllowReadOnlyOutsideWorkspace",
+            "alwaysAllowWrite",
+            "alwaysAllowWriteOutsideWorkspace",
+            "alwaysAllowWriteProtected",
+            "alwaysAllowMcp",
+            "alwaysAllowModeSwitch",
+            "alwaysAllowSubtasks",
+            "alwaysAllowExecute",
+            "alwaysAllowFollowupQuestions",
+        )
+
+        for label, settings in (("accepted", self.accepted), ("declined", self.declined)):
+            global_settings = settings["globalSettings"]
+            for key in always_allow_keys:
+                self.assertTrue(
+                    global_settings.get(key, False),
+                    f"{label}: globalSettings['{key}'] must be true, got {global_settings.get(key)!r}",
+                )
+
 
 class TestSecretsAreNotCorrupted(unittest.TestCase):
     """Regression tests for the escape_sed_replacement() class of bug."""
