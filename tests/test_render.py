@@ -214,6 +214,22 @@ class TestZooSettingsContent(unittest.TestCase):
                 f"got {global_settings.get('followupAutoApproveTimeoutMs')!r}",
             )
 
+    def test_deny_destructive_git_commands(self):
+        """Verify deniedCommands includes destructive git commands.
+
+        The template currently has deniedCommands as an empty array [], so this
+        test fails until the renderer populates it with at least:
+        - "git reset --hard"
+        - "git push --force"
+        """
+        denied_accepted = self.accepted["globalSettings"]["deniedCommands"]
+        denied_declined = self.declined["globalSettings"]["deniedCommands"]
+
+        self.assertIn("git reset --hard", denied_accepted)
+        self.assertIn("git push --force", denied_accepted)
+        self.assertIn("git reset --hard", denied_declined)
+        self.assertIn("git push --force", denied_declined)
+
 
 class TestSecretsAreNotCorrupted(unittest.TestCase):
     """Regression tests for the escape_sed_replacement() class of bug."""
