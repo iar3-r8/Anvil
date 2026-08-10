@@ -21,6 +21,8 @@
 		"git": {
 			"command": "uvx",
 			"args": [
+				"--with",
+				"mcp<1.10",
 				"mcp-server-git",
 				"--repository",
 				"/golden/target/repo"

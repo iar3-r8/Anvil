@@ -6,12 +6,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg git && \
+        ca-certificates curl gnupg git sudo && \
     mkdir -p /etc/apt/keyrings && \
     curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg && \
-    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] \
-        https://deb.nodesource.com/node_22.x nodistro main" \
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
         > /etc/apt/sources.list.d/nodesource.list && \
     apt-get update && \
     apt-get install -y --no-install-recommends nodejs && \
@@ -21,13 +20,14 @@ RUN pip install --no-cache-dir uv==0.8.5
 
 RUN groupadd -g 1000 vscode && \
     useradd -u 1000 -g 1000 -m vscode -s /bin/bash && \
-    echo "vscode ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
-    # Pre-create .vscode-server with correct ownership so VS Code server can write
-    mkdir -p /home/vscode/.vscode-server/{bin,data,extensions} && \
-    chown -R vscode:vscode /home/vscode/.vscode-server && \
+    echo "vscode ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/vscode && \
+    chmod 0440 /etc/sudoers.d/vscode && \
+    mkdir -p /home/vscode/.vscode-server/bin \
+             /home/vscode/.vscode-server/data \
+             /home/vscode/.vscode-server/extensions \
+             /home/vscode/.npm \
+             /home/vscode/.cache/uv && \
     chown -R vscode:vscode /home/vscode
-
-ENV PATH="/usr/local/bin:/usr/bin:/root/.local/bin:${PATH}"
 
 USER vscode
 WORKDIR /workspaces/anvil

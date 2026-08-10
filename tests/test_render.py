@@ -269,6 +269,30 @@ class TestMcpGoldenParity(unittest.TestCase):
 
         self.assertNotIn("${", payload)
 
+    def test_git_server_constrains_the_mcp_sdk(self):
+        """Regression: an unpinned SDK broke the git server on any fresh machine.
+
+        'uvx mcp-server-git' resolves the mcp SDK afresh, and a newer SDK moved
+        the attribute the server calls, so it died at startup with
+        "AttributeError: 'Server' object has no attribute 'list_tools'". A warm
+        uv cache hid this locally; a container exposed it. The constraint must
+        travel in the generated config, not in anyone's cache.
+        """
+        args = json.loads(
+            render.mcp_settings(workspace_folder="/some/repo", github_token="")
+        )["mcpServers"]["git"]["args"]
+
+        self.assertIn("--with", args)
+        self.assertEqual("mcp<1.10", args[args.index("--with") + 1])
+
+    def test_git_sdk_constraint_precedes_the_package_name(self):
+        """uvx applies --with only before the package it is running."""
+        args = json.loads(
+            render.mcp_settings(workspace_folder="/some/repo", github_token="")
+        )["mcpServers"]["git"]["args"]
+
+        self.assertLess(args.index("--with"), args.index("mcp-server-git"))
+
 
 class TestWriteToDisk(unittest.TestCase):
     def setUp(self):

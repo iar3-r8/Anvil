@@ -33,8 +33,6 @@ Qdrant without modifying Anvil itself.
   and any other host state is **not** mounted into the container. The workspace
   volume is the only bind mount.
 
-- **Named volumes** for `.venv`, the npm cache, the uv cache and the VS Code
-  server directory so rebuilds are fast and artifacts survive container removal.
 
 - **`ANVIL_IN_CONTAINER=1`** in `containerEnv`. Drives the two Python-level
   behaviours above: `doctor` changes the docker report, `up`/`down` emit a
@@ -55,8 +53,6 @@ Qdrant without modifying Anvil itself.
 - Without the Docker socket the agent cannot escalate to the host daemon.
 - Secrets are injected by the VS Code client, not committed or baked into the
   image.
-- Fast rebuilds thanks to named volumes — the venv is not rebuilt from scratch
-  every time.
 
 ### What this does not protect against
 
@@ -69,9 +65,39 @@ Qdrant without modifying Anvil itself.
   into the container environment, but any other process on the host can read
   those same variables.
 
+## Defects found while validating
+
+0. **The git MCP server had no version pin — the most important finding.**
+   `uvx mcp-server-git` resolved the `mcp` SDK afresh, and a newer SDK moved the
+   attribute the server calls, so it died at startup with
+   `AttributeError: 'Server' object has no attribute 'list_tools'`, surfaced to
+   the user only as `MCP error -32000: Connection closed`. This was **not**
+   caused by the container: a warm `uv` cache on the host held an older,
+   compatible pair, so the latent fault was invisible until a clean environment
+   resolved dependencies from scratch. Any new contributor would have hit it.
+   Fixed with `uvx --with "mcp<1.10"` in `templates/mcp.json.template`, so the
+   constraint travels in the generated config rather than living in someone's
+   cache. Regression tests: `TestMcpGoldenParity.test_git_server_constrains_the_mcp_sdk`
+   and `..._precedes_the_package_name`.
+
+Recorded so they are not reintroduced:
+
+1. **`mcp.json` carried an absolute host path.** The git MCP server was invoked
+   with `--repository /home/mgaron/Repositories/anvil`, which does not exist
+   inside the container — the workspace is at `/workspaces/anvil`. The server
+   exited immediately, reported only as `Connection closed`. The generated
+   `.roo/mcp.json` now uses `${workspaceFolder}`, matching the template.
+2. **`RUN` uses `dash`, which has no brace expansion.** `mkdir -p
+   .vscode-server/{bin,data,extensions}` created a single directory literally
+   named `{bin,data,extensions}`. Every path is now listed explicitly.
+3. **Root-owned named volumes**, as described above.
+4. **An invented schema key.** `customizations.vscode.experimental
+   .extensionsInstallBypassListing` is not part of the dev container
+   specification and did nothing; it was removed.
+
 ## Alternatives considered
 
-- **Configurable gateway host in Anvil.** Add `--network=host` is the simplest
+- **Configurable gateway host in Anvil.** `--network=host` is the simplest
   Linux-only solution. A future enhancement could make the gateway host
   configurable via `anvil.yaml` and `.env`, which would allow bridged networking
   and isolate the agent further.
