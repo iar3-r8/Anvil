@@ -61,6 +61,22 @@ Once your profile is active, initialize the system prompts, custom tools, and be
 ```text
    /update_roo_rules
    ```
-3. The LLM will automatically parse your `.roo/commands/update_roo_rules.md` directives to orchestrate, align, and save your specific development rules and behaviors. 
+3. The LLM will automatically parse your `.roo/commands/update_roo_rules.md` directives to orchestrate, align, and save your specific development rules and behaviors.
 
 Your local environment is now fully configured and ready for sovereign agentic execution!
+
+---
+
+## 5. Run Zoo Code Inside a Dev Container (Optional)
+
+For a fully sandboxed coding session — isolated filesystem, no access to your
+host credentials, and all MCP runtimes pre-installed — open the repo in VS Code
+and click **Reopen in Container**.
+
+The container runs with `--network=host` so `localhost` still reaches the gateway
+on the host. The Docker socket is **not** mounted, so `./anvil up` and
+`./anvil down` must be run from the host. The GitHub token is injected via
+`remoteEnv` from the host `${GITHUB_TOKEN}` environment variable.
+
+See [`.devcontainer/devcontainer.json`](../.devcontainer/devcontainer.json) for
+details.

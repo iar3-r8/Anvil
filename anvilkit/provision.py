@@ -22,6 +22,7 @@ from . import render
 PathLike = Union[str, Path]
 
 ROO_SUBDIRS = (".roo", ".roo/commands", ".roo/skills", ".roo/rules")
+DEVCONTAINER_DIR = ".devcontainer"
 
 _SEPARATOR = "-" * 70
 
@@ -84,6 +85,9 @@ def setup_repo(
     report("📂 Verifying framework directory architectures...")
     _create_directories(resolved, dry_run, report)
 
+    report("🐳 Deploying devcontainer configuration...")
+    _copy_devcontainer(resolved, templates, dry_run, report)
+
     report("⚙️  Generating zoo-code-settings.json unified across a single proxy gate...")
     report("   ↳ 📐 Context window: {}".format(repo_plan.context_window))
     _write_zoo_settings(resolved, repo_plan, dry_run, report)
@@ -120,6 +124,7 @@ class _Templates:
         self.extensions = base / "extensions.json.template"
         self.rules_command = base / "update_roo_rules.md"
         self.roo_template = base / "roo_template"
+        self.devcontainer = base / "devcontainer"
 
     def validate(self) -> None:
         """Check every template before any file is written.
@@ -144,6 +149,13 @@ class _Templates:
             raise ProvisionError(
                 "Roo template directory not found at '{}'.".format(
                     self.roo_template
+                )
+            )
+
+        if not self.devcontainer.is_dir():
+            raise ProvisionError(
+                "Devcontainer template directory not found at '{}'.".format(
+                    self.devcontainer
                 )
             )
 
@@ -317,6 +329,26 @@ def _deploy_mode_rules(
                     shutil.rmtree(str(destination))
                 shutil.copytree(str(entry), str(destination))
             report("   ↳ ✅ Deployed: {}".format(destination))
+
+
+def _copy_devcontainer(
+    target: Path, templates: "_Templates", dry_run: bool, report
+) -> None:
+    """Copy devcontainer template to the target, skipping if one exists.
+
+    If the target already has a ``.devcontainer`` directory (file or otherwise),
+    provisioning skips it silently — overwriting a developer's own container
+    config would be destructive.
+    """
+    destination = target / DEVCONTAINER_DIR
+    if destination.exists():
+        report("   ⏭️  Skipped devcontainer (target already has {})".format(destination))
+        return
+
+    if not dry_run:
+        shutil.copytree(str(templates.devcontainer), str(destination))
+
+    report("   ↳ ✅ Deployed: {}".format(destination))
 
 
 def _report_completion(target: Path, report) -> None:

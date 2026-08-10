@@ -1,0 +1,53 @@
+{
+    "name": "Anvil",
+    "build": {
+        "dockerfile": "Dockerfile",
+        "context": ".."
+    },
+
+    "runArgs": [
+        "--network=host",
+        "--security-opt=no-new-privileges:true",
+        "--cap-drop=ALL",
+        "--shm-size=2g"
+    ],
+
+    "remoteUser": "vscode",
+
+    "containerEnv": {
+        "ANVIL_IN_CONTAINER": "1"
+    },
+
+    "remoteEnv": {
+        "GITHUB_TOKEN": "${localEnv:GITHUB_TOKEN}"
+    },
+
+    "workspaceMount": "source=${localWorkspaceFolder},target=/workspaces/${localWorkspaceFolderBasename},type=bind,consistency=delegated",
+    "workspaceFolder": "/workspaces/anvil",
+
+    "mounts": [
+        "source=anvil-venv,target=/workspaces/anvil/.venv,type=volume",
+        "source=anvil-npmcache,target=/home/vscode/.npm,type=volume",
+        "source=anvil-uvcache,target=/home/vscode/.cache/uv,type=volume"
+    ],
+
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "zoocodeorganization.zoo-code"
+            ],
+            "settings": {
+                "python.defaultInterpreterPath": "/workspaces/anvil/.venv/bin/python",
+                "python.terminal.activateEnvironment": true,
+                "terminal.integrated.defaultProfile.linux": "bash"
+            },
+            "experimental": {
+                "extensionsInstallBypassListing": true
+            }
+        }
+    },
+
+    "postCreateCommand": "bash scripts/bootstrap.sh",
+
+    "features": {}
+}
