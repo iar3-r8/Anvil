@@ -3,6 +3,7 @@
 *.env
 .roo/*
 zoo-code-settings.json
+plans/
 
 # Anvil local overrides (machine-specific, never committed)
 anvil.local.yaml

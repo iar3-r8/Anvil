@@ -241,6 +241,11 @@
                 "cohere.embed-multilingual-v3": {
                     "dimension": 1024
                 }
+            },
+            "semblance": {
+                "potion-code-16M": {
+                    "dimension": 256
+                }
             }
         },
         "codebaseIndexConfig": {
@@ -267,6 +272,15 @@
         "reasoningBlockCollapsed": true,
         "enterBehavior": "send",
         "profileThresholds": {},
-        "hasOpenedModeSelector": true
+        "hasOpenedModeSelector": true,
+        "autoApprovalEnabled": true,
+        "autoCloseZooOpenedFiles": true,
+        "autoCloseZooOpenedFilesAfterUserEdited": false,
+        "autoCloseZooOpenedNewFiles": false,
+        "chatFontSize": null,
+        "destructiveCommandGuardEnabled": false,
+        "diffFuzzyThreshold": 1,
+        "lastSettingsExportPath": "",
+        "rateLimitSeconds": 0
     }
 }
