@@ -30,6 +30,23 @@ Use `--no-github` and `--no-anthropic` to skip either integration explicitly, an
 `--dry-run` to see exactly which files would be written without writing any of
 them. See the [backend guide](1-setting-up-backend.md) for the full flag list.
 
+### Sensitive file protection
+
+`setup-repo` deploys a `.gitignore` template into the target repository that
+protects sensitive files from accidental commits. The merge is **additive** —
+existing content is never truncated or reordered. The entries managed are:
+
+| Entry | Reason |
+| --- | --- |
+| `.env` | secrets and host paths |
+| `anvil.local.yaml` | machine-specific overrides |
+| `zoo-code-settings.json` | Anthropic API key, gateway URL |
+| `.roo/mcp.json` | GitHub personal access token |
+| `.venv/.anvil-requirements-stamp` | bootstrap state |
+
+If all entries are already present in the target's `.gitignore`, the file is
+left byte-for-byte unchanged (idempotent).
+
 ---
 
 ## 2. Open VS Code & Install the Extension
