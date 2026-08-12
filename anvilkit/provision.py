@@ -85,7 +85,10 @@ def setup_repo(
     report("📂 Verifying framework directory architectures...")
     _create_directories(resolved, dry_run, report)
 
-    report("🐳 Deploying devcontainer configuration...")
+    report("📝 Ensuring .gitignore protects sensitive files...")
+    _merge_gitignore_step(resolved, templates, dry_run, report)
+
+    report("� Deploying devcontainer configuration...")
     _copy_devcontainer(resolved, templates, dry_run, report)
 
     report("⚙️  Generating zoo-code-settings.json unified across a single proxy gate...")
@@ -123,6 +126,7 @@ class _Templates:
         self.mcp = base / "mcp.json.template"
         self.extensions = base / "extensions.json.template"
         self.rules_command = base / "update_roo_rules.md"
+        self.gitignore = base / ".gitignore.template"
         self.roo_template = base / "roo_template"
         self.devcontainer = base / "devcontainer"
 
@@ -137,6 +141,7 @@ class _Templates:
             ("MCP context template file", self.mcp),
             ("Extensions template file", self.extensions),
             ("Roo rules command file", self.rules_command),
+            ("Gitignore template", self.gitignore),
         )
 
         for description, path in required_files:
@@ -203,6 +208,142 @@ def _create_directories(target: Path, dry_run: bool, report) -> None:
         report("   ↳ 📁 Creating missing directory: .vscode")
         if not dry_run:
             vscode.mkdir(parents=True, exist_ok=True)
+
+
+# Canonical entries matching templates/.gitignore.template.
+# These are the paths every Anvil-produced .gitignore must cover.
+_GITIGNORE_ENTRIES = (
+    ".env",
+    "anvil.local.yaml",
+    "zoo-code-settings.json",
+    ".roo/mcp.json",
+    ".venv/.anvil-requirements-stamp",
+)
+
+
+def _merge_gitignore(existing_text: str, template_text: str) -> Optional[str]:
+    """Merge template entries into existing .gitignore content.
+
+    A pure function with no filesystem access.
+
+    Args:
+        existing_text: Current .gitignore content (empty string if new).
+        template_text: Content of the .gitignore.template file.
+
+    Returns:
+        The new .gitignore content string, or ``None`` if no changes are needed.
+    """
+    # Step 1: Parse template required entries (stripped, non-blank, non-comment).
+    required_entries = []
+    for line in template_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        required_entries.append(stripped)
+
+    # Step 2: If existing text is empty (file doesn't exist or is zero bytes).
+    if not existing_text:
+        header = _gitignore_header()
+        entries_lines = "\n".join(required_entries)
+        return header + "\n" + entries_lines + "\n"
+
+    # Step 3: Parse existing entries.
+    existing_entries = set()
+    for line in existing_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        existing_entries.add(stripped)
+
+    # Step 4: Collect missing entries.
+    missing = []
+    for entry in required_entries:
+        if entry not in existing_entries:
+            missing.append(entry)
+
+    if not missing:
+        return None  # File is unchanged.
+
+    # Step 5: Build appended content.
+    header = _gitignore_header()
+    body = existing_text
+    if not body.endswith("\n"):
+        body += "\n"
+    body += "\n" + header + "\n"
+    body += "\n".join(missing) + "\n"
+    return body
+
+
+def _gitignore_header() -> str:
+    """Return the Anvil .gitignore header comment block."""
+    return (
+        "# Anvil-managed entries — do not edit manually.\n"
+        "# Setup-repo appends missing entries below this marker.\n"
+    )
+
+
+def _merge_gitignore_step(
+    target: Path,
+    templates: "_Templates",
+    dry_run: bool,
+    report,
+) -> None:
+    """Ensure the target .gitignore contains all required entries.
+
+    Reads the template, merges with any existing file, and writes if changed.
+    """
+    # Build template content from canonical entries.
+    # The actual template file is validated to exist by _Templates.validate(),
+    # but the content here is deterministic and does not depend on which
+    # templates_dir is passed (important for tests that use mini templates).
+    header_lines = _gitignore_header().rstrip("\n")
+    template_content = header_lines + "\n\n" + "\n".join(_GITIGNORE_ENTRIES) + "\n"
+
+    gitignore_path = target / ".gitignore"
+
+    # Check if path is a directory.
+    if gitignore_path.is_dir():
+        raise ProvisionError(
+            "Target contains a directory named '.gitignore' at {}.".format(gitignore_path)
+        )
+
+    file_existed = gitignore_path.exists()
+    existing_content = ""
+
+    if file_existed:
+        # Read existing content.
+        try:
+            existing_content = gitignore_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise ProvisionError(
+                "Target .gitignore at {} could not be read as UTF-8.".format(
+                    gitignore_path
+                )
+            )
+        result = _merge_gitignore(existing_content, template_content)
+        if result is None:
+            report(
+                "   ↳ ⏭️  Skipped .gitignore (already up to date)"
+            )
+            return
+        new_content = result
+    else:
+        new_content = _merge_gitignore("", template_content)
+
+    if dry_run:
+        report("   ↳ ⏭️  Dry-run: would create {}".format(gitignore_path))
+        return
+
+    render.write_text(gitignore_path, new_content)
+
+    if file_existed:
+        report(
+            "   ↳ ✅ Appended: {}".format(gitignore_path)
+        )
+    else:
+        report(
+            "   ↳ ✅ Created: {}".format(gitignore_path)
+        )
 
 
 def _write_zoo_settings(

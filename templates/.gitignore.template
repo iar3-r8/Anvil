@@ -1,0 +1,8 @@
+# Anvil-managed entries — do not edit manually.
+# Setup-repo appends missing entries below this marker.
+
+.env
+anvil.local.yaml
+zoo-code-settings.json
+.roo/mcp.json
+.venv/.anvil-requirements-stamp
