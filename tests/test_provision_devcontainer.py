@@ -76,6 +76,7 @@ class DevcontainerProvisionCase(unittest.TestCase):
             "mcp.json.template",
             "extensions.json.template",
             "update_roo_rules.md",
+            ".gitignore.template",
         ):
             (self.template_root / name).write_text("{}\n", encoding="utf-8")
         roo = self.template_root / "roo_template"

@@ -123,6 +123,7 @@ class _Templates:
         self.mcp = base / "mcp.json.template"
         self.extensions = base / "extensions.json.template"
         self.rules_command = base / "update_roo_rules.md"
+        self.gitignore = base / ".gitignore.template"
         self.roo_template = base / "roo_template"
         self.devcontainer = base / "devcontainer"
 
@@ -137,6 +138,7 @@ class _Templates:
             ("MCP context template file", self.mcp),
             ("Extensions template file", self.extensions),
             ("Roo rules command file", self.rules_command),
+            ("Gitignore template", self.gitignore),
         )
 
         for description, path in required_files:
