@@ -101,7 +101,7 @@ def _provision(tmp_dir, target, dry_run=False, echo_list=None):
     Returns ``(target, message_list)``.
     """
     templates_dir = Path(tmp_dir.name) / "templates"
-    messages = echo_list or []
+    messages = echo_list if echo_list is not None else []
     repo_plan = provision.RepoPlan(
         port=8000,
         context_window=262144,
