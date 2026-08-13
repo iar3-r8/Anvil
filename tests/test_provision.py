@@ -600,5 +600,49 @@ class FullDeploymentIntegrationTests(ProvisionCase):
         self.assertIn("qna-tester", content)
 
 
+class OxylabsPlanTests(ProvisionCase):
+    """Behavior 2: RepoPlan accepts oxylabs fields and _write_mcp_settings passes them through."""
+
+    def test_repo_plan_accepts_oxylabs_username_and_password_defaults(self):
+        """2a: RepoPlan must accept oxylabs_username="" and oxylabs_password="" as kwargs with defaults of ""."""
+        repo_plan = plan()
+
+        self.assertTrue(hasattr(repo_plan, "oxylabs_username"))
+        self.assertTrue(hasattr(repo_plan, "oxylabs_password"))
+        self.assertEqual(repo_plan.oxylabs_username, "")
+        self.assertEqual(repo_plan.oxylabs_password, "")
+
+    def test_write_mcp_settings_passes_oxylabs_credentials(self):
+        """2b: _write_mcp_settings passes oxylabs_username and oxylabs_password from repo_plan."""
+        self.provision(repo_plan=plan(oxylabs_username="test_user", oxylabs_password="test_pass"))
+
+        config = self.read_json(".roo/mcp.json")
+
+        self.assertEqual(
+            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            "test_user",
+        )
+        self.assertEqual(
+            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            "test_pass",
+        )
+
+    def test_empty_oxylabs_credentials_yield_disabled_server(self):
+        """2c: empty oxylabs credentials yield disabled server in .roo/mcp.json."""
+        self.provision(repo_plan=plan(oxylabs_username="", oxylabs_password=""))
+
+        config = self.read_json(".roo/mcp.json")
+
+        self.assertEqual(config["mcpServers"]["oxylabs"]["disabled"], True)
+        self.assertEqual(
+            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            "",
+        )
+        self.assertEqual(
+            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            "",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
