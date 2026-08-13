@@ -17,6 +17,7 @@ Anvil gives you a turnkey, production-grade alternative that runs completely on 
 * **High-Throughput Inference:** Child containers run [`vllm`](https://vllm.ai/) hosting optimized `Qwen2.5-Coder-7B` and `Qwen3.6-35B-A3B-FP8` reasoning models on-demand.
 * **Local Workspace RAG:** A dedicated text-embedding container paired with a [`Qdrant`](https://qdrant.tech/) vector database to provide deep codebase context to your agent.
 * **Frictionless UI Integration:** Pre-configured settings to tie the entire infrastructure directly into the [**Zoo Code**](https://www.zoocode.dev/) (formerly Roo Code) VS Code extension.
+* **Documentation-Grounded Planning:** The agent modes treat an unknown third-party interface as a blocking condition rather than something to guess at. Real vendor documentation is fetched through the [Oxylabs](https://dashboard.oxylabs.io/en/overview/scraper) MCP server, saved under `doc/external/` and cited in the plan, so tests are never written against an invented API.
 
 ---
 
@@ -37,6 +38,13 @@ Learn how to use the interactive `./anvil` helper script to generate your enviro
 
 ### Step 2: Configure Your VS Code Extension
 Once your local backend engines are online, learn how to install the recommended extension workspace and configure your agentic setup in your own repository.
+
+`./anvil setup-repo` provisions the target repository and prompts for the optional
+integrations. Supply them as flags to run unattended — `--github-token`,
+`--anthropic-key`, `--oxylabs-username` and `--oxylabs-password` — or skip any of them
+with `--no-github`, `--no-anthropic` and `--no-oxylabs`. Re-running `setup-repo` is also
+the upgrade path for an already-provisioned repository: existing `.env` credentials are
+reused rather than re-prompted.
 
 👉 **[Read the VS Code Plugin Setup Guide](doc/2-setting-up-vscode-plugin.md)**
 
