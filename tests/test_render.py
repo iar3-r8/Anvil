@@ -346,6 +346,82 @@ class TestMcpGoldenParity(unittest.TestCase):
         self.assertLess(args.index("--with"), args.index("mcp-server-git"))
 
 
+class TestMcpOxylabs(unittest.TestCase):
+    """Tests for Behavior 1: render.mcp_settings emits an oxylabs server block."""
+
+    def test_oxylabs_server_env_substituted_when_credentials_supplied(self):
+        """1a. Non-empty oxylabs_username and oxylabs_password appear in the rendered JSON.
+
+        The oxylabs server must carry OXYLABS_USERNAME and OXYLABS_PASSWORD
+        env keys set to the exact credential values passed in.
+        """
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/some/repo",
+                github_token="ghp_test",
+                oxylabs_username="test_user",
+                oxylabs_password="test_pass",
+            )
+        )
+
+        self.assertIn("oxylabs", rendered["mcpServers"])
+        env = rendered["mcpServers"]["oxylabs"]["env"]
+        self.assertEqual(env["OXYLABS_USERNAME"], "test_user")
+        self.assertEqual(env["OXYLABS_PASSWORD"], "test_pass")
+
+    def test_oxylabs_disabled_when_credentials_empty(self):
+        """1b. Empty credentials yield disabled: true with empty or absent env.
+
+        When both oxylabs_username and oxylabs_password are empty strings,
+        the rendered server must not crash and must be marked disabled.
+        """
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/some/repo",
+                github_token="ghp_test",
+                oxylabs_username="",
+                oxylabs_password="",
+            )
+        )
+
+        self.assertIn("oxylabs", rendered["mcpServers"])
+        self.assertTrue(rendered["mcpServers"]["oxylabs"].get("disabled", False))
+
+    def test_backward_compat_two_positional_args(self):
+        """2. Calling mcp_settings with only workspace_folder and github_token (positional) still works.
+
+        The function must accept two positional arguments with defaults for
+        oxylabs_username and oxylabs_password, rendering an oxylabs server
+        that is disabled by default.
+        """
+        rendered = json.loads(
+            render.mcp_settings("/some/repo", "")
+        )
+
+        self.assertIn("mcpServers", rendered)
+        self.assertIn("oxylabs", rendered["mcpServers"])
+        self.assertTrue(rendered["mcpServers"]["oxylabs"].get("disabled", False))
+
+    def test_oxylabs_appears_alongside_github_and_git(self):
+        """4. The oxylabs server is added to the existing github and git servers, not replacing them.
+
+        All three servers must coexist in the rendered JSON.
+        """
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/some/repo",
+                github_token="ghp_abc",
+                oxylabs_username="user",
+                oxylabs_password="pass",
+            )
+        )
+
+        servers = rendered["mcpServers"]
+        self.assertIn("github", servers)
+        self.assertIn("git", servers)
+        self.assertIn("oxylabs", servers)
+
+
 class TestWriteToDisk(unittest.TestCase):
     def setUp(self):
         tmp_dir = tempfile.TemporaryDirectory()

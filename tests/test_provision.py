@@ -600,5 +600,133 @@ class FullDeploymentIntegrationTests(ProvisionCase):
         self.assertIn("qna-tester", content)
 
 
+class OxylabsPlanTests(ProvisionCase):
+    """Behavior 2: RepoPlan accepts oxylabs fields and _write_mcp_settings passes them through."""
+
+    def test_repo_plan_accepts_oxylabs_username_and_password_defaults(self):
+        """2a: RepoPlan must accept oxylabs_username="" and oxylabs_password="" as kwargs with defaults of ""."""
+        repo_plan = plan()
+
+        self.assertTrue(hasattr(repo_plan, "oxylabs_username"))
+        self.assertTrue(hasattr(repo_plan, "oxylabs_password"))
+        self.assertEqual(repo_plan.oxylabs_username, "")
+        self.assertEqual(repo_plan.oxylabs_password, "")
+
+    def test_write_mcp_settings_passes_oxylabs_credentials(self):
+        """2b: _write_mcp_settings passes oxylabs_username and oxylabs_password from repo_plan."""
+        self.provision(repo_plan=plan(oxylabs_username="test_user", oxylabs_password="test_pass"))
+
+        config = self.read_json(".roo/mcp.json")
+
+        self.assertEqual(
+            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            "test_user",
+        )
+        self.assertEqual(
+            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            "test_pass",
+        )
+
+    def test_empty_oxylabs_credentials_yield_disabled_server(self):
+        """2c: empty oxylabs credentials yield disabled server in .roo/mcp.json."""
+        self.provision(repo_plan=plan(oxylabs_username="", oxylabs_password=""))
+
+        config = self.read_json(".roo/mcp.json")
+
+        self.assertEqual(config["mcpServers"]["oxylabs"]["disabled"], True)
+        self.assertEqual(
+            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            "",
+        )
+        self.assertEqual(
+            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            "",
+        )
+
+
+class RulesArchitectDeploymentTests(ProvisionCase):
+    """Behavior 5: the existing _deploy_mode_rules loop picks up any rules-* directory."""
+
+    def test_provisioning_deploys_roo_rules_architect_via_existing_rules_loop(self):
+        """5: _deploy_mode_rules copies rules-architect from roo_template into .roo/.
+
+        The loop at provision:472 iterates over every sub-directory in
+        ``roo_template/`` whose name starts with ``rules-`` and copies it into
+        ``.roo/``.  The new ``rules-architect/instructions.xml`` template sits in
+        that tree, so the existing loop should deploy it without any Python code
+        change.
+        """
+        self.provision()
+
+        # File exists in the deployed tree
+        deployed = self.target / ".roo" / "rules-architect" / "instructions.xml"
+        self.assertTrue(deployed.is_file(), ".roo/rules-architect/instructions.xml missing")
+
+        # File is valid XML (parse with ElementTree)
+        import xml.etree.ElementTree as ET
+        tree = ET.parse(str(deployed))
+        root = tree.getroot()
+        self.assertEqual(root.tag, "instructions")
+
+
+class ReprovisioningEndToEndTests(ProvisionCase):
+    """Behavior 6: re-provisioning an already-set-up repo does not corrupt it."""
+
+    def test_reprovisioning_an_already_setup_repo_end_to_end(self):
+        """6: re-running setup-repo on the same target preserves all files.
+
+        First provisioning writes ``.roo/mcp.json`` with oxylabs credentials.
+        A second provisioning on the same target should not corrupt ``mcp.json``
+        or ``zoo-code-settings.json``.
+        """
+        # -- First provisioning with oxylabs credentials ---
+        self.provision(
+            repo_plan=plan(
+                oxylabs_username="test_user",
+                oxylabs_password="test_pass",
+            )
+        )
+
+        # Read back mcp.json after first provisioning
+        config_first = self.read_json(".roo/mcp.json")
+        self.assertEqual(
+            config_first["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            "test_user",
+        )
+        self.assertEqual(
+            config_first["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            "test_pass",
+        )
+
+        # Verify zoo-code-settings.json still exists and is valid
+        settings_first = self.read_json("zoo-code-settings.json")
+        self.assertIsInstance(settings_first, dict)
+
+        # -- Second provisioning on the same target ---
+        self.provision(
+            repo_plan=plan(
+                oxylabs_username="test_user",
+                oxylabs_password="test_pass",
+            )
+        )
+
+        # Read back mcp.json after second provisioning
+        config_second = self.read_json(".roo/mcp.json")
+        self.assertEqual(
+            config_second["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            "test_user",
+        )
+        self.assertEqual(
+            config_second["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            "test_pass",
+        )
+        # mcp.json is valid JSON (read_json already parses it, so if we got here it's valid)
+        self.assertIsInstance(config_second, dict)
+
+        # zoo-code-settings.json still exists and is valid
+        settings_second = self.read_json("zoo-code-settings.json")
+        self.assertIsInstance(settings_second, dict)
+
+
 if __name__ == "__main__":
     unittest.main()

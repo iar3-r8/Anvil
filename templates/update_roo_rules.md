@@ -21,6 +21,18 @@ For each files in ./roo_template, **including dotfiles such as `.roomodes`**
     2. If it exists, append only the modes whose `slug` is not already present under `customModes`. Never overwrite a mode the user already has.
     3. A mode's `groups` entry carries a `fileRegex` that decides which files the mode may edit. Ask the user which paths apply in this repository before writing it, and keep the pattern as narrow as their answer allows.
 
+## What this command cannot update
+`.roo/mcp.json` lives **outside** `./roo_template`, so it is not covered by the steps
+above. It is generated wholesale by `./anvil setup-repo`, which is therefore the only way
+to add or change an MCP server entry.
+
+This matters for the **oxylabs** documentation-fetching server: if the rules delivered by
+this command tell a mode to fetch documentation with oxylabs but `.roo/mcp.json` has no
+`oxylabs` entry, the tool will simply be absent. Re-run
+`./anvil setup-repo /path/to/this/repo` from the Anvil directory to pick it up, and supply
+credentials when prompted. Existing `.env` values are reused and existing keys are
+preserved.
+
 ## Guidelines
 - Always change placeholders when adding a new sections from a template. (placeholders are usually under <>) Do not copy <...> into the .md files in the .roo.
 - Always write based on facts, if a placeholder (<>) needs to add new information in the file, either refer to the repository or the user.

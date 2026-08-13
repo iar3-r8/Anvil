@@ -783,6 +783,59 @@ def _resolve_github_token(
     return resolved
 
 
+def _resolve_oxylabs(
+    shared: Context,
+    username: Optional[str],
+    no_oxylabs: bool,
+    password: Optional[str] = None,
+) -> Tuple[str, str]:
+    """Decide the Oxylabs credentials, returning (username, password)."""
+    if no_oxylabs:
+        return ("", "")
+
+    if username is not None:
+        return (username, password if password is not None else "")
+
+    # Check .env for existing credentials.
+    env_username = env.get(shared.env_path, "OXYLABS_USERNAME")
+    env_password = env.get(shared.env_path, "OXYLABS_PASSWORD")
+    if env_username and env_password:
+        return (env_username, env_password)
+
+    if shared.assume_yes or not shared.interactive():
+        return ("", "")
+
+    wants_oxylabs = prompts.confirm(
+        "❓ Do you want to use Oxylabs web scraping for documentation lookups?\nSign up at https://dashboard.oxylabs.io/en/overview/scraper",
+        default=False,
+        assume_yes=shared.assume_yes,
+        interactive=shared.interactive(),
+    )
+
+    if not wants_oxylabs:
+        shared.echo("⚠️  Skipping Oxylabs web scraping setup.")
+        shared.echo("💡 Note: If you wish to set this up later, you must manually edit")
+        shared.echo("   '.env' and populate OXYLABS_USERNAME and OXYLABS_PASSWORD.")
+        return ("", "")
+
+    resolved_username = prompts.ask_required(
+        "🔑 Enter your Oxylabs Username",
+        assume_yes=shared.assume_yes,
+        interactive=shared.interactive(),
+        hide_input=False,
+    )
+    resolved_password = prompts.ask_required(
+        "🔑 Enter your Oxylabs Password",
+        assume_yes=shared.assume_yes,
+        interactive=shared.interactive(),
+        hide_input=True,
+    )
+    shared.echo("⚡ Credentials accepted and persisted to .env")
+    env.set_value(shared.env_path, "OXYLABS_USERNAME", resolved_username)
+    env.set_value(shared.env_path, "OXYLABS_PASSWORD", resolved_password)
+    return (resolved_username, resolved_password)
+
+
 class _Frontier:
     """The resolved architect-mode provider settings."""
 
@@ -896,6 +949,15 @@ def setup_repo(
     anthropic_model: Optional[str] = typer.Option(
         None, "--anthropic-model", help="Any model id, including an unlisted one."
     ),
+    oxylabs_username: Optional[str] = typer.Option(
+        None, "--oxylabs-username"
+    ),
+    oxylabs_password: Optional[str] = typer.Option(
+        None, "--oxylabs-password"
+    ),
+    no_oxylabs: bool = typer.Option(
+        False, "--no-oxylabs", help="Skip Oxylabs documentation scraping entirely."
+    ),
     assume_yes: bool = typer.Option(
         False, "--yes", "-y", help="Accept every default without prompting."
     ),
@@ -927,6 +989,10 @@ def setup_repo(
             anthropic_model,
         )
         shared.echo("")
+        oxylabs_username, oxylabs_password = _resolve_oxylabs(
+            shared, oxylabs_username, no_oxylabs, oxylabs_password
+        )
+        shared.echo("")
     except PromptError as exc:
         raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
@@ -941,6 +1007,8 @@ def setup_repo(
         anthropic_model_id=frontier.model_id,
         use_anthropic_for_frontier_modes=frontier.use_anthropic,
         github_token=token,
+        oxylabs_username=oxylabs_username,
+        oxylabs_password=oxylabs_password,
     )
 
     try:

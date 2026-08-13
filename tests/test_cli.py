@@ -1615,3 +1615,120 @@ class TestRunEntryPoint(CliCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------------------
+# _resolve_oxylabs  (Behavior 3 — red phase)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveOxylabs(CliCase):
+    """Tests for ``_resolve_oxylabs`` — the CLI resolution function for Oxylabs credentials.
+
+    Follows the same pattern as ``_resolve_github_token`` (``anvilkit/cli.py:752``)
+    but returns a ``(username, password)`` tuple.
+
+    TDD red phase: these tests verify the *desired* behaviour. The production
+    function does not exist yet, so every test must fail with ``AttributeError``
+    or ``AssertionError`` until Behaviour 3 is implemented.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    # -- Test 1: --no-oxylabs flag wins --------------------------------
+
+    def test_no_oxylabs_returns_empty_tuple_without_reading_env(self):
+        """When no_oxylabs=True, return (\"\", \"\") immediately, without reading .env."""
+        ctx = self._make_context(assume_yes=False)
+
+        # env.get should raise if it is called — we must not read .env
+        with mock.patch.object(
+            cli.env, "get", side_effect=AssertionError("_resolve_oxylabs must not read .env when no_oxylabs=True")
+        ):
+            result = cli._resolve_oxylabs(ctx, None, no_oxylabs=True)
+
+        self.assertEqual(("", ""), result)
+
+    # -- Test 2: --oxylabs-username flag wins --------------------------
+
+    def test_supplied_username_flag_wins_over_env(self):
+        """When oxylabs_username is provided, use it and password — do NOT read .env."""
+        ctx = self._make_context(assume_yes=False)
+
+        # Write old values to .env — they must be ignored
+        self.write_env(OXYLABS_USERNAME="old_user", OXYLABS_PASSWORD="old_pass")
+
+        with mock.patch.object(cli.env, "get", return_value="old_user"):
+            result = cli._resolve_oxylabs(
+                ctx, username="new_user", no_oxylabs=False, password="new_pass"
+            )
+
+        self.assertEqual(("new_user", "new_pass"), result)
+        # .env must remain unchanged
+        values = cli.env.read(self.env_path())
+        self.assertEqual("old_user", values.get("OXYLABS_USERNAME"))
+        self.assertEqual("old_pass", values.get("OXYLABS_PASSWORD"))
+
+    # -- Test 3: existing .env value is reused -------------------------
+
+    def test_existing_env_value_is_reused_without_prompting(self):
+        """When neither flag is provided and .env has credentials, reuse them without prompting."""
+        ctx = self._make_context(assume_yes=False)
+
+        self.write_env(OXYLABS_USERNAME="existing_user", OXYLABS_PASSWORD="existing_pass")
+
+        # Patch confirm to raise — we must NOT prompt the user
+        with mock.patch.object(
+            cli.prompts, "confirm", side_effect=AssertionError("_resolve_oxylabs must not prompt when .env has values")
+        ):
+            result = cli._resolve_oxylabs(ctx, username=None, no_oxylabs=False, password=None)
+
+        self.assertEqual(("existing_user", "existing_pass"), result)
+
+    # -- Test 4: --yes with no .env returns empty ----------------------
+
+    def test_yes_with_no_env_returns_empty_without_prompting(self):
+        """When assume_yes=True and no .env value and no flag, return (\"\", \"\") without prompting."""
+        # Ensure no .env exists
+        if self.env_path().exists():
+            self.env_path().unlink()
+
+        ctx = self._make_context(assume_yes=True)
+
+        # Patch confirm to raise — we must NOT prompt
+        with mock.patch.object(
+            cli.prompts, "confirm", side_effect=AssertionError("_resolve_oxylabs must not prompt with --yes")
+        ):
+            result = cli._resolve_oxylabs(ctx, username=None, no_oxylabs=False, password=None)
+
+        self.assertEqual(("", ""), result)
+
+    # -- Test 5: decline returns empty without persisting --------------
+
+    def test_decline_returns_empty_without_persisting(self):
+        """When interactive=True, .env is empty, and user declines, return (\"\", \"\") and do not persist."""
+        # Ensure no .env exists
+        if self.env_path().exists():
+            self.env_path().unlink()
+
+        ctx = self._make_context(assume_yes=False)
+
+        # Force interactive=True so we go down the prompt path
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(
+                cli.prompts, "confirm", return_value=False  # user declines
+            ):
+                result = cli._resolve_oxylabs(
+                    ctx, username=None, no_oxylabs=False, password=None
+                )
+
+        self.assertEqual(("", ""), result)
+        # .env must NOT have been created
+        self.assertFalse(self.env_path().exists())

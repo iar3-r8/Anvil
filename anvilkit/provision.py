@@ -50,6 +50,8 @@ class RepoPlan:
         anthropic_model_id: str,
         use_anthropic_for_frontier_modes: bool,
         github_token: str = "",
+        oxylabs_username: str = "",
+        oxylabs_password: str = "",
     ) -> None:
         self.port = port
         self.context_window = context_window
@@ -61,6 +63,8 @@ class RepoPlan:
         self.anthropic_model_id = anthropic_model_id
         self.use_anthropic_for_frontier_modes = use_anthropic_for_frontier_modes
         self.github_token = github_token
+        self.oxylabs_username = oxylabs_username
+        self.oxylabs_password = oxylabs_password
 
 
 def setup_repo(
@@ -385,7 +389,10 @@ def _write_mcp_settings(
     target: Path, repo_plan: RepoPlan, dry_run: bool, report
 ) -> None:
     content = render.mcp_settings(
-        workspace_folder=str(target), github_token=repo_plan.github_token
+        workspace_folder=str(target),
+        github_token=repo_plan.github_token,
+        oxylabs_username=repo_plan.oxylabs_username,
+        oxylabs_password=repo_plan.oxylabs_password,
     )
     _write(target / ".roo" / "mcp.json", content, dry_run, report)
 

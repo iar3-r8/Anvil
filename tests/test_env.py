@@ -266,6 +266,29 @@ class TestSet(EnvTestCase):
 
         self.assertTrue(nested.is_file())
 
+    def test_set_value_preserves_anthropic_api_key_and_github_token_when_setting_oxylabs(self):
+        """Verify env.set_value preserves existing keys when persisting oxylabs credentials.
+
+        This is the decisive test for the Behavior 4 contract: when ``_resolve_oxylabs``
+        calls ``env.set_value`` twice (once for OXYLABS_USERNAME, once for
+        OXYLABS_PASSWORD), every pre-existing key in the file must remain
+        byte-for-byte unchanged.
+        """
+        self.write_env(
+            "ANTHROPIC_API_KEY=sk-abc123\n"
+            "GITHUB_TOKEN=ghp_old\n"
+        )
+
+        env.set_value(self.env_path, "OXYLABS_USERNAME", "user1")
+        env.set_value(self.env_path, "OXYLABS_PASSWORD", "pass1")
+
+        content = self.env_path.read_text(encoding="utf-8")
+
+        self.assertIn("ANTHROPIC_API_KEY=sk-abc123\n", content)
+        self.assertIn("GITHUB_TOKEN=ghp_old\n", content)
+        self.assertIn("OXYLABS_USERNAME=user1\n", content)
+        self.assertIn("OXYLABS_PASSWORD=pass1\n", content)
+
 
 class TestWriteMany(EnvTestCase):
     def test_writes_all_pairs_in_given_order(self):
