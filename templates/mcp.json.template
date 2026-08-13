@@ -29,6 +29,17 @@
 			],
 			"disabled": false,
 			"alwaysAllow": []
+		},
+		"oxylabs": {
+			"command": "uvx",
+			"args": [
+				"oxylabs-mcp"
+			],
+			"disabled": false,
+			"env": {
+				"OXYLABS_USERNAME": "${OXYLABS_USERNAME}",
+				"OXYLABS_PASSWORD": "${OXYLABS_PASSWORD}"
+			}
 		}
 	}
 }
