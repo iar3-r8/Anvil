@@ -14,7 +14,7 @@ Anvil gives you a turnkey, production-grade alternative that runs completely on 
 
 ### What's Under the Hood?
 * **Dynamic Model Routing:** Powered by [llama-swap](https://github.com/mostlygeek/llama-swap), a smart gateway that manages model lifecycles with TTL-based swapping, allowing multiple models to share limited GPU resources efficiently.
-* **High-Throughput Inference:** Child containers run [`vllm`](https://vllm.ai/) hosting optimized `Qwen2.5-Coder-7B` and `Qwen3.6-35B-A3B-FP8` reasoning models on-demand.
+* **High-Throughput Inference:** Child containers run [`vllm`](https://vllm.ai/) hosting optimized `Qwen2.5-Coder-7B` and `Qwen3.8-27B-FP8` reasoning models on-demand.
 * **Local Workspace RAG:** A dedicated text-embedding container paired with a [`Qdrant`](https://qdrant.tech/) vector database to provide deep codebase context to your agent.
 * **Frictionless UI Integration:** Pre-configured settings to tie the entire infrastructure directly into the [**Zoo Code**](https://www.zoocode.dev/) (formerly Roo Code) VS Code extension.
 * **Documentation-Grounded Planning:** The agent modes treat an unknown third-party interface as a blocking condition rather than something to guess at. Real vendor documentation is fetched through the [Oxylabs](https://dashboard.oxylabs.io/en/overview/scraper) MCP server, saved under `doc/external/` and cited in the plan, so tests are never written against an invented API.

@@ -28,10 +28,10 @@ Run `./anvil doctor` to verify all of the above at once.
 ### Hardware Prerequisites
 
 #### Mid Tier (Default Configuration)
-* **GPU for Main LLM (`Qwen/Qwen3.6-35B-A3B-FP8`):** Minimum $2 \times 24\text{GB}$ GPUs (e.g., $2 \times \text{RTX 3090/4090}$ or enterprise equivalents like A10/A100) to run the 35B model with `--tensor-parallel-size 2`.
+* **GPU for Main LLM (`Qwen/Qwen3.8-27B-FP8`):** Minimum $2 \times 24\text{GB}$ GPUs (e.g., $2 \times \text{RTX 3090/4090}$ or enterprise equivalents like A10/A100) to run the 27B model with `--tensor-parallel-size 2`.
 * **GPU for Embedding Indexer (`nomic-ai/nomic-embed-text-v1.5`):** Minimum $1 \times$ dedicated GPU with at least $1\text{GB}$ available VRAM (can be a low-end card or integrated GPU).
 * **Storage:** $\sim 50\text{GB}$ of (ideally) fast SSD storage allocated to the Hugging Face cache directory (`HF_HOME`) to store model weights for all configured models.
-* **RAM:** $64\text{GB}$ system RAM recommended when running the 35B model with speculative decoding.
+* **RAM:** $64\text{GB}$ system RAM recommended when running with speculative decoding.
 
 ---
 
