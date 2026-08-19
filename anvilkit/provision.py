@@ -14,11 +14,13 @@ Constraints:
 """
 
 import json
+import re
 import shutil
 from pathlib import Path
-from typing import Callable, Optional, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from . import render
+from . import yamlio
 
 PathLike = Union[str, Path]
 
@@ -409,6 +411,168 @@ def _merge_mcp_servers(existing_text: str, rendered_text: str, source: str = ".r
     merged = dict(existing)
     merged["mcpServers"] = merged_servers
     return json.dumps(merged, indent=4)
+
+
+_ROOMODES_KEY_RE = re.compile(r"^( *)customModes:\s*$")
+_ROOMODES_ITEM_RE = re.compile(r"^( *)- ")
+_ROOMODES_SLUG_RE = re.compile(r"^( *)- slug:\s*(\S+)")
+
+
+def _merge_roomodes(
+    existing_text: str, template_text: str, source: str = ".roomodes"
+) -> Optional[str]:
+    """Merge the template's mode blocks into an existing ``.roomodes``.
+
+    A pure function with no filesystem access, mirroring the
+    ``_merge_gitignore`` shape and its ``None``-means-unchanged convention:
+    the provisioning step writes nothing when ``None`` is returned.
+
+    The decision is made with the parser, the emission as text. The slugs
+    already present are discovered by parsing ``existing_text`` with
+    ``yamlio.loads()`` — a textual scan is unsafe because ``slug:`` can
+    legally appear inside a ``>-`` folded scalar — while the appended
+    content is the template's own lines verbatim. A YAML round-trip is
+    deliberately avoided: it would reflow the ``>-`` scalars and nested
+    ``groups`` lists in a file developers hand-edit, and every existing
+    byte must remain an exact prefix of the result.
+
+    Args:
+        existing_text: Current ``.roomodes`` content (empty if new).
+        template_text: Content of the template ``.roomodes`` file.
+        source: Name of the existing file, named in error messages.
+
+    Returns:
+        The merged content, or ``None`` when every template slug is already
+        present. Empty or whitespace-only ``existing_text`` yields the
+        template text verbatim, byte-for-byte.
+
+    Raises:
+        ProvisionError: the existing text is not a valid YAML mapping
+            (naming ``source``), or the template has drifted (no
+            ``customModes:`` key, or a block with no parseable slug).
+    """
+    if not existing_text.strip():
+        # First run: nothing to preserve, so the merge is the identity on
+        # the template — not even a trailing-newline normalisation.
+        return template_text
+
+    try:
+        # yamlio.loads also raises YamlError when the top level is not a
+        # mapping, so one except covers both error families of the
+        # existing file.
+        existing = yamlio.loads(existing_text)
+    except yamlio.YamlError as exc:
+        raise ProvisionError(
+            "Existing {} is not a valid YAML mapping: {}".format(source, exc)
+        ) from exc
+
+    key_indent, blocks = _roomodes_template_blocks(template_text, source)
+
+    present = set()
+    custom_modes = existing.get("customModes")
+    if isinstance(custom_modes, list):
+        for entry in custom_modes:
+            if isinstance(entry, dict):
+                slug = entry.get("slug")
+                if isinstance(slug, str) and slug.strip():
+                    present.add(slug)
+
+    missing = [text for slug, text in blocks if slug not in present]
+    if not missing:
+        return None
+
+    body = existing_text
+    if not body.endswith("\n"):
+        # Insert one newline so no appended line is glued onto the last
+        # existing line.
+        body += "\n"
+    if "customModes" not in existing:
+        # The key itself is missing, so it is created at the template's
+        # top-level key indentation; when the key is present (even null)
+        # the blocks simply land under it and no second key line is
+        # emitted.
+        body += "{}customModes:\n".format(key_indent)
+    for block in missing:
+        body += block
+    return body
+
+
+def _roomodes_template_blocks(
+    template_text: str, source: str
+) -> Tuple[str, List[Tuple[str, str]]]:
+    """Split template text into per-mode blocks, verbatim.
+
+    Returns ``(key_indent, blocks)`` where each block is a
+    ``(slug, block_text)`` pair and ``block_text`` is the template's own
+    lines from its ``- slug:`` line to the next item at the same
+    indentation, or end of text.
+
+    The item indentation is taken from the FIRST item found, never
+    hard-coded, so a re-indented template still splits on its own
+    boundaries.
+
+    Raises:
+        ProvisionError: the template has drifted — no ``customModes:``
+            key, no items under it, or an item line carrying no
+            parseable slug.
+    """
+    lines = template_text.split("\n")
+
+    key_indent = None
+    key_index = None
+    for index, line in enumerate(lines):
+        match = _ROOMODES_KEY_RE.match(line)
+        if match:
+            key_index = index
+            key_indent = match.group(1)
+            break
+
+    if key_index is None:
+        raise ProvisionError(
+            "Template {} has drifted: no 'customModes:' key found.".format(
+                source
+            )
+        )
+
+    item_indent = None
+    for line in lines[key_index + 1:]:
+        if not line.strip():
+            continue
+        match = _ROOMODES_ITEM_RE.match(line)
+        if match:
+            item_indent = len(match.group(1))
+        break
+
+    blocks = []
+    current = None  # type: Optional[Tuple[str, List[str]]]
+    for line in lines[key_index + 1:]:
+        if item_indent is not None and line.startswith(" " * item_indent + "- "):
+            # An item line: it opens a new block, and its slug must be
+            # parseable on the same line.
+            match = _ROOMODES_SLUG_RE.match(line)
+            if match is None:
+                raise ProvisionError(
+                    "Template {} has drifted: a mode block under "
+                    "'customModes' has no parseable slug.".format(source)
+                )
+            if current is not None:
+                blocks.append((current[0], "\n".join(current[1])))
+            current = (match.group(2), [line])
+        elif current is not None:
+            # Continuation lines (deeper-indented content, blank lines
+            # between blocks) belong to the open block, verbatim.
+            current[1].append(line)
+
+    if current is not None:
+        blocks.append((current[0], "\n".join(current[1])))
+
+    if not blocks:
+        raise ProvisionError(
+            "Template {} has drifted: 'customModes' defines no mode "
+            "blocks.".format(source)
+        )
+
+    return key_indent, blocks
 
 
 def _gitignore_header() -> str:
