@@ -829,12 +829,50 @@ def _write_mcp_settings(
 
 
 def _write_extensions(target: Path, dry_run: bool, report) -> None:
-    _write(
-        target / ".vscode" / "extensions.json",
-        render.extensions_settings(),
-        dry_run,
-        report,
+    extensions_path = target / ".vscode" / "extensions.json"
+    rendered_text = render.extensions_settings()
+
+    file_existed = extensions_path.exists()
+    existing_text = ""
+    if file_existed:
+        try:
+            existing_text = extensions_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise ProvisionError(
+                "Existing extension settings at {} could not be read as UTF-8."
+                .format(extensions_path)
+            )
+
+    # Validation happens before the dry_run check, per the
+    # _merge_gitignore_step and _write_mcp_settings precedent: a dry run
+    # must surface the same fault, so a malformed existing file is never
+    # silently clobbered.
+    merged_text = _merge_extensions(
+        existing_text, rendered_text, source=str(extensions_path)
     )
+
+    if not file_existed:
+        # First run: the file does not exist yet, so the rendered text is
+        # written wholesale rather than merged.
+        if not dry_run:
+            render.write_text(extensions_path, rendered_text)
+        report("   ↳ ✅ Injected: {}".format(extensions_path))
+        return
+
+    # render.write_text always terminates the deployed file with one
+    # newline, which the helper's canonical json.dumps form never carries;
+    # accept either form so a no-change re-run is detected instead of
+    # reported as a merge.
+    if existing_text == merged_text or existing_text == merged_text + "\n":
+        report("   ↳ ⏭️  Skipped .vscode/extensions.json (already up to date)")
+        return
+
+    if dry_run:
+        report("   ↳ ⏭️  Dry-run: would merge {}".format(extensions_path))
+        return
+
+    render.write_text(extensions_path, merged_text)
+    report("   ↳ ✅ Merged: {}".format(extensions_path))
 
 
 def _install_rules_command(
