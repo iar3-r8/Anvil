@@ -40,6 +40,14 @@
 				"OXYLABS_USERNAME": "${OXYLABS_USERNAME}",
 				"OXYLABS_PASSWORD": "${OXYLABS_PASSWORD}"
 			}
+		},
+		"package-registry": {
+			"command": "npx",
+			"args": [
+				"package-registry-mcp"
+			],
+			"disabled": false,
+			"alwaysAllow": []
 		}
 	}
 }
