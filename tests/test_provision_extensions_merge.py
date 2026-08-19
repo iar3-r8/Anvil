@@ -42,6 +42,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import provision, render  # noqa: E402
+from tests.test_provision import ProvisionCase, plan  # noqa: E402
+from tests.test_provision_mcp_merge import _provision_fresh  # noqa: E402
 
 try:
     from anvilkit.provision import _merge_extensions  # noqa: E402
@@ -296,6 +298,251 @@ class Behaviour14ErrorTests(unittest.TestCase):
             SOURCE,
             str(ctx.exception),
             "ProvisionError must name the source: {}".format(ctx.exception),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 15 — setup_repo merges .vscode/extensions.json instead of
+# overwriting it (plan §3, Group D, item 15)
+# ---------------------------------------------------------------------------
+
+
+class Behaviour15SetupRepoWiringTests(ProvisionCase):
+    """Behaviour 15: ``setup_repo`` merges ``.vscode/extensions.json``.
+
+    End-to-end through the real entry path, mirroring the behaviour 6
+    (``.roo/mcp.json``) and behaviour 13 (``.roomodes``) wiring tests:
+    the target is provisioned once, the deployed file is modified by
+    hand, and a second ``setup_repo`` run must reconcile with the
+    rendered output via ``_merge_extensions`` and report the outcome
+    distinctly from a first-run injection. The merge helper's own
+    semantics are proven at the unit level in the behaviour 14 classes
+    above; this class proves the *wiring*.
+
+    RED state (written before the rewire): ``_write_extensions`` still
+    calls ``_write`` and overwrites the file wholesale on every run, so
+
+    * a hand-added recommendation is gone after the second run;
+    * a no-change second run reports ``Injected`` and rewrites the
+      bytes instead of reporting ``Skipped ... (already up to date)``;
+    * a merging second run reports ``Injected`` instead of ``Merged``;
+    * a malformed existing file is silently clobbered instead of
+      raising ``ProvisionError`` (behaviour 7 precedent).
+
+    The first-run golden and the dry-run locks pass in the red state
+    too: they lock what the rewire must not change (the first-run line
+    stays the ``_write`` injection line, so the existing tests keep
+    passing).
+    """
+
+    HAND_ADDED = "ms-python.python"
+
+    def _extensions_report_lines(self, messages):
+        """The report lines emitted by the extensions step for one run."""
+        marker = ".vscode/extensions.json"
+        return [line for line in messages if marker in line]
+
+    def _hand_add_recommendation(self, name):
+        """Hand-add a recommendation to the deployed extensions.json."""
+        path = self.target / ".vscode" / "extensions.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        recommendations = list(data.get("recommendations") or [])
+        if name not in recommendations:
+            recommendations.append(name)
+        data["recommendations"] = recommendations
+        path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+        return path
+
+    def _provision_with_fresh_messages(self, **kwargs):
+        """Provision with a fresh per-run message list, returned for asserts."""
+        return _provision_fresh(self.target, **kwargs)
+
+    def test_second_run_preserves_hand_added_recommendation(self):
+        # B15 core: provision, add a recommendation by hand, provision again.
+        self._provision_with_fresh_messages()
+        self._hand_add_recommendation(self.HAND_ADDED)
+        self._provision_with_fresh_messages()
+
+        recommendations = self.read_json(
+            ".vscode/extensions.json"
+        )["recommendations"]
+        self.assertIn(
+            self.HAND_ADDED,
+            recommendations,
+            "The hand-added recommendation must survive a second "
+            "setup_repo run (merge, not overwrite): "
+            "{}".format(recommendations),
+        )
+        self.assertIn(
+            ZOO_CODE,
+            recommendations,
+            "The Anvil recommendation must still be present after the "
+            "second run: {}".format(recommendations),
+        )
+        self.assertEqual(
+            len(recommendations),
+            len(set(recommendations)),
+            "Every recommendation must appear exactly once: "
+            "{}".format(recommendations),
+        )
+
+    def test_first_run_output_matches_render_extensions_settings(self):
+        # Lock: the first run must still produce exactly what the renderer
+        # produces (parse and compare), unchanged from today.
+        self._provision_with_fresh_messages()
+
+        on_disk = self.read_json(".vscode/extensions.json")
+        expected = json.loads(render.extensions_settings())
+        self.assertEqual(
+            on_disk,
+            expected,
+            "First-run output must be semantically identical to "
+            "render.extensions_settings()",
+        )
+
+    def test_second_run_without_changes_reports_skipped_and_leaves_bytes_unchanged(self):
+        # B15 edge: a no-change second run reports skipped/"already up to
+        # date" and leaves the file bytes unchanged (bytes, not mtime).
+        self._provision_with_fresh_messages()
+        path = self.target / ".vscode" / "extensions.json"
+        before = path.read_bytes()
+
+        second_messages = self._provision_with_fresh_messages()
+        second_lines = self._extensions_report_lines(second_messages)
+        self.assertTrue(
+            second_lines, "Second run must report on the extensions step"
+        )
+        self.assertTrue(
+            any("Skipped" in line or "up to date" in line for line in second_lines),
+            "A no-change second run must report the extensions step as "
+            "skipped (already up to date): {}".format(second_lines),
+        )
+        self.assertFalse(
+            any("Merged" in line or "Injected" in line for line in second_lines),
+            "A no-change second run must not report a merge or an "
+            "injection: {}".format(second_lines),
+        )
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "A no-change second run must not rewrite the file's bytes",
+        )
+
+    def test_second_run_report_says_merged_and_differs_from_first_run(self):
+        # B15 edge: the file holds only the hand-added recommendation, so
+        # the second run adds the Anvil recommendation and must report
+        # "Merged", distinct from the first-run line.
+        first_messages = self._provision_with_fresh_messages()
+        path = self.target / ".vscode" / "extensions.json"
+        path.write_text(
+            json.dumps({"recommendations": [self.HAND_ADDED]}, indent=4),
+            encoding="utf-8",
+        )
+        second_messages = self._provision_with_fresh_messages()
+
+        first_lines = self._extensions_report_lines(first_messages)
+        second_lines = self._extensions_report_lines(second_messages)
+        self.assertTrue(
+            first_lines, "First run must report on the extensions step"
+        )
+        self.assertTrue(
+            any("Injected" in line for line in first_lines),
+            "A first run on a fresh repo must keep reporting the "
+            "extensions step as injected: {}".format(first_lines),
+        )
+        self.assertTrue(
+            second_lines, "Second run must report on the extensions step"
+        )
+        self.assertTrue(
+            any("Merged" in line for line in second_lines),
+            "A second run that merges must say 'Merged', distinct from "
+            "the first-run line: {}".format(second_lines),
+        )
+        self.assertNotEqual(
+            first_lines,
+            second_lines,
+            "The extensions step report must differ between an injection "
+            "and a merge",
+        )
+        recommendations = self.read_json(
+            ".vscode/extensions.json"
+        )["recommendations"]
+        self.assertEqual(
+            recommendations,
+            [self.HAND_ADDED, ZOO_CODE],
+            "The hand-added entry must survive with its position "
+            "(existing first); the Anvil recommendation is appended "
+            "after: {}".format(recommendations),
+        )
+
+    def _seed_extensions_json(self, content):
+        """Hand-write the target's .vscode/extensions.json and return its path."""
+        path = self.target / ".vscode" / "extensions.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_invalid_json_existing_file_raises_provision_error_naming_path(self):
+        # B15 edge (behaviour 7 precedent at the wiring level): a
+        # malformed existing file must fail cleanly, not be clobbered.
+        path = self._seed_extensions_json("not json at all")
+        before = path.read_bytes()
+
+        with self.assertRaises(provision.ProvisionError) as ctx:
+            self._provision_with_fresh_messages()
+
+        self.assertIn(
+            str(path),
+            str(ctx.exception),
+            "ProvisionError must name the offending path: {}".format(
+                ctx.exception
+            ),
+        )
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "The original bytes on disk must be unchanged after the error",
+        )
+
+    def test_invalid_json_error_is_raised_under_dry_run(self):
+        # B15 edge: a dry run must surface the same fault and must not
+        # hide it (validation before the dry_run check, B7 precedent).
+        path = self._seed_extensions_json("not json at all")
+        before = path.read_bytes()
+
+        with self.assertRaises(provision.ProvisionError) as ctx:
+            self._provision_with_fresh_messages(dry_run=True)
+
+        self.assertIn(
+            str(path),
+            str(ctx.exception),
+            "A dry run must surface the same fault: {}".format(ctx.exception),
+        )
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "A dry run must not modify the file while reporting the fault",
+        )
+
+    def test_dry_run_on_fresh_target_writes_no_extensions_json(self):
+        self._provision_with_fresh_messages(dry_run=True)
+        self.assertFalse(
+            (self.target / ".vscode" / "extensions.json").exists(),
+            "A dry run on a fresh repo must not create "
+            ".vscode/extensions.json",
+        )
+
+    def test_dry_run_over_existing_file_changes_no_bytes(self):
+        self._provision_with_fresh_messages()
+        path = self._hand_add_recommendation(self.HAND_ADDED)
+        before = path.read_bytes()
+
+        self._provision_with_fresh_messages(dry_run=True)
+
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "A dry run must not modify an existing .vscode/extensions.json",
         )
 
 
