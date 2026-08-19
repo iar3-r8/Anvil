@@ -11,12 +11,11 @@ This module is the shared home for the template-instruction tests in Group E of
   * behaviour 19 — the tdd-manager template requires the validated plan;
   * behaviour 20 — the anvil repo's own tdd-manager rules carry it too.
 
-Only behaviour 16 is written in this red step. The file-loading helpers and the
-``XmlTemplateTestCase`` base below are deliberately shared so 17-20 slot in
-without restructuring: 17 reuses ``ArchitectTemplateTestCase``; 19 and 20 each
-need a subclass pointed at ``TDD_MANAGER_TEMPLATE`` and ``LOCAL_TDD_MANAGER``
-respectively; 18 provisions a target and reads the deployed copy from a temp
-dir.
+Behaviours 16 and 17 are written in this module. The file-loading helpers and
+the ``XmlTemplateTestCase`` base are deliberately shared so 18-20 slot in
+without restructuring: 19 and 20 each need a subclass pointed at
+``TDD_MANAGER_TEMPLATE`` and ``LOCAL_TDD_MANAGER`` respectively; 18 provisions
+a target and reads the deployed copy from a temp dir.
 
 Every assertion is on the parsed XML structure and on key phrases, never on raw
 bytes, so the green step has latitude in the prose. The template files are data
@@ -393,6 +392,278 @@ class ArchitectTemplateTestCase(XmlTemplateTestCase):
             matching,
             "no <quality_checklist> <item> mentions the existing-solution / "
             "package-registry check",
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Behaviour 17: the blocking user-validation gate
+# --------------------------------------------------------------------------- #
+
+def _mentions_user_validation(text):
+    """True when *text* (lower-cased) asks the architect to validate or confirm
+    something with the user."""
+    action = ("validat" in text) or ("confirm" in text)
+    return action and ("user" in text)
+
+
+def _mentions_planning_session(text):
+    """True when *text* places the gate during the planning session."""
+    return ("planning" in text) and ("session" in text or "during" in text)
+
+
+def _covers_newly_defined_behaviours(text):
+    """True when *text* is about validating newly defined behaviours. "new"
+    also matches "newly"."""
+    behaviour = ("behaviour" in text) or ("behavior" in text)
+    return behaviour and ("new" in text)
+
+
+def _covers_nonstandard_packages(text):
+    """True when *text* covers a proposed use of a non-standard package, using
+    the plan's phrasing: "non-standard" or "standard dependencies"."""
+    return ("package" in text) and (
+        ("non-standard" in text) or ("standard dependencies" in text)
+    )
+
+
+def _states_it_is_blocking(text):
+    """True when *text* states the gate is blocking — work must not proceed
+    without the user's confirmation."""
+    return (
+        ("blocking" in text)
+        or ("must not proceed" in text)
+        or ("do not proceed" in text)
+        or ("without confirmation" in text)
+    )
+
+
+def _before_plan_written(text):
+    """True when *text* places the gate before the plan is written."""
+    ordering = ("before" in text) or ("prior to" in text)
+    target = ("plan" in text) and ("writ" in text)
+    return ordering and target
+
+
+def _validation_gate_steps(root):
+    """Return steps whose text asks for validation/confirmation with the
+    user."""
+    return [
+        step
+        for step in _all_steps(root)
+        if _mentions_user_validation(_element_text(step))
+    ]
+
+
+def _is_gate_practice(text):
+    """True when a <practice>'s text is about validating with the user before
+    the plan is written."""
+    return _mentions_user_validation(text) and (
+        ("behaviour" in text)
+        or ("behavior" in text)
+        or ("package" in text)
+        or ("plan" in text)
+    )
+
+
+def _is_proceeding_without_confirmation(text):
+    """True when a <mistake>'s text is proceeding without the user's
+    confirmation / validation."""
+    return (
+        ("without" in text)
+        and (("confirm" in text) or ("validat" in text))
+        and (("proceed" in text) or ("continue" in text) or ("writ" in text))
+    )
+
+
+def _is_gate_checklist_item(text):
+    """True when a quality-checklist item mentions validating with the user."""
+    return _mentions_user_validation(text) and (
+        ("behaviour" in text)
+        or ("behavior" in text)
+        or ("package" in text)
+    )
+
+
+class B17ValidationGateTests(ArchitectTemplateTestCase):
+    """Behaviour 17: the architect template gains the blocking user-validation
+    gate.
+
+    Subclassing ``ArchitectTemplateTestCase`` re-runs its structure guards
+    (well-formed XML with root ``instructions``, contiguous step numbering, the
+    original steps still present) and its behaviour-16 assertions, so the
+    green-step edit that adds the gate is verified again against the edges
+    shared with behaviour 16.
+    """
+
+    def _gate_steps_or_fail(self, missing_hint):
+        """Return the user-validation gate steps, failing with a diagnostic
+        listing every step title when none exists."""
+        steps = _validation_gate_steps(self.root)
+        self.assertTrue(
+            steps,
+            "no <step> in <workflow> asks for validation/confirmation with the "
+            "user; %s. Step titles: %r"
+            % (missing_hint, [_step_title(s) for s in _all_steps(self.root)]),
+        )
+        return steps
+
+    # -- the gate step: each requirement of plan §3, item 17 -- #
+
+    def test_validation_gate_step_exists(self):
+        # A <step> requiring the architect to validate with the user must exist.
+        self._gate_steps_or_fail("expected the blocking user-validation gate step")
+
+    def test_single_step_satisfies_every_gate_requirement(self):
+        # One step must state the whole gate: user validation, during the
+        # planning session, covering newly defined behaviours AND non-standard
+        # packages, blocking, before the plan is written.
+        def covers_all(step):
+            text = _element_text(step)
+            return (
+                _mentions_user_validation(text)
+                and _mentions_planning_session(text)
+                and _covers_newly_defined_behaviours(text)
+                and _covers_nonstandard_packages(text)
+                and _states_it_is_blocking(text)
+                and _before_plan_written(text)
+            )
+
+        matching = [s for s in _validation_gate_steps(self.root) if covers_all(s)]
+        self.assertTrue(
+            matching,
+            "no single <step> states the whole gate (user validation + planning "
+            "session + newly defined behaviours + non-standard packages + "
+            "blocking + before the plan is written). Candidate gate step titles: "
+            "%r; all step titles: %r"
+            % (
+                [_step_title(s) for s in _validation_gate_steps(self.root)],
+                [_step_title(s) for s in _all_steps(self.root)],
+            ),
+        )
+
+    def test_gate_step_happens_during_planning_session(self):
+        # (ii) The gate happens during the planning session.
+        steps = self._gate_steps_or_fail("cannot check planning-session placement")
+        matching = [s for s in steps if _mentions_planning_session(_element_text(s))]
+        self.assertTrue(
+            matching,
+            "no user-validation step places the gate during the planning session "
+            "(looked for 'planning' together with 'session' or 'during')",
+        )
+
+    def test_gate_step_covers_newly_defined_behaviours(self):
+        # (a) Every newly defined behaviour must be validated with the user.
+        steps = self._gate_steps_or_fail("cannot check behaviour coverage")
+        matching = [
+            s for s in steps if _covers_newly_defined_behaviours(_element_text(s))
+        ]
+        self.assertTrue(
+            matching,
+            "no user-validation step covers newly defined behaviours (looked for "
+            "'behaviour'/'behavior' together with 'new'/'newly')",
+        )
+
+    def test_gate_step_covers_nonstandard_packages(self):
+        # (b) Any proposed use of a non-standard package must be validated, with
+        # "non-standard" phrased per the plan: "non-standard" or "standard
+        # dependencies".
+        steps = self._gate_steps_or_fail("cannot check non-standard package coverage")
+        matching = [
+            s for s in steps if _covers_nonstandard_packages(_element_text(s))
+        ]
+        self.assertTrue(
+            matching,
+            "no user-validation step covers non-standard packages (looked for "
+            "'package' together with 'non-standard' or 'standard dependencies')",
+        )
+
+    def test_gate_step_states_it_is_blocking(self):
+        # The text states the gate is blocking: no proceeding without the
+        # user's confirmation.
+        steps = self._gate_steps_or_fail("cannot check blocking wording")
+        matching = [s for s in steps if _states_it_is_blocking(_element_text(s))]
+        self.assertTrue(
+            matching,
+            "no user-validation step states it is blocking (looked for "
+            "'blocking', 'must not proceed', 'do not proceed' or 'without "
+            "confirmation')",
+        )
+
+    def test_gate_step_comes_before_the_plan_is_written(self):
+        # (v) The validation happens before the plan is written.
+        steps = self._gate_steps_or_fail("cannot check before-writing ordering")
+        matching = [s for s in steps if _before_plan_written(_element_text(s))]
+        self.assertTrue(
+            matching,
+            "no user-validation step places the gate before the plan is written "
+            "(looked for 'before'/'prior to' + 'plan' + 'write'/'written')",
+        )
+
+    # -- the matching best-practice / pitfall / checklist -- #
+
+    def test_best_practices_has_high_priority_user_validation_practice(self):
+        # A <practice priority="high"> whose text is about validating with the
+        # user before the plan is written.
+        practices = self.root.findall(".//best_practices/practice")
+        self.assertTrue(practices, "<best_practices> has no <practice> elements")
+        matching = [
+            p
+            for p in practices
+            if p.get("priority") == "high" and _is_gate_practice(_element_text(p))
+        ]
+        self.assertTrue(
+            matching,
+            "no <practice priority='high'> in <best_practices> is about validating "
+            "new behaviours / non-standard packages with the user; practice "
+            "priorities: %r" % [p.get("priority") for p in practices],
+        )
+
+    def test_common_pitfalls_has_proceeding_without_confirmation_pitfall(self):
+        # A <pitfall> whose <mistake> is proceeding without the user's
+        # confirmation.
+        pitfalls = self.root.findall(".//common_pitfalls/pitfall")
+        self.assertTrue(pitfalls, "<common_pitfalls> has no <pitfall> elements")
+
+        def _mistake_text(pitfall):
+            mistake = pitfall.find("mistake")
+            return _element_text(mistake) if mistake is not None else ""
+
+        matching = [
+            p
+            for p in pitfalls
+            if _is_proceeding_without_confirmation(_mistake_text(p))
+        ]
+        self.assertTrue(
+            matching,
+            "no <pitfall> has a <mistake> about proceeding without the user's "
+            "confirmation / validation (looked for 'without' + 'confirm'/'validat' "
+            "+ 'proceed'/'continue'/'write')",
+        )
+
+    def test_quality_checklist_planning_category_has_user_validation_item(self):
+        # A <quality_checklist> <item> under the planning category that mentions
+        # validating with the user.
+        categories = self.root.findall(".//quality_checklist/category")
+        self.assertTrue(
+            categories, "<quality_checklist> has no <category> elements"
+        )
+        planning_cats = [
+            c for c in categories if "plan" in (c.get("name") or "").lower()
+        ]
+        self.assertTrue(
+            planning_cats,
+            "<quality_checklist> has no category whose name mentions planning; "
+            "category names: %r" % [c.get("name") for c in categories],
+        )
+        matching = []
+        for category in planning_cats:
+            for item in category.findall("item"):
+                if _is_gate_checklist_item(_element_text(item)):
+                    matching.append(item)
+        self.assertTrue(
+            matching,
+            "no <item> in the planning category (names: %r) mentions validating "
+            "with the user" % [c.get("name") for c in planning_cats],
         )
 
 
