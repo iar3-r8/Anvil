@@ -33,6 +33,11 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+# Reused for behaviour 18: a throwaway target repository per test, provisioned
+# through the real ``setup_repo`` entry path. Imported after the sys.path fix
+# above, matching the convention in tests/test_provision.py.
+from tests.test_provision import ProvisionCase  # noqa: E402
+
 # The rules XML files under test. B16 targets the architect template; the other
 # two are loaded for the later B19/B20 cycles.
 ARCHITECT_TEMPLATE = (
@@ -665,6 +670,270 @@ class B17ValidationGateTests(ArchitectTemplateTestCase):
             "no <item> in the planning category (names: %r) mentions validating "
             "with the user" % [c.get("name") for c in planning_cats],
         )
+
+
+# --------------------------------------------------------------------------- #
+# Behaviour 18: the architect instructions reach the target repo
+# --------------------------------------------------------------------------- #
+
+# The path of the deployed architect instructions, relative to the target repo.
+ARCHITECT_TEMPLATE_DEPLOYED = ".roo/rules-architect/instructions.xml"
+
+
+class B18ArchitectDeploymentTests(ProvisionCase):
+    """Behaviour 18 (guard): the existing ``rules-*`` deploy loop carries the
+    architect instructions into a provisioned target.
+
+    The test exists to prove the loop needs no code change and to protect the
+    behaviour 16/17 content from being lost in deployment. It is expected to
+    PASS on the red step: it is coverage-only (precedent: PR #12, "Coverage
+    only: rules-architect deployment").
+    """
+
+    def test_architect_instructions_are_deployed(self):
+        # The deployed file exists and parses as XML.
+        self.provision()
+        deployed = self.target / ARCHITECT_TEMPLATE_DEPLOYED
+        self.assertTrue(
+            deployed.is_file(),
+            ".roo/rules-architect/instructions.xml missing from the provisioned "
+            "target",
+        )
+        root = _load_xml(deployed)
+        self.assertEqual(
+            root.tag,
+            "instructions",
+            "deployed architect instructions do not parse to an <instructions> "
+            "root",
+        )
+
+    def test_deployed_architect_instructions_are_byte_identical_to_template(self):
+        # Byte-identity with the template is the strong form of "the existing
+        # loop copied the file": any transformation in flight would be caught.
+        self.provision()
+        deployed = self.target / ARCHITECT_TEMPLATE_DEPLOYED
+        template = ARCHITECT_TEMPLATE
+        self.assertTrue(
+            deployed.is_file(),
+            ".roo/rules-architect/instructions.xml missing from the provisioned "
+            "target",
+        )
+        self.assertEqual(
+            deployed.read_bytes(),
+            template.read_bytes(),
+            "deployed .roo/rules-architect/instructions.xml is not "
+            "byte-identical to the template",
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Behaviours 19 and 20: the tdd-manager files require the validated plan
+# --------------------------------------------------------------------------- #
+#
+# The shared requirement (plan §3, item 19): the architect must validate
+# (a) newly defined behaviours and (b) any non-standard package with the user
+# BEFORE writing the plan, and the confirmation must be carried in the
+# architect's required report. The requirement is asserted on both the
+# template (B19) and the anvil repo's local copy (B20), so the local copy
+# cannot drift on this point. Whole-file equality between the two files is
+# deliberately NOT asserted: the local copy may carry repo-specific text.
+
+def _validation_requirement_text(text):
+    """True when *text* (lower-cased) states the shared requirement: validate
+    with the user, new behaviours AND non-standard packages, before the plan
+    is written.
+
+    Reuses the behaviour-17 predicates so the two cycles anchor on the same
+    phrasing latitude.
+    """
+    return (
+        _mentions_user_validation(text)
+        and _covers_newly_defined_behaviours(text)
+        and _covers_nonstandard_packages(text)
+        and _before_plan_written(text)
+    )
+
+
+def _report_carries_confirmation(text):
+    """True when a <required_report> <item> says the user confirmation must be
+    reported."""
+    return (
+        ("report" in text)
+        and (("confirm" in text) or ("validat" in text))
+        and (("user" in text) or ("confirmation" in text))
+    )
+
+
+def _architect_payload_items(root):
+    """Return the <item> elements of the <to_architect> <payload>."""
+    return root.findall(".//delegation_contract/to_architect/payload/item")
+
+
+def _architect_required_report_items(root):
+    """Return the <item> elements of the <to_architect> <required_report>."""
+    return root.findall(".//delegation_contract/to_architect/required_report/item")
+
+
+def _step3(root):
+    """Return the workflow step with number='3', or None."""
+    for step in _all_steps(root):
+        if step.get("number") == "3":
+            return step
+    return None
+
+
+class TddManagerRequirementBase(XmlTemplateTestCase):
+    """Shared assertions for the validated-plan requirement, pointed at either
+    the template (B19) or the anvil repo's local copy (B20).
+
+    Both files carry the same delegation contract and workflow, so the shared
+    requirement is asserted structurally on both.
+
+    The class itself is collected by ``unittest`` because its name matches the
+    default ``Test`` suffix; ``setUp`` skips it, so only the two concrete
+    subclasses run the assertions.
+    """
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    # -- structure guards (must pass on both files before and after green) -- #
+
+    def test_document_parses_with_instructions_root(self):
+        # Well-formed XML is proven by having parsed in setUp; the root tag is
+        # asserted on the parsed element, never by substring.
+        self.assertEqual(self.root.tag, "instructions")
+
+    def test_delegation_contract_has_to_architect_payload_and_required_report(self):
+        payload = _architect_payload_items(self.root)
+        report = _architect_required_report_items(self.root)
+        self.assertTrue(
+            payload,
+            "<delegation_contract> has no <to_architect><payload><item> elements",
+        )
+        self.assertTrue(
+            report,
+            "<delegation_contract> has no "
+            "<to_architect><required_report><item> elements",
+        )
+
+    def test_workflow_step_3_is_delegate_planning_to_architect(self):
+        step = _step3(self.root)
+        self.assertIsNotNone(
+            step, "workflow has no step with number='3'"
+        )
+        self.assertEqual(
+            _step_title(step).lower(),
+            "delegate planning to architect",
+            "step 3 title is %r, expected 'Delegate planning to architect'"
+            % _step_title(step),
+        )
+
+    # -- the requirement itself: each of the three required places -- #
+
+    def test_to_architect_payload_has_validation_requirement_item(self):
+        # <to_architect><payload> gains an <item> requiring the architect to
+        # validate new behaviours and any non-standard package with the user
+        # before writing the plan.
+        payload = _architect_payload_items(self.root)
+        matching = [
+            i for i in payload if _validation_requirement_text(_element_text(i))
+        ]
+        self.assertTrue(
+            matching,
+            "no <to_architect><payload><item> requires the architect to "
+            "validate new behaviours and non-standard packages with the user "
+            "before the plan is written. Payload item texts: %r"
+            % [_element_text(i) for i in payload],
+        )
+
+    def test_required_report_has_confirmation_item(self):
+        # <required_report> gains an <item> requiring the confirmation to be
+        # reported.
+        report = _architect_required_report_items(self.root)
+        matching = [
+            i for i in report if _report_carries_confirmation(_element_text(i))
+        ]
+        self.assertTrue(
+            matching,
+            "no <to_architect><required_report><item> requires the user "
+            "confirmation to be reported. Report item texts: %r"
+            % [_element_text(i) for i in report],
+        )
+
+    def test_workflow_step_3_states_validation_requirement(self):
+        # Workflow step 3 ("Delegate planning to architect") states the same
+        # requirement.
+        step = _step3(self.root)
+        self.assertIsNotNone(step, "workflow has no step with number='3'")
+        text = _element_text(step)
+        self.assertTrue(
+            _mentions_user_validation(text)
+            and _covers_newly_defined_behaviours(text)
+            and _covers_nonstandard_packages(text)
+            and _before_plan_written(text),
+            "workflow step 3 does not state the validation requirement (user "
+            "validation + new behaviours + non-standard packages + before the "
+            "plan is written). Step text: %r" % text,
+        )
+
+    # -- edge: the existing delegation contract items are untouched -- #
+
+    def test_existing_to_architect_payload_items_still_present(self):
+        # The pre-existing payload items survive; the new item is additive.
+        payload = _architect_payload_items(self.root)
+        payload_text = " ".join(_element_text(i) for i in payload)
+        for marker in (
+            "intake source verbatim",
+            "answers to every question already resolved",
+            "plans/{task-slug}.md",
+            "independently testable",
+        ):
+            self.assertIn(
+                marker,
+                payload_text,
+                "an existing <to_architect><payload> item is missing or was "
+                "altered (expected marker %r). Payload text: %r"
+                % (marker, payload_text),
+            )
+
+    def test_existing_required_report_items_still_present(self):
+        # The pre-existing required-report items survive.
+        report = _architect_required_report_items(self.root)
+        report_text = " ".join(_element_text(i) for i in report)
+        for marker in (
+            "the plan path",
+            "numbered behaviour list",
+            "assumption needing confirmation",
+            "proposed branch name",
+        ):
+            self.assertIn(
+                marker,
+                report_text,
+                "an existing <to_architect><required_report> item is missing or "
+                "was altered (expected marker %r). Report text: %r"
+                % (marker, report_text),
+            )
+
+
+class B19TddManagerTemplateTests(TddManagerRequirementBase):
+    """Behaviour 19: the tdd-manager TEMPLATE requires the validated plan."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class B20LocalTddManagerTests(TddManagerRequirementBase):
+    """Behaviour 20: the anvil repo's OWN tdd-manager rules carry the same
+    requirement.
+
+    The same assertions run against the local copy, so it cannot drift from
+    the template on this point. Only the shared requirement is locked, never
+    whole-file equality.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
 
 
 if __name__ == "__main__":
