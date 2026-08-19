@@ -14,6 +14,11 @@ The Python implementation is correct when it reproduces these outputs.
 | `golden_zoo_settings_local.json` | Same template rendered with the frontier model **declined**, so architect falls back to the local llama-swap profile. |
 | `golden_mcp.json` | `templates/mcp.json.template` rendered with a GitHub token supplied. |
 
+> `golden_mcp.json` was deliberately changed on 2026-08-19 to add the
+> `package-registry` server, because Anvil now owns that MCP entry
+> (`plans/package-registry-context.md`, behaviour 2). It was not regenerated
+> to silence a failure.
+
 ## Capture parameters
 
 Held constant so the fixtures are reproducible:
