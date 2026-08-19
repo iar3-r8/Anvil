@@ -521,13 +521,50 @@ def _write_zoo_settings(
 def _write_mcp_settings(
     target: Path, repo_plan: RepoPlan, dry_run: bool, report
 ) -> None:
-    content = render.mcp_settings(
+    mcp_path = target / ".roo" / "mcp.json"
+    rendered_text = render.mcp_settings(
         workspace_folder=str(target),
         github_token=repo_plan.github_token,
         oxylabs_username=repo_plan.oxylabs_username,
         oxylabs_password=repo_plan.oxylabs_password,
     )
-    _write(target / ".roo" / "mcp.json", content, dry_run, report)
+
+    file_existed = mcp_path.exists()
+    existing_text = ""
+    if file_existed:
+        try:
+            existing_text = mcp_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise ProvisionError(
+                "Existing MCP settings at {} could not be read as UTF-8."
+                .format(mcp_path)
+            )
+
+    # Validation happens before the dry_run check, per the
+    # _merge_gitignore_step precedent: a dry run must surface the same
+    # fault, so a malformed existing file is never silently clobbered.
+    merged_text = _merge_mcp_servers(
+        existing_text, rendered_text, source=str(mcp_path)
+    )
+
+    if not file_existed:
+        # First run: the file does not exist yet, so the rendered text is
+        # written wholesale rather than merged.
+        if not dry_run:
+            render.write_text(mcp_path, rendered_text)
+        report("   ↳ ✅ Injected: {}".format(mcp_path))
+        return
+
+    if merged_text == existing_text:
+        report("   ↳ ⏭️  Skipped .roo/mcp.json (already up to date)")
+        return
+
+    if dry_run:
+        report("   ↳ ⏭️  Dry-run: would merge {}".format(mcp_path))
+        return
+
+    render.write_text(mcp_path, merged_text)
+    report("   ↳ ✅ Merged: {}".format(mcp_path))
 
 
 def _write_extensions(target: Path, dry_run: bool, report) -> None:
