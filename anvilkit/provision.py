@@ -13,6 +13,7 @@ Constraints:
 * secrets are never echoed, only the paths they were written to.
 """
 
+import json
 import shutil
 from pathlib import Path
 from typing import Callable, Optional, Union
@@ -276,6 +277,138 @@ def _merge_gitignore(existing_text: str, template_text: str) -> Optional[str]:
     body += "\n" + header + "\n"
     body += "\n".join(missing) + "\n"
     return body
+
+
+def _merge_mcp_servers(existing_text: str, rendered_text: str, source: str = ".roo/mcp.json") -> str:
+    """Merge the freshly rendered ``.roo/mcp.json`` with the one on disk.
+
+    A pure function with no filesystem access, following the
+    ``_merge_gitignore`` shape. Ownership is decided by name (plan §2.4,
+    A1 option 1): a server named in the rendered text is Anvil-owned and is
+    refreshed wholesale, so a rotated token or a server added by a newer
+    Anvil version arrives on every run; a server present only in the
+    existing file is user-owned and survives untouched, in position.
+    Nothing is ever removed, and every top-level key other than
+    ``mcpServers`` survives, so a hand-tuned file is re-serialised
+    (plan §2.2, A5) but never loses data.
+
+    The one exception is credentials (A2): refreshing an Anvil-owned
+    server whose ``env`` mapping carries an empty value for a key the
+    user has already filled in must not silently disable the server —
+    an empty incoming value therefore never blanks a non-empty stored
+    one, while any non-empty incoming value always wins.
+
+    Unlike ``_merge_gitignore`` the helper always returns the merged
+    text; detecting "unchanged" is the provisioning step's job, which
+    compares before writing.
+
+    Raises:
+        ProvisionError: either text is not valid JSON, or the existing
+            file has a structure the merge cannot reconcile (top level
+            not a mapping, ``mcpServers`` present but not a mapping).
+            The offending file is named via ``source`` so the pure
+            function never needs to touch a real path.
+    """
+    if not existing_text.strip():
+        # First run: the provisioning step writes the rendered text
+        # wholesale, so it comes back verbatim rather than
+        # re-serialised.
+        return rendered_text
+
+    try:
+        existing = json.loads(existing_text)
+    except json.JSONDecodeError as exc:
+        raise ProvisionError(
+            "Existing {} is not valid JSON: {}".format(source, exc)
+        ) from exc
+
+    if not isinstance(existing, dict):
+        raise ProvisionError(
+            "Existing {} must be a JSON object at the top level, got {}."
+            .format(source, type(existing).__name__)
+        )
+
+    try:
+        rendered = json.loads(rendered_text)
+    except json.JSONDecodeError as exc:
+        # Invalid rendered output is an Anvil bug, not user fault, but it
+        # is ProvisionError anyway: one exception type per module keeps
+        # the provisioning step's single ``except`` holding.
+        raise ProvisionError(
+            "Rendered MCP settings for {} are not valid JSON: {}".format(
+                source, exc
+            )
+        ) from exc
+
+    if not isinstance(rendered, dict):
+        raise ProvisionError(
+            "Rendered MCP settings must be a JSON object at the top "
+            "level, got {}.".format(type(rendered).__name__)
+        )
+
+    existing_servers = existing.get("mcpServers")
+    if existing_servers is None:
+        # An existing file with no mcpServers key gets it created; every
+        # server then lands as an append, which is exactly what the loop
+        # below does with an empty start.
+        existing_servers = {}
+
+    if not isinstance(existing_servers, dict):
+        raise ProvisionError(
+            "Existing {} has an 'mcpServers' entry that is not a JSON "
+            "object.".format(source)
+        )
+
+    rendered_servers = rendered.get("mcpServers")
+    if rendered_servers is None:
+        rendered_servers = {}
+
+    if not isinstance(rendered_servers, dict):
+        raise ProvisionError(
+            "Rendered MCP settings have an 'mcpServers' entry that is "
+            "not a JSON object; Anvil's template has drifted."
+        )
+
+    merged_servers = {}
+    for name, existing_entry in existing_servers.items():
+        rendered_entry = rendered_servers.get(name)
+        if rendered_entry is None:
+            # User-owned: kept untouched, in its existing position.
+            merged_servers[name] = existing_entry
+            continue
+        if not isinstance(rendered_entry, dict):
+            raise ProvisionError(
+                "Rendered MCP server '{}' is not a JSON object; Anvil's "
+                "template has drifted.".format(name)
+            )
+        if not isinstance(existing_entry, dict):
+            # Cannot be refreshed field by field, so it is replaced
+            # wholesale; the A2 exception has nothing to apply to.
+            merged_servers[name] = rendered_entry
+            continue
+        # Anvil-owned: refreshed wholesale, with the A2 exception for
+        # stored credentials that would be blanked.
+        merged_entry = dict(rendered_entry)
+        incoming_env = rendered_entry.get("env")
+        stored_env = existing_entry.get("env")
+        if isinstance(incoming_env, dict) and isinstance(stored_env, dict):
+            merged_env = dict(incoming_env)
+            for key, incoming_value in incoming_env.items():
+                stored_value = stored_env.get(key)
+                if incoming_value == "" and stored_value not in ("", None):
+                    merged_env[key] = stored_value
+            merged_entry["env"] = merged_env
+        merged_servers[name] = merged_entry
+
+    for name, rendered_entry in rendered_servers.items():
+        if name not in merged_servers:
+            # A server this Anvil version owns but the repo predates:
+            # appended after every existing entry, in rendered order.
+            merged_servers[name] = rendered_entry
+
+    merged = dict(existing)
+    merged["mcpServers"] = merged_servers
+    return json.dumps(merged, indent=4)
 
 
 def _gitignore_header() -> str:
