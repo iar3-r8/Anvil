@@ -413,6 +413,103 @@ def _merge_mcp_servers(existing_text: str, rendered_text: str, source: str = ".r
     return json.dumps(merged, indent=4)
 
 
+def _merge_extensions(
+    existing_text: str, rendered_text: str, source: str = ".vscode/extensions.json"
+) -> str:
+    """Merge the freshly rendered ``.vscode/extensions.json`` with the one on disk.
+
+    A pure function with no filesystem access, following the
+    ``_merge_mcp_servers`` shape and its always-returns-merged-text
+    convention: detecting "unchanged" belongs to the provisioning step,
+    which compares before writing.
+
+    ``recommendations`` is the only key Anvil claims: existing entries keep
+    their order and value, and a rendered recommendation missing from the
+    existing list is appended after them. Everything else in the file
+    (``unwantedRecommendations`` and any future VS Code key) survives
+    in place, so a hand-tuned file is re-serialised but never loses data
+    and never reorders the developer's own keys.
+
+    Raises:
+        ProvisionError: either text is not valid JSON, the existing file
+            has a structure the merge cannot reconcile (top level not a
+            mapping, or ``recommendations`` present but not a list of
+            strings), or the rendered output has drifted (its
+            ``recommendations`` is not a list). The offending file is
+            named via ``source`` so the pure function never needs to
+            touch a real path.
+    """
+    if not existing_text.strip():
+        # First run: the provisioning step writes the rendered text
+        # wholesale, so it comes back verbatim rather than
+        # re-serialised.
+        return rendered_text
+
+    try:
+        existing = json.loads(existing_text)
+    except json.JSONDecodeError as exc:
+        raise ProvisionError(
+            "Existing {} is not valid JSON: {}".format(source, exc)
+        ) from exc
+
+    if not isinstance(existing, dict):
+        raise ProvisionError(
+            "Existing {} must be a JSON object at the top level, got {}."
+            .format(source, type(existing).__name__)
+        )
+
+    try:
+        rendered = json.loads(rendered_text)
+    except json.JSONDecodeError as exc:
+        # Invalid rendered output is an Anvil bug, not user fault, but it
+        # is ProvisionError anyway: one exception type per module keeps
+        # the provisioning step's single ``except`` holding.
+        raise ProvisionError(
+            "Rendered extension settings for {} are not valid JSON: {}".format(
+                source, exc
+            )
+        ) from exc
+
+    if not isinstance(rendered, dict):
+        raise ProvisionError(
+            "Rendered extension settings must be a JSON object at the "
+            "top level, got {}.".format(type(rendered).__name__)
+        )
+
+    existing_recs = existing.get("recommendations")
+    if existing_recs is not None:
+        if not isinstance(existing_recs, list) or not all(
+            isinstance(entry, str) for entry in existing_recs
+        ):
+            raise ProvisionError(
+                "Existing {} has a 'recommendations' entry that is not "
+                "a list of strings.".format(source)
+            )
+    else:
+        existing_recs = []
+
+    rendered_recs = rendered.get("recommendations")
+    if rendered_recs is None:
+        rendered_recs = []
+    if not isinstance(rendered_recs, list):
+        raise ProvisionError(
+            "Rendered extension settings have a 'recommendations' entry "
+            "that is not a list; Anvil's template has drifted."
+        )
+
+    merged_recs = list(existing_recs)
+    for entry in rendered_recs:
+        if entry not in merged_recs:
+            # A recommendation this Anvil version owns but the repo
+            # predates: appended after every existing entry, in rendered
+            # order.
+            merged_recs.append(entry)
+
+    merged = dict(existing)
+    merged["recommendations"] = merged_recs
+    return json.dumps(merged, indent=4)
+
+
 _ROOMODES_KEY_RE = re.compile(r"^( *)customModes:\s*$")
 _ROOMODES_ITEM_RE = re.compile(r"^( *)- ")
 _ROOMODES_SLUG_RE = re.compile(r"^( *)- slug:\s*(\S+)")
