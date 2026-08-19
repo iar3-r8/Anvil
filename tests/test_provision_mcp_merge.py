@@ -1,7 +1,11 @@
-"""RED tests for the ``_merge_mcp_servers()`` pure helper in ``anvilkit/provision.py``.
+"""RED tests for the ``_merge_mcp_servers()`` merge in ``anvilkit/provision.py``.
 
-Written before the implementation (TDD) for behaviours 3, 4, 5 and 8 of
-``plans/package-registry-context.md`` (section 3, Group B).
+Written before the implementation (TDD) for behaviours 3, 4, 5, 6, 7 and 8
+of ``plans/package-registry-context.md`` (section 3, Group B).
+
+Behaviours 6 and 7 exercise the real ``setup_repo`` entry path end-to-end
+inside ``tempfile.TemporaryDirectory``, reusing the ``ProvisionCase`` /
+``plan()`` harness from ``tests/test_provision.py``.
 
 The helper does not exist yet. The module imports it once at top level
 inside a guarded ``try/except ImportError`` and binds ``None`` in the red
@@ -32,6 +36,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import provision, render  # noqa: E402
+from tests.test_provision import ProvisionCase, plan  # noqa: E402
 
 try:
     from anvilkit.provision import _merge_mcp_servers  # noqa: E402
@@ -446,6 +451,239 @@ class RenderedTextErrorSemanticsTests(unittest.TestCase):
             str(ctx.exception),
             "ProvisionError must name the source: {}".format(ctx.exception),
         )
+
+
+# ---------------------------------------------------------------------------
+# Shared end-to-end helper for behaviours 6 and 7
+# ---------------------------------------------------------------------------
+
+
+def _provision_fresh(target, **kwargs):
+    """Run ``setup_repo`` with a fresh per-run message list, returned.
+
+    A fresh list per run lets a test compare the report lines of a first
+    run against those of a second run without cross-contamination.
+    """
+    messages = []
+    params = dict(target=target, repo_plan=plan(), echo=messages.append)
+    params.update(kwargs)
+    provision.setup_repo(**params)
+    return messages
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 6 — setup_repo wires the merge in, and reports what it did
+# ---------------------------------------------------------------------------
+
+
+class Behaviour6SetupRepoWiringTests(ProvisionCase):
+    """Behaviour 6: ``setup_repo`` merges ``.roo/mcp.json`` instead of clobbering it.
+
+    End-to-end through the real entry path: the target is provisioned twice,
+    the second time with a different GitHub token, and a user-added server is
+    written into ``.roo/mcp.json`` by hand in between. The helper's own
+    semantics are proven at the unit level in classes 4 and 5; this class
+    proves the *wiring* — that the step actually calls the merge and reports
+    it distinctly from a first-run injection.
+    """
+
+    USER_SERVER = {
+        "command": "node",
+        "args": ["/home/user/scripts/my-server.js"],
+        "disabled": False,
+        "env": {"MY_SERVER_KEY": "my-secret"},
+    }
+
+    def _mcp_report_lines(self, messages):
+        """The report lines emitted by the mcp.json write step for one run."""
+        marker = ".roo/mcp.json"
+        return [line for line in messages if marker in line]
+
+    def _provision_with_fresh_messages(self, **kwargs):
+        """Provision with a fresh per-run message list, returned for asserts."""
+        return _provision_fresh(self.target, **kwargs)
+
+    def _inject_user_server(self):
+        """Hand-write a user-added server into the provisioned mcp.json."""
+        path = self.target / ".roo" / "mcp.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["mcpServers"]["my-server"] = self.USER_SERVER
+        path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+    def test_second_run_preserves_user_server_and_refreshes_token(self):
+        self._provision_with_fresh_messages(repo_plan=plan(github_token="ghp_first"))
+        self._inject_user_server()
+        self._provision_with_fresh_messages(repo_plan=plan(github_token="ghp_second"))
+
+        config = self.read_json(".roo/mcp.json")
+        servers = config["mcpServers"]
+        self.assertIn(
+            "my-server",
+            servers,
+            "The user-added server must survive the second setup_repo run",
+        )
+        self.assertEqual(
+            servers["my-server"],
+            self.USER_SERVER,
+            "The user-added server must keep its original value",
+        )
+        self.assertEqual(
+            servers["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"],
+            "ghp_second",
+            "The Anvil-owned github server must carry the NEW token after refresh",
+        )
+
+    def test_first_run_report_says_injected_or_created(self):
+        messages = self._provision_with_fresh_messages(repo_plan=plan(github_token="ghp_first"))
+        first_lines = self._mcp_report_lines(messages)
+        self.assertTrue(first_lines, "First run must report on the mcp.json step")
+        self.assertTrue(
+            any(
+                "Injected" in line or "Created" in line
+                for line in first_lines
+            ),
+            "A first run on a fresh repo must report the mcp step as "
+            "injected or created: {}".format(first_lines),
+        )
+
+    def test_second_run_report_distinguishes_merge_from_injection(self):
+        first_messages = self._provision_with_fresh_messages(
+            repo_plan=plan(github_token="ghp_first")
+        )
+        self._inject_user_server()
+        second_messages = self._provision_with_fresh_messages(
+            repo_plan=plan(github_token="ghp_second")
+        )
+
+        first_lines = self._mcp_report_lines(first_messages)
+        second_lines = self._mcp_report_lines(second_messages)
+        self.assertTrue(second_lines, "Second run must report on the mcp.json step")
+        self.assertTrue(
+            any("Merged" in line for line in second_lines),
+            "A second run that merges must say so distinctly, not merely "
+            "'Injected': {}".format(second_lines),
+        )
+        self.assertNotEqual(
+            first_lines,
+            second_lines,
+            "The mcp step report must differ between a create and a merge",
+        )
+
+    def test_first_run_output_matches_render_mcp_settings(self):
+        self._provision_with_fresh_messages(repo_plan=plan(github_token="ghp_first"))
+        on_disk = self.read_json(".roo/mcp.json")
+        expected = json.loads(
+            render.mcp_settings(
+                workspace_folder=str(self.target),
+                github_token="ghp_first",
+            )
+        )
+        self.assertEqual(
+            on_disk,
+            expected,
+            "First-run output must be semantically identical to "
+            "render.mcp_settings()",
+        )
+
+    def test_dry_run_on_fresh_target_writes_no_mcp_json(self):
+        self._provision_with_fresh_messages(dry_run=True)
+        self.assertFalse(
+            (self.target / ".roo" / "mcp.json").exists(),
+            "A dry run on a fresh repo must not create .roo/mcp.json",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 7 — a malformed existing .roo/mcp.json fails cleanly
+# ---------------------------------------------------------------------------
+
+
+class Behaviour7MalformedExistingMcpTests(ProvisionCase):
+    """Behaviour 7: a malformed existing ``.roo/mcp.json`` raises
+    ``ProvisionError`` naming the path, changes nothing on disk, and is
+    raised under ``dry_run=True`` as well.
+
+    The validation must happen at the mcp step; only the error and the file
+    bytes are asserted, never the ordering of earlier steps.
+    """
+
+    def _seed_mcp_json(self, content):
+        path = self.target / ".roo" / "mcp.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            path.write_bytes(content)
+        else:
+            path.write_text(content, encoding="utf-8")
+        return path
+
+    def test_invalid_json_existing_file_raises_provision_error_naming_path(self):
+        path = self._seed_mcp_json("not json at all")
+        before = path.read_bytes()
+
+        with self.assertRaises(provision.ProvisionError) as ctx:
+            _provision_fresh(self.target, repo_plan=plan(github_token="ghp_x"))
+
+        self.assertIn(
+            str(path),
+            str(ctx.exception),
+            "ProvisionError must name the offending path: {}".format(ctx.exception),
+        )
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "The original bytes on disk must be unchanged after the error",
+        )
+
+    def test_invalid_utf8_existing_file_raises_provision_error_not_unicode_error(self):
+        bad_bytes = b"\xff\xfe\xfa{not utf8"
+        path = self._seed_mcp_json(bad_bytes)
+
+        with self.assertRaises(provision.ProvisionError) as ctx:
+            _provision_fresh(self.target, repo_plan=plan(github_token="ghp_x"))
+
+        self.assertIn(
+            str(path),
+            str(ctx.exception),
+            "ProvisionError must name the offending path: {}".format(ctx.exception),
+        )
+        self.assertNotIsInstance(
+            ctx.exception,
+            UnicodeDecodeError,
+            "Never surface a bare UnicodeDecodeError",
+        )
+        self.assertEqual(
+            path.read_bytes(),
+            bad_bytes,
+            "The original bytes on disk must be unchanged after the error",
+        )
+
+    def test_invalid_json_error_is_raised_under_dry_run(self):
+        path = self._seed_mcp_json("not json at all")
+        before = path.read_bytes()
+
+        with self.assertRaises(provision.ProvisionError) as ctx:
+            _provision_fresh(
+                self.target, dry_run=True, repo_plan=plan(github_token="ghp_x")
+            )
+
+        self.assertIn(str(path), str(ctx.exception))
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "A dry run must not modify the file while reporting the fault",
+        )
+
+    def test_invalid_utf8_error_is_raised_under_dry_run(self):
+        bad_bytes = b"\xff\xfe\xfa{not utf8"
+        path = self._seed_mcp_json(bad_bytes)
+
+        with self.assertRaises(provision.ProvisionError) as ctx:
+            _provision_fresh(
+                self.target, dry_run=True, repo_plan=plan(github_token="ghp_x")
+            )
+
+        self.assertIn(str(path), str(ctx.exception))
+        self.assertEqual(path.read_bytes(), bad_bytes)
 
 
 if __name__ == "__main__":
