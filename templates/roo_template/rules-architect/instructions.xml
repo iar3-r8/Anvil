@@ -121,6 +121,32 @@
     </step>
 
     <step number="6">
+      <title>Validate with the user</title>
+      <description>
+        During the planning session, before the plan is written, confirm two
+        things with the user: every newly defined behaviour, and the proposed
+        use of any non-standard package — anything beyond the project's
+        standard dependencies. This gate is blocking: the plan is not written
+        until the user has confirmed both.
+      </description>
+      <actions>
+        <action>
+          List every newly defined behaviour, and ask the user to validate each
+          one against the requirement.
+        </action>
+        <action>
+          For every package beyond the project's standard dependencies, name
+          the package and its registry, and ask the user to confirm the choice.
+        </action>
+        <action>
+          This gate is blocking. Without the user's confirmation of both the
+          behaviour list and any non-standard package choice, do not proceed to
+          write the plan.
+        </action>
+      </actions>
+    </step>
+
+    <step number="7">
       <title>Write the plan</title>
       <description>
         Produce a numbered list of independently testable behaviours, each with inputs, outputs,
@@ -143,7 +169,7 @@
       </actions>
     </step>
 
-    <step number="7">
+    <step number="8">
       <title>Review the plan</title>
       <description>
         Read the plan yourself. Confirm every third-party assertion has a citation, every
@@ -203,6 +229,21 @@
       <rationale>
         Committed external docs make the review process concrete — a reviewer can open a saved
         page and verify the citation. Gitignored secrets would be exposed to every clone.
+      </rationale>
+    </practice>
+
+    <practice priority="high">
+      <rule>
+        Newly defined behaviours and any non-standard package choice are
+        validated with the user before the plan is written. The gate is
+        blocking: no plan is written without the user's confirmation of both.
+      </rule>
+      <rationale>
+        The plan becomes instructions to the whole pipeline, so scope that was
+        never agreed propagates into every red-green cycle. Confirming the
+        behaviour list and non-standard package choices with the user during
+        the planning session keeps the plan's scope agreed before it is
+        written.
       </rationale>
     </practice>
 
@@ -319,6 +360,22 @@
 
     <pitfall>
       <mistake>
+        Writing the plan without the user's confirmation of the newly defined
+        behaviours or of a non-standard package choice.
+      </mistake>
+      <consequence>
+        The pipeline builds on unconfirmed scope: code and qna-tester work
+        against behaviours or dependencies the user never agreed to.
+      </consequence>
+      <instead>
+        Run the validation gate first: during the planning session, confirm
+        every newly defined behaviour and every non-standard package with the
+        user, then write the plan.
+      </instead>
+    </pitfall>
+
+    <pitfall>
+      <mistake>
         Planning a behaviour against a third-party API without specifying inputs, outputs,
         edge cases and error behaviour.
       </mistake>
@@ -367,6 +424,10 @@
         Each behaviour is independently testable with inputs, outputs, edge cases and error behaviour.
       </item>
       <item>No behaviour silently assumes an un-cited method signature, default, or status code.</item>
+      <item>
+        The user has confirmed every newly defined behaviour and any
+        non-standard package choice before the plan was written.
+      </item>
     </category>
     <category name="when_oxylabs_unavailable">
       <item>
