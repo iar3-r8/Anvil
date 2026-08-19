@@ -3,6 +3,14 @@
 Written before the implementation (TDD) for behaviours 9, 10, 11 and 12
 of ``plans/package-registry-context.md`` (section 3, Group C).
 
+Behaviour 13 of the same plan — ``setup_repo`` must merge ``.roomodes``
+instead of overwriting it — is covered end-to-end by
+``Behaviour13SetupRepoWiringTests``. It reuses the ``ProvisionCase``
+harness from ``tests/test_provision.py`` and the ``_provision_fresh``
+helper from ``tests/test_provision_mcp_merge.py`` (no duplicated
+machinery) and captures report lines with a list-append echo callback,
+as the behaviour 6 wiring tests do.
+
 The helper does not exist yet. The module imports it once at top level
 inside a guarded ``try/except ImportError`` and binds ``None`` in the red
 state; the shared ``_merge()`` wrapper then asserts the binding is not
@@ -39,6 +47,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import provision  # noqa: E402
+from tests.test_provision import ProvisionCase  # noqa: E402
+from tests.test_provision_mcp_merge import _provision_fresh  # noqa: E402
 
 try:
     from anvilkit.provision import _merge_roomodes  # noqa: E402
@@ -506,6 +516,146 @@ class Behaviour12StructuralEdgesTests(RoomodesMergeBase):
             "Template-drift ProvisionError must name the source: {}".format(
                 ctx.exception
             ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 13 — setup_repo merges .roomodes instead of overwriting it
+# ---------------------------------------------------------------------------
+
+
+class Behaviour13SetupRepoWiringTests(ProvisionCase):
+    """Behaviour 13: ``setup_repo`` merges ``.roomodes`` instead of overwriting it.
+
+    End-to-end through the real entry path, mirroring the behaviour 6
+    wiring tests for ``.roo/mcp.json``: the target is provisioned once,
+    the deployed ``.roomodes`` is hand-edited (a ``fileRegex`` value), and
+    a second ``setup_repo`` run must preserve the edit, keep every
+    template slug, and report the merge distinctly from a first-run
+    deployment. The merge helper's own semantics are already proven at
+    the unit level in the behaviour 9-12 classes above; this class proves
+    the wiring — that the step actually calls ``_merge_roomodes`` and
+    reports deploy / merge / skip distinctly.
+    """
+
+    # A value no template line carries; replacing the first ``fileRegex``
+    # line (the docs-manager one, per template file order) simulates a
+    # developer hand-editing the deployed file.
+    HAND_EDIT = "fileRegex: hand-edited-regex-xyz"
+
+    def _roomodes_report_lines(self, messages):
+        """The report lines emitted by the ``.roomodes`` step for one run."""
+        marker = ".roomodes"
+        return [line for line in messages if marker in line]
+
+    def _hand_edit_first_fileregex(self):
+        """Hand-edit the first ``fileRegex`` line of the deployed file."""
+        path = self.target / ".roomodes"
+        text = path.read_text(encoding="utf-8")
+        edited, count = re.subn(
+            r"fileRegex: .*$", self.HAND_EDIT, text, count=1, flags=re.M
+        )
+        self.assertEqual(
+            count,
+            1,
+            "The deployed .roomodes must contain a fileRegex line to edit",
+        )
+        path.write_text(edited, encoding="utf-8")
+        return path
+
+    def test_second_run_preserves_hand_edit_and_keeps_all_template_slugs(self):
+        _provision_fresh(self.target)
+        path = self._hand_edit_first_fileregex()
+        self.assertIn(
+            self.HAND_EDIT,
+            path.read_text(encoding="utf-8"),
+            "sanity: the hand edit must be in place before the second run",
+        )
+
+        _provision_fresh(self.target)
+
+        content = path.read_text(encoding="utf-8")
+        self.assertIn(
+            self.HAND_EDIT,
+            content,
+            "A hand edit to the deployed .roomodes must survive a second "
+            "setup_repo run (merge, not overwrite)",
+        )
+        for slug in _template_slugs(TEMPLATE_TEXT):
+            self.assertIn(
+                "- slug: {}".format(slug),
+                content,
+                "Every template slug must still be present after the merge: "
+                "{}".format(slug),
+            )
+
+    def test_second_run_report_says_merged_and_differs_from_first_run(self):
+        first_messages = _provision_fresh(self.target)
+        self._hand_edit_first_fileregex()
+        second_messages = _provision_fresh(self.target)
+
+        first_lines = self._roomodes_report_lines(first_messages)
+        second_lines = self._roomodes_report_lines(second_messages)
+        self.assertTrue(first_lines, "First run must report on the .roomodes step")
+        self.assertTrue(
+            any("Deployed" in line or "Injected" in line for line in first_lines),
+            "A first run on a fresh repo must report the .roomodes step as "
+            "deployed or injected: {}".format(first_lines),
+        )
+        self.assertTrue(second_lines, "Second run must report on the .roomodes step")
+        self.assertTrue(
+            any("Merged" in line for line in second_lines),
+            "A second run that merges must say 'Merged', not merely "
+            "'Deployed': {}".format(second_lines),
+        )
+        self.assertNotEqual(
+            first_lines,
+            second_lines,
+            "The .roomodes step report must differ between a deploy and a merge",
+        )
+
+    def test_second_run_without_changes_reports_skipped_and_leaves_bytes_unchanged(self):
+        _provision_fresh(self.target)
+        path = self.target / ".roomodes"
+        before = path.read_bytes()
+
+        second_messages = _provision_fresh(self.target)
+        second_lines = self._roomodes_report_lines(second_messages)
+        self.assertTrue(second_lines, "Second run must report on the .roomodes step")
+        self.assertTrue(
+            any("Skipped" in line or "up to date" in line for line in second_lines),
+            "A no-change second run must report the .roomodes step as skipped "
+            "(already up to date): {}".format(second_lines),
+        )
+        self.assertFalse(
+            any(
+                "Merged" in line or "Injected" in line or "Deployed" in line
+                for line in second_lines
+            ),
+            "A no-change second run must not report a merge or a deploy: "
+            "{}".format(second_lines),
+        )
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "A no-change second run must not rewrite the file's bytes",
+        )
+
+    def test_dry_run_over_edited_existing_file_changes_no_bytes(self):
+        # The fresh dry-run half of this edge ("creates no .roomodes") is
+        # already locked by test_dry_run_does_not_write_roomodes in
+        # tests/test_provision.py; here the dry run targets an EXISTING
+        # edited file and must leave its bytes untouched.
+        _provision_fresh(self.target)
+        path = self._hand_edit_first_fileregex()
+        before = path.read_bytes()
+
+        _provision_fresh(self.target, dry_run=True)
+
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "A dry run must not modify an edited .roomodes",
         )
 
 
