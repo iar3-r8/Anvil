@@ -529,12 +529,23 @@ class Behaviour13SetupRepoWiringTests(ProvisionCase):
 
     End-to-end through the real entry path, mirroring the behaviour 6
     wiring tests for ``.roo/mcp.json``: the target is provisioned once,
-    the deployed ``.roomodes`` is hand-edited (a ``fileRegex`` value), and
-    a second ``setup_repo`` run must preserve the edit, keep every
-    template slug, and report the merge distinctly from a first-run
-    deployment. The merge helper's own semantics are already proven at
-    the unit level in the behaviour 9-12 classes above; this class proves
-    the wiring — that the step actually calls ``_merge_roomodes`` and
+    the deployed ``.roomodes`` is modified, and a second ``setup_repo``
+    run must reconcile with the template and report the outcome
+    distinctly from a first-run deployment. Under A4 (per-mode merge)
+    two modifications report differently, so both are covered:
+
+    - a hand edit to a ``fileRegex`` *value* leaves the slug set intact,
+      so the second run is a no-change *skip* that preserves the edit
+      byte-for-byte (``test_second_run_preserves_hand_edit...`` and
+      ``test_second_run_without_changes...``);
+    - an existing file *missing a template slug* (an older deployment
+      that predates a mode) makes the second run a real *merge* that
+      re-appends the dropped block and says ``Merged``
+      (``test_second_run_report_says_merged...``).
+
+    The merge helper's own semantics are already proven at the unit
+    level in the behaviour 9-12 classes above; this class proves the
+    wiring — that the step actually calls ``_merge_roomodes`` and
     reports deploy / merge / skip distinctly.
     """
 
@@ -589,9 +600,56 @@ class Behaviour13SetupRepoWiringTests(ProvisionCase):
                 "{}".format(slug),
             )
 
+    # The mode block dropped from the deployed file to simulate an older
+    # deployment. tdd-manager is the template's last block (pinned by the
+    # sanity check in RoomodesMergeBase.setUp: the template ends with its
+    # '- mcp' line), so dropping it is a plain truncation at its slug line.
+    DROPPED_SLUG = "tdd-manager"
+
+    def _drop_mode_block(self, text):
+        # type: (str) -> str
+        """Return ``text`` with the ``DROPPED_SLUG`` mode block removed.
+
+        Simulates a deployment that predates the mode: the file then holds
+        every template slug except one, which is exactly the input for
+        which A4 (per-mode merge) makes a second run a real merge rather
+        than a no-change skip. A value-only hand edit would leave the
+        slug set intact and produce a skip, not a merge.
+        """
+        lines = text.split("\n")
+        start = None
+        for index, line in enumerate(lines):
+            if re.match(
+                r"^\s*- slug:\s*{}\s*$".format(re.escape(self.DROPPED_SLUG)), line
+            ):
+                start = index
+                break
+        self.assertIsNotNone(
+            start,
+            "sanity: the deployed .roomodes must contain the {} block".format(
+                self.DROPPED_SLUG
+            ),
+        )
+        kept = lines[:start]
+        while kept and not kept[-1].strip():
+            kept.pop()
+        return "\n".join(kept) + "\n"
+
     def test_second_run_report_says_merged_and_differs_from_first_run(self):
         first_messages = _provision_fresh(self.target)
-        self._hand_edit_first_fileregex()
+        # The second run must actually *merge*: the existing file is
+        # therefore missing a template slug (an older deployment that
+        # predates the mode), not merely hand-edited in a value — a
+        # value edit keeps the slug set intact and reports a skip under
+        # A4.
+        path = self.target / ".roomodes"
+        reduced = self._drop_mode_block(path.read_text(encoding="utf-8"))
+        self.assertNotIn(
+            "- slug: {}".format(self.DROPPED_SLUG),
+            reduced,
+            "sanity: the dropped block must be gone before the second run",
+        )
+        path.write_text(reduced, encoding="utf-8")
         second_messages = _provision_fresh(self.target)
 
         first_lines = self._roomodes_report_lines(first_messages)
@@ -613,6 +671,27 @@ class Behaviour13SetupRepoWiringTests(ProvisionCase):
             second_lines,
             "The .roomodes step report must differ between a deploy and a merge",
         )
+        content = path.read_text(encoding="utf-8")
+        self.assertIn(
+            "- slug: {}".format(self.DROPPED_SLUG),
+            content,
+            "The dropped mode must be re-appended by the merge",
+        )
+        self.assertTrue(
+            content.startswith(reduced),
+            "The pre-existing (mode-dropped) content must be preserved "
+            "byte-for-byte as a prefix of the merged file",
+        )
+        for slug in _template_slugs(TEMPLATE_TEXT):
+            found = re.findall(
+                r"^\s*- slug:\s*{}\s*$".format(re.escape(slug)), content, re.M
+            )
+            self.assertEqual(
+                len(found),
+                1,
+                "After the merge the {} slug must appear exactly once "
+                "(present slugs are never re-appended)".format(slug),
+            )
 
     def test_second_run_without_changes_reports_skipped_and_leaves_bytes_unchanged(self):
         _provision_fresh(self.target)
