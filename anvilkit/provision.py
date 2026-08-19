@@ -777,16 +777,78 @@ def _write(destination: Path, content: str, dry_run: bool, report) -> None:
 def _copy_root_roomodes(
     target: Path, templates: "_Templates", dry_run: bool, report
 ) -> None:
-    """Copy .roomodes from inside roo_template to the repo root."""
+    """Deploy .roomodes from roo_template, merging instead of overwriting.
+
+    A first run deploys the template verbatim; a re-run merges the
+    template's mode blocks into the existing file via
+    ``_merge_roomodes`` so a developer's hand edits survive, and writes
+    nothing when the merge reports the file already up to date.
+    """
     source = templates.roo_template / ".roomodes"
     destination = target / ".roomodes"
 
-    if source.is_file():
-        if not dry_run:
-            render.write_text(destination, source.read_text(encoding="utf-8"))
-        report("   ↳ ✅ Deployed: {}".format(destination))
-    else:
+    if not source.is_file():
         report("   ↳ ⏭️  Skipped .roomodes (source not found at {})".format(source))
+        return
+
+    template_text = source.read_text(encoding="utf-8")
+
+    if not destination.exists():
+        # First run: the template text is deployed wholesale, so the
+        # result stays byte-identical to the pre-merge behaviour
+        # (locked by test_roomodes_content_matches_template).
+        if not dry_run:
+            render.write_text(destination, template_text)
+        report("   ↳ ✅ Deployed: {}".format(destination))
+        return
+
+    if destination.is_dir():
+        raise ProvisionError(
+            "Target contains a directory named '.roomodes' at {}.".format(
+                destination
+            )
+        )
+
+    try:
+        existing_text = destination.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise ProvisionError(
+            "Existing .roomodes at {} could not be read as UTF-8.".format(
+                destination
+            )
+        )
+
+    # A template without a 'customModes:' key defines no mode blocks, so
+    # there is nothing to merge; the merge helper would classify such a
+    # template as drift and fail every re-provision of a repo that was
+    # already set up, which is the destructive-re-run class this step
+    # exists to eliminate.
+    has_mode_blocks = any(
+        _ROOMODES_KEY_RE.match(line) for line in template_text.split("\n")
+    )
+    if not has_mode_blocks:
+        report("   ↳ ⏭️  Skipped .roomodes (already up to date)")
+        return
+
+    # Validation happens before the dry_run check, per the
+    # _merge_gitignore_step and _write_mcp_settings precedent: a dry run
+    # must surface the same fault, so a malformed existing file is never
+    # silently clobbered.
+    merged_text = _merge_roomodes(
+        existing_text, template_text, source=str(destination)
+    )
+    if merged_text is None:
+        # Every template slug is already present: nothing to write, even
+        # under dry_run the report is the same.
+        report("   ↳ ⏭️  Skipped .roomodes (already up to date)")
+        return
+
+    if dry_run:
+        report("   ↳ ⏭️  Dry-run: would merge {}".format(destination))
+        return
+
+    render.write_text(destination, merged_text)
+    report("   ↳ ✅ Merged: {}".format(destination))
 
 
 def _deploy_mode_rules(
