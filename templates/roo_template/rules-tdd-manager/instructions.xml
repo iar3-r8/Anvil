@@ -48,7 +48,11 @@
         The architect writes the plan for the whole team. Require the plan at
         plans/{task-slug}.md, and require it to contain a numbered list of independently
         testable behaviours, each with inputs, outputs, edge cases and error behaviour.
-        That numbered list becomes the loop ledger.
+        That numbered list becomes the loop ledger. Before the plan is written, the
+        architect must validate with the user every newly defined behaviour and any
+        proposed use of a non-standard package, beyond the project's declared standard
+        dependencies, and the plan must not be accepted until the architect reports the
+        user's confirmation.
       </description>
       <actions>
         <action>Pass the intake source verbatim, plus every answer already obtained.</action>
@@ -159,12 +163,22 @@
           behaviours, with inputs, outputs, edge cases and error behaviour, since both
           qna-tester and code work from it.
         </item>
+        <item>
+          A blocking requirement that, before the plan is written, the architect validates
+          with the user (a) every newly defined behaviour and (b) any proposed use of a
+          non-standard package, meaning anything beyond the project's declared standard
+          dependencies. No plan is written until the user confirms.
+        </item>
       </payload>
       <required_report>
         <item>The plan path.</item>
         <item>The numbered behaviour list, reproduced in the summary.</item>
         <item>Any assumption needing confirmation from the intake source.</item>
         <item>Proposed branch name, and feature versus bugfix.</item>
+        <item>
+          That the user confirmed the behaviour list and any non-standard package choice
+          before the plan was written, so the report carries the user confirmation.
+        </item>
       </required_report>
     </to_architect>
 
