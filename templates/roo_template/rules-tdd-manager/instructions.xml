@@ -151,6 +151,7 @@
       Branch: {branch name}
       Test command: {exact command}
       Do not commit. Do not push. Report back when done.
+      You are a leaf: report back and stop. Do not create subtasks for other modes.
     </preamble>
 
     <to_architect>
@@ -330,6 +331,15 @@
       <rationale>
         A subtask that can commit can also quietly rewrite history around a stuck step, which
         destroys both the delegation contract and the audit trail.
+      </rationale>
+    </practice>
+
+    <practice priority="high">
+      <rule>You are the only mode that creates subtasks for other modes. Specialists report back and stop; they never dispatch onward.</rule>
+      <rationale>
+        A specialist that dispatches hides a handoff from the manager's view, breaks the
+        red/green audit trail, and can spawn unbounded subtask chains. Every handoff must
+        pass through the manager so the ledger stays accurate.
       </rationale>
     </practice>
 

@@ -1732,3 +1732,1568 @@ class TestResolveOxylabs(CliCase):
         self.assertEqual(("", ""), result)
         # .env must NOT have been created
         self.assertFalse(self.env_path().exists())
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 1 — contract lock for --no-github)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenNoGithub(CliCase):
+    """B1: ``--no-github`` short-circuits before any store access.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B1:
+
+    * input ``no_github=True`` (with or without a ``GITHUB_TOKEN`` in .env),
+    * output ``""``,
+    * ``env.get`` is never called — the stored token is neither read nor
+      clobbered by the decision,
+    * ``prompts.confirm`` / ``prompts.ask_required`` are never called — no
+      interactive surface is even reachable.
+
+    Both seams are booby-trapped with ``side_effect=AssertionError``, matching
+    the oxylabs precedent in ``TestResolveOxylabs``: any call from
+    ``_resolve_github_token`` fails the test loudly rather than hanging or
+    reading the real file.
+
+    Red-phase note: the current implementation (``anvilkit/cli.py:752``)
+    already returns on ``no_github`` before the prompt, and does not read
+    ``.env`` at all yet — so these assertions may be green today. That is the
+    *partially green* situation the task anticipated: the value of these tests
+    is that they LOCK the contract, so a later refactor that consults the
+    store before the flag (e.g. to decide whether to skip the prompt) cannot
+    silently break the "no store access" promise.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _booby_traps(self):
+        """Context managers that booby-trap the store seams.
+
+        Any call from ``_resolve_github_token`` raises a named AssertionError;
+        the bound mocks are also captured so the test can assert non-use
+        explicitly.
+        """
+        return (
+            mock.patch.object(
+                cli.env,
+                "get",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not read .env when no_github=True"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when no_github=True"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when no_github=True"
+                ),
+            ),
+        )
+
+    # -- B1 proper: stored token present, must be ignored -----------------
+
+    def test_no_github_returns_empty_without_reading_stored_token(self):
+        """``no_github=True`` with ``GITHUB_TOKEN=ghp_stored`` in .env -> ``""``.
+
+        The stored token must not be read, echoed, or disturbed.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_env_get, trap_confirm, trap_ask = self._booby_traps()
+        with trap_env_get as env_get, trap_confirm as prompts_confirm, trap_ask as ask_required:
+            result = cli._resolve_github_token(ctx, None, no_github=True)
+
+        # (a) the returned value is the empty token
+        self.assertEqual("", result)
+        # (b) the store was never consulted
+        env_get.assert_not_called()
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # the decision left .env exactly as found
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+
+    # -- B1 edge: no .env at all ------------------------------------------
+
+    def test_no_github_returns_empty_when_env_file_is_absent(self):
+        """The short-circuit holds even when .env does not exist."""
+        if self.env_path().exists():
+            self.env_path().unlink()
+        ctx = self._make_context(assume_yes=False)
+
+        trap_env_get, trap_confirm, trap_ask = self._booby_traps()
+        with trap_env_get as env_get, trap_confirm as prompts_confirm, trap_ask as ask_required:
+            result = cli._resolve_github_token(ctx, None, no_github=True)
+
+        self.assertEqual("", result)
+        env_get.assert_not_called()
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # and it must not *create* the store as a side effect
+        self.assertFalse(self.env_path().exists())
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 5 — --yes / non-interactive, nothing stored)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenYesOrNonInteractive(CliCase):
+    """B5: ``--yes`` or non-interactive with nothing stored returns empty, never blocking.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B5:
+
+    * input ``token=None``, ``no_github=False``, nothing stored in .env (no
+      ``GITHUB_TOKEN`` key, or a key with an empty value),
+    * input A: ``assume_yes=True`` (``--yes``),
+    * input B (separate test): non-interactive — ``_is_interactive`` patched
+      to return ``False``, the same seam the oxylabs decline test and B4
+      patch (``anvilkit/cli.py:142``),
+    * output for both: ``""``, with ``prompts.confirm`` patched to raise an
+      ``AssertionError`` if called — the Definition of Done (§6) requires no
+      new blocking prompt, so the guard must be explicit rather than an
+      emergent property of ``confirm(default=False)`` returning ``False``
+      under ``assume_yes``/non-interactive (``anvilkit/prompts.py:93``).
+
+    Red-phase note: the current implementation (``anvilkit/cli.py:777``) has
+    no ``assume_yes or not interactive`` guard — it calls
+    ``prompts.confirm`` unconditionally after the store lookup misses,
+    relying on ``confirm``'s internal ``assume_yes`` handling
+    (``anvilkit/prompts.py:93``) to keep ``ask_required`` out of reach. The
+    booby-trapped ``confirm`` seam therefore fires today, so both tests are
+    RED with an AssertionError naming the missing guard. Compare
+    ``_resolve_oxylabs`` (``anvilkit/cli.py:837``), which guards before the
+    prompt — the shape this behaviour must take.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _booby_traps(self):
+        """Context managers that booby-trap the prompt seams.
+
+        Any call from ``_resolve_github_token`` raises a named AssertionError;
+        the bound mocks are also captured so the test can assert non-use
+        explicitly. The store seam is left live: the ``.env`` lookup is
+        expected to happen (and miss) before the guard is reached.
+        """
+        return (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not call prompts.confirm "
+                    "when --yes or non-interactive and no token is stored"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token "
+                    "when --yes or non-interactive and no token is stored"
+                ),
+            ),
+        )
+
+    # -- B5 input A: --yes (assume_yes=True), nothing stored ----------------
+
+    def test_assume_yes_with_nothing_stored_returns_empty_without_prompting(self):
+        """``assume_yes=True`` and no ``GITHUB_TOKEN`` in .env -> ``""``.
+
+        The store is consulted (and misses), then the guard must return
+        without reaching ``prompts.confirm`` at all — ``confirm``'s own
+        ``assume_yes`` handling must not be the thing that keeps the prompt
+        out of reach.
+        """
+        # .env exists but carries no GITHUB_TOKEN — the lookup must miss
+        self.write_env(LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=True)
+
+        trap_confirm, trap_ask = self._booby_traps()
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        # (a) the store was consulted (and found nothing)
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the confirm gate is never reached — this is what the guard owns
+        self.assertEqual("", result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # the decision left .env exactly as found, no token created
+        values = cli.env.read(self.env_path())
+        self.assertIsNone(values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B5 input B: non-interactive, nothing stored ------------------------
+
+    def test_non_interactive_with_nothing_stored_returns_empty_without_prompting(self):
+        """Non-interactive (``_is_interactive`` -> ``False``), nothing stored -> ``""``.
+
+        Same contract as input A through a different seam: the guard must
+        key off interactivity as well, and return before ``prompts.confirm``
+        is even called.
+        """
+        # .env exists but carries no GITHUB_TOKEN — the lookup must miss
+        self.write_env(LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = self._booby_traps()
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with mock.patch.object(cli, "_is_interactive", return_value=False):
+                with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                    result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        # (a) the store was consulted (and found nothing)
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the confirm gate is never reached, whether or not it would
+        #     answer no internally
+        self.assertEqual("", result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # the decision left .env exactly as found, no token created
+        values = cli.env.read(self.env_path())
+        self.assertIsNone(values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 2 — --github-token wins, and is persisted)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenFlag(CliCase):
+    """B2: ``--github-token`` wins over the store, and is persisted.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B2:
+
+    * input ``token="ghp_flag"`` (i.e. ``token is not None``) with
+      ``GITHUB_TOKEN=ghp_stored`` in .env,
+    * output ``"ghp_flag"`` — the flag value is authoritative,
+    * no prompt of any kind (``prompts.confirm`` / ``prompts.ask_required``
+      booby-trapped, as in ``TestResolveGithubTokenNoGithub``),
+    * side effect: ``.env`` now holds ``GITHUB_TOKEN=ghp_flag``.
+
+    The persistence is a *deliberate divergence* from ``_resolve_oxylabs``
+    (which returns the flag value without writing it): following
+    ``_persist_anthropic_key`` (``anvilkit/cli.py:917``), a flag-supplied value
+    populates the store, so flag-less runs are not prompted forever.
+
+    Edge case: an *explicit empty string* (``token=""``) is still
+    ``token is not None``, so it resolves to ``""`` but — being
+    unchanged-or-empty — must NOT overwrite a non-empty stored value.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    # -- B2 proper: flag beats store, and the flag value lands in .env ------
+
+    def test_flag_token_wins_over_stored_token_and_is_persisted(self):
+        """``token="ghp_flag"`` with a stored token -> ``"ghp_flag"``, stored.
+
+        No prompt of any kind; ``.env`` is rewritten to hold the flag value.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when the flag is given"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when the flag is given"
+                ),
+            ),
+        )
+        with trap_confirm as prompts_confirm, trap_ask as ask_required:
+            result = cli._resolve_github_token(ctx, "ghp_flag", no_github=False)
+
+        # (a) the flag value is returned
+        self.assertEqual("ghp_flag", result)
+        # (b) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (c) the flag value was persisted to .env, replacing the stored one
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_flag", values.get("GITHUB_TOKEN"))
+        # the decision disturbed no other key
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B2 edge: explicit empty string must not clobber the store ----------
+
+    def test_empty_flag_token_returns_empty_and_preserves_stored_token(self):
+        """``token=""`` (explicit) resolves to ``""`` and leaves the store intact.
+
+        The no-op-if-unchanged-or-empty rule means a non-empty stored value
+        survives an explicit empty flag.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when the flag is given"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when the flag is given"
+                ),
+            ),
+        )
+        with trap_confirm as prompts_confirm, trap_ask as ask_required:
+            result = cli._resolve_github_token(ctx, "", no_github=False)
+
+        # (a) the explicit empty flag is returned as-is
+        self.assertEqual("", result)
+        # (b) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (c) the stored token survived — an empty value never blanks a store
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 3 — a stored token is reused)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenStoredReuse(CliCase):
+    """B3: a stored token is reused, and the skip is reported.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B3:
+
+    * input ``token=None``, ``no_github=False``, ``GITHUB_TOKEN=ghp_stored``
+      in .env, interactive (no ``--yes``),
+    * output ``"ghp_stored"`` — the stored token is reused,
+    * ``prompts.confirm`` and ``prompts.ask_required`` are never called —
+      booby-trapped with ``side_effect=AssertionError`` exactly as in
+      ``TestResolveGithubTokenNoGithub`` / ``TestResolveGithubTokenFlag``,
+    * a skip notice is echoed, modelled on the oxylabs reuse notice
+      (``anvilkit/cli.py:892``): ``🔑 Reusing existing GITHUB_TOKEN from .env``,
+    * the token value itself is never echoed — ``ghp_stored`` must not appear
+      anywhere in the captured output.
+
+    Red-phase note: the current implementation (``anvilkit/cli.py:752``) never
+    reads the store on the ``token=None`` path; it goes straight to
+    ``prompts.confirm`` / ``ask_required``. With interactivity forced on and
+    both seams booby-trapped, the confirm trap fires, so these tests fail
+    today with an AssertionError naming the missing store lookup.
+    """
+
+    REUSE_NOTICE = "🔑 Reusing existing GITHUB_TOKEN from .env"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    # -- B3 proper: stored token is reused, no prompt --------------------------
+
+    def test_stored_token_is_reused_without_prompting(self):
+        """``token=None`` with ``GITHUB_TOKEN=ghp_stored`` -> ``"ghp_stored"``.
+
+        No prompt of any kind is reached, and .env is left exactly as found.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when GITHUB_TOKEN is stored in .env"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when GITHUB_TOKEN is stored in .env"
+                ),
+            ),
+        )
+        echo_patcher, _ = self._capture_echo()
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        # (a) the stored token is returned
+        self.assertEqual("ghp_stored", result)
+        # (b) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (c) the store was not disturbed by the reuse
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B3 reporting: skip notice echoed, secret never echoed ----------------
+
+    def test_reuse_echoes_skip_notice_but_never_the_token(self):
+        """The reuse is reported; the token value itself is not echoed.
+
+        The notice mirrors the anthropic reuse wording at
+        ``anvilkit/cli.py:892``. The secret must not appear in any output line.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when GITHUB_TOKEN is stored in .env"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when GITHUB_TOKEN is stored in .env"
+                ),
+            ),
+        )
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        self.assertEqual("ghp_stored", result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        output = "\n".join(lines)
+        # (a) the skip notice is reported
+        self.assertIn(self.REUSE_NOTICE, output)
+        # (b) the secret is never echoed, on any line
+        self.assertNotIn("ghp_stored", output)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 4 — an empty stored value counts as absent)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenEmptyStored(CliCase):
+    """B4: an empty stored value counts as absent.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B4:
+
+    * input ``token=None``, ``no_github=False``, interactive, with
+      ``GITHUB_TOKEN=`` (an *empty* value) in .env,
+    * output: the confirm/prompt path is reached — ``prompts.confirm`` IS
+      called, exactly as with an absent key. The ``if stored:`` truthiness
+      check (``anvilkit/cli.py:772``) is what makes a blank value behave as
+      though nothing were stored, matching ``_resolve_oxylabs``'s treatment
+      of a blank username (``anvilkit/cli.py:802``),
+    * edge case: a missing .env file behaves identically — ``env.get``
+      returns the default for a missing file (``anvilkit/env.py:40``), so
+      the same fall-through happens.
+
+    These tests are *contract locks* written booby-trapped in the opposite
+    direction from B3: ``prompts.confirm`` is expected to be called (patched
+    to decline, so the test cannot block or persist), while
+    ``prompts.ask_required`` is booby-trapped with
+    ``side_effect=AssertionError`` so an implementation that skips the
+    confirm gate cannot slip through. The current ``if stored:``
+    implementation already satisfies this, so both tests are green from the
+    start; their value is preventing a future ``is not None``-style change
+    that would treat a blank stored value as a usable token and suppress
+    the prompt.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    # -- B4 proper: empty stored value falls through to the prompt ----------
+
+    def test_empty_stored_token_reaches_confirm_and_decline_returns_empty(self):
+        """``GITHUB_TOKEN=`` in .env -> confirm IS reached; declining -> ``""``.
+
+        The blank value must not count as a stored token: unlike the B3
+        reuse path, the confirm gate is reached, and declining returns
+        ``""`` without reaching the token prompt or disturbing .env.
+        """
+        self.write_env(GITHUB_TOKEN="", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with mock.patch.object(cli, "_is_interactive", return_value=True):
+                with mock.patch.object(
+                    cli.prompts, "confirm", return_value=False
+                ) as prompts_confirm:
+                    with mock.patch.object(
+                        cli.prompts,
+                        "ask_required",
+                        side_effect=AssertionError(
+                            "_resolve_github_token must not ask for a token "
+                            "when the user declines"
+                        ),
+                    ) as ask_required:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        # (a) the store was consulted
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the empty stored value is not treated as a token: the confirm
+        #     gate IS reached, the opposite of the B3 reuse path
+        prompts_confirm.assert_called_once()
+        # (c) declining returns empty and never reaches the token prompt
+        self.assertEqual("", result)
+        ask_required.assert_not_called()
+        # the decision left .env exactly as found
+        values = cli.env.read(self.env_path())
+        self.assertEqual("", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B4 edge: .env absent entirely behaves identically -------------------
+
+    def test_missing_env_file_reaches_confirm_and_decline_returns_empty(self):
+        """No .env at all -> same fall-through as an empty stored value.
+
+        ``env.get`` returns the default for a missing file, so the confirm
+        gate is reached the same way; declining returns ``""`` and the
+        store must not be created as a side effect.
+        """
+        if self.env_path().exists():
+            self.env_path().unlink()
+        ctx = self._make_context(assume_yes=False)
+
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with mock.patch.object(cli, "_is_interactive", return_value=True):
+                with mock.patch.object(
+                    cli.prompts, "confirm", return_value=False
+                ) as prompts_confirm:
+                    with mock.patch.object(
+                        cli.prompts,
+                        "ask_required",
+                        side_effect=AssertionError(
+                            "_resolve_github_token must not ask for a token "
+                            "when the user declines"
+                        ),
+                    ) as ask_required:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        # (a) the store was consulted (and found nothing)
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the confirm gate IS reached, same as with an empty value
+        prompts_confirm.assert_called_once()
+        # (c) declining returns empty and never reaches the token prompt
+        self.assertEqual("", result)
+        ask_required.assert_not_called()
+        # and it must not *create* the store as a side effect
+        self.assertFalse(self.env_path().exists())
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 7 — declining the prompt points at the store)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenDecline(CliCase):
+    """B7: declining the prompt returns empty and points at the new store.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B7:
+
+    * input: interactive (``_is_interactive`` -> ``True``), nothing stored
+      in .env, ``prompts.confirm`` returns ``False``,
+    * output ``""`` — nothing is written to .env, and
+      ``prompts.ask_required`` is never called (booby-trapped with
+      ``side_effect=AssertionError``),
+    * the decline advisory changes wording: it must name ``.env`` and
+      ``GITHUB_TOKEN``, mirroring the oxylabs decline message
+      (``anvilkit/cli.py:851-853``), and must no longer point at the
+      target repo's ``.roo/mcp.json`` (``anvilkit/cli.py:789-791``).
+
+    Red-phase note: the return-value, no-write and no-ask parts already
+    hold; the message assertions fail today because the current advisory
+    names ``mcp.json`` inside ``.roo/`` and never mentions ``.env``.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def _ensure_nothing_stored(self):
+        if self.env_path().exists():
+            self.env_path().unlink()
+
+    # -- B7 proper: decline returns empty, writes nothing, asks nothing -------
+
+    def test_decline_returns_empty_and_writes_nothing_to_env(self):
+        """Interactive, nothing stored, decline -> ``""`` and .env untouched.
+
+        ``prompts.ask_required`` is booby-trapped, and ``env.set_value``
+        is patched to raise if the decline path tried to persist anything.
+        """
+        self._ensure_nothing_stored()
+        ctx = self._make_context(assume_yes=False)
+
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(
+                cli.prompts, "confirm", return_value=False
+            ) as prompts_confirm:
+                with mock.patch.object(
+                    cli.prompts,
+                    "ask_required",
+                    side_effect=AssertionError(
+                        "_resolve_github_token must not ask for a token "
+                        "when the user declines"
+                    ),
+                ) as ask_required:
+                    with mock.patch.object(
+                        cli.env,
+                        "set_value",
+                        side_effect=AssertionError(
+                            "declining must not write GITHUB_TOKEN to .env"
+                        ),
+                    ) as set_value:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        # (a) the confirm gate was reached and answered
+        prompts_confirm.assert_called_once()
+        # (b) declining returns empty
+        self.assertEqual("", result)
+        # (c) the token prompt is never reached
+        ask_required.assert_not_called()
+        # (d) nothing is persisted — not via the module, not onto disk
+        set_value.assert_not_called()
+        self.assertFalse(self.env_path().exists())
+
+    # -- B7 reporting: the advisory names the store, not the repo --------------
+
+    def test_decline_advisory_names_env_store_not_repo_mcp_json(self):
+        """The advisory points at ``.env``/``GITHUB_TOKEN``, not ``.roo/mcp.json``.
+
+        The new wording mirrors the oxylabs decline message
+        (``anvilkit/cli.py:851-853``): edit ``.env`` and populate the
+        variable. Distinctive substrings are asserted so the exact
+        punctuation is not load-bearing, but the old ``.roo/``/``mcp.json``
+        framing must be gone.
+        """
+        self._ensure_nothing_stored()
+        ctx = self._make_context(assume_yes=False)
+
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(cli.prompts, "confirm", return_value=False):
+                with mock.patch.object(
+                    cli.prompts,
+                    "ask_required",
+                    side_effect=AssertionError(
+                        "_resolve_github_token must not ask for a token "
+                        "when the user declines"
+                    ),
+                ):
+                    with echo_patcher:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        self.assertEqual("", result)
+        output = "\n".join(lines)
+        # (a) the new store is named
+        self.assertIn(".env", output)
+        self.assertIn("GITHUB_TOKEN", output)
+        # (b) the old target-repo framing is gone
+        self.assertNotIn("mcp.json", output)
+        self.assertNotIn(".roo", output)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 8 — accepting the prompt persists the token)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenAcceptPersists(CliCase):
+    """B8: accepting the prompt persists the token.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B8:
+
+    * input: interactive (``_is_interactive`` -> ``True``), nothing stored
+      in .env, ``prompts.confirm`` returns ``True`` and
+      ``prompts.ask_required`` returns ``"ghp_new"``,
+    * output ``"ghp_new"``, and ``.env`` now contains
+      ``GITHUB_TOKEN=ghp_new`` (asserted against the file's content, not
+      just the mock),
+    * ``ask_required`` is called with ``hide_input=True`` (asserted via the
+      mock's call kwargs),
+    * the accept echo is the persist notice
+      ``⚡ Token accepted and persisted to .env`` — which
+      ``_persist_github_token`` (``anvilkit/cli.py:803``) already echoes —
+      and the token value ``ghp_new`` never appears in captured output.
+
+    Red-phase note: the return-value and echo assertions hold today; the
+    persist assertion fails because the accept path
+    (``anvilkit/cli.py:793-800``) never calls ``_persist_github_token`` — it
+    echoes the old ``⚡ Token accepted.`` notice and returns without writing
+    ``.env``.
+    """
+
+    PERSIST_NOTICE = "⚡ Token accepted and persisted to .env"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def _ensure_nothing_stored(self):
+        if self.env_path().exists():
+            self.env_path().unlink()
+
+    # -- B8 proper: accept -> token returned, hidden prompt, .env updated ----
+
+    def test_accept_persists_token_to_env_and_returns_it(self):
+        """Interactive, nothing stored, accept -> ``"ghp_new"`` in .env.
+
+        ``ask_required`` is mocked (its hidden-input prompt mechanics are
+        owned by ``prompts`` and covered in ``test_prompts.py``); the call's
+        kwargs are asserted so ``hide_input=True`` cannot be lost.
+        """
+        self._ensure_nothing_stored()
+        ctx = self._make_context(assume_yes=False)
+
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(
+                cli.prompts, "confirm", return_value=True
+            ) as prompts_confirm:
+                with mock.patch.object(
+                    cli.prompts, "ask_required", return_value="ghp_new"
+                ) as ask_required:
+                    result = cli._resolve_github_token(
+                        ctx, None, no_github=False
+                    )
+
+        # (a) the confirm gate was reached and answered
+        prompts_confirm.assert_called_once()
+        # (b) the hidden prompt was reached, with the hidden-input kwarg intact
+        ask_required.assert_called_once()
+        self.assertTrue(ask_required.call_args[1].get("hide_input"))
+        # (c) the entered token is returned
+        self.assertEqual("ghp_new", result)
+        # (d) the token was persisted to .env — asserted against the file
+        #     itself, not just the mock
+        self.assertTrue(self.env_path().exists())
+        self.assertIn(
+            "GITHUB_TOKEN=ghp_new",
+            self.env_path().read_text(encoding="utf-8"),
+        )
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_new", values.get("GITHUB_TOKEN"))
+
+    # -- B8 reporting: the persist notice replaces the old accept echo -------
+
+    def test_accept_echoes_persist_notice_and_never_the_secret(self):
+        """The accept path echoes the persist notice, not the token value.
+
+        The old ``⚡ Token accepted.`` echo is expected to be replaced by
+        ``⚡ Token accepted and persisted to .env``; this test asserts only
+        that the new notice is present and that ``ghp_new`` never appears in
+        captured output.
+        """
+        self._ensure_nothing_stored()
+        ctx = self._make_context(assume_yes=False)
+
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(cli.prompts, "confirm", return_value=True):
+                with mock.patch.object(
+                    cli.prompts, "ask_required", return_value="ghp_new"
+                ):
+                    with echo_patcher:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        self.assertEqual("ghp_new", result)
+        output = "\n".join(lines)
+        # (a) the persist notice is reported
+        self.assertIn(self.PERSIST_NOTICE, output)
+        # (b) the secret is never echoed
+        self.assertNotIn("ghp_new", output)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 9 — persisting is a no-op when unchanged)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenPersistNoopUnchanged(CliCase):
+    """B9: persisting is a no-op when the value is unchanged.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B9:
+
+    * input: ``.env`` already holds ``GITHUB_TOKEN=ghp_same`` and the
+      resolved value is ``ghp_same`` — reachable via B2 with a matching
+      flag, i.e. ``_resolve_github_token`` called with
+      ``token="ghp_same"`` against a store already holding ``ghp_same``,
+    * ``env.set_value`` is NOT called — asserted with
+      ``mock.patch.object(cli.env, "set_value")`` and ``assert_not_called``,
+    * the return value is still ``"ghp_same"``,
+    * ``.env`` is byte-for-byte unchanged: the existing lines, their
+      ordering and the other keys all survive (no read-modify-rewrite),
+    * the persist notice ``⚡ Token accepted and persisted to .env`` is NOT
+      echoed — the no-op returns before the echo
+      (``anvilkit/cli.py:812-813``).
+
+    Contract-lock note: B2's green cycle already built the
+    unchanged-early-return into ``_persist_github_token``, so this test is
+    expected to be green from the start, pinning the guard against a future
+    rewrite (like B1/B4/B6's committed locks).
+    """
+
+    PERSIST_NOTICE = "⚡ Token accepted and persisted to .env"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def test_unchanged_flag_token_is_not_rewritten_to_env(self):
+        """Flag value == stored value -> returned, no ``set_value``, file untouched.
+
+        ``.env`` holds ``GITHUB_TOKEN=ghp_same`` plus other keys; passing
+        the matching ``token="ghp_same"`` through the B2 flag path must
+        leave the file byte-for-byte identical and echo no persist notice.
+        """
+        self.write_env(
+            GITHUB_TOKEN="ghp_same",
+            LLM_PORT="8000",
+            OXYLABS_USERNAME="oxu",
+        )
+        content_before = self.env_path().read_bytes()
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when the flag is given"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when the flag is given"
+                ),
+            ),
+        )
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli.env, "set_value") as set_value:
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(
+                        ctx, "ghp_same", no_github=False
+                    )
+
+        # (a) the flag value is still returned
+        self.assertEqual("ghp_same", result)
+        # (b) no write happened at all
+        set_value.assert_not_called()
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the file is byte-for-byte unchanged: every line, its ordering
+        #     and the other keys survive
+        self.assertEqual(content_before, self.env_path().read_bytes())
+        values = cli.env.read(self.env_path())
+        self.assertEqual(
+            {
+                "GITHUB_TOKEN": "ghp_same",
+                "LLM_PORT": "8000",
+                "OXYLABS_USERNAME": "oxu",
+            },
+            values,
+        )
+        # (e) the persist notice is not echoed — the no-op returns before it
+        output = "\n".join(lines)
+        self.assertNotIn(self.PERSIST_NOTICE, output)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 10 — --dry-run writes nothing)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenDryRunWritesNothing(CliCase):
+    """B10: ``--dry-run`` writes nothing.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B10:
+
+    * input: ``shared.dry_run=True``, a resolved non-empty token, and
+      ``.env`` either absent or holding a *different* value (the
+      different-value case is chosen because a missing dry-run guard
+      would actually write there),
+    * output: ``.env`` unchanged on disk — the assertion is on the
+      file's content, not just on the mock,
+    * echoes ``would store GITHUB_TOKEN in <env_path>``;
+    * the token value is never echoed.
+
+    The persist helper is reached through the public
+    ``_resolve_github_token`` path — ``token="ghp_flag"`` with
+    ``dry_run=True`` — so the test exercises the real seam.
+
+    Contract-lock note: B2's green cycle already built the dry-run
+    guard into ``_persist_github_token``
+    (``anvilkit/cli.py:808-810``), so this test is expected to be green
+    from the start, pinning the guard against a future rewrite (like
+    B1/B4/B6/B9's committed locks).
+    """
+
+    PERSIST_NOTICE = "⚡ Token accepted and persisted to .env"
+    TOKEN = "ghp_flag"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context with ``dry_run=True`` pointing at the test project."""
+        return cli.Context(
+            dry_run=True,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def _resolve_dry_run(self, token):
+        """Run ``_resolve_github_token`` through the flag path with ``dry_run=True``.
+
+        Returns ``(result, set_value, prompts_confirm, ask_required, lines)``.
+        """
+        ctx = self._make_context(assume_yes=False)
+        trap_confirm = mock.patch.object(
+            cli.prompts,
+            "confirm",
+            side_effect=AssertionError(
+                "_resolve_github_token must not prompt when the flag is given"
+            ),
+        )
+        trap_ask = mock.patch.object(
+            cli.prompts,
+            "ask_required",
+            side_effect=AssertionError(
+                "_resolve_github_token must not ask for a token when the flag is given"
+            ),
+        )
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli.env, "set_value") as set_value:
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(ctx, token, no_github=False)
+        return result, set_value, prompts_confirm, ask_required, lines
+
+    def test_dry_run_flag_token_writes_nothing_when_stored_value_differs(self):
+        """``token="ghp_flag"`` + a *different* stored value -> echo only, file unchanged.
+
+        The different stored value is what makes this test bite: a missing
+        dry-run guard would write here, and the byte comparison catches it.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        content_before = self.env_path().read_bytes()
+        ctx = self._make_context()
+
+        (
+            result,
+            set_value,
+            prompts_confirm,
+            ask_required,
+            lines,
+        ) = self._resolve_dry_run(self.TOKEN)
+
+        # (a) the flag value is still returned
+        self.assertEqual(self.TOKEN, result)
+        # (b) no write happened at all
+        set_value.assert_not_called()
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the file content is unchanged on disk — a missing dry-run guard
+        #     would have rewritten it with the different flag value
+        self.assertEqual(content_before, self.env_path().read_bytes())
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+        # (e) the would-store line is echoed, naming the key and the path
+        output = "\n".join(lines)
+        self.assertIn("would store", output)
+        self.assertIn("GITHUB_TOKEN", output)
+        self.assertIn(str(ctx.env_path), output)
+        # (f) the persist notice is not echoed, and neither is the secret
+        self.assertNotIn(self.PERSIST_NOTICE, output)
+        self.assertNotIn(self.TOKEN, output)
+
+    def test_dry_run_flag_token_creates_no_file_when_env_absent(self):
+        """``token="ghp_flag"`` + no ``.env`` -> the file is never created."""
+        self.assertFalse(self.env_path().exists())
+        ctx = self._make_context()
+
+        (
+            result,
+            set_value,
+            prompts_confirm,
+            ask_required,
+            lines,
+        ) = self._resolve_dry_run(self.TOKEN)
+
+        # (a) the flag value is still returned
+        self.assertEqual(self.TOKEN, result)
+        # (b) no write happened at all
+        set_value.assert_not_called()
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the file was never created — asserted on the disk, not the mock
+        self.assertFalse(self.env_path().exists())
+        # (e) the would-store line is echoed, naming the key and the path
+        output = "\n".join(lines)
+        self.assertIn("would store", output)
+        self.assertIn("GITHUB_TOKEN", output)
+        self.assertIn(str(ctx.env_path), output)
+        # (f) the persist notice is not echoed, and neither is the secret
+        self.assertNotIn(self.PERSIST_NOTICE, output)
+        self.assertNotIn(self.TOKEN, output)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 6 — --yes / non-interactive reuse a stored token)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenStoredYesOrNonInteractive(CliCase):
+    """B6: ``--yes`` or non-interactive with a stored token returns the stored token.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B6:
+
+    * input ``token=None``, ``no_github=False``, ``GITHUB_TOKEN=ghp_stored``
+      in .env,
+    * input A: ``assume_yes=True`` (``--yes``),
+    * input B (separate test): non-interactive — ``_is_interactive`` patched
+      to return ``False``, the same seam B5 input B patches
+      (``anvilkit/cli.py:142``),
+    * output for both: ``"ghp_stored"`` — the stored token is returned with
+      no prompt of any kind: ``prompts.confirm`` and ``prompts.ask_required``
+      are booby-trapped with ``side_effect=AssertionError``, exactly as in
+      B3/B5,
+    * ``.env`` is left undisturbed — reuse reads, never writes.
+
+    Ordering requirement (the crux): the ``.env`` lookup must sit BEFORE the
+    ``assume_yes or not interactive`` guard — the same ordering as
+    ``_resolve_oxylabs`` (store lookup at ``anvilkit/cli.py:832``, guard at
+    ``anvilkit/cli.py:837``). An implementation that reversed the order
+    (guard first) would return ``""`` here without ever consulting the store;
+    the booby-trapped result assertions (plus ``env_get.assert_called_once``
+    and the non-empty return) catch exactly that.
+
+    These tests are *contract locks*: B3's green cycle already placed the
+    store lookup before the B5 guard, so both tests are expected to be green
+    from the start, pinning the ordering against a future reordering (like
+    B1/B4's committed locks).
+    """
+
+    REUSE_NOTICE = "🔑 Reusing existing GITHUB_TOKEN from .env"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _booby_traps(self):
+        """Context managers that booby-trap the prompt seams.
+
+        Any call from ``_resolve_github_token`` raises a named AssertionError;
+        the bound mocks are also captured so the test can assert non-use
+        explicitly. The store seam is left live: the ``.env`` lookup is
+        expected to happen (and hit) before the guard would be reached.
+        """
+        return (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not call prompts.confirm "
+                    "when GITHUB_TOKEN is stored in .env, even under "
+                    "--yes or non-interactive"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token "
+                    "when GITHUB_TOKEN is stored in .env, even under "
+                    "--yes or non-interactive"
+                ),
+            ),
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    # -- B6 input A: --yes (assume_yes=True), token stored --------------------
+
+    def test_assume_yes_with_stored_token_returns_stored_token_without_prompting(self):
+        """``assume_yes=True`` and ``GITHUB_TOKEN=ghp_stored`` -> ``"ghp_stored"``.
+
+        The store hit must short-circuit BEFORE the ``assume_yes`` guard:
+        a guard-first implementation returns ``""`` here without a prompt,
+        which is exactly the regression these tests lock out.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=True)
+
+        trap_confirm, trap_ask = self._booby_traps()
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        # (a) the store was consulted — the lookup precedes the guard
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the stored token is returned, not the guard's ""
+        self.assertEqual("ghp_stored", result)
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the reuse is reported; the secret is never echoed
+        output = "\n".join(lines)
+        self.assertIn(self.REUSE_NOTICE, output)
+        self.assertNotIn("ghp_stored", output)
+        # the decision left .env exactly as found
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B6 input B: non-interactive, token stored ----------------------------
+
+    def test_non_interactive_with_stored_token_returns_stored_token_without_prompting(self):
+        """Non-interactive (``_is_interactive`` -> ``False``) and
+        ``GITHUB_TOKEN=ghp_stored`` -> ``"ghp_stored"``.
+
+        Same ordering contract as input A through the interactivity seam:
+        the store lookup must win before the ``not interactive()`` half of
+        the guard can return ``""``.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = self._booby_traps()
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with mock.patch.object(cli, "_is_interactive", return_value=False):
+                with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                    with echo_patcher:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        # (a) the store was consulted — the lookup precedes the guard
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the stored token is returned, not the guard's ""
+        self.assertEqual("ghp_stored", result)
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the reuse is reported; the secret is never echoed
+        output = "\n".join(lines)
+        self.assertIn(self.REUSE_NOTICE, output)
+        self.assertNotIn("ghp_stored", output)
+        # the decision left .env exactly as found
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+
+# ---------------------------------------------------------------------------
+# _persist_github_token  (Behavior 11 — writing GITHUB_TOKEN disturbs no other key)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenWriteDoesNotDisturbOtherKeys(CliCase):
+    """B11: writing ``GITHUB_TOKEN`` disturbs no other key.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B11:
+
+    * input: ``.env`` containing ``ANTHROPIC_API_KEY``, ``OXYLABS_USERNAME``,
+      ``OXYLABS_PASSWORD``, ``LLM_PORT``, a comment line and a section
+      heading,
+    * action: persist a GitHub token through the real seam —
+      ``_resolve_github_token`` with ``token="ghp_new"`` — covering both the
+      append-a-new-key case and the replace-an-existing-entry case,
+    * output: every other key and its value, the comments and the original
+      ordering are intact in the file, and ``GITHUB_TOKEN`` is appended or
+      replaced in place.
+
+    Assertions are on the actual file content — parsed values via
+    ``cli.env.read`` plus raw text for ordering, comments and in-place
+    position — not on a mock of ``env.set_value``.
+
+    Regression sibling of
+    ``test_set_value_preserves_anthropic_api_key_and_github_token_when_setting_oxylabs``
+    (``tests/test_env.py:269``), which asserts the mirror-image property at
+    the store level. Here the property is locked one seam higher: through
+    ``_persist_github_token`` as reached from ``_resolve_github_token``.
+
+    Contract-lock note: ``env.set_value`` (``anvilkit/env.py:44``) is a
+    purpose-built, tested store documented to match the key exactly and
+    preserve surrounding lines, comments and ordering, so this test is
+    expected to be green from the start, pinning the property against a
+    future rewrite (like the committed locks for B1/B4/B6/B9/B10).
+    """
+
+    PERSIST_NOTICE = "⚡ Token accepted and persisted to .env"
+    TOKEN = "ghp_new"
+
+    # The fixture is written as raw text rather than via ``write_env``
+    # (which delegates to ``env.write`` and cannot express a plain comment
+    # line), so the test owns its exact ordering, comment and heading.
+    FIXTURE = (
+        "# Anvil machine-specific secrets\n"
+        "ANTHROPIC_API_KEY=sk-ant-abc123\n"
+        "\n"
+        "# --- Oxylabs proxy ---\n"
+        "OXYLABS_USERNAME=oxuser\n"
+        "OXYLABS_PASSWORD=oxpass\n"
+        "\n"
+        "# Networking\n"
+        "LLM_PORT=8000\n"
+    )
+
+    EXPECTED_OTHERS = {
+        "ANTHROPIC_API_KEY": "sk-ant-abc123",
+        "OXYLABS_USERNAME": "oxuser",
+        "OXYLABS_PASSWORD": "oxpass",
+        "LLM_PORT": "8000",
+    }
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def _write_fixture(self, extra_lines=()):
+        """Write the fixture, optionally interleaving ``extra_lines`` before the last line."""
+        lines = self.FIXTURE.splitlines()
+        for extra in reversed(list(extra_lines)):
+            lines.insert(2, extra)  # right after ANTHROPIC_API_KEY
+        self.env_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _resolve_with_flag(self):
+        """Run ``_resolve_github_token`` through the flag path with a new token.
+
+        Returns ``(result, prompts_confirm, ask_required, lines)``. The
+        prompt seams are booby-trapped: the flag path must not prompt.
+        """
+        trap_confirm = mock.patch.object(
+            cli.prompts,
+            "confirm",
+            side_effect=AssertionError(
+                "_resolve_github_token must not prompt when the flag is given"
+            ),
+        )
+        trap_ask = mock.patch.object(
+            cli.prompts,
+            "ask_required",
+            side_effect=AssertionError(
+                "_resolve_github_token must not ask for a token when the flag is given"
+            ),
+        )
+        echo_patcher, lines = self._capture_echo()
+        with trap_confirm as prompts_confirm, trap_ask as ask_required:
+            with echo_patcher:
+                result = cli._resolve_github_token(self._make_context(), self.TOKEN, no_github=False)
+        return result, prompts_confirm, ask_required, lines
+
+    def _assert_other_keys_intact(self):
+        """Every other key and its value survives, plus the comments and heading."""
+        values = cli.env.read(self.env_path())
+        for key, value in self.EXPECTED_OTHERS.items():
+            self.assertEqual(value, values.get(key))
+
+        content = self.env_path().read_text(encoding="utf-8")
+        # comment line and section heading survive byte-for-byte
+        self.assertIn("# Anvil machine-specific secrets\n", content)
+        self.assertIn("# --- Oxylabs proxy ---\n", content)
+        self.assertIn("# Networking\n", content)
+
+    def test_persist_new_token_appends_without_disturbing_other_keys(self):
+        """``token="ghp_new"`` with no stored token -> ``GITHUB_TOKEN`` appended, everything else intact.
+
+        The byte comparison is the decisive assertion: the resulting file
+        must be exactly the original file plus the appended line, so any
+        reordering, dropped line or value mutation fails.
+        """
+        self._write_fixture()
+        content_before = self.env_path().read_text(encoding="utf-8")
+        lines_before = content_before.splitlines()
+
+        result, prompts_confirm, ask_required, lines = self._resolve_with_flag()
+
+        # (a) the flag value is returned, no prompt of any kind
+        self.assertEqual(self.TOKEN, result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (b) every other key/value, the comments and the heading are intact
+        self._assert_other_keys_intact()
+        # (c) the original ordering is intact and GITHUB_TOKEN is appended
+        #     last — the file is byte-for-byte the original plus one line
+        lines_after = self.env_path().read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines_before + ["GITHUB_TOKEN=" + self.TOKEN], lines_after)
+        # (d) the store now answers for the new key with the new value
+        self.assertEqual(self.TOKEN, cli.env.get(self.env_path(), cli.GITHUB_TOKEN_ENV))
+        # (e) the persist notice is echoed; the secret never is
+        output = "\n".join(lines)
+        self.assertIn(self.PERSIST_NOTICE, output)
+        self.assertNotIn(self.TOKEN, output)
+
+    def test_persist_replaces_existing_token_in_place_without_disturbing_other_keys(self):
+        """``token="ghp_new"`` over ``GITHUB_TOKEN=ghp_old`` -> replaced in place, everything else intact.
+
+        The entry sits mid-file, between two unrelated keys: an in-place
+        replace leaves its line index unchanged, while a rewrite that
+        re-sorted or re-appended the key would move it and fail the
+        line-by-line comparison.
+        """
+        self._write_fixture(extra_lines=("GITHUB_TOKEN=ghp_old",))
+        lines_before = self.env_path().read_text(encoding="utf-8").splitlines()
+        index_before = lines_before.index("GITHUB_TOKEN=ghp_old")
+
+        result, prompts_confirm, ask_required, lines = self._resolve_with_flag()
+
+        # (a) the flag value is returned, no prompt of any kind
+        self.assertEqual(self.TOKEN, result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (b) every other key/value, the comments and the heading are intact
+        self._assert_other_keys_intact()
+        # (c) the replacement is in place: the old value is gone, the new
+        #     one sits at exactly the same line index, and every other line
+        #     is byte-for-byte unchanged
+        content_after = self.env_path().read_text(encoding="utf-8")
+        self.assertNotIn("ghp_old", content_after)
+        lines_after = content_after.splitlines()
+        self.assertEqual(len(lines_before), len(lines_after))
+        self.assertEqual(
+            "GITHUB_TOKEN=" + self.TOKEN, lines_after[index_before]
+        )
+        for position, (before, after) in enumerate(zip(lines_before, lines_after)):
+            if position != index_before:
+                self.assertEqual(before, after)
+        # (d) the store now answers for the key with the new value, and no
+        #     duplicate entry was left behind
+        self.assertEqual(self.TOKEN, cli.env.get(self.env_path(), cli.GITHUB_TOKEN_ENV))
+        self.assertEqual(
+            1, sum(1 for line in lines_after if line.startswith("GITHUB_TOKEN="))
+        )
+        # (e) the persist notice is echoed; the secret never is
+        output = "\n".join(lines)
+        self.assertIn(self.PERSIST_NOTICE, output)
+        self.assertNotIn(self.TOKEN, output)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 12 — no ripple into render or provision)
+# ---------------------------------------------------------------------------
+
+
+class TestNoGithubRunNeverBlanksStoredRepoToken(CliCase):
+    """B12: ``--no-github`` reaching provision as ``""`` must not blank a token the target repo already holds.
+
+    ``_resolve_github_token`` now returns ``""`` from new code paths
+    (``--no-github`` short-circuit, ``--yes`` / non-interactive with nothing
+    stored) that could not produce it before the bugfix. This guard locks
+    the downstream contract end-to-end: the real ``provision.setup_repo``
+    (unmocked, as in ``TestNonInteractive.test_yes_setup_repo_reads_no_stdin``)
+    merges an incoming ``GITHUB_PERSONAL_ACCESS_TOKEN=""`` into a target whose
+    ``.roo/mcp.json`` already holds a non-empty one, and the stored value must
+    survive — the A2 credential rule at ``anvilkit/provision.py:404-408``.
+
+    Assertions are on the parsed structure of the deployed ``.roo/mcp.json``
+    in the target, never on source text. The target is seeded with the
+    same realistic github server entry shape as
+    ``tests/test_provision_mcp_merge.py`` so the merge path (Anvil-owned
+    server, dict env on both sides) is the one exercised.
+    """
+
+    STORED = "ghp_preexisting_in_repo"
+
+    def setUp(self):
+        super().setUp()
+        self.write_env(LLM_PORT="8000")
+        self._target = tempfile.TemporaryDirectory()
+        self.target = Path(self._target.name)
+        self.addCleanup(self._target.cleanup)
+        self._seed_mcp_json()
+
+    def _seed_mcp_json(self):
+        roo = self.target / ".roo"
+        roo.mkdir(parents=True)
+        data = {
+            "mcpServers": {
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                    "disabled": False,
+                    "alwaysAllow": [],
+                    "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": self.STORED},
+                }
+            }
+        }
+        (roo / "mcp.json").write_text(
+            json.dumps(data, indent=4), encoding="utf-8"
+        )
+
+    def test_no_github_run_keeps_the_stored_repo_token(self):
+        """``setup-repo --no-github``: the empty incoming token must not blank the stored one.
+
+        * arrange: a target repo whose ``.roo/mcp.json`` holds
+          ``GITHUB_PERSONAL_ACCESS_TOKEN=ghp_preexisting_in_repo``;
+        * act: ``setup-repo <target> --yes --no-github`` through the real
+          entry path, with the real provision performing the writes;
+        * assert: exit 0 and the stored token still present in the merged
+          ``.roo/mcp.json`` in the target.
+        """
+        result = self.invoke(
+            ["setup-repo", str(self.target), "--yes", "--no-github"]
+        )
+        self.assertEqual(0, result.exit_code, result.output)
+
+        deployed = json.loads(
+            (self.target / ".roo" / "mcp.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            self.STORED,
+            deployed["mcpServers"]["github"]["env"][
+                "GITHUB_PERSONAL_ACCESS_TOKEN"
+            ],
+        )

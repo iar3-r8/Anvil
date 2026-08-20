@@ -73,6 +73,7 @@ _DEFAULT_GPU_EMBEDDER = "2"
 _UNSET_API_KEY = "to set"
 
 ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
+GITHUB_TOKEN_ENV = "GITHUB_TOKEN"
 PORT_ENV = "LLM_PORT"
 
 
@@ -757,7 +758,24 @@ def _resolve_github_token(
         return ""
 
     if token is not None:
+        # A flag-supplied value is authoritative; persist it so flag-less runs
+        # are not prompted forever. An explicit empty string returns as-is and
+        # never blanks a non-empty stored value.
+        _persist_github_token(shared, token)
         return token
+
+    # Consult the .env store before prompting: a non-empty stored token is
+    # reused as-is so already-configured machines are not re-prompted. The
+    # lookup sits before the --yes / non-interactive guard, matching
+    # _resolve_oxylabs.
+    stored = env.get(shared.env_path, GITHUB_TOKEN_ENV)
+    if stored:
+        # The value itself is never echoed.
+        shared.echo("🔑 Reusing existing GITHUB_TOKEN from .env")
+        return stored
+
+    if shared.assume_yes or not shared.interactive():
+        return ""
 
     wants_github = prompts.confirm(
         "❓ Do you use GitHub and want to map a personal repository token for the agent?",
@@ -769,8 +787,7 @@ def _resolve_github_token(
     if not wants_github:
         shared.echo("⚠️  Skipping interactive GitHub integration token.")
         shared.echo("💡 Note: If you wish to set this up later, you must manually edit")
-        shared.echo("   the 'mcp.json' file inside your repository's '.roo/' directory")
-        shared.echo("   and populate the GITHUB_TOKEN variable.")
+        shared.echo("   '.env' and populate GITHUB_TOKEN.")
         return ""
 
     resolved = prompts.ask_required(
@@ -779,8 +796,27 @@ def _resolve_github_token(
         interactive=shared.interactive(),
         hide_input=True,
     )
-    shared.echo("⚡ Token accepted.")
+    _persist_github_token(shared, resolved)
     return resolved
+
+
+def _persist_github_token(shared: Context, token: str) -> None:
+    """Store the token in .env, replacing any existing entry."""
+    if not token:
+        # --github-token "" reaches here via the flag path; treating an empty
+        # value as a no-op is what keeps it from blanking a stored token.
+        return
+
+    if shared.dry_run:
+        shared.echo("would store {} in {}".format(GITHUB_TOKEN_ENV, shared.env_path))
+        return
+
+    if env.get(shared.env_path, GITHUB_TOKEN_ENV) == token:
+        return
+
+    env.set_value(shared.env_path, GITHUB_TOKEN_ENV, token)
+    # The value itself is never echoed.
+    shared.echo("⚡ Token accepted and persisted to .env")
 
 
 def _resolve_oxylabs(
