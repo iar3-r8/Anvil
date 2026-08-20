@@ -1851,6 +1851,137 @@ class TestResolveGithubTokenNoGithub(CliCase):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 5 — --yes / non-interactive, nothing stored)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenYesOrNonInteractive(CliCase):
+    """B5: ``--yes`` or non-interactive with nothing stored returns empty, never blocking.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B5:
+
+    * input ``token=None``, ``no_github=False``, nothing stored in .env (no
+      ``GITHUB_TOKEN`` key, or a key with an empty value),
+    * input A: ``assume_yes=True`` (``--yes``),
+    * input B (separate test): non-interactive — ``_is_interactive`` patched
+      to return ``False``, the same seam the oxylabs decline test and B4
+      patch (``anvilkit/cli.py:142``),
+    * output for both: ``""``, with ``prompts.confirm`` patched to raise an
+      ``AssertionError`` if called — the Definition of Done (§6) requires no
+      new blocking prompt, so the guard must be explicit rather than an
+      emergent property of ``confirm(default=False)`` returning ``False``
+      under ``assume_yes``/non-interactive (``anvilkit/prompts.py:93``).
+
+    Red-phase note: the current implementation (``anvilkit/cli.py:777``) has
+    no ``assume_yes or not interactive`` guard — it calls
+    ``prompts.confirm`` unconditionally after the store lookup misses,
+    relying on ``confirm``'s internal ``assume_yes`` handling
+    (``anvilkit/prompts.py:93``) to keep ``ask_required`` out of reach. The
+    booby-trapped ``confirm`` seam therefore fires today, so both tests are
+    RED with an AssertionError naming the missing guard. Compare
+    ``_resolve_oxylabs`` (``anvilkit/cli.py:837``), which guards before the
+    prompt — the shape this behaviour must take.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _booby_traps(self):
+        """Context managers that booby-trap the prompt seams.
+
+        Any call from ``_resolve_github_token`` raises a named AssertionError;
+        the bound mocks are also captured so the test can assert non-use
+        explicitly. The store seam is left live: the ``.env`` lookup is
+        expected to happen (and miss) before the guard is reached.
+        """
+        return (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not call prompts.confirm "
+                    "when --yes or non-interactive and no token is stored"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token "
+                    "when --yes or non-interactive and no token is stored"
+                ),
+            ),
+        )
+
+    # -- B5 input A: --yes (assume_yes=True), nothing stored ----------------
+
+    def test_assume_yes_with_nothing_stored_returns_empty_without_prompting(self):
+        """``assume_yes=True`` and no ``GITHUB_TOKEN`` in .env -> ``""``.
+
+        The store is consulted (and misses), then the guard must return
+        without reaching ``prompts.confirm`` at all — ``confirm``'s own
+        ``assume_yes`` handling must not be the thing that keeps the prompt
+        out of reach.
+        """
+        # .env exists but carries no GITHUB_TOKEN — the lookup must miss
+        self.write_env(LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=True)
+
+        trap_confirm, trap_ask = self._booby_traps()
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        # (a) the store was consulted (and found nothing)
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the confirm gate is never reached — this is what the guard owns
+        self.assertEqual("", result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # the decision left .env exactly as found, no token created
+        values = cli.env.read(self.env_path())
+        self.assertIsNone(values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B5 input B: non-interactive, nothing stored ------------------------
+
+    def test_non_interactive_with_nothing_stored_returns_empty_without_prompting(self):
+        """Non-interactive (``_is_interactive`` -> ``False``), nothing stored -> ``""``.
+
+        Same contract as input A through a different seam: the guard must
+        key off interactivity as well, and return before ``prompts.confirm``
+        is even called.
+        """
+        # .env exists but carries no GITHUB_TOKEN — the lookup must miss
+        self.write_env(LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = self._booby_traps()
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with mock.patch.object(cli, "_is_interactive", return_value=False):
+                with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                    result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        # (a) the store was consulted (and found nothing)
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the confirm gate is never reached, whether or not it would
+        #     answer no internally
+        self.assertEqual("", result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # the decision left .env exactly as found, no token created
+        values = cli.env.read(self.env_path())
+        self.assertIsNone(values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+
+# ---------------------------------------------------------------------------
 # _resolve_github_token  (Behavior 2 — --github-token wins, and is persisted)
 # ---------------------------------------------------------------------------
 
