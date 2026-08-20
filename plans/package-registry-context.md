@@ -348,6 +348,9 @@ should fail only if someone changes it later.
   point.
 - *Rationale for not asserting whole-file equality:* the local copy may legitimately carry
   repo-specific text; only the shared requirement is locked.
+- *Edge (added after green):* `.roo/*` is gitignored, so the local copy is absent on a
+  fresh clone. The B20 tests must skip cleanly when the file is missing and keep the full
+  assertion set when it is present.
 
 ### Group F — regression guards
 

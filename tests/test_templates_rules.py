@@ -931,9 +931,21 @@ class B20LocalTddManagerTests(TddManagerRequirementBase):
     The same assertions run against the local copy, so it cannot drift from
     the template on this point. Only the shared requirement is locked, never
     whole-file equality.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone (and
+    on CI). ``setUp`` skips every B20 test cleanly in that case; when the
+    file is provisioned, the full assertion set runs exactly as written below
+    in the base class.
     """
 
     template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
 
 
 if __name__ == "__main__":
