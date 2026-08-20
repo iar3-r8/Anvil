@@ -796,7 +796,7 @@ def _resolve_github_token(
         interactive=shared.interactive(),
         hide_input=True,
     )
-    shared.echo("⚡ Token accepted.")
+    _persist_github_token(shared, resolved)
     return resolved
 
 
