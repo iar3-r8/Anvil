@@ -2608,6 +2608,116 @@ class TestResolveGithubTokenAcceptPersists(CliCase):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 9 — persisting is a no-op when unchanged)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenPersistNoopUnchanged(CliCase):
+    """B9: persisting is a no-op when the value is unchanged.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B9:
+
+    * input: ``.env`` already holds ``GITHUB_TOKEN=ghp_same`` and the
+      resolved value is ``ghp_same`` — reachable via B2 with a matching
+      flag, i.e. ``_resolve_github_token`` called with
+      ``token="ghp_same"`` against a store already holding ``ghp_same``,
+    * ``env.set_value`` is NOT called — asserted with
+      ``mock.patch.object(cli.env, "set_value")`` and ``assert_not_called``,
+    * the return value is still ``"ghp_same"``,
+    * ``.env`` is byte-for-byte unchanged: the existing lines, their
+      ordering and the other keys all survive (no read-modify-rewrite),
+    * the persist notice ``⚡ Token accepted and persisted to .env`` is NOT
+      echoed — the no-op returns before the echo
+      (``anvilkit/cli.py:812-813``).
+
+    Contract-lock note: B2's green cycle already built the
+    unchanged-early-return into ``_persist_github_token``, so this test is
+    expected to be green from the start, pinning the guard against a future
+    rewrite (like B1/B4/B6's committed locks).
+    """
+
+    PERSIST_NOTICE = "⚡ Token accepted and persisted to .env"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def test_unchanged_flag_token_is_not_rewritten_to_env(self):
+        """Flag value == stored value -> returned, no ``set_value``, file untouched.
+
+        ``.env`` holds ``GITHUB_TOKEN=ghp_same`` plus other keys; passing
+        the matching ``token="ghp_same"`` through the B2 flag path must
+        leave the file byte-for-byte identical and echo no persist notice.
+        """
+        self.write_env(
+            GITHUB_TOKEN="ghp_same",
+            LLM_PORT="8000",
+            OXYLABS_USERNAME="oxu",
+        )
+        content_before = self.env_path().read_bytes()
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when the flag is given"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when the flag is given"
+                ),
+            ),
+        )
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli.env, "set_value") as set_value:
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(
+                        ctx, "ghp_same", no_github=False
+                    )
+
+        # (a) the flag value is still returned
+        self.assertEqual("ghp_same", result)
+        # (b) no write happened at all
+        set_value.assert_not_called()
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the file is byte-for-byte unchanged: every line, its ordering
+        #     and the other keys survive
+        self.assertEqual(content_before, self.env_path().read_bytes())
+        values = cli.env.read(self.env_path())
+        self.assertEqual(
+            {
+                "GITHUB_TOKEN": "ghp_same",
+                "LLM_PORT": "8000",
+                "OXYLABS_USERNAME": "oxu",
+            },
+            values,
+        )
+        # (e) the persist notice is not echoed — the no-op returns before it
+        output = "\n".join(lines)
+        self.assertNotIn(self.PERSIST_NOTICE, output)
+
+
+# ---------------------------------------------------------------------------
 # _resolve_github_token  (Behavior 6 — --yes / non-interactive reuse a stored token)
 # ---------------------------------------------------------------------------
 
