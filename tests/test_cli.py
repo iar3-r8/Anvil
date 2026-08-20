@@ -1732,3 +1732,119 @@ class TestResolveOxylabs(CliCase):
         self.assertEqual(("", ""), result)
         # .env must NOT have been created
         self.assertFalse(self.env_path().exists())
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 1 — contract lock for --no-github)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenNoGithub(CliCase):
+    """B1: ``--no-github`` short-circuits before any store access.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B1:
+
+    * input ``no_github=True`` (with or without a ``GITHUB_TOKEN`` in .env),
+    * output ``""``,
+    * ``env.get`` is never called — the stored token is neither read nor
+      clobbered by the decision,
+    * ``prompts.confirm`` / ``prompts.ask_required`` are never called — no
+      interactive surface is even reachable.
+
+    Both seams are booby-trapped with ``side_effect=AssertionError``, matching
+    the oxylabs precedent in ``TestResolveOxylabs``: any call from
+    ``_resolve_github_token`` fails the test loudly rather than hanging or
+    reading the real file.
+
+    Red-phase note: the current implementation (``anvilkit/cli.py:752``)
+    already returns on ``no_github`` before the prompt, and does not read
+    ``.env`` at all yet — so these assertions may be green today. That is the
+    *partially green* situation the task anticipated: the value of these tests
+    is that they LOCK the contract, so a later refactor that consults the
+    store before the flag (e.g. to decide whether to skip the prompt) cannot
+    silently break the "no store access" promise.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _booby_traps(self):
+        """Context managers that booby-trap the store seams.
+
+        Any call from ``_resolve_github_token`` raises a named AssertionError;
+        the bound mocks are also captured so the test can assert non-use
+        explicitly.
+        """
+        return (
+            mock.patch.object(
+                cli.env,
+                "get",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not read .env when no_github=True"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when no_github=True"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when no_github=True"
+                ),
+            ),
+        )
+
+    # -- B1 proper: stored token present, must be ignored -----------------
+
+    def test_no_github_returns_empty_without_reading_stored_token(self):
+        """``no_github=True`` with ``GITHUB_TOKEN=ghp_stored`` in .env -> ``""``.
+
+        The stored token must not be read, echoed, or disturbed.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_env_get, trap_confirm, trap_ask = self._booby_traps()
+        with trap_env_get as env_get, trap_confirm as prompts_confirm, trap_ask as ask_required:
+            result = cli._resolve_github_token(ctx, None, no_github=True)
+
+        # (a) the returned value is the empty token
+        self.assertEqual("", result)
+        # (b) the store was never consulted
+        env_get.assert_not_called()
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # the decision left .env exactly as found
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+
+    # -- B1 edge: no .env at all ------------------------------------------
+
+    def test_no_github_returns_empty_when_env_file_is_absent(self):
+        """The short-circuit holds even when .env does not exist."""
+        if self.env_path().exists():
+            self.env_path().unlink()
+        ctx = self._make_context(assume_yes=False)
+
+        trap_env_get, trap_confirm, trap_ask = self._booby_traps()
+        with trap_env_get as env_get, trap_confirm as prompts_confirm, trap_ask as ask_required:
+            result = cli._resolve_github_token(ctx, None, no_github=True)
+
+        self.assertEqual("", result)
+        env_get.assert_not_called()
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # and it must not *create* the store as a side effect
+        self.assertFalse(self.env_path().exists())
