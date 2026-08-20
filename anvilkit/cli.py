@@ -787,8 +787,7 @@ def _resolve_github_token(
     if not wants_github:
         shared.echo("⚠️  Skipping interactive GitHub integration token.")
         shared.echo("💡 Note: If you wish to set this up later, you must manually edit")
-        shared.echo("   the 'mcp.json' file inside your repository's '.roo/' directory")
-        shared.echo("   and populate the GITHUB_TOKEN variable.")
+        shared.echo("   '.env' and populate GITHUB_TOKEN.")
         return ""
 
     resolved = prompts.ask_required(
