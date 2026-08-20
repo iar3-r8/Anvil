@@ -764,6 +764,16 @@ def _resolve_github_token(
         _persist_github_token(shared, token)
         return token
 
+    # Consult the .env store before prompting: a non-empty stored token is
+    # reused as-is so already-configured machines are not re-prompted. The
+    # lookup sits before the --yes / non-interactive guard, matching
+    # _resolve_oxylabs.
+    stored = env.get(shared.env_path, GITHUB_TOKEN_ENV)
+    if stored:
+        # The value itself is never echoed.
+        shared.echo("🔑 Reusing existing GITHUB_TOKEN from .env")
+        return stored
+
     wants_github = prompts.confirm(
         "❓ Do you use GitHub and want to map a personal repository token for the agent?",
         default=False,
