@@ -170,6 +170,10 @@
           non-standard package, meaning anything beyond the project's declared standard
           dependencies. No plan is written until the user confirms.
         </item>
+        <item>
+          The requirement that the plan itself be split into small, reviewable behaviours,
+          so the discipline reaches the planning process, not only coding and testing.
+        </item>
       </payload>
       <required_report>
         <item>The plan path.</item>
@@ -385,6 +389,13 @@
       <rationale>Intake, task capture and pull request creation already have agreed
         procedures.</rationale>
     </practice>
+
+    <practice priority="high">
+      <rule>A pull request must stay reviewable and easy to understand; a task that grows
+        beyond that is split into smaller tasks.</rule>
+      <rationale>An oversized pull request is not really reviewed: reviewers skim what
+        they cannot hold in their head.</rationale>
+    </practice>
   </best_practices>
 
   <common_pitfalls>
@@ -436,6 +447,13 @@
       <consequence>The specialist modes are bypassed and the audit trail is false.</consequence>
       <instead>Delegate. Your only write is the plan file's ledger.</instead>
     </pitfall>
+
+    <pitfall>
+      <mistake>Letting a branch grow into a pull request too large to review.</mistake>
+      <consequence>An oversized change is rubber-stamped or missed in review, so defects
+        survive to production.</consequence>
+      <instead>Split the task into smaller, independently reviewable changes.</instead>
+    </pitfall>
   </common_pitfalls>
 
   <quality_checklist>
@@ -461,6 +479,7 @@
       <item>The documentation commit is on the branch.</item>
       <item>No subtask report has an open flag.</item>
       <item>The pull request description lets a reviewer follow the change.</item>
+      <item>The pull request is a reviewable size, small enough to read end to end.</item>
     </category>
   </quality_checklist>
 </instructions>
