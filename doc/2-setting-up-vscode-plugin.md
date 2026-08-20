@@ -32,6 +32,25 @@ explicitly, and `--dry-run` to see exactly which files would be written without
 writing any of them. See the [backend guide](1-setting-up-backend.md) for the full
 flag list.
 
+### GitHub token
+
+The agent's GitHub personal access token is kept in Anvil's own store, not in
+the target repository, so the decision is shared across every provisioned
+repository:
+
+* Accepting the prompt stores the token (hidden as you type) in `.env` as
+  `GITHUB_TOKEN`, and `setup-repo` injects it into the target's `.roo/mcp.json`
+  as `GITHUB_PERSONAL_ACCESS_TOKEN`.
+* A `GITHUB_TOKEN` already present in `.env` is reused silently — a second run
+  does not re-prompt, and the value itself is never echoed. A blank stored
+  value counts as absent and prompts again.
+* `--github-token` wins over the store and is persisted the same way, so a
+  flag-bearing run leaves flag-less runs on the same machine un-prompted.
+* `--no-github` skips the integration entirely without touching `.env`, and a
+  `--yes` or non-interactive run with nothing stored skips without blocking.
+* Declining the prompt does the same and points you at the same place to fix it
+  later: edit `.env` and populate `GITHUB_TOKEN`.
+
 ### Documentation grounding with Oxylabs
 
 The agent modes are told that an unknown third-party interface is a **blocking

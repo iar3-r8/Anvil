@@ -803,6 +803,8 @@ def _resolve_github_token(
 def _persist_github_token(shared: Context, token: str) -> None:
     """Store the token in .env, replacing any existing entry."""
     if not token:
+        # --github-token "" reaches here via the flag path; treating an empty
+        # value as a no-op is what keeps it from blanking a stored token.
         return
 
     if shared.dry_run:
