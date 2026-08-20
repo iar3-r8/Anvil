@@ -2352,3 +2352,161 @@ class TestResolveGithubTokenEmptyStored(CliCase):
         ask_required.assert_not_called()
         # and it must not *create* the store as a side effect
         self.assertFalse(self.env_path().exists())
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 6 — --yes / non-interactive reuse a stored token)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenStoredYesOrNonInteractive(CliCase):
+    """B6: ``--yes`` or non-interactive with a stored token returns the stored token.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B6:
+
+    * input ``token=None``, ``no_github=False``, ``GITHUB_TOKEN=ghp_stored``
+      in .env,
+    * input A: ``assume_yes=True`` (``--yes``),
+    * input B (separate test): non-interactive — ``_is_interactive`` patched
+      to return ``False``, the same seam B5 input B patches
+      (``anvilkit/cli.py:142``),
+    * output for both: ``"ghp_stored"`` — the stored token is returned with
+      no prompt of any kind: ``prompts.confirm`` and ``prompts.ask_required``
+      are booby-trapped with ``side_effect=AssertionError``, exactly as in
+      B3/B5,
+    * ``.env`` is left undisturbed — reuse reads, never writes.
+
+    Ordering requirement (the crux): the ``.env`` lookup must sit BEFORE the
+    ``assume_yes or not interactive`` guard — the same ordering as
+    ``_resolve_oxylabs`` (store lookup at ``anvilkit/cli.py:832``, guard at
+    ``anvilkit/cli.py:837``). An implementation that reversed the order
+    (guard first) would return ``""`` here without ever consulting the store;
+    the booby-trapped result assertions (plus ``env_get.assert_called_once``
+    and the non-empty return) catch exactly that.
+
+    These tests are *contract locks*: B3's green cycle already placed the
+    store lookup before the B5 guard, so both tests are expected to be green
+    from the start, pinning the ordering against a future reordering (like
+    B1/B4's committed locks).
+    """
+
+    REUSE_NOTICE = "🔑 Reusing existing GITHUB_TOKEN from .env"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _booby_traps(self):
+        """Context managers that booby-trap the prompt seams.
+
+        Any call from ``_resolve_github_token`` raises a named AssertionError;
+        the bound mocks are also captured so the test can assert non-use
+        explicitly. The store seam is left live: the ``.env`` lookup is
+        expected to happen (and hit) before the guard would be reached.
+        """
+        return (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not call prompts.confirm "
+                    "when GITHUB_TOKEN is stored in .env, even under "
+                    "--yes or non-interactive"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token "
+                    "when GITHUB_TOKEN is stored in .env, even under "
+                    "--yes or non-interactive"
+                ),
+            ),
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    # -- B6 input A: --yes (assume_yes=True), token stored --------------------
+
+    def test_assume_yes_with_stored_token_returns_stored_token_without_prompting(self):
+        """``assume_yes=True`` and ``GITHUB_TOKEN=ghp_stored`` -> ``"ghp_stored"``.
+
+        The store hit must short-circuit BEFORE the ``assume_yes`` guard:
+        a guard-first implementation returns ``""`` here without a prompt,
+        which is exactly the regression these tests lock out.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=True)
+
+        trap_confirm, trap_ask = self._booby_traps()
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        # (a) the store was consulted — the lookup precedes the guard
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the stored token is returned, not the guard's ""
+        self.assertEqual("ghp_stored", result)
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the reuse is reported; the secret is never echoed
+        output = "\n".join(lines)
+        self.assertIn(self.REUSE_NOTICE, output)
+        self.assertNotIn("ghp_stored", output)
+        # the decision left .env exactly as found
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B6 input B: non-interactive, token stored ----------------------------
+
+    def test_non_interactive_with_stored_token_returns_stored_token_without_prompting(self):
+        """Non-interactive (``_is_interactive`` -> ``False``) and
+        ``GITHUB_TOKEN=ghp_stored`` -> ``"ghp_stored"``.
+
+        Same ordering contract as input A through the interactivity seam:
+        the store lookup must win before the ``not interactive()`` half of
+        the guard can return ``""``.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = self._booby_traps()
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with mock.patch.object(cli, "_is_interactive", return_value=False):
+                with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                    with echo_patcher:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        # (a) the store was consulted — the lookup precedes the guard
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the stored token is returned, not the guard's ""
+        self.assertEqual("ghp_stored", result)
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the reuse is reported; the secret is never echoed
+        output = "\n".join(lines)
+        self.assertIn(self.REUSE_NOTICE, output)
+        self.assertNotIn("ghp_stored", output)
+        # the decision left .env exactly as found
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
