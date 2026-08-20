@@ -2355,6 +2355,135 @@ class TestResolveGithubTokenEmptyStored(CliCase):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 7 — declining the prompt points at the store)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenDecline(CliCase):
+    """B7: declining the prompt returns empty and points at the new store.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B7:
+
+    * input: interactive (``_is_interactive`` -> ``True``), nothing stored
+      in .env, ``prompts.confirm`` returns ``False``,
+    * output ``""`` — nothing is written to .env, and
+      ``prompts.ask_required`` is never called (booby-trapped with
+      ``side_effect=AssertionError``),
+    * the decline advisory changes wording: it must name ``.env`` and
+      ``GITHUB_TOKEN``, mirroring the oxylabs decline message
+      (``anvilkit/cli.py:851-853``), and must no longer point at the
+      target repo's ``.roo/mcp.json`` (``anvilkit/cli.py:789-791``).
+
+    Red-phase note: the return-value, no-write and no-ask parts already
+    hold; the message assertions fail today because the current advisory
+    names ``mcp.json`` inside ``.roo/`` and never mentions ``.env``.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def _ensure_nothing_stored(self):
+        if self.env_path().exists():
+            self.env_path().unlink()
+
+    # -- B7 proper: decline returns empty, writes nothing, asks nothing -------
+
+    def test_decline_returns_empty_and_writes_nothing_to_env(self):
+        """Interactive, nothing stored, decline -> ``""`` and .env untouched.
+
+        ``prompts.ask_required`` is booby-trapped, and ``env.set_value``
+        is patched to raise if the decline path tried to persist anything.
+        """
+        self._ensure_nothing_stored()
+        ctx = self._make_context(assume_yes=False)
+
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(
+                cli.prompts, "confirm", return_value=False
+            ) as prompts_confirm:
+                with mock.patch.object(
+                    cli.prompts,
+                    "ask_required",
+                    side_effect=AssertionError(
+                        "_resolve_github_token must not ask for a token "
+                        "when the user declines"
+                    ),
+                ) as ask_required:
+                    with mock.patch.object(
+                        cli.env,
+                        "set_value",
+                        side_effect=AssertionError(
+                            "declining must not write GITHUB_TOKEN to .env"
+                        ),
+                    ) as set_value:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        # (a) the confirm gate was reached and answered
+        prompts_confirm.assert_called_once()
+        # (b) declining returns empty
+        self.assertEqual("", result)
+        # (c) the token prompt is never reached
+        ask_required.assert_not_called()
+        # (d) nothing is persisted — not via the module, not onto disk
+        set_value.assert_not_called()
+        self.assertFalse(self.env_path().exists())
+
+    # -- B7 reporting: the advisory names the store, not the repo --------------
+
+    def test_decline_advisory_names_env_store_not_repo_mcp_json(self):
+        """The advisory points at ``.env``/``GITHUB_TOKEN``, not ``.roo/mcp.json``.
+
+        The new wording mirrors the oxylabs decline message
+        (``anvilkit/cli.py:851-853``): edit ``.env`` and populate the
+        variable. Distinctive substrings are asserted so the exact
+        punctuation is not load-bearing, but the old ``.roo/``/``mcp.json``
+        framing must be gone.
+        """
+        self._ensure_nothing_stored()
+        ctx = self._make_context(assume_yes=False)
+
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(cli.prompts, "confirm", return_value=False):
+                with mock.patch.object(
+                    cli.prompts,
+                    "ask_required",
+                    side_effect=AssertionError(
+                        "_resolve_github_token must not ask for a token "
+                        "when the user declines"
+                    ),
+                ):
+                    with echo_patcher:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        self.assertEqual("", result)
+        output = "\n".join(lines)
+        # (a) the new store is named
+        self.assertIn(".env", output)
+        self.assertIn("GITHUB_TOKEN", output)
+        # (b) the old target-repo framing is gone
+        self.assertNotIn("mcp.json", output)
+        self.assertNotIn(".roo", output)
+
+
+# ---------------------------------------------------------------------------
 # _resolve_github_token  (Behavior 6 — --yes / non-interactive reuse a stored token)
 # ---------------------------------------------------------------------------
 
