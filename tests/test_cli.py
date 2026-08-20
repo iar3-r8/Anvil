@@ -2718,6 +2718,154 @@ class TestResolveGithubTokenPersistNoopUnchanged(CliCase):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 10 — --dry-run writes nothing)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenDryRunWritesNothing(CliCase):
+    """B10: ``--dry-run`` writes nothing.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B10:
+
+    * input: ``shared.dry_run=True``, a resolved non-empty token, and
+      ``.env`` either absent or holding a *different* value (the
+      different-value case is chosen because a missing dry-run guard
+      would actually write there),
+    * output: ``.env`` unchanged on disk — the assertion is on the
+      file's content, not just on the mock,
+    * echoes ``would store GITHUB_TOKEN in <env_path>``;
+    * the token value is never echoed.
+
+    The persist helper is reached through the public
+    ``_resolve_github_token`` path — ``token="ghp_flag"`` with
+    ``dry_run=True`` — so the test exercises the real seam.
+
+    Contract-lock note: B2's green cycle already built the dry-run
+    guard into ``_persist_github_token``
+    (``anvilkit/cli.py:808-810``), so this test is expected to be green
+    from the start, pinning the guard against a future rewrite (like
+    B1/B4/B6/B9's committed locks).
+    """
+
+    PERSIST_NOTICE = "⚡ Token accepted and persisted to .env"
+    TOKEN = "ghp_flag"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context with ``dry_run=True`` pointing at the test project."""
+        return cli.Context(
+            dry_run=True,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def _resolve_dry_run(self, token):
+        """Run ``_resolve_github_token`` through the flag path with ``dry_run=True``.
+
+        Returns ``(result, set_value, prompts_confirm, ask_required, lines)``.
+        """
+        ctx = self._make_context(assume_yes=False)
+        trap_confirm = mock.patch.object(
+            cli.prompts,
+            "confirm",
+            side_effect=AssertionError(
+                "_resolve_github_token must not prompt when the flag is given"
+            ),
+        )
+        trap_ask = mock.patch.object(
+            cli.prompts,
+            "ask_required",
+            side_effect=AssertionError(
+                "_resolve_github_token must not ask for a token when the flag is given"
+            ),
+        )
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli.env, "set_value") as set_value:
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(ctx, token, no_github=False)
+        return result, set_value, prompts_confirm, ask_required, lines
+
+    def test_dry_run_flag_token_writes_nothing_when_stored_value_differs(self):
+        """``token="ghp_flag"`` + a *different* stored value -> echo only, file unchanged.
+
+        The different stored value is what makes this test bite: a missing
+        dry-run guard would write here, and the byte comparison catches it.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        content_before = self.env_path().read_bytes()
+        ctx = self._make_context()
+
+        (
+            result,
+            set_value,
+            prompts_confirm,
+            ask_required,
+            lines,
+        ) = self._resolve_dry_run(self.TOKEN)
+
+        # (a) the flag value is still returned
+        self.assertEqual(self.TOKEN, result)
+        # (b) no write happened at all
+        set_value.assert_not_called()
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the file content is unchanged on disk — a missing dry-run guard
+        #     would have rewritten it with the different flag value
+        self.assertEqual(content_before, self.env_path().read_bytes())
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+        # (e) the would-store line is echoed, naming the key and the path
+        output = "\n".join(lines)
+        self.assertIn("would store", output)
+        self.assertIn("GITHUB_TOKEN", output)
+        self.assertIn(str(ctx.env_path), output)
+        # (f) the persist notice is not echoed, and neither is the secret
+        self.assertNotIn(self.PERSIST_NOTICE, output)
+        self.assertNotIn(self.TOKEN, output)
+
+    def test_dry_run_flag_token_creates_no_file_when_env_absent(self):
+        """``token="ghp_flag"`` + no ``.env`` -> the file is never created."""
+        self.assertFalse(self.env_path().exists())
+        ctx = self._make_context()
+
+        (
+            result,
+            set_value,
+            prompts_confirm,
+            ask_required,
+            lines,
+        ) = self._resolve_dry_run(self.TOKEN)
+
+        # (a) the flag value is still returned
+        self.assertEqual(self.TOKEN, result)
+        # (b) no write happened at all
+        set_value.assert_not_called()
+        # (c) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (d) the file was never created — asserted on the disk, not the mock
+        self.assertFalse(self.env_path().exists())
+        # (e) the would-store line is echoed, naming the key and the path
+        output = "\n".join(lines)
+        self.assertIn("would store", output)
+        self.assertIn("GITHUB_TOKEN", output)
+        self.assertIn(str(ctx.env_path), output)
+        # (f) the persist notice is not echoed, and neither is the secret
+        self.assertNotIn(self.PERSIST_NOTICE, output)
+        self.assertNotIn(self.TOKEN, output)
+
+
+# ---------------------------------------------------------------------------
 # _resolve_github_token  (Behavior 6 — --yes / non-interactive reuse a stored token)
 # ---------------------------------------------------------------------------
 
