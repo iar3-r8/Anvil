@@ -24,6 +24,37 @@
     </step>
 
     <step number="2">
+      <title>Search for an existing solution</title>
+      <description>
+        Before defining a coded solution, check whether the behaviour is already
+        solved by a well-maintained package. Search the package registries
+        (npm, PyPI, crates.io, NuGet, Go, plus GitHub security advisories)
+        through the package-registry MCP server, and prefer a package that
+        really solves the problem over a bespoke implementation.
+      </description>
+      <actions>
+        <action>
+          For each behaviour that would reach beyond the project's own code,
+          first query the package-registry MCP server for an existing package
+          that solves it.
+        </action>
+        <action>
+          When a well-maintained package fits, plan against that package —
+          record the package name and its registry in the plan — rather than
+          specifying a bespoke implementation.
+        </action>
+        <action>
+          Check the returned security advisories; a package carrying an
+          unpatched critical advisory is not a safe reuse.
+        </action>
+        <action>
+          Proceed to a bespoke implementation only when no existing package
+          really solves the problem, and record that finding in the plan.
+        </action>
+      </actions>
+    </step>
+
+    <step number="3">
       <title>Assess interface knowledge</title>
       <description>
         Before planning against any third-party library, API or service, decide whether its
@@ -38,12 +69,12 @@
         </action>
         <action>If the interface is known, proceed with the plan.</action>
         <action>
-          If the interface is unknown, apply the unknown_interface protocol (step 3).
+          If the interface is unknown, apply the unknown_interface protocol (step 4).
         </action>
       </actions>
     </step>
 
-    <step number="3">
+    <step number="4">
       <title>Handle unknown interfaces</title>
       <description>
         Unknown third-party interfaces are blocking. Guessing is not an option, and neither is
@@ -66,7 +97,7 @@
       </actions>
     </step>
 
-    <step number="4">
+    <step number="5">
       <title>Fetch comprehensively</title>
       <description>
         When fetching via oxylabs, retrieve the reference pages that bear on the question at
@@ -89,7 +120,33 @@
       </actions>
     </step>
 
-    <step number="5">
+    <step number="6">
+      <title>Validate with the user</title>
+      <description>
+        During the planning session, before the plan is written, confirm two
+        things with the user: every newly defined behaviour, and the proposed
+        use of any non-standard package — anything beyond the project's
+        standard dependencies. This gate is blocking: the plan is not written
+        until the user has confirmed both.
+      </description>
+      <actions>
+        <action>
+          List every newly defined behaviour, and ask the user to validate each
+          one against the requirement.
+        </action>
+        <action>
+          For every package beyond the project's standard dependencies, name
+          the package and its registry, and ask the user to confirm the choice.
+        </action>
+        <action>
+          This gate is blocking. Without the user's confirmation of both the
+          behaviour list and any non-standard package choice, do not proceed to
+          write the plan.
+        </action>
+      </actions>
+    </step>
+
+    <step number="7">
       <title>Write the plan</title>
       <description>
         Produce a numbered list of independently testable behaviours, each with inputs, outputs,
@@ -112,7 +169,7 @@
       </actions>
     </step>
 
-    <step number="6">
+    <step number="8">
       <title>Review the plan</title>
       <description>
         Read the plan yourself. Confirm every third-party assertion has a citation, every
@@ -133,6 +190,19 @@
   </workflow>
 
   <best_practices>
+    <practice priority="high">
+      <rule>
+        Reuse an existing, well-maintained package over a bespoke
+        implementation when it really solves the problem.
+      </rule>
+      <rationale>
+        A curated package carries maintenance, security review and a track
+        record that bespoke code in this repository does not. Reimplementing
+        an already-solved problem adds attack surface and maintenance burden
+        for no capability gain.
+      </rationale>
+    </practice>
+
     <practice priority="high">
       <rule>Unknown third-party interfaces are blocking. Do not plan around them.</rule>
       <rationale>
@@ -159,6 +229,21 @@
       <rationale>
         Committed external docs make the review process concrete — a reviewer can open a saved
         page and verify the citation. Gitignored secrets would be exposed to every clone.
+      </rationale>
+    </practice>
+
+    <practice priority="high">
+      <rule>
+        Newly defined behaviours and any non-standard package choice are
+        validated with the user before the plan is written. The gate is
+        blocking: no plan is written without the user's confirmation of both.
+      </rule>
+      <rationale>
+        The plan becomes instructions to the whole pipeline, so scope that was
+        never agreed propagates into every red-green cycle. Confirming the
+        behaviour list and non-standard package choices with the user during
+        the planning session keeps the plan's scope agreed before it is
+        written.
       </rationale>
     </practice>
 
@@ -258,6 +343,39 @@
 
     <pitfall>
       <mistake>
+        Writing a bespoke implementation of a problem an existing, well-maintained
+        package already solves.
+      </mistake>
+      <consequence>
+        The plan grows an in-repo dependency that duplicates an established
+        package: more attack surface, more maintenance, and no security review
+        behind it.
+      </consequence>
+      <instead>
+        Search the package registries with the package-registry MCP server
+        first, and plan against a well-maintained package whenever one really
+        solves the problem.
+      </instead>
+    </pitfall>
+
+    <pitfall>
+      <mistake>
+        Writing the plan without the user's confirmation of the newly defined
+        behaviours or of a non-standard package choice.
+      </mistake>
+      <consequence>
+        The pipeline builds on unconfirmed scope: code and qna-tester work
+        against behaviours or dependencies the user never agreed to.
+      </consequence>
+      <instead>
+        Run the validation gate first: during the planning session, confirm
+        every newly defined behaviour and every non-standard package with the
+        user, then write the plan.
+      </instead>
+    </pitfall>
+
+    <pitfall>
+      <mistake>
         Planning a behaviour against a third-party API without specifying inputs, outputs,
         edge cases and error behaviour.
       </mistake>
@@ -280,6 +398,11 @@
         Interface status assessed for each: known (read this task, present in repo, stated by user) or unknown.
       </item>
       <item>No interface was filled from training recollection alone.</item>
+      <item>
+        Existing-solution check done: each behaviour searched the package
+        registries via the package-registry MCP server, and a well-maintained
+        package is preferred over a bespoke implementation.
+      </item>
     </category>
     <category name="during_fetching">
       <item>
@@ -301,6 +424,10 @@
         Each behaviour is independently testable with inputs, outputs, edge cases and error behaviour.
       </item>
       <item>No behaviour silently assumes an un-cited method signature, default, or status code.</item>
+      <item>
+        The user has confirmed every newly defined behaviour and any
+        non-standard package choice before the plan was written.
+      </item>
     </category>
     <category name="when_oxylabs_unavailable">
       <item>

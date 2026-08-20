@@ -23,8 +23,10 @@ For each files in ./roo_template, **including dotfiles such as `.roomodes`**
 
 ## What this command cannot update
 `.roo/mcp.json` lives **outside** `./roo_template`, so it is not covered by the steps
-above. It is generated wholesale by `./anvil setup-repo`, which is therefore the only way
-to add or change an MCP server entry.
+above. It is owned by `./anvil setup-repo`, which is therefore the only way to add or
+change an Anvil-managed MCP server entry. Re-running `setup-repo` **merges** the file
+rather than rewriting it: servers you added by hand are preserved untouched, the
+servers Anvil owns are refreshed, and nothing is ever removed.
 
 This matters for the **oxylabs** documentation-fetching server: if the rules delivered by
 this command tell a mode to fetch documentation with oxylabs but `.roo/mcp.json` has no

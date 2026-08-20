@@ -44,7 +44,9 @@ integrations. Supply them as flags to run unattended — `--github-token`,
 `--anthropic-key`, `--oxylabs-username` and `--oxylabs-password` — or skip any of them
 with `--no-github`, `--no-anthropic` and `--no-oxylabs`. Re-running `setup-repo` is also
 the upgrade path for an already-provisioned repository: existing `.env` credentials are
-reused rather than re-prompted.
+reused rather than re-prompted, and anything you added by hand — your own MCP
+servers, mode definitions in `.roomodes`, extension recommendations — survives the
+merge instead of being overwritten.
 
 👉 **[Read the VS Code Plugin Setup Guide](doc/2-setting-up-vscode-plugin.md)**
 
