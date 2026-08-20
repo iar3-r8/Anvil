@@ -774,6 +774,9 @@ def _resolve_github_token(
         shared.echo("🔑 Reusing existing GITHUB_TOKEN from .env")
         return stored
 
+    if shared.assume_yes or not shared.interactive():
+        return ""
+
     wants_github = prompts.confirm(
         "❓ Do you use GitHub and want to map a personal repository token for the agent?",
         default=False,
