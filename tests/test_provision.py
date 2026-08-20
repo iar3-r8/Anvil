@@ -554,6 +554,38 @@ class ModeRulesDeploymentTests(ProvisionCase):
         self.assertNotEqual(new_content, "old content")
         self.assertIn("<instructions>", new_content)
 
+    def test_stray_files_in_mode_rules_are_removed_on_reprovision(self):
+        """22 (guard): .roo/rules-*/ is still replaced wholesale, not merged.
+
+        ``test_existing_mode_rules_are_overwritten`` locks the overwrite half;
+        this test locks the removal half, so a future change cannot turn the
+        deployment into a copy-only (merge) without breaking it.
+        """
+        self.provision()
+
+        orphan = self.target / ".roo" / "rules-qna-tester" / "orphan.xml"
+        orphan.write_text("<orphan/>", encoding="utf-8")
+        self.assertTrue(orphan.is_file())
+
+        self.provision()
+
+        # (a) the stray file is gone.
+        self.assertFalse(orphan.exists())
+
+        # (b) instructions.xml is byte-identical to the template.
+        template = (
+            REPO_ROOT
+            / "templates"
+            / "roo_template"
+            / "rules-qna-tester"
+            / "instructions.xml"
+        ).read_bytes()
+        deployed = (
+            self.target / ".roo" / "rules-qna-tester" / "instructions.xml"
+        ).read_bytes()
+
+        self.assertEqual(deployed, template)
+
 
 class FullDeploymentIntegrationTests(ProvisionCase):
     """End-to-end: the full provisioned tree has all expected files."""
@@ -726,6 +758,40 @@ class ReprovisioningEndToEndTests(ProvisionCase):
         # zoo-code-settings.json still exists and is valid
         settings_second = self.read_json("zoo-code-settings.json")
         self.assertIsInstance(settings_second, dict)
+
+    def test_zoo_code_settings_is_still_rewritten_wholesale(self):
+        """21 (guard): zoo-code-settings.json is still rewritten wholesale.
+
+        Locks the "no change" decision from the plan: if a future merge is
+        ever added to the zoo-settings step, a key the user injected between
+        runs would survive, and this test would fail.
+        """
+        # Baseline: what a fresh provision into a second target produces.
+        # The rendered file depends only on the plan values, never on the
+        # target path, so a whole-structure comparison is meaningful.
+        baseline = self.target.parent / "baseline-repo"
+        baseline.mkdir()
+        self.provision(target=baseline, echo=lambda _line: None)
+        baseline_settings = json.loads(
+            (baseline / "zoo-code-settings.json").read_text(encoding="utf-8")
+        )
+
+        # First provision, then corrupt the file between runs.
+        self.provision()
+        stale = self.target / "zoo-code-settings.json"
+        stale.write_text(
+            json.dumps({"stale": True}), encoding="utf-8"
+        )
+
+        self.provision()
+
+        settings = self.read_json("zoo-code-settings.json")
+
+        # (a) the injected key is gone.
+        self.assertNotIn("stale", settings)
+
+        # (b) the resolved values are back, exactly as a fresh provision writes them.
+        self.assertEqual(settings, baseline_settings)
 
 
 if __name__ == "__main__":
