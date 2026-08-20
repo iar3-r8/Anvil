@@ -2484,6 +2484,130 @@ class TestResolveGithubTokenDecline(CliCase):
 
 
 # ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 8 — accepting the prompt persists the token)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenAcceptPersists(CliCase):
+    """B8: accepting the prompt persists the token.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B8:
+
+    * input: interactive (``_is_interactive`` -> ``True``), nothing stored
+      in .env, ``prompts.confirm`` returns ``True`` and
+      ``prompts.ask_required`` returns ``"ghp_new"``,
+    * output ``"ghp_new"``, and ``.env`` now contains
+      ``GITHUB_TOKEN=ghp_new`` (asserted against the file's content, not
+      just the mock),
+    * ``ask_required`` is called with ``hide_input=True`` (asserted via the
+      mock's call kwargs),
+    * the accept echo is the persist notice
+      ``⚡ Token accepted and persisted to .env`` — which
+      ``_persist_github_token`` (``anvilkit/cli.py:803``) already echoes —
+      and the token value ``ghp_new`` never appears in captured output.
+
+    Red-phase note: the return-value and echo assertions hold today; the
+    persist assertion fails because the accept path
+    (``anvilkit/cli.py:793-800``) never calls ``_persist_github_token`` — it
+    echoes the old ``⚡ Token accepted.`` notice and returns without writing
+    ``.env``.
+    """
+
+    PERSIST_NOTICE = "⚡ Token accepted and persisted to .env"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def _ensure_nothing_stored(self):
+        if self.env_path().exists():
+            self.env_path().unlink()
+
+    # -- B8 proper: accept -> token returned, hidden prompt, .env updated ----
+
+    def test_accept_persists_token_to_env_and_returns_it(self):
+        """Interactive, nothing stored, accept -> ``"ghp_new"`` in .env.
+
+        ``ask_required`` is mocked (its hidden-input prompt mechanics are
+        owned by ``prompts`` and covered in ``test_prompts.py``); the call's
+        kwargs are asserted so ``hide_input=True`` cannot be lost.
+        """
+        self._ensure_nothing_stored()
+        ctx = self._make_context(assume_yes=False)
+
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(
+                cli.prompts, "confirm", return_value=True
+            ) as prompts_confirm:
+                with mock.patch.object(
+                    cli.prompts, "ask_required", return_value="ghp_new"
+                ) as ask_required:
+                    result = cli._resolve_github_token(
+                        ctx, None, no_github=False
+                    )
+
+        # (a) the confirm gate was reached and answered
+        prompts_confirm.assert_called_once()
+        # (b) the hidden prompt was reached, with the hidden-input kwarg intact
+        ask_required.assert_called_once()
+        self.assertTrue(ask_required.call_args[1].get("hide_input"))
+        # (c) the entered token is returned
+        self.assertEqual("ghp_new", result)
+        # (d) the token was persisted to .env — asserted against the file
+        #     itself, not just the mock
+        self.assertTrue(self.env_path().exists())
+        self.assertIn(
+            "GITHUB_TOKEN=ghp_new",
+            self.env_path().read_text(encoding="utf-8"),
+        )
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_new", values.get("GITHUB_TOKEN"))
+
+    # -- B8 reporting: the persist notice replaces the old accept echo -------
+
+    def test_accept_echoes_persist_notice_and_never_the_secret(self):
+        """The accept path echoes the persist notice, not the token value.
+
+        The old ``⚡ Token accepted.`` echo is expected to be replaced by
+        ``⚡ Token accepted and persisted to .env``; this test asserts only
+        that the new notice is present and that ``ghp_new`` never appears in
+        captured output.
+        """
+        self._ensure_nothing_stored()
+        ctx = self._make_context(assume_yes=False)
+
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with mock.patch.object(cli.prompts, "confirm", return_value=True):
+                with mock.patch.object(
+                    cli.prompts, "ask_required", return_value="ghp_new"
+                ):
+                    with echo_patcher:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        self.assertEqual("ghp_new", result)
+        output = "\n".join(lines)
+        # (a) the persist notice is reported
+        self.assertIn(self.PERSIST_NOTICE, output)
+        # (b) the secret is never echoed
+        self.assertNotIn("ghp_new", output)
+
+
+# ---------------------------------------------------------------------------
 # _resolve_github_token  (Behavior 6 — --yes / non-interactive reuse a stored token)
 # ---------------------------------------------------------------------------
 
