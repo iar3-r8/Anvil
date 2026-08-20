@@ -39,8 +39,8 @@ developer added:
 | `.devcontainer/` | [`_copy_devcontainer()`](anvilkit/provision.py:482) | skipped if present | already safe |
 | `.gitignore` | [`_merge_gitignore_step()`](anvilkit/provision.py:289) | merged | already safe — the precedent this plan follows |
 
-The "keep" rows are not oversights. They are locked by regression tests (behaviours 22
-and 23) so a later change cannot silently flip them.
+The "keep" rows are not oversights. They are locked by regression tests (behaviours 21
+and 22) so a later change cannot silently flip them.
 
 ---
 
@@ -223,14 +223,21 @@ should fail only if someone changes it later.
 - *Error type:* `ProvisionError`, never a bare `json.JSONDecodeError` or
   `UnicodeDecodeError`. Exit code 5.
 
-**8. An empty incoming credential does not blank a stored one. (needs confirmation — see A2)**
+**8. An empty incoming credential does not blank a stored one. (confirmed — see A2)**
 - *Input:* existing `oxylabs` entry with `OXYLABS_USERNAME == "stored_user"`; rendered
   text where that value is `""` and `disabled` is true.
-- *Output:* the stored value survives and `disabled` stays false.
+- *Output:* the stored value survives. The `disabled` flag is **not** protected: it is
+  refreshed with the Anvil-owned entry per A1 option 1 (only `env` values are protected).
 - *Edge:* a *non-empty* incoming value always wins, including a deliberate change.
 - *Rationale:* today a re-run after `.env` loses a credential silently disables the
   server. That is precisely the "overwrites something in an existing repo" class the user
   asked to fix.
+- *Edge (added after green):* the original draft said "`disabled` stays false". Under A1
+  option 1 the whole Anvil-owned entry except `env` values is refreshed, so with empty
+  incoming credentials the stored credentials survive but the renderer's
+  `disabled: true` (empty `.env` signal, see `render.mcp_settings`) also refreshes in.
+  The tests lock this deliberately: an empty stored credential is indistinguishable from
+  one that is being set, and the `disabled` flag follows the incoming entry.
 
 ### Group C — `.roomodes` merge
 

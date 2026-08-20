@@ -10,6 +10,10 @@ Constraints:
   cannot leave a repository half-provisioned;
 * re-running refreshes ``roo_template/`` in place instead of nesting a copy
   inside the previous one;
+* a re-run **merges** the user-owned files (``.roo/mcp.json``, ``.roomodes``,
+  ``.vscode/extensions.json``) rather than clobbering them, while the
+  Anvil-owned artifacts (``zoo-code-settings.json``, ``.roo/rules-*/``) are
+  still replaced wholesale;
 * secrets are never echoed, only the paths they were written to.
 """
 
@@ -287,9 +291,11 @@ def _merge_mcp_servers(existing_text: str, rendered_text: str, source: str = ".r
     A pure function with no filesystem access, following the
     ``_merge_gitignore`` shape. Ownership is decided by name (plan §2.4,
     A1 option 1): a server named in the rendered text is Anvil-owned and is
-    refreshed wholesale, so a rotated token or a server added by a newer
-    Anvil version arrives on every run; a server present only in the
-    existing file is user-owned and survives untouched, in position.
+    replaced by the template's entry — the A2 credential rule below is the
+    only field that may survive the refresh — so a rotated token or a server
+    added by a newer Anvil version arrives on every run; a server present
+    only in the existing file is user-owned and survives untouched, in
+    position.
     Nothing is ever removed, and every top-level key other than
     ``mcpServers`` survives, so a hand-tuned file is re-serialised
     (plan §2.2, A5) but never loses data.
