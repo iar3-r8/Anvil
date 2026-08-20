@@ -1965,3 +1965,134 @@ class TestResolveGithubTokenFlag(CliCase):
         values = cli.env.read(self.env_path())
         self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
         self.assertEqual("8000", values.get("LLM_PORT"))
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 3 — a stored token is reused)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenStoredReuse(CliCase):
+    """B3: a stored token is reused, and the skip is reported.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B3:
+
+    * input ``token=None``, ``no_github=False``, ``GITHUB_TOKEN=ghp_stored``
+      in .env, interactive (no ``--yes``),
+    * output ``"ghp_stored"`` — the stored token is reused,
+    * ``prompts.confirm`` and ``prompts.ask_required`` are never called —
+      booby-trapped with ``side_effect=AssertionError`` exactly as in
+      ``TestResolveGithubTokenNoGithub`` / ``TestResolveGithubTokenFlag``,
+    * a skip notice is echoed, modelled on the oxylabs reuse notice
+      (``anvilkit/cli.py:892``): ``🔑 Reusing existing GITHUB_TOKEN from .env``,
+    * the token value itself is never echoed — ``ghp_stored`` must not appear
+      anywhere in the captured output.
+
+    Red-phase note: the current implementation (``anvilkit/cli.py:752``) never
+    reads the store on the ``token=None`` path; it goes straight to
+    ``prompts.confirm`` / ``ask_required``. With interactivity forced on and
+    both seams booby-trapped, the confirm trap fires, so these tests fail
+    today with an AssertionError naming the missing store lookup.
+    """
+
+    REUSE_NOTICE = "🔑 Reusing existing GITHUB_TOKEN from .env"
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    # -- B3 proper: stored token is reused, no prompt --------------------------
+
+    def test_stored_token_is_reused_without_prompting(self):
+        """``token=None`` with ``GITHUB_TOKEN=ghp_stored`` -> ``"ghp_stored"``.
+
+        No prompt of any kind is reached, and .env is left exactly as found.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when GITHUB_TOKEN is stored in .env"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when GITHUB_TOKEN is stored in .env"
+                ),
+            ),
+        )
+        echo_patcher, _ = self._capture_echo()
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        # (a) the stored token is returned
+        self.assertEqual("ghp_stored", result)
+        # (b) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (c) the store was not disturbed by the reuse
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B3 reporting: skip notice echoed, secret never echoed ----------------
+
+    def test_reuse_echoes_skip_notice_but_never_the_token(self):
+        """The reuse is reported; the token value itself is not echoed.
+
+        The notice mirrors the anthropic reuse wording at
+        ``anvilkit/cli.py:892``. The secret must not appear in any output line.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when GITHUB_TOKEN is stored in .env"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when GITHUB_TOKEN is stored in .env"
+                ),
+            ),
+        )
+        echo_patcher, lines = self._capture_echo()
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            with trap_confirm as prompts_confirm, trap_ask as ask_required:
+                with echo_patcher:
+                    result = cli._resolve_github_token(ctx, None, no_github=False)
+
+        self.assertEqual("ghp_stored", result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        output = "\n".join(lines)
+        # (a) the skip notice is reported
+        self.assertIn(self.REUSE_NOTICE, output)
+        # (b) the secret is never echoed, on any line
+        self.assertNotIn("ghp_stored", output)
