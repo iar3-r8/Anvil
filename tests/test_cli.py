@@ -2096,3 +2096,128 @@ class TestResolveGithubTokenStoredReuse(CliCase):
         self.assertIn(self.REUSE_NOTICE, output)
         # (b) the secret is never echoed, on any line
         self.assertNotIn("ghp_stored", output)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 4 — an empty stored value counts as absent)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenEmptyStored(CliCase):
+    """B4: an empty stored value counts as absent.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B4:
+
+    * input ``token=None``, ``no_github=False``, interactive, with
+      ``GITHUB_TOKEN=`` (an *empty* value) in .env,
+    * output: the confirm/prompt path is reached — ``prompts.confirm`` IS
+      called, exactly as with an absent key. The ``if stored:`` truthiness
+      check (``anvilkit/cli.py:772``) is what makes a blank value behave as
+      though nothing were stored, matching ``_resolve_oxylabs``'s treatment
+      of a blank username (``anvilkit/cli.py:802``),
+    * edge case: a missing .env file behaves identically — ``env.get``
+      returns the default for a missing file (``anvilkit/env.py:40``), so
+      the same fall-through happens.
+
+    These tests are *contract locks* written booby-trapped in the opposite
+    direction from B3: ``prompts.confirm`` is expected to be called (patched
+    to decline, so the test cannot block or persist), while
+    ``prompts.ask_required`` is booby-trapped with
+    ``side_effect=AssertionError`` so an implementation that skips the
+    confirm gate cannot slip through. The current ``if stored:``
+    implementation already satisfies this, so both tests are green from the
+    start; their value is preventing a future ``is not None``-style change
+    that would treat a blank stored value as a usable token and suppress
+    the prompt.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    # -- B4 proper: empty stored value falls through to the prompt ----------
+
+    def test_empty_stored_token_reaches_confirm_and_decline_returns_empty(self):
+        """``GITHUB_TOKEN=`` in .env -> confirm IS reached; declining -> ``""``.
+
+        The blank value must not count as a stored token: unlike the B3
+        reuse path, the confirm gate is reached, and declining returns
+        ``""`` without reaching the token prompt or disturbing .env.
+        """
+        self.write_env(GITHUB_TOKEN="", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with mock.patch.object(cli, "_is_interactive", return_value=True):
+                with mock.patch.object(
+                    cli.prompts, "confirm", return_value=False
+                ) as prompts_confirm:
+                    with mock.patch.object(
+                        cli.prompts,
+                        "ask_required",
+                        side_effect=AssertionError(
+                            "_resolve_github_token must not ask for a token "
+                            "when the user declines"
+                        ),
+                    ) as ask_required:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        # (a) the store was consulted
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the empty stored value is not treated as a token: the confirm
+        #     gate IS reached, the opposite of the B3 reuse path
+        prompts_confirm.assert_called_once()
+        # (c) declining returns empty and never reaches the token prompt
+        self.assertEqual("", result)
+        ask_required.assert_not_called()
+        # the decision left .env exactly as found
+        values = cli.env.read(self.env_path())
+        self.assertEqual("", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B4 edge: .env absent entirely behaves identically -------------------
+
+    def test_missing_env_file_reaches_confirm_and_decline_returns_empty(self):
+        """No .env at all -> same fall-through as an empty stored value.
+
+        ``env.get`` returns the default for a missing file, so the confirm
+        gate is reached the same way; declining returns ``""`` and the
+        store must not be created as a side effect.
+        """
+        if self.env_path().exists():
+            self.env_path().unlink()
+        ctx = self._make_context(assume_yes=False)
+
+        with mock.patch.object(cli.env, "get", wraps=cli.env.get) as env_get:
+            with mock.patch.object(cli, "_is_interactive", return_value=True):
+                with mock.patch.object(
+                    cli.prompts, "confirm", return_value=False
+                ) as prompts_confirm:
+                    with mock.patch.object(
+                        cli.prompts,
+                        "ask_required",
+                        side_effect=AssertionError(
+                            "_resolve_github_token must not ask for a token "
+                            "when the user declines"
+                        ),
+                    ) as ask_required:
+                        result = cli._resolve_github_token(
+                            ctx, None, no_github=False
+                        )
+
+        # (a) the store was consulted (and found nothing)
+        env_get.assert_called_once_with(ctx.env_path, cli.GITHUB_TOKEN_ENV)
+        # (b) the confirm gate IS reached, same as with an empty value
+        prompts_confirm.assert_called_once()
+        # (c) declining returns empty and never reaches the token prompt
+        self.assertEqual("", result)
+        ask_required.assert_not_called()
+        # and it must not *create* the store as a side effect
+        self.assertFalse(self.env_path().exists())
