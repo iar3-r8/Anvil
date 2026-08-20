@@ -3219,3 +3219,81 @@ class TestResolveGithubTokenWriteDoesNotDisturbOtherKeys(CliCase):
         output = "\n".join(lines)
         self.assertIn(self.PERSIST_NOTICE, output)
         self.assertNotIn(self.TOKEN, output)
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 12 — no ripple into render or provision)
+# ---------------------------------------------------------------------------
+
+
+class TestNoGithubRunNeverBlanksStoredRepoToken(CliCase):
+    """B12: ``--no-github`` reaching provision as ``""`` must not blank a token the target repo already holds.
+
+    ``_resolve_github_token`` now returns ``""`` from new code paths
+    (``--no-github`` short-circuit, ``--yes`` / non-interactive with nothing
+    stored) that could not produce it before the bugfix. This guard locks
+    the downstream contract end-to-end: the real ``provision.setup_repo``
+    (unmocked, as in ``TestNonInteractive.test_yes_setup_repo_reads_no_stdin``)
+    merges an incoming ``GITHUB_PERSONAL_ACCESS_TOKEN=""`` into a target whose
+    ``.roo/mcp.json`` already holds a non-empty one, and the stored value must
+    survive — the A2 credential rule at ``anvilkit/provision.py:404-408``.
+
+    Assertions are on the parsed structure of the deployed ``.roo/mcp.json``
+    in the target, never on source text. The target is seeded with the
+    same realistic github server entry shape as
+    ``tests/test_provision_mcp_merge.py`` so the merge path (Anvil-owned
+    server, dict env on both sides) is the one exercised.
+    """
+
+    STORED = "ghp_preexisting_in_repo"
+
+    def setUp(self):
+        super().setUp()
+        self.write_env(LLM_PORT="8000")
+        self._target = tempfile.TemporaryDirectory()
+        self.target = Path(self._target.name)
+        self.addCleanup(self._target.cleanup)
+        self._seed_mcp_json()
+
+    def _seed_mcp_json(self):
+        roo = self.target / ".roo"
+        roo.mkdir(parents=True)
+        data = {
+            "mcpServers": {
+                "github": {
+                    "command": "npx",
+                    "args": ["-y", "@modelcontextprotocol/server-github"],
+                    "disabled": False,
+                    "alwaysAllow": [],
+                    "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": self.STORED},
+                }
+            }
+        }
+        (roo / "mcp.json").write_text(
+            json.dumps(data, indent=4), encoding="utf-8"
+        )
+
+    def test_no_github_run_keeps_the_stored_repo_token(self):
+        """``setup-repo --no-github``: the empty incoming token must not blank the stored one.
+
+        * arrange: a target repo whose ``.roo/mcp.json`` holds
+          ``GITHUB_PERSONAL_ACCESS_TOKEN=ghp_preexisting_in_repo``;
+        * act: ``setup-repo <target> --yes --no-github`` through the real
+          entry path, with the real provision performing the writes;
+        * assert: exit 0 and the stored token still present in the merged
+          ``.roo/mcp.json`` in the target.
+        """
+        result = self.invoke(
+            ["setup-repo", str(self.target), "--yes", "--no-github"]
+        )
+        self.assertEqual(0, result.exit_code, result.output)
+
+        deployed = json.loads(
+            (self.target / ".roo" / "mcp.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(
+            self.STORED,
+            deployed["mcpServers"]["github"]["env"][
+                "GITHUB_PERSONAL_ACCESS_TOKEN"
+            ],
+        )
