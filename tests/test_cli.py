@@ -1848,3 +1848,120 @@ class TestResolveGithubTokenNoGithub(CliCase):
         ask_required.assert_not_called()
         # and it must not *create* the store as a side effect
         self.assertFalse(self.env_path().exists())
+
+
+# ---------------------------------------------------------------------------
+# _resolve_github_token  (Behavior 2 — --github-token wins, and is persisted)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenFlag(CliCase):
+    """B2: ``--github-token`` wins over the store, and is persisted.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B2:
+
+    * input ``token="ghp_flag"`` (i.e. ``token is not None``) with
+      ``GITHUB_TOKEN=ghp_stored`` in .env,
+    * output ``"ghp_flag"`` — the flag value is authoritative,
+    * no prompt of any kind (``prompts.confirm`` / ``prompts.ask_required``
+      booby-trapped, as in ``TestResolveGithubTokenNoGithub``),
+    * side effect: ``.env`` now holds ``GITHUB_TOKEN=ghp_flag``.
+
+    The persistence is a *deliberate divergence* from ``_resolve_oxylabs``
+    (which returns the flag value without writing it): following
+    ``_persist_anthropic_key`` (``anvilkit/cli.py:917``), a flag-supplied value
+    populates the store, so flag-less runs are not prompted forever.
+
+    Edge case: an *explicit empty string* (``token=""``) is still
+    ``token is not None``, so it resolves to ``""`` but — being
+    unchanged-or-empty — must NOT overwrite a non-empty stored value.
+    """
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    # -- B2 proper: flag beats store, and the flag value lands in .env ------
+
+    def test_flag_token_wins_over_stored_token_and_is_persisted(self):
+        """``token="ghp_flag"`` with a stored token -> ``"ghp_flag"``, stored.
+
+        No prompt of any kind; ``.env`` is rewritten to hold the flag value.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when the flag is given"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when the flag is given"
+                ),
+            ),
+        )
+        with trap_confirm as prompts_confirm, trap_ask as ask_required:
+            result = cli._resolve_github_token(ctx, "ghp_flag", no_github=False)
+
+        # (a) the flag value is returned
+        self.assertEqual("ghp_flag", result)
+        # (b) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (c) the flag value was persisted to .env, replacing the stored one
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_flag", values.get("GITHUB_TOKEN"))
+        # the decision disturbed no other key
+        self.assertEqual("8000", values.get("LLM_PORT"))
+
+    # -- B2 edge: explicit empty string must not clobber the store ----------
+
+    def test_empty_flag_token_returns_empty_and_preserves_stored_token(self):
+        """``token=""`` (explicit) resolves to ``""`` and leaves the store intact.
+
+        The no-op-if-unchanged-or-empty rule means a non-empty stored value
+        survives an explicit empty flag.
+        """
+        self.write_env(GITHUB_TOKEN="ghp_stored", LLM_PORT="8000")
+        ctx = self._make_context(assume_yes=False)
+
+        trap_confirm, trap_ask = (
+            mock.patch.object(
+                cli.prompts,
+                "confirm",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not prompt when the flag is given"
+                ),
+            ),
+            mock.patch.object(
+                cli.prompts,
+                "ask_required",
+                side_effect=AssertionError(
+                    "_resolve_github_token must not ask for a token when the flag is given"
+                ),
+            ),
+        )
+        with trap_confirm as prompts_confirm, trap_ask as ask_required:
+            result = cli._resolve_github_token(ctx, "", no_github=False)
+
+        # (a) the explicit empty flag is returned as-is
+        self.assertEqual("", result)
+        # (b) no prompt of any kind was reached
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (c) the stored token survived — an empty value never blanks a store
+        values = cli.env.read(self.env_path())
+        self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
+        self.assertEqual("8000", values.get("LLM_PORT"))
