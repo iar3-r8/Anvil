@@ -73,6 +73,7 @@ _DEFAULT_GPU_EMBEDDER = "2"
 _UNSET_API_KEY = "to set"
 
 ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
+GITHUB_TOKEN_ENV = "GITHUB_TOKEN"
 PORT_ENV = "LLM_PORT"
 
 
@@ -757,6 +758,10 @@ def _resolve_github_token(
         return ""
 
     if token is not None:
+        # A flag-supplied value is authoritative; persist it so flag-less runs
+        # are not prompted forever. An explicit empty string returns as-is and
+        # never blanks a non-empty stored value.
+        _persist_github_token(shared, token)
         return token
 
     wants_github = prompts.confirm(
@@ -781,6 +786,23 @@ def _resolve_github_token(
     )
     shared.echo("⚡ Token accepted.")
     return resolved
+
+
+def _persist_github_token(shared: Context, token: str) -> None:
+    """Store the token in .env, replacing any existing entry."""
+    if not token:
+        return
+
+    if shared.dry_run:
+        shared.echo("would store {} in {}".format(GITHUB_TOKEN_ENV, shared.env_path))
+        return
+
+    if env.get(shared.env_path, GITHUB_TOKEN_ENV) == token:
+        return
+
+    env.set_value(shared.env_path, GITHUB_TOKEN_ENV, token)
+    # The value itself is never echoed.
+    shared.echo("⚡ Token accepted and persisted to .env")
 
 
 def _resolve_oxylabs(
