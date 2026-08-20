@@ -3021,3 +3021,201 @@ class TestResolveGithubTokenStoredYesOrNonInteractive(CliCase):
         values = cli.env.read(self.env_path())
         self.assertEqual("ghp_stored", values.get("GITHUB_TOKEN"))
         self.assertEqual("8000", values.get("LLM_PORT"))
+
+
+# ---------------------------------------------------------------------------
+# _persist_github_token  (Behavior 11 — writing GITHUB_TOKEN disturbs no other key)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveGithubTokenWriteDoesNotDisturbOtherKeys(CliCase):
+    """B11: writing ``GITHUB_TOKEN`` disturbs no other key.
+
+    The contract, per plans/skip-github-token-prompt.md §4/B11:
+
+    * input: ``.env`` containing ``ANTHROPIC_API_KEY``, ``OXYLABS_USERNAME``,
+      ``OXYLABS_PASSWORD``, ``LLM_PORT``, a comment line and a section
+      heading,
+    * action: persist a GitHub token through the real seam —
+      ``_resolve_github_token`` with ``token="ghp_new"`` — covering both the
+      append-a-new-key case and the replace-an-existing-entry case,
+    * output: every other key and its value, the comments and the original
+      ordering are intact in the file, and ``GITHUB_TOKEN`` is appended or
+      replaced in place.
+
+    Assertions are on the actual file content — parsed values via
+    ``cli.env.read`` plus raw text for ordering, comments and in-place
+    position — not on a mock of ``env.set_value``.
+
+    Regression sibling of
+    ``test_set_value_preserves_anthropic_api_key_and_github_token_when_setting_oxylabs``
+    (``tests/test_env.py:269``), which asserts the mirror-image property at
+    the store level. Here the property is locked one seam higher: through
+    ``_persist_github_token`` as reached from ``_resolve_github_token``.
+
+    Contract-lock note: ``env.set_value`` (``anvilkit/env.py:44``) is a
+    purpose-built, tested store documented to match the key exactly and
+    preserve surrounding lines, comments and ordering, so this test is
+    expected to be green from the start, pinning the property against a
+    future rewrite (like the committed locks for B1/B4/B6/B9/B10).
+    """
+
+    PERSIST_NOTICE = "⚡ Token accepted and persisted to .env"
+    TOKEN = "ghp_new"
+
+    # The fixture is written as raw text rather than via ``write_env``
+    # (which delegates to ``env.write`` and cannot express a plain comment
+    # line), so the test owns its exact ordering, comment and heading.
+    FIXTURE = (
+        "# Anvil machine-specific secrets\n"
+        "ANTHROPIC_API_KEY=sk-ant-abc123\n"
+        "\n"
+        "# --- Oxylabs proxy ---\n"
+        "OXYLABS_USERNAME=oxuser\n"
+        "OXYLABS_PASSWORD=oxpass\n"
+        "\n"
+        "# Networking\n"
+        "LLM_PORT=8000\n"
+    )
+
+    EXPECTED_OTHERS = {
+        "ANTHROPIC_API_KEY": "sk-ant-abc123",
+        "OXYLABS_USERNAME": "oxuser",
+        "OXYLABS_PASSWORD": "oxpass",
+        "LLM_PORT": "8000",
+    }
+
+    def _make_context(self, assume_yes=False):
+        """Build a minimal Context pointing at the test project."""
+        return cli.Context(
+            dry_run=False,
+            verbose=False,
+            no_color=False,
+            assume_yes=assume_yes,
+        )
+
+    def _capture_echo(self):
+        """Patch ``typer.echo`` (the target of ``Context.echo``) to collect lines."""
+        lines = []
+        return mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        ), lines
+
+    def _write_fixture(self, extra_lines=()):
+        """Write the fixture, optionally interleaving ``extra_lines`` before the last line."""
+        lines = self.FIXTURE.splitlines()
+        for extra in reversed(list(extra_lines)):
+            lines.insert(2, extra)  # right after ANTHROPIC_API_KEY
+        self.env_path().write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+    def _resolve_with_flag(self):
+        """Run ``_resolve_github_token`` through the flag path with a new token.
+
+        Returns ``(result, prompts_confirm, ask_required, lines)``. The
+        prompt seams are booby-trapped: the flag path must not prompt.
+        """
+        trap_confirm = mock.patch.object(
+            cli.prompts,
+            "confirm",
+            side_effect=AssertionError(
+                "_resolve_github_token must not prompt when the flag is given"
+            ),
+        )
+        trap_ask = mock.patch.object(
+            cli.prompts,
+            "ask_required",
+            side_effect=AssertionError(
+                "_resolve_github_token must not ask for a token when the flag is given"
+            ),
+        )
+        echo_patcher, lines = self._capture_echo()
+        with trap_confirm as prompts_confirm, trap_ask as ask_required:
+            with echo_patcher:
+                result = cli._resolve_github_token(self._make_context(), self.TOKEN, no_github=False)
+        return result, prompts_confirm, ask_required, lines
+
+    def _assert_other_keys_intact(self):
+        """Every other key and its value survives, plus the comments and heading."""
+        values = cli.env.read(self.env_path())
+        for key, value in self.EXPECTED_OTHERS.items():
+            self.assertEqual(value, values.get(key))
+
+        content = self.env_path().read_text(encoding="utf-8")
+        # comment line and section heading survive byte-for-byte
+        self.assertIn("# Anvil machine-specific secrets\n", content)
+        self.assertIn("# --- Oxylabs proxy ---\n", content)
+        self.assertIn("# Networking\n", content)
+
+    def test_persist_new_token_appends_without_disturbing_other_keys(self):
+        """``token="ghp_new"`` with no stored token -> ``GITHUB_TOKEN`` appended, everything else intact.
+
+        The byte comparison is the decisive assertion: the resulting file
+        must be exactly the original file plus the appended line, so any
+        reordering, dropped line or value mutation fails.
+        """
+        self._write_fixture()
+        content_before = self.env_path().read_text(encoding="utf-8")
+        lines_before = content_before.splitlines()
+
+        result, prompts_confirm, ask_required, lines = self._resolve_with_flag()
+
+        # (a) the flag value is returned, no prompt of any kind
+        self.assertEqual(self.TOKEN, result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (b) every other key/value, the comments and the heading are intact
+        self._assert_other_keys_intact()
+        # (c) the original ordering is intact and GITHUB_TOKEN is appended
+        #     last — the file is byte-for-byte the original plus one line
+        lines_after = self.env_path().read_text(encoding="utf-8").splitlines()
+        self.assertEqual(lines_before + ["GITHUB_TOKEN=" + self.TOKEN], lines_after)
+        # (d) the store now answers for the new key with the new value
+        self.assertEqual(self.TOKEN, cli.env.get(self.env_path(), cli.GITHUB_TOKEN_ENV))
+        # (e) the persist notice is echoed; the secret never is
+        output = "\n".join(lines)
+        self.assertIn(self.PERSIST_NOTICE, output)
+        self.assertNotIn(self.TOKEN, output)
+
+    def test_persist_replaces_existing_token_in_place_without_disturbing_other_keys(self):
+        """``token="ghp_new"`` over ``GITHUB_TOKEN=ghp_old`` -> replaced in place, everything else intact.
+
+        The entry sits mid-file, between two unrelated keys: an in-place
+        replace leaves its line index unchanged, while a rewrite that
+        re-sorted or re-appended the key would move it and fail the
+        line-by-line comparison.
+        """
+        self._write_fixture(extra_lines=("GITHUB_TOKEN=ghp_old",))
+        lines_before = self.env_path().read_text(encoding="utf-8").splitlines()
+        index_before = lines_before.index("GITHUB_TOKEN=ghp_old")
+
+        result, prompts_confirm, ask_required, lines = self._resolve_with_flag()
+
+        # (a) the flag value is returned, no prompt of any kind
+        self.assertEqual(self.TOKEN, result)
+        prompts_confirm.assert_not_called()
+        ask_required.assert_not_called()
+        # (b) every other key/value, the comments and the heading are intact
+        self._assert_other_keys_intact()
+        # (c) the replacement is in place: the old value is gone, the new
+        #     one sits at exactly the same line index, and every other line
+        #     is byte-for-byte unchanged
+        content_after = self.env_path().read_text(encoding="utf-8")
+        self.assertNotIn("ghp_old", content_after)
+        lines_after = content_after.splitlines()
+        self.assertEqual(len(lines_before), len(lines_after))
+        self.assertEqual(
+            "GITHUB_TOKEN=" + self.TOKEN, lines_after[index_before]
+        )
+        for position, (before, after) in enumerate(zip(lines_before, lines_after)):
+            if position != index_before:
+                self.assertEqual(before, after)
+        # (d) the store now answers for the key with the new value, and no
+        #     duplicate entry was left behind
+        self.assertEqual(self.TOKEN, cli.env.get(self.env_path(), cli.GITHUB_TOKEN_ENV))
+        self.assertEqual(
+            1, sum(1 for line in lines_after if line.startswith("GITHUB_TOKEN="))
+        )
+        # (e) the persist notice is echoed; the secret never is
+        output = "\n".join(lines)
+        self.assertIn(self.PERSIST_NOTICE, output)
+        self.assertNotIn(self.TOKEN, output)
