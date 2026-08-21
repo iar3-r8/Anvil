@@ -113,6 +113,22 @@ except ImportError as _err:
     LevelSummary = None
     summarise_level = None
 
+# Behaviour 13 (TDD red): these do not exist yet, so the import is guarded.
+# The new test classes turn the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_run_stress_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import (  # noqa: E402
+        StressReport,
+        run_stress,
+    )
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _run_stress_import_error = str(_err)
+    StressReport = None
+    run_stress = None
+
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
     """The level series for a given maximum, straight from the plan's table."""
@@ -1590,6 +1606,368 @@ class TestSummariseLevelResultType(unittest.TestCase):
                 "{}".format(_summarise_level_import_error)
             )
         self.assertTrue(dataclasses.is_dataclass(LevelSummary))
+
+
+class _LevelSend:
+    """A fake ``send`` that serves one scripted outcome list per level.
+
+    ``run_stress`` runs the levels one after another and calls ``send``
+    ``request_count`` times per level, so call ``k`` belongs to level
+    ``(k - 1) // request_count`` and to slot ``(k - 1) % request_count``
+    within that level. Within one level the worker threads interleave, so
+    which task receives which scripted outcome is not pinned: the per-level
+    list is meaningful as a multiset, and every assertion is on the
+    aggregated counts and the figures that follow from per-level latency
+    values, never on the arrival order of individual outcomes.
+    """
+
+    def __init__(self, level_outcomes, request_count):
+        self._levels = [list(outcomes) for outcomes in level_outcomes]
+        self._request_count = request_count
+        self._lock = threading.Lock()
+        self._calls = 0
+
+    def __call__(self, *args, **kwargs):
+        with self._lock:
+            self._calls += 1
+            call_index = self._calls
+        zero = call_index - 1
+        level_index = zero // self._request_count
+        if level_index >= len(self._levels):
+            raise AssertionError(
+                "send called {} times but only {} levels were scripted".format(
+                    call_index, len(self._levels)
+                )
+            )
+        return self._levels[level_index][zero % self._request_count]
+
+    @property
+    def calls(self):
+        with self._lock:
+            return self._calls
+
+
+class TestRunStressCleanRun(unittest.TestCase):
+    """Behaviour 13: a run where every request at every level succeeded.
+
+    ``run_stress(send, levels, request_count, warm_up_result, model_id,
+    port)`` returns a ``StressReport`` carrying the run's identifying
+    metadata, the warm-up result it was handed, and one ``LevelSummary``
+    per input level in input order. The per-level wall time comes from
+    ``time.monotonic`` inside the implementation and is not injectable, so
+    the rates (``requests_per_second`` / ``tokens_per_second``) are NOT
+    pinned here; the latency figures are, because they derive from the
+    canned ``latency_seconds`` only.
+    """
+
+    def _run(self, send, levels, request_count, warm_up_result, model_id, port):
+        if run_stress is None:
+            self.fail(
+                "anvilkit.stress.run_stress is not implemented yet: "
+                "{}".format(_run_stress_import_error)
+            )
+        return run_stress(
+            send, levels, request_count, warm_up_result, model_id, port
+        )
+
+    def test_metadata_and_warm_up_pass_through(self):
+        levels = [1, 2, 4]
+        request_count = 3
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=42.1, error=None
+        )
+        send = _LevelSend(
+            [[_ok_outcome(0.5) for _ in range(request_count)] for _ in levels],
+            request_count,
+        )
+        report = self._run(
+            send, levels, request_count, warm, "Qwen/Qwen3-Coder-30B", 8080
+        )
+        if StressReport is not None:
+            self.assertIsInstance(report, StressReport)
+        self.assertEqual(report.model_id, "Qwen/Qwen3-Coder-30B")
+        self.assertEqual(report.port, 8080)
+        # The report carries the very WarmUpResult it was handed, not a copy.
+        self.assertIs(report.warm_up, warm)
+
+    def test_one_summary_per_input_level_in_input_order(self):
+        levels = [1, 2, 4]
+        request_count = 3
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=42.1, error=None
+        )
+        send = _LevelSend(
+            [[_ok_outcome(0.5) for _ in range(request_count)] for _ in levels],
+            request_count,
+        )
+        report = self._run(send, levels, request_count, warm, "model", 11434)
+        self.assertEqual(len(report.levels), len(levels))
+        self.assertEqual(
+            [summary.concurrency for summary in report.levels], levels
+        )
+        for summary in report.levels:
+            self.assertIsInstance(summary, LevelSummary)
+
+    def test_clean_level_summaries(self):
+        # Distinct per-level latencies so a level that got the wrong
+        # outcomes would show up in its latency figures.
+        per_level = {1: 0.5, 2: 1.0, 4: 2.0}
+        levels = [1, 2, 4]
+        request_count = 3
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=42.1, error=None
+        )
+        send = _LevelSend(
+            [
+                [_ok_outcome(per_level[level]) for _ in range(request_count)]
+                for level in levels
+            ],
+            request_count,
+        )
+        report = self._run(send, levels, request_count, warm, "model", 11434)
+        for summary in report.levels:
+            with self.subTest(concurrency=summary.concurrency):
+                expected = per_level[summary.concurrency]
+                self.assertEqual(summary.requests, request_count)
+                self.assertEqual(summary.succeeded, request_count)
+                self.assertEqual(summary.failed, 0)
+                # Clean level: empty buckets, no raw messages.
+                self.assertEqual(summary.error_counts, {})
+                self.assertEqual(summary.errors, [])
+                # Every figure collapses to the single canned latency.
+                self.assertAlmostEqual(summary.latency_mean, expected)
+                self.assertAlmostEqual(summary.latency_p50, expected)
+                self.assertAlmostEqual(summary.latency_p95, expected)
+                self.assertAlmostEqual(summary.latency_p99, expected)
+                self.assertAlmostEqual(summary.latency_min, expected)
+                self.assertAlmostEqual(summary.latency_max, expected)
+
+    def test_completed_is_true_for_a_clean_run(self):
+        levels = [1, 2]
+        request_count = 2
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=10.0, error=None
+        )
+        send = _LevelSend(
+            [[_ok_outcome(0.5) for _ in range(request_count)] for _ in levels],
+            request_count,
+        )
+        report = self._run(send, levels, request_count, warm, "model", 8080)
+        self.assertTrue(report.completed)
+
+    def test_send_called_request_count_times_per_level(self):
+        levels = [1, 2, 4]
+        request_count = 3
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=10.0, error=None
+        )
+        send = _LevelSend(
+            [[_ok_outcome(0.5) for _ in range(request_count)] for _ in levels],
+            request_count,
+        )
+        self._run(send, levels, request_count, warm, "model", 8080)
+        self.assertEqual(send.calls, len(levels) * request_count)
+
+
+class TestRunStressContinuesAfterFailedLevel(unittest.TestCase):
+    """Behaviour 13: the load-bearing rule.
+
+    Every level runs even if an earlier one failed completely: "fine at 1
+    and 2, dies at 4" is the finding, not a reason to stop. A level that
+    fails entirely is recorded -- with ``None`` latency figures and its
+    error buckets filled -- and the run continues to the next level.
+    """
+
+    def _run(self, send, levels, request_count, warm_up_result, model_id, port):
+        if run_stress is None:
+            self.fail(
+                "anvilkit.stress.run_stress is not implemented yet: "
+                "{}".format(_run_stress_import_error)
+            )
+        return run_stress(
+            send, levels, request_count, warm_up_result, model_id, port
+        )
+
+    def test_plan_script_succeed_at_1_and_2_fail_at_4(self):
+        # The plan's own scripted case: succeed at levels 1 and 2, fail
+        # every request at level 4, and all three summaries are present,
+        # in order 1, 2, 4.
+        levels = [1, 2, 4]
+        request_count = 3
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=42.1, error=None
+        )
+        send = _LevelSend(
+            [
+                [_ok_outcome(0.5) for _ in range(request_count)],
+                [_ok_outcome(1.0) for _ in range(request_count)],
+                [
+                    _failed_outcome(
+                        "CUDA out of memory", http_status=500
+                    )
+                    for _ in range(request_count)
+                ],
+            ],
+            request_count,
+        )
+        report = self._run(send, levels, request_count, warm, "model", 8080)
+        self.assertEqual(
+            [summary.concurrency for summary in report.levels], levels
+        )
+        by_level = {summary.concurrency: summary for summary in report.levels}
+        # The healthy levels are untouched by the dying one.
+        for level in (1, 2):
+            with self.subTest(concurrency=level):
+                self.assertEqual(by_level[level].succeeded, request_count)
+                self.assertEqual(by_level[level].failed, 0)
+                self.assertEqual(by_level[level].error_counts, {})
+                self.assertEqual(by_level[level].errors, [])
+        # The dying level is recorded, not hidden: no successes, every
+        # latency figure None, the OOM bucketed and the raw text kept.
+        dying = by_level[4]
+        self.assertEqual(dying.succeeded, 0)
+        self.assertEqual(dying.failed, request_count)
+        self.assertIsNone(dying.latency_mean)
+        self.assertIsNone(dying.latency_p50)
+        self.assertIsNone(dying.latency_p95)
+        self.assertIsNone(dying.latency_p99)
+        self.assertIsNone(dying.latency_min)
+        self.assertIsNone(dying.latency_max)
+        self.assertEqual(dying.error_counts, {"oom": request_count})
+        self.assertEqual(dying.errors, ["CUDA out of memory"])
+        # Reaching the end IS completion, even with failures: this is the
+        # run that earns exit 8 downstream, not a run that was abandoned.
+        self.assertTrue(report.completed)
+        # All three levels really ran: the full request budget was spent.
+        self.assertEqual(send.calls, len(levels) * request_count)
+
+    def test_later_levels_still_run_after_earlier_level_failed_completely(
+        self
+    ):
+        # The edge-case wording in the plan: an EARLIER level failing
+        # completely must not stop the ramp -- level 1 dies and levels 2
+        # and 4 must still run and be recorded.
+        levels = [1, 2, 4]
+        request_count = 2
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=42.1, error=None
+        )
+        send = _LevelSend(
+            [
+                [
+                    _failed_outcome(
+                        "CUDA out of memory", http_status=500
+                    )
+                    for _ in range(request_count)
+                ],
+                [_ok_outcome(1.0) for _ in range(request_count)],
+                [_ok_outcome(2.0) for _ in range(request_count)],
+            ],
+            request_count,
+        )
+        report = self._run(send, levels, request_count, warm, "model", 8080)
+        self.assertEqual(
+            [summary.concurrency for summary in report.levels], levels
+        )
+        by_level = {summary.concurrency: summary for summary in report.levels}
+        self.assertEqual(by_level[1].succeeded, 0)
+        self.assertEqual(by_level[1].failed, request_count)
+        self.assertEqual(by_level[1].error_counts, {"oom": request_count})
+        self.assertEqual(by_level[2].succeeded, request_count)
+        self.assertEqual(by_level[2].failed, 0)
+        self.assertAlmostEqual(by_level[2].latency_mean, 1.0)
+        self.assertEqual(by_level[4].succeeded, request_count)
+        self.assertEqual(by_level[4].failed, 0)
+        self.assertAlmostEqual(by_level[4].latency_mean, 2.0)
+        self.assertTrue(report.completed)
+        self.assertEqual(send.calls, len(levels) * request_count)
+
+    def test_every_level_failing_still_yields_the_full_report(self):
+        # The strongest form: total failure at every level. The run still
+        # reaches the end and reports all levels -- learning that nothing
+        # worked is itself the finding.
+        levels = [1, 2]
+        request_count = 2
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=42.1, error=None
+        )
+        send = _LevelSend(
+            [
+                [
+                    _failed_outcome("connection refused")
+                    for _ in range(request_count)
+                ]
+                for _ in levels
+            ],
+            request_count,
+        )
+        report = self._run(send, levels, request_count, warm, "model", 8080)
+        self.assertEqual(
+            [summary.concurrency for summary in report.levels], levels
+        )
+        for summary in report.levels:
+            with self.subTest(concurrency=summary.concurrency):
+                self.assertEqual(summary.requests, request_count)
+                self.assertEqual(summary.succeeded, 0)
+                self.assertEqual(summary.failed, request_count)
+                self.assertIsNone(summary.latency_mean)
+                self.assertEqual(
+                    summary.error_counts, {"connection": request_count}
+                )
+        self.assertTrue(report.completed)
+        self.assertEqual(send.calls, len(levels) * request_count)
+
+
+class TestRunStressLevelOrder(unittest.TestCase):
+    """Behaviour 13: levels execute in ascending order, as a progression."""
+
+    def _run(self, send, levels, request_count, warm_up_result, model_id, port):
+        if run_stress is None:
+            self.fail(
+                "anvilkit.stress.run_stress is not implemented yet: "
+                "{}".format(_run_stress_import_error)
+            )
+        return run_stress(
+            send, levels, request_count, warm_up_result, model_id, port
+        )
+
+    def test_report_reads_as_the_ascending_progression(self):
+        # Distinct per-level latencies prove that each summary is the
+        # summary of its own level, in the order the levels ran.
+        per_level = {1: 0.25, 2: 0.5, 4: 1.0, 8: 2.0}
+        levels = [1, 2, 4, 8]
+        request_count = 2
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=42.1, error=None
+        )
+        send = _LevelSend(
+            [
+                [_ok_outcome(per_level[level]) for _ in range(request_count)]
+                for level in levels
+            ],
+            request_count,
+        )
+        report = self._run(send, levels, request_count, warm, "model", 8080)
+        self.assertEqual(
+            [summary.concurrency for summary in report.levels], levels
+        )
+        for summary in report.levels:
+            with self.subTest(concurrency=summary.concurrency):
+                self.assertAlmostEqual(
+                    summary.latency_mean, per_level[summary.concurrency]
+                )
+
+
+class TestRunStressReportType(unittest.TestCase):
+    """The result type contract from behaviour 13 of the plan."""
+
+    def test_stress_report_is_a_dataclass(self):
+        if StressReport is None:
+            self.fail(
+                "anvilkit.stress.StressReport is not implemented yet: "
+                "{}".format(_run_stress_import_error)
+            )
+        self.assertTrue(dataclasses.is_dataclass(StressReport))
 
 
 if __name__ == "__main__":
