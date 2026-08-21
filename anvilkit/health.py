@@ -9,6 +9,7 @@ loaded, which says nothing about whether the underlying vLLM worker can actually
 answer. :func:`test_model` sends one real completion to find out.
 """
 
+import dataclasses
 import json
 import socket
 import time
@@ -52,6 +53,26 @@ _CONTENT_KEYS = ("content", "reasoning_content")
 
 # Keys under which llama-swap names a loaded model.
 _MODEL_NAME_KEYS = ("model", "id", "name")
+
+
+@dataclasses.dataclass
+class ChatOutcome:
+    """One chat completion, success or failure, for the stress runner.
+
+    Unlike :class:`ModelTestResult` it carries an ``http_status`` so the caller
+    can classify the failure (a 500 that says 'out of memory' is not the same
+    problem as a refused connection), and it measures the reply rather than
+    judging it: under load a truncated, even empty, answer is the expected shape
+    of a healthy model running on a fixed token budget, so emptiness is decided
+    by the caller, not here.
+    """
+
+    ok: bool
+    latency_seconds: float
+    completion_tokens: Optional[int] = None
+    prompt_tokens: Optional[int] = None
+    error: Optional[str] = None
+    http_status: Optional[int] = None
 
 
 class ModelStatus:
@@ -297,6 +318,54 @@ def test_model(
     )
 
 
+def chat_once(
+    port: int, model_id: str, prompt: str, max_tokens: int, timeout: float
+) -> ChatOutcome:
+    """Send one chat completion and report it without raising.
+
+    The stress runner calls this for every measured request, so it is the one
+    place that knows the chat-completion wire format: the body is built by
+    :func:`build_chat_request` and serialised from a dict, never assembled by
+    string substitution.
+
+    Like :func:`test_model`, it never raises for a network or payload problem -
+    a request that fails under load is the very thing being measured - but it
+    stops where ``test_model`` goes on: it reports the payload it received and
+    leaves judging the reply (emptiness, finish reason) to the caller, because
+    under a fixed token budget a truncated answer is the expected shape of a
+    healthy model.
+    """
+    body = build_chat_request(model_id, prompt, max_tokens)
+
+    started = time.monotonic()
+    try:
+        payload = _load_json(
+            _read_chat(_url(port, _CHAT_PATH), body, timeout), _CHAT_PATH
+        )
+    except _ProbeError as exc:
+        return ChatOutcome(
+            ok=False,
+            latency_seconds=time.monotonic() - started,
+            error=str(exc),
+            http_status=getattr(exc, "http_status", None),
+        )
+    elapsed = time.monotonic() - started
+
+    try:
+        _check_completion_shape(payload)
+    except _ProbeError as exc:
+        return ChatOutcome(ok=False, latency_seconds=elapsed, error=str(exc))
+
+    prompt_tokens, completion_tokens = _parse_usage(payload)
+
+    return ChatOutcome(
+        ok=True,
+        latency_seconds=elapsed,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+    )
+
+
 def format_model_test(result: ModelTestResult, use_color: bool = True) -> str:
     lines = []
 
@@ -449,6 +518,48 @@ def _post_json(
     return _load_json(_read(urllib.request.urlopen, request, path, timeout), path)
 
 
+def _read_chat(url: str, body: Mapping[str, Any], timeout: float) -> str:
+    """POST the chat body and return the raw reply.
+
+    Like :func:`_read` it never raises for a network problem, but it keeps the
+    HTTP status out of the message: ``chat_once`` records it in
+    ``ChatOutcome.http_status`` and the caller's error classifier needs the two
+    apart, rather than re-parsing "HTTP 500 from ..." out of the text.
+    """
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(dict(body)).encode("utf-8"),
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        method="POST",
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        probe = _ProbeError(
+            "HTTP {} from {}{}".format(exc.code, _CHAT_PATH, _error_detail(exc))
+        )
+        # Carried on the exception, not parsed back out of the message:
+        # chat_once lifts it into ChatOutcome.http_status, and the stress
+        # classifier (behaviour 6) needs the number separately from the text.
+        probe.http_status = exc.code
+        raise probe from exc
+    except socket.timeout as exc:
+        raise _ProbeError(
+            "timed out after {}s contacting {}".format(timeout, _CHAT_PATH)
+        ) from exc
+    except urllib.error.URLError as exc:
+        # URLError wraps the real cause, including socket.timeout on some versions.
+        if isinstance(exc.reason, socket.timeout):
+            raise _ProbeError(
+                "timed out after {}s contacting {}".format(timeout, _CHAT_PATH)
+            ) from exc
+        raise _ProbeError("{}: {}".format(_CHAT_PATH, exc.reason)) from exc
+    except OSError as exc:
+        raise _ProbeError("{}: {}".format(_CHAT_PATH, exc)) from exc
+
+
 def _read(opener: Any, target: Any, path: str, timeout: float) -> str:
     """Perform one request, translating every failure into _ProbeError."""
     try:
@@ -535,6 +646,32 @@ def _parse_completion(payload: Any) -> str:
         )
 
     raise _ProbeError("the model returned an empty reply")
+
+
+def _check_completion_shape(payload: Any) -> None:
+    """Verify the payload is a chat completion at all, without judging it.
+
+    :func:`_parse_completion` is deliberately not reused here: it raises on an
+    empty reply, and for a stress run an empty reply on a fixed token budget is
+    the *expected* shape of a healthy model. Only the structure is checked;
+    what the model said - and whether saying nothing is a fault - is the
+    caller's decision. The messages match ``_parse_completion``'s so a
+    misbehaving gateway reads the same either way.
+    """
+    if not isinstance(payload, dict):
+        raise _ProbeError("{} returned a non-object payload".format(_CHAT_PATH))
+
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise _ProbeError("{} returned no choices".format(_CHAT_PATH))
+
+    first = choices[0]
+    if not isinstance(first, dict):
+        raise _ProbeError("{} returned a malformed choice".format(_CHAT_PATH))
+
+    message = first.get("message")
+    if not isinstance(message, dict):
+        raise _ProbeError("{} returned a choice with no message".format(_CHAT_PATH))
 
 
 def _parse_usage(payload: Any) -> Tuple[Optional[int], Optional[int]]:
