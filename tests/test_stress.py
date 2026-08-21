@@ -30,9 +30,19 @@ dispatches ``request_count`` requests through a pool bounded to
 ``concurrency`` workers and returns exactly ``request_count``
 ``ChatOutcome``s -- at most ``concurrency`` are in flight at once,
 concurrency 1 is genuinely serial, and a ``send`` that raises is caught
-and converted into a failed outcome rather than aborting the level.
+and converted into a failed outcome rather than aborting the level;
+``summarise_level(level, outcomes, wall_seconds)`` aggregates one level's
+outcomes into a ``LevelSummary`` -- latency figures are computed from
+successful outcomes only, ``requests_per_second`` is ``succeeded /
+wall_seconds`` and ``tokens_per_second`` the total completion tokens over
+the wall time, ``error_counts`` buckets the failed outcomes via
+``classify_error`` (a clean level has an empty mapping) and ``errors``
+carries the distinct raw error strings in first-seen order, capped at five;
+a level where every request failed reports ``None`` for all latency figures
+and ``0.0`` for both rates, and a zero wall time with successes yields
+``None`` rates rather than an exception.
 
-Behaviours 4, 5 and 12-16 land in this same file in later cycles.
+Behaviours 4, 5 and 13-16 land in this same file in later cycles.
 
 The module is a pure-function module for these behaviours: no network, no
 real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
@@ -86,6 +96,22 @@ try:  # noqa: E402
 except ImportError as _err:
     _run_level_import_error = str(_err)
     run_level = None
+
+# Behaviour 12 (TDD red): these do not exist yet, so the import is guarded.
+# The new test classes turn the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_summarise_level_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import (  # noqa: E402
+        LevelSummary,
+        summarise_level,
+    )
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _summarise_level_import_error = str(_err)
+    LevelSummary = None
+    summarise_level = None
 
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
@@ -1182,6 +1208,388 @@ class TestRunLevelRaisingSend(unittest.TestCase):
             self.assertFalse(outcome.ok)
             self.assertIsInstance(outcome.error, str)
             self.assertTrue(outcome.error)
+
+
+def _ok_outcome(latency, completion_tokens=None, prompt_tokens=None):
+    """A canned successful ``ChatOutcome`` with the given latency."""
+    return ChatOutcome(
+        ok=True,
+        latency_seconds=latency,
+        completion_tokens=completion_tokens,
+        prompt_tokens=prompt_tokens,
+    )
+
+
+def _failed_outcome(error, latency=0.0, http_status=None):
+    """A canned failed ``ChatOutcome`` with the given raw error text."""
+    return ChatOutcome(
+        ok=False,
+        latency_seconds=latency,
+        error=error,
+        http_status=http_status,
+    )
+
+
+class TestSummariseLevelAllSuccess(unittest.TestCase):
+    """Behaviour 12: a level where every request succeeded."""
+
+    def _summarise(self, level, outcomes, wall_seconds):
+        if summarise_level is None:
+            self.fail(
+                "anvilkit.stress.summarise_level is not implemented yet: "
+                "{}".format(_summarise_level_import_error)
+            )
+        return summarise_level(level, outcomes, wall_seconds)
+
+    def test_reports_counts_and_clean_error_fields(self):
+        outcomes = [
+            _ok_outcome(1.0, completion_tokens=128),
+            _ok_outcome(2.0, completion_tokens=256),
+            _ok_outcome(3.0, completion_tokens=64),
+            _ok_outcome(4.0, completion_tokens=192),
+        ]
+        summary = self._summarise(4, outcomes, 10.0)
+        self.assertEqual(summary.concurrency, 4)
+        self.assertEqual(summary.requests, 4)
+        self.assertEqual(summary.succeeded, 4)
+        self.assertEqual(summary.failed, 0)
+        # A clean level has an empty error mapping and no raw errors.
+        self.assertEqual(summary.error_counts, {})
+        self.assertEqual(summary.errors, [])
+
+    def test_latency_figures(self):
+        # Nearest-rank on [1, 2, 3, 4]: p50 is index ceil(0.5*4)-1 = 1 ->
+        # 2.0; p95 and p99 both reach the last element.
+        outcomes = [
+            _ok_outcome(1.0),
+            _ok_outcome(2.0),
+            _ok_outcome(3.0),
+            _ok_outcome(4.0),
+        ]
+        summary = self._summarise(2, outcomes, 10.0)
+        self.assertAlmostEqual(summary.latency_mean, 2.5)
+        self.assertAlmostEqual(summary.latency_p50, 2.0)
+        self.assertAlmostEqual(summary.latency_p95, 4.0)
+        self.assertAlmostEqual(summary.latency_p99, 4.0)
+        self.assertAlmostEqual(summary.latency_min, 1.0)
+        self.assertAlmostEqual(summary.latency_max, 4.0)
+
+    def test_single_success_reports_it_for_every_figure(self):
+        outcome = _ok_outcome(1.5, completion_tokens=100)
+        summary = self._summarise(1, [outcome], 3.0)
+        self.assertEqual(summary.requests, 1)
+        self.assertEqual(summary.succeeded, 1)
+        self.assertAlmostEqual(summary.latency_mean, 1.5)
+        self.assertAlmostEqual(summary.latency_p50, 1.5)
+        self.assertAlmostEqual(summary.latency_p95, 1.5)
+        self.assertAlmostEqual(summary.latency_p99, 1.5)
+        self.assertAlmostEqual(summary.latency_min, 1.5)
+        self.assertAlmostEqual(summary.latency_max, 1.5)
+        self.assertAlmostEqual(summary.requests_per_second, 1.0 / 3.0)
+        self.assertAlmostEqual(summary.tokens_per_second, 100.0 / 3.0)
+
+    def test_rates(self):
+        outcomes = [
+            _ok_outcome(1.0, completion_tokens=128),
+            _ok_outcome(2.0, completion_tokens=256),
+            _ok_outcome(3.0, completion_tokens=64),
+            _ok_outcome(4.0, completion_tokens=192),
+        ]
+        summary = self._summarise(4, outcomes, 10.0)
+        self.assertAlmostEqual(summary.requests_per_second, 4.0 / 10.0)
+        # 128 + 256 + 64 + 192 = 640 completion tokens over 10 seconds.
+        self.assertAlmostEqual(summary.tokens_per_second, 64.0)
+
+
+class TestSummariseLevelMixed(unittest.TestCase):
+    """Behaviour 12: successes and failures at the same level.
+
+    The load-bearing rule: latency figures come from successful outcomes
+    only, so a fast failure must not drag the mean down.
+    """
+
+    def _summarise(self, level, outcomes, wall_seconds):
+        if summarise_level is None:
+            self.fail(
+                "anvilkit.stress.summarise_level is not implemented yet: "
+                "{}".format(_summarise_level_import_error)
+            )
+        return summarise_level(level, outcomes, wall_seconds)
+
+    def test_latency_figures_exclude_failures(self):
+        # Two slow successes and two fast failures: the 0.1/0.2 s failures
+        # must not appear in any latency figure.
+        outcomes = [
+            _ok_outcome(3.0, completion_tokens=128),
+            _failed_outcome("CUDA out of memory", latency=0.2, http_status=500),
+            _ok_outcome(4.0, completion_tokens=256),
+            _failed_outcome("request timed out", latency=0.1),
+        ]
+        summary = self._summarise(8, outcomes, 20.0)
+        self.assertAlmostEqual(summary.latency_mean, 3.5)
+        # Nearest-rank on [3, 4]: p50 is index 0, p95/p99 reach index 1.
+        self.assertAlmostEqual(summary.latency_p50, 3.0)
+        self.assertAlmostEqual(summary.latency_p95, 4.0)
+        self.assertAlmostEqual(summary.latency_p99, 4.0)
+        self.assertAlmostEqual(summary.latency_min, 3.0)
+        self.assertAlmostEqual(summary.latency_max, 4.0)
+
+    def test_counts(self):
+        outcomes = [
+            _ok_outcome(3.0, completion_tokens=128),
+            _failed_outcome("CUDA out of memory", http_status=500),
+            _ok_outcome(4.0, completion_tokens=256),
+            _failed_outcome("request timed out"),
+        ]
+        summary = self._summarise(8, outcomes, 20.0)
+        self.assertEqual(summary.concurrency, 8)
+        self.assertEqual(summary.requests, 4)
+        self.assertEqual(summary.succeeded, 2)
+        self.assertEqual(summary.failed, 2)
+
+    def test_rates_and_throughput(self):
+        outcomes = [
+            _ok_outcome(3.0, completion_tokens=128),
+            _failed_outcome("CUDA out of memory", http_status=500),
+            _ok_outcome(4.0, completion_tokens=256),
+            _failed_outcome("request timed out"),
+        ]
+        summary = self._summarise(8, outcomes, 20.0)
+        self.assertAlmostEqual(summary.requests_per_second, 2.0 / 20.0)
+        # Only the successful token counts contribute: 128 + 256 over 20 s.
+        self.assertAlmostEqual(summary.tokens_per_second, 19.2)
+
+    def test_error_counts_and_raw_errors(self):
+        outcomes = [
+            _ok_outcome(3.0, completion_tokens=128),
+            _failed_outcome("CUDA out of memory", http_status=500),
+            _ok_outcome(4.0, completion_tokens=256),
+            _failed_outcome("request timed out"),
+        ]
+        summary = self._summarise(8, outcomes, 20.0)
+        # The OOM arrives as an HTTP 500 but must bucket as oom, not http.
+        self.assertEqual(
+            summary.error_counts, {"oom": 1, "timeout": 1}
+        )
+        self.assertEqual(
+            summary.errors,
+            ["CUDA out of memory", "request timed out"],
+        )
+
+
+class TestSummariseLevelAllFailed(unittest.TestCase):
+    """Behaviour 12: a level where every request failed.
+
+    All latency figures are ``None`` -- never a fabricated ``0.0`` -- and
+    both rates are ``0.0``, never a ``ZeroDivisionError``.
+    """
+
+    def _summarise(self, level, outcomes, wall_seconds):
+        if summarise_level is None:
+            self.fail(
+                "anvilkit.stress.summarise_level is not implemented yet: "
+                "{}".format(_summarise_level_import_error)
+            )
+        return summarise_level(level, outcomes, wall_seconds)
+
+    def test_latency_figures_are_none(self):
+        outcomes = [
+            _failed_outcome("CUDA out of memory", latency=0.2, http_status=500),
+            _failed_outcome("request timed out", latency=0.1),
+        ]
+        summary = self._summarise(4, outcomes, 10.0)
+        self.assertEqual(summary.requests, 2)
+        self.assertEqual(summary.succeeded, 0)
+        self.assertEqual(summary.failed, 2)
+        self.assertIsNone(summary.latency_mean)
+        self.assertIsNone(summary.latency_p50)
+        self.assertIsNone(summary.latency_p95)
+        self.assertIsNone(summary.latency_p99)
+        self.assertIsNone(summary.latency_min)
+        self.assertIsNone(summary.latency_max)
+
+    def test_rates_are_zero_not_an_exception(self):
+        outcomes = [
+            _failed_outcome("CUDA out of memory", latency=0.2, http_status=500),
+            _failed_outcome("request timed out", latency=0.1),
+        ]
+        summary = self._summarise(4, outcomes, 10.0)
+        self.assertEqual(summary.requests_per_second, 0.0)
+        self.assertEqual(summary.tokens_per_second, 0.0)
+
+    def test_all_failed_with_zero_wall_still_reports_zero_rates(self):
+        # The plan's all-failure rule is unconditional on wall time: an
+        # all-failed level reports 0.0 rates even when the wall time is
+        # zero -- 0/0 must not raise.
+        outcomes = [
+            _failed_outcome("CUDA out of memory", http_status=500),
+        ]
+        summary = self._summarise(1, outcomes, 0.0)
+        self.assertEqual(summary.requests_per_second, 0.0)
+        self.assertEqual(summary.tokens_per_second, 0.0)
+        self.assertIsNone(summary.latency_mean)
+
+    def test_error_counts_cover_every_category_over_failures_only(self):
+        outcomes = [
+            _failed_outcome("CUDA out of memory", http_status=500),
+            _failed_outcome("request timed out"),
+            _failed_outcome("connection refused"),
+            _failed_outcome("internal error", http_status=500),
+            _failed_outcome("server did not return json"),
+            _failed_outcome("???"),
+        ]
+        summary = self._summarise(6, outcomes, 10.0)
+        self.assertEqual(
+            summary.error_counts,
+            {"oom": 1, "timeout": 1, "connection": 1, "http": 1, "protocol": 1, "unknown": 1},
+        )
+        self.assertEqual(
+            summary.errors,
+            [
+                "CUDA out of memory",
+                "request timed out",
+                "connection refused",
+                "internal error",
+                "server did not return json",
+            ],
+        )
+
+
+class TestSummariseLevelZeroWall(unittest.TestCase):
+    """Behaviour 12: a zero wall time must not raise.
+
+    With successes the rates are ``None`` rather than an exception; the
+    latency figures are unaffected, since they do not use the wall time.
+    """
+
+    def _summarise(self, level, outcomes, wall_seconds):
+        if summarise_level is None:
+            self.fail(
+                "anvilkit.stress.summarise_level is not implemented yet: "
+                "{}".format(_summarise_level_import_error)
+            )
+        return summarise_level(level, outcomes, wall_seconds)
+
+    def test_rates_are_none_when_there_are_successes(self):
+        outcomes = [
+            _ok_outcome(1.0, completion_tokens=128),
+            _ok_outcome(2.0, completion_tokens=256),
+        ]
+        summary = self._summarise(2, outcomes, 0.0)
+        self.assertIsNone(summary.requests_per_second)
+        self.assertIsNone(summary.tokens_per_second)
+
+    def test_latency_figures_still_computed(self):
+        outcomes = [
+            _ok_outcome(1.0, completion_tokens=128),
+            _ok_outcome(2.0, completion_tokens=256),
+        ]
+        summary = self._summarise(2, outcomes, 0.0)
+        self.assertAlmostEqual(summary.latency_mean, 1.5)
+        self.assertAlmostEqual(summary.latency_min, 1.0)
+        self.assertAlmostEqual(summary.latency_max, 2.0)
+
+
+class TestSummariseLevelTokenThroughput(unittest.TestCase):
+    """Behaviour 12: token throughput versus missing usage counters.
+
+    ``None`` token counts mean "the response reported no usage", which is
+    distinct from a genuine zero and must yield ``None`` throughput.
+    """
+
+    def _summarise(self, level, outcomes, wall_seconds):
+        if summarise_level is None:
+            self.fail(
+                "anvilkit.stress.summarise_level is not implemented yet: "
+                "{}".format(_summarise_level_import_error)
+            )
+        return summarise_level(level, outcomes, wall_seconds)
+
+    def test_no_usage_reported_is_none_not_zero(self):
+        outcomes = [
+            _ok_outcome(1.0),
+            _ok_outcome(2.0),
+        ]
+        summary = self._summarise(2, outcomes, 10.0)
+        self.assertIsNone(summary.tokens_per_second)
+        # The request rate does not depend on usage counters.
+        self.assertAlmostEqual(summary.requests_per_second, 0.2)
+
+    def test_genuine_zero_tokens_is_zero_not_none(self):
+        outcomes = [
+            _ok_outcome(1.0, completion_tokens=0),
+            _ok_outcome(2.0, completion_tokens=0),
+        ]
+        summary = self._summarise(2, outcomes, 10.0)
+        self.assertEqual(summary.tokens_per_second, 0.0)
+
+    def test_partial_usage_sums_only_reported_counts(self):
+        outcomes = [
+            _ok_outcome(1.0, completion_tokens=128),
+            _ok_outcome(2.0),
+            _ok_outcome(3.0, completion_tokens=256),
+        ]
+        summary = self._summarise(3, outcomes, 10.0)
+        self.assertAlmostEqual(summary.tokens_per_second, 38.4)
+
+
+class TestSummariseLevelErrorsList(unittest.TestCase):
+    """Behaviour 12: ``errors`` is distinct raw strings, first five.
+
+    Duplicates collapse; first-seen order is pinned here as the contract;
+    the list is capped at the first five distinct errors, so the report
+    shows actual messages without growing without bound.
+    """
+
+    def _summarise(self, level, outcomes, wall_seconds):
+        if summarise_level is None:
+            self.fail(
+                "anvilkit.stress.summarise_level is not implemented yet: "
+                "{}".format(_summarise_level_import_error)
+            )
+        return summarise_level(level, outcomes, wall_seconds)
+
+    def test_duplicates_collapse_in_first_seen_order(self):
+        outcomes = [
+            _failed_outcome("boom-a"),
+            _failed_outcome("boom-b"),
+            _failed_outcome("boom-a"),
+            _failed_outcome("boom-c"),
+        ]
+        summary = self._summarise(4, outcomes, 10.0)
+        self.assertEqual(
+            summary.errors, ["boom-a", "boom-b", "boom-c"]
+        )
+
+    def test_capped_at_first_five_distinct_errors(self):
+        outcomes = [
+            _failed_outcome("boom-a"),
+            _failed_outcome("boom-b"),
+            _failed_outcome("boom-c"),
+            _failed_outcome("boom-a"),
+            _failed_outcome("boom-d"),
+            _failed_outcome("boom-e"),
+            _failed_outcome("boom-f"),
+        ]
+        summary = self._summarise(6, outcomes, 10.0)
+        self.assertEqual(
+            summary.errors,
+            ["boom-a", "boom-b", "boom-c", "boom-d", "boom-e"],
+        )
+        # The count of failures is not capped: only the shown messages are.
+        self.assertEqual(summary.failed, 7)
+
+
+class TestSummariseLevelResultType(unittest.TestCase):
+    """The result type contract from behaviour 12 of the plan."""
+
+    def test_level_summary_is_a_dataclass(self):
+        if LevelSummary is None:
+            self.fail(
+                "anvilkit.stress.LevelSummary is not implemented yet: "
+                "{}".format(_summarise_level_import_error)
+            )
+        self.assertTrue(dataclasses.is_dataclass(LevelSummary))
 
 
 if __name__ == "__main__":
