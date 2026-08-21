@@ -1050,6 +1050,207 @@ class FormatRequestTests(unittest.TestCase):
         self.assertEqual(MODEL, data["body"]["model"])
 
 
+# ---------------------------------------------------------------------------
+# chat_once - one completion for the stress runner, measured, never raising
+# ---------------------------------------------------------------------------
+#
+# The import is deferred to setUp: until chat_once exists the file must keep
+# importing cleanly so the existing suite stays green and the red lands on the
+# new tests alone (ImportError: cannot import name 'chat_once').
+
+
+def chat_responder(chat_result):
+    """A urlopen side effect answering only the chat-completions POST.
+
+    ``chat_once`` makes no registry call, so any other URL is a bug; the
+    responder says so loudly instead of guessing.
+    """
+
+    def side_effect(target, timeout=None):
+        url = _requested_url(target)
+        if "/v1/chat/completions" not in url:
+            raise AssertionError("unexpected request to {}".format(url))
+        if isinstance(chat_result, BaseException):
+            raise chat_result
+        return chat_result
+
+    return side_effect
+
+
+class ChatOnceSuccessTests(unittest.TestCase):
+    """A 200 with an answer is a success, whatever else the body carries."""
+
+    def setUp(self):
+        from anvilkit.health import chat_once
+
+        self.chat_once = chat_once
+
+    def _run(self, response):
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=chat_responder(json_response(response)),
+        ):
+            return self.chat_once(
+                PORT, MODEL, prompt=PROMPT, max_tokens=16, timeout=5.0
+            )
+
+    def test_reports_ok_when_the_model_replies(self):
+        outcome = self._run(chat_completion())
+
+        self.assertTrue(outcome.ok)
+        self.assertIsNone(outcome.error)
+        self.assertIsNone(outcome.http_status)
+
+    def test_records_token_usage(self):
+        outcome = self._run(chat_completion(prompt_tokens=7, completion_tokens=3))
+
+        self.assertEqual(7, outcome.prompt_tokens)
+        self.assertEqual(3, outcome.completion_tokens)
+
+    def test_missing_usage_is_still_a_success(self):
+        """A missing counter is not a failed request."""
+        payload = chat_completion()
+        del payload["usage"]
+
+        outcome = self._run(payload)
+
+        self.assertTrue(outcome.ok)
+        self.assertIsNone(outcome.prompt_tokens)
+        self.assertIsNone(outcome.completion_tokens)
+
+    def test_success_latency_is_measured(self):
+        outcome = self._run(chat_completion())
+
+        self.assertIsNotNone(outcome.latency_seconds)
+        self.assertGreaterEqual(outcome.latency_seconds, 0.0)
+
+    def test_measures_the_latency_of_the_completion(self):
+        with mock.patch("time.monotonic", FakeClock(10.0, 11.5)):
+            outcome = self._run(chat_completion())
+
+        self.assertAlmostEqual(1.5, outcome.latency_seconds, places=3)
+
+
+class ChatOnceRequestTests(unittest.TestCase):
+    """What is actually put on the wire."""
+
+    def setUp(self):
+        from anvilkit.health import chat_once
+
+        self.chat_once = chat_once
+
+    def _urlopen(self):
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=chat_responder(json_response(chat_completion())),
+        ) as urlopen:
+            self.chat_once(PORT, MODEL, prompt=PROMPT, max_tokens=16, timeout=5.0)
+        return urlopen
+
+    def test_posts_to_the_chat_completions_endpoint(self):
+        self.assertEqual(CHAT_URL, sent_request(self._urlopen()).full_url)
+
+    def test_uses_the_post_method(self):
+        self.assertEqual("POST", sent_request(self._urlopen()).get_method())
+
+    def test_declares_a_json_content_type(self):
+        request = sent_request(self._urlopen())
+
+        self.assertEqual("application/json", request.get_header("Content-type"))
+
+    def test_sends_the_body_built_by_build_chat_request(self):
+        body = sent_body(self._urlopen())
+
+        self.assertEqual(health.build_chat_request(MODEL, PROMPT, 16), body)
+
+    def test_does_not_stream(self):
+        self.assertFalse(sent_body(self._urlopen())["stream"])
+
+    def test_passes_the_timeout_to_the_request(self):
+        self.assertEqual(5.0, self._urlopen().call_args.kwargs.get("timeout"))
+
+    def test_honours_a_non_default_port(self):
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=chat_responder(json_response(chat_completion())),
+        ) as urlopen:
+            self.chat_once(9999, MODEL, prompt=PROMPT, max_tokens=16, timeout=5.0)
+
+        self.assertIn("localhost:9999", sent_request(urlopen).full_url)
+
+
+class ChatOnceFailureTests(unittest.TestCase):
+    """Every failure is reported - with latency - and none of them raise."""
+
+    def setUp(self):
+        from anvilkit.health import chat_once
+
+        self.chat_once = chat_once
+
+    def _run(self, chat_result):
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=chat_responder(chat_result),
+        ):
+            return self.chat_once(
+                PORT, MODEL, prompt=PROMPT, max_tokens=16, timeout=5.0
+            )
+
+    def test_an_http_500_is_reported_with_its_status(self):
+        outcome = self._run(http_error(500))
+
+        self.assertFalse(outcome.ok)
+        self.assertEqual(500, outcome.http_status)
+        self.assertIn("500", outcome.error)
+        self.assertIsNone(outcome.prompt_tokens)
+        self.assertIsNone(outcome.completion_tokens)
+
+    def test_the_gateway_error_body_is_surfaced_on_http_error(self):
+        """The gateway's own error text must reach the stress log."""
+        body = json.dumps({"error": {"message": "CUDA out of memory"}})
+        outcome = self._run(http_error(500, body))
+
+        self.assertFalse(outcome.ok)
+        self.assertEqual(500, outcome.http_status)
+        self.assertIn("CUDA out of memory", outcome.error)
+
+    def test_a_plain_text_error_body_is_surfaced_on_http_error(self):
+        outcome = self._run(http_error(503, "no healthy upstream"))
+
+        self.assertFalse(outcome.ok)
+        self.assertEqual(503, outcome.http_status)
+        self.assertIn("no healthy upstream", outcome.error)
+
+    def test_a_timeout_is_reported_with_latency_and_no_status(self):
+        with mock.patch("time.monotonic", FakeClock(10.0, 11.5)):
+            outcome = self._run(socket.timeout("timed out"))
+
+        self.assertFalse(outcome.ok)
+        self.assertIn("timed out", outcome.error)
+        self.assertIsNone(outcome.http_status)
+        self.assertAlmostEqual(1.5, outcome.latency_seconds, places=3)
+
+    def test_a_connection_refusal_is_reported_with_latency_and_no_status(self):
+        with mock.patch("time.monotonic", FakeClock(10.0, 11.5)):
+            outcome = self._run(
+                urllib.error.URLError(ConnectionRefusedError(111, "refused"))
+            )
+
+        self.assertFalse(outcome.ok)
+        self.assertIn("refused", outcome.error)
+        self.assertIsNone(outcome.http_status)
+        self.assertAlmostEqual(1.5, outcome.latency_seconds, places=3)
+
+    def test_a_non_json_completion_body_is_reported(self):
+        with mock.patch("time.monotonic", FakeClock(10.0, 11.5)):
+            outcome = self._run(FakeResponse("not json at all"))
+
+        self.assertFalse(outcome.ok)
+        self.assertIn("JSON", outcome.error)
+        self.assertIsNone(outcome.http_status)
+        self.assertAlmostEqual(1.5, outcome.latency_seconds, places=3)
+
+
 def _strip_ansi(text):
     import re
 
