@@ -38,3 +38,12 @@ knowledge gap, not to browse.
   can check the claim without re-deriving it.
 - **If oxylabs is unavailable** — disabled, or missing credentials — say so and ask the user
   for the documentation rather than proceeding on assumption.
+
+## Keep It Simple (KISS)
+
+- **The simplest solution wins**: The simplest solution that meets the requirement is the right one — do not add complexity nothing asks for.
+- **Optimise only when asked or measured**: Optimise only when the user asks or a measured problem demands it — never pre-emptively.
+- **Build the happy path first**: Deliver the main feature before the rare case.
+- **Fail safely**: On an unexpected state, raise a clear controlled error or return a safe default — never a silent bug, never a crash that loses data.
+- **Log unexpected states**: Log unexpected states, so how often a rare case really happens is known, not guessed.
+- **Handle a rare edge case only when real users or real data hit it** — exception: a data-loss or security risk is fixed immediately.
