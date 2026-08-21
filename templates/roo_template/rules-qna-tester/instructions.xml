@@ -50,7 +50,7 @@
     <rule>Test both standalone_mode=True and standalone_mode=False if the CLI entry path uses one but the other differs.</rule>
     <rule>Do not test everything — test public logic, complex algorithms and the critical business rules.</rule>
     <rule>Cover business logic and core calculations, edge cases (boundary values, empty inputs, nulls) and error paths: how the code handles bad data and failures.</rule>
-    <rule>Write a test for a bug before fixing it, so the fix is proven and the regression stays caught.</rule>
+    <rule>For bugfixes, write a test first, so the fix is proven and the regression stays caught.</rule>
     <rule>Skip getters and setters, third-party code and trivial wrappers that only call another method — test behavior, not appearance or UI styling.</rule>
     <rule>Keep tests small, fast, isolated from each other, repeatable and self-checking.</rule>
   </best_practices>
