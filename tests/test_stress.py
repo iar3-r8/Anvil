@@ -971,7 +971,7 @@ class _InFlightTracker:
             call_index = self._calls
             self._in_flight += 1
             if self._in_flight > self.peak:
-                self._peak = self._in_flight
+                self.peak = self._in_flight
         try:
             return self._outcomes[call_index - 1]
         finally:
