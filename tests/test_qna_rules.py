@@ -56,25 +56,27 @@ QNA_TEMPLATE = (
 )
 LOCAL_QNA = REPO_ROOT / ".roo" / "rules-qna-tester" / "instructions.xml"
 
-# The qna-tester instructions are *almost* well-formed XML: the <overview>
-# names the mode "Q&A Tester" with a bare ampersand, which ElementTree
-# rejects ("not well-formed (invalid token)"). This is a latent defect in
-# the data file, not in this behaviour — behaviour 2 is additive and must
-# not be forced to fix it — so the loader escapes bare ampersands for
-# parsing only. Escaping happens on a string copy; the file on disk is
-# never touched, and every assertion below still runs on the parsed
-# structure plus key phrases (an escaped "&" parses back to "&", so
-# no phrase predicate is affected).
+# The qna-tester instructions are parsed through a loader that escapes bare
+# ampersands on a string copy before ElementTree sees the text, so an
+# unescaped "&" (for example in a title like "Q&A") cannot abort the parse.
+# The data files are well-formed today: the "Q&A Tester" bare-& defect the
+# tolerance was written for has been fixed, and the strict well-formedness
+# test below pins it, so a regression to an unescaped ampersand is caught
+# even though this loader would still parse. A missing file, or a document
+# malformed beyond an unescaped ampersand, still fails at load time.
 _BARE_AMPERSAND = re.compile(r"&(?!(?:[a-zA-Z][a-zA-Z0-9]*|#[0-9]+|#x[0-9a-fA-F]+);)")
 
 
 def _load_qna_instructions(path):
-    """Parse the qna-tester instructions at *path*, tolerating the bare
-    ampersand in "Q&A Tester", and return the root element.
+    """Parse the qna-tester instructions at *path*, returning the root
+    element.
 
-    A missing file or a document that is malformed beyond the known
-    ampersand still fails at load time, so a genuinely corrupt document
-    cannot slip through silently.
+    Bare ampersands are escaped on a string copy before ElementTree sees
+    the text, so an unescaped "&" (for example in a title like "Q&A") does
+    not abort the parse; the file on disk is never touched. A missing file,
+    or a document that is malformed beyond an unescaped ampersand, still
+    fails at load time, so a genuinely corrupt document cannot slip through
+    silently.
     """
     raw = Path(path).read_text(encoding="utf-8")
     escaped = _BARE_AMPERSAND.sub("&" + "amp;", raw)
@@ -190,9 +192,10 @@ class QnaTestingDisciplineBase(XmlTemplateTestCase):
     ``TddManagerRequirementBase`` in tests/test_templates_rules.py).
 
     ``setUp`` parses through :func:`_load_qna_instructions` rather than the
-    shared ``_load_xml`` because the data files carry the bare-ampersand
-    "Q&A Tester" defect described above; everything else about loading is
-    inherited (a missing file still fails, never skips, for the template).
+    shared ``_load_xml``: the loader's ampersand tolerance (a leftover from
+    the now-fixed "Q&A Tester" bare-& defect) can never abort the suite on
+    that token. Everything else about loading is inherited (a missing file
+    still fails, never skips, for the template).
     """
 
     def setUp(self):
@@ -208,13 +211,11 @@ class QnaTestingDisciplineBase(XmlTemplateTestCase):
         self.assertEqual(self.root.tag, "instructions")
 
     def test_document_is_strictly_well_formed_xml(self):
-        # The plan requires the document to stay well-formed XML *without*
-        # any loader tolerance: a strict ElementTree.parse on the raw file
-        # must succeed. setUp's tolerant loader (which escapes the known
-        # bare ampersand) must not mask this — so parse the file itself,
-        # capture a ParseError rather than letting it raise, and assert it
-        # is None. Fails now on the "Q&A Tester" bare-& defect; passes once
-        # the data is fixed ("Q&A") with no change to this test.
+        # The document must stay well-formed XML *without* any loader
+        # tolerance: a strict ElementTree.parse on the raw file must
+        # succeed, so setUp's ampersand-tolerant loader can never mask a
+        # malformed file. Parse the file itself, capture the ParseError
+        # rather than letting it raise, and assert it is None.
         parse_error = None
         try:
             ET.parse(str(self.template_path))

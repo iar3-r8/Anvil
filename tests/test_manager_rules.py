@@ -227,10 +227,9 @@ class TaskSplittingDutyTests(XmlTemplateTestCase):
     def test_added_texts_carry_no_numeric_line_threshold(self):
         # QUALITATIVE-ONLY GUARD: the newly added texts state no numeric
         # line-count threshold — the PR-size wording stays qualitative
-        # (user's decision, plan §1). Passes now vacuously: none of the four
-        # added elements exist yet, so there is nothing to scan. Once the
-        # green step adds them, this same call identifies them and scans
-        # their full text for a digits-plus-"line(s)" phrase such as
+        # (user's decision, plan §1). The four added elements are identified
+        # by the same phrase predicates the new-content tests use, and their
+        # full text is scanned for a digits-plus-"line(s)" phrase such as
         # "500 lines" or "300-line".
         #
         # The guard scans only the added elements: both files were verified
