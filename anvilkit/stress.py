@@ -12,11 +12,14 @@ here; this module never prompts, never reads configuration and never calls
 ``sys.exit()`` -- those stay with the CLI.
 """
 
+import dataclasses
 import math
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Sequence
+from typing import Callable, List, Optional, Sequence
+
+from anvilkit.health import ChatOutcome
 
 
 class StressError(Exception):
@@ -173,3 +176,69 @@ def classify_error(error: str, http_status: Optional[int]) -> str:
     if any(needle in text for needle in _PROTOCOL_SUBSTRINGS):
         return "protocol"
     return "unknown"
+
+
+@dataclasses.dataclass
+class WarmUpResult:
+    """The outcome of the warm-up phase, reported but never measured.
+
+    Warm-up exists so the model is loaded before measurement starts; its cost
+    is shown to the user but never enters the statistics. On an exhausted
+    budget, ``error`` carries the last failure's text verbatim, so the user
+    sees *why* the model never came up rather than a bare "gave up".
+    """
+
+    ok: bool
+    attempts: int
+    elapsed_seconds: float
+    error: Optional[str]
+
+
+def warm_up(
+    send: Callable[[], "ChatOutcome"],
+    timeout: float,
+    retry_interval: float,
+    sleep: Callable[[float], None],
+    now: Callable[[], float],
+) -> "WarmUpResult":
+    """Make a single warm-up attempt and report its outcome.
+
+    ``send`` is called exactly once and its outcome is reported as-is:
+    success returns ``ok=True`` with ``error=None``, failure returns
+    ``ok=False`` with the outcome's error preserved verbatim. ``sleep`` is
+    never called on either path. Retry and budget handling land in later
+    behaviours.
+
+    ``sleep`` and ``now`` are injected rather than read from the process,
+    which is what lets the elapsed time be exercised by an instant test.
+
+    Args:
+        send: one chat completion; returns an outcome, never raises.
+        timeout: the total warm-up budget, in seconds (used by later
+            behaviours; accepted here for signature stability).
+        retry_interval: the wall-clock pause between attempts, in seconds
+            (used by later behaviours; accepted here for signature
+            stability).
+        sleep: the injected sleep (used by later behaviours).
+        now: the injected monotonic clock.
+
+    Returns:
+        A ``WarmUpResult``. Never raises; a failed outcome is a failed
+        result with the error's text preserved.
+    """
+    start = now()
+    outcome = send()
+    elapsed = now() - start
+    if outcome.ok:
+        return WarmUpResult(
+            ok=True,
+            attempts=1,
+            elapsed_seconds=elapsed,
+            error=None,
+        )
+    return WarmUpResult(
+        ok=False,
+        attempts=1,
+        elapsed_seconds=elapsed,
+        error=outcome.error,
+    )
