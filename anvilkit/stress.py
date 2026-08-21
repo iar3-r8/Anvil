@@ -13,6 +13,9 @@ here; this module never prompts, never reads configuration and never calls
 """
 
 import math
+import re
+from datetime import datetime
+from pathlib import Path
 from typing import List, Sequence
 
 
@@ -78,3 +81,20 @@ def percentile(values: Sequence[float], p: float) -> float:
     rank = math.ceil(p / 100 * len(ordered)) - 1
     index = max(0, min(len(ordered) - 1, rank))
     return ordered[index]
+
+
+def log_path(root: Path, model_id: str, when: datetime) -> Path:
+    """Derive the log file path for a stress run, without touching the disk.
+
+    Returns ``root / "logs" / "stress-<safe-model>-<YYYYmmdd-HHMMSS>.log"``.
+    The model id is sanitised so it can never leave ``root/logs``: ``/``,
+    ``\\``, ``:`` and any whitespace become ``-``, so a HuggingFace-style id
+    (``org/sub/model``) and a traversal attempt (``a/../../evil``) both end
+    up as a flat file name. Leading/trailing separators collapse so the id
+    never contributes a doubled, leading or dangling dash. ``when`` is a
+    naive ``datetime`` already in UTC and is rendered directly; reading the
+    clock would make the result untestable.
+    """
+    safe = re.sub(r"[/\\:\s]", "-", model_id).strip("-")
+    stamp = when.strftime("%Y%m%d-%H%M%S")
+    return root / "logs" / "stress-{}-{}.log".format(safe, stamp)
