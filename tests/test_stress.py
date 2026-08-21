@@ -2,7 +2,7 @@
 
 Written before the implementation (TDD).
 
-Current scope: behaviours 1-3 and 6-10 of plans/stress-test.md --
+Current scope: behaviours 1-3 and 6-11 of plans/stress-test.md --
 ``concurrency_levels(max_concurrency)`` derives the level series from a single
 maximum: 1, then each power of two up to the maximum, then the maximum itself
 if it is not already a power of two; ``percentile(values, p)`` is the
@@ -25,18 +25,25 @@ an online gateway whose ``registry_error`` is set, is ``unreachable`` with
 the gateway's own error text verbatim as ``reason``; a named model that is
 an exact member of the registered ids is ``ok`` with ``reason=None``;
 otherwise it is ``unknown_model`` with ``available`` set to the registered
-ids (ascending).
+ids (ascending); ``run_level(send, concurrency, request_count)``
+dispatches ``request_count`` requests through a pool bounded to
+``concurrency`` workers and returns exactly ``request_count``
+``ChatOutcome``s -- at most ``concurrency`` are in flight at once,
+concurrency 1 is genuinely serial, and a ``send`` that raises is caught
+and converted into a failed outcome rather than aborting the level.
 
-Behaviours 4, 5 and 11-16 land in this same file in later cycles.
+Behaviours 4, 5 and 12-16 land in this same file in later cycles.
 
 The module is a pure-function module for these behaviours: no network, no
 real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
-clock as spies and fakes; assertions are on returned data structures only.
+clock as spies and fakes, and the level tests inject ``send`` as a
+thread-safe spy; assertions are on returned data structures only.
 """
 
 import dataclasses
 import sys
 import tempfile
+import threading
 import unittest
 from datetime import datetime
 from pathlib import Path
@@ -69,6 +76,16 @@ except ImportError as _err:
     _check_model_available_import_error = str(_err)
     ModelAvailability = None
     check_model_available = None
+
+# Behaviour 11 (TDD red): this does not exist yet, so the import is guarded.
+# The new test classes turn the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_run_level_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import run_level
+except ImportError as _err:
+    _run_level_import_error = str(_err)
+    run_level = None
 
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
@@ -920,6 +937,251 @@ class TestCheckModelAvailableResultType(unittest.TestCase):
                 "{}".format(_check_model_available_import_error)
             )
         self.assertTrue(dataclasses.is_dataclass(ModelAvailability))
+
+
+def _success_outcome():
+    """A canned successful ``ChatOutcome`` for level tests."""
+    return ChatOutcome(
+        ok=True,
+        latency_seconds=0.01,
+        prompt_tokens=7,
+        completion_tokens=128,
+    )
+
+
+class _InFlightTracker:
+    """A thread-safe fake ``send`` that records its observed peak in-flight.
+
+    Increments the in-flight count on entry, records the peak, and
+    decrements on exit, all under a lock so the observation is exact even
+    though the worker threads interleave. Returns the outcome queued for
+    its call number, so the test knows ``send`` ran the expected times.
+    """
+
+    def __init__(self, outcomes):
+        self._lock = threading.Lock()
+        self._outcomes = list(outcomes)
+        self._calls = 0
+        self._in_flight = 0
+        self.peak = 0
+
+    def __call__(self, *args, **kwargs):
+        with self._lock:
+            self._calls += 1
+            call_index = self._calls
+            self._in_flight += 1
+            if self._in_flight > self.peak:
+                self._peak = self._in_flight
+        try:
+            return self._outcomes[call_index - 1]
+        finally:
+            with self._lock:
+                self._in_flight -= 1
+
+    @property
+    def calls(self):
+        with self._lock:
+            return self._calls
+
+
+class _RaisingSend:
+    """A thread-safe fake ``send`` whose first N calls raise, the rest return.
+
+    Call order across the worker threads is not pinned, so the raise set
+    is over the call *sequence* rather than any request identity: exactly
+    ``raise_count`` of the calls raise, whichever requests they are.
+    """
+
+    def __init__(self, outcomes, raise_count):
+        self._lock = threading.Lock()
+        self._outcomes = list(outcomes)
+        self._raise_count = raise_count
+        self._calls = 0
+        self.raised = 0
+
+    def __call__(self, *args, **kwargs):
+        with self._lock:
+            self._calls += 1
+            call_index = self._calls
+            should_raise = call_index <= self._raise_count
+            if should_raise:
+                self.raised += 1
+            outcome = self._outcomes[call_index - 1]
+        if should_raise:
+            raise RuntimeError(
+                "injected failure: call {}".format(call_index)
+            )
+        return outcome
+
+    @property
+    def calls(self):
+        with self._lock:
+            return self._calls
+
+
+class TestRunLevelOutcomeCount(unittest.TestCase):
+    """Behaviour 11: exactly ``request_count`` outcomes, one per request."""
+
+    def _run(self, send, concurrency, request_count):
+        if run_level is None:
+            self.fail(
+                "anvilkit.stress.run_level is not implemented yet: "
+                "{}".format(_run_level_import_error)
+            )
+        return run_level(send, concurrency, request_count)
+
+    def test_returns_exactly_request_count_outcomes(self):
+        cases = [
+            (1, 1),
+            (1, 5),
+            (2, 10),
+            (3, 10),
+            (4, 20),
+            (16, 20),
+        ]
+        for concurrency, request_count in cases:
+            with self.subTest(
+                concurrency=concurrency, request_count=request_count
+            ):
+                send = _InFlightTracker(
+                    [_success_outcome() for _ in range(request_count)]
+                )
+                outcomes = self._run(send, concurrency, request_count)
+                self.assertEqual(len(outcomes), request_count)
+                self.assertEqual(send.calls, request_count)
+                for outcome in outcomes:
+                    self.assertIsInstance(outcome, ChatOutcome)
+
+    def test_concurrency_above_request_count_still_returns_full_count(
+        self
+    ):
+        # The pool is sized to ``concurrency`` but only ``request_count``
+        # requests are submitted: the level returns 3 outcomes, not 8. The
+        # "not reached its nominal concurrency" annotation belongs to the
+        # later reporting behaviour; this behaviour's contract is the count.
+        for concurrency, request_count in ((8, 3), (16, 1)):
+            with self.subTest(
+                concurrency=concurrency, request_count=request_count
+            ):
+                send = _InFlightTracker(
+                    [_success_outcome() for _ in range(request_count)]
+                )
+                outcomes = self._run(send, concurrency, request_count)
+                self.assertEqual(len(outcomes), request_count)
+                self.assertEqual(send.calls, request_count)
+                for outcome in outcomes:
+                    self.assertIsInstance(outcome, ChatOutcome)
+
+    def test_failure_outcomes_do_not_shrink_the_count(self):
+        # Returned failures are collected results, not short-circuits: one
+        # outcome per request, ok or not.
+        request_count = 10
+        outcomes_in = [
+            ChatOutcome(
+                ok=(index % 3 != 0),
+                latency_seconds=0.01,
+                error=None
+                if index % 3 != 0
+                else "connection refused",
+            )
+            for index in range(request_count)
+        ]
+        send = _InFlightTracker(outcomes_in)
+        outcomes = self._run(send, 2, request_count)
+        self.assertEqual(len(outcomes), request_count)
+        # Assert as a multiset on the ok flag, not on any ordering.
+        self.assertEqual(
+            sorted(o.ok for o in outcomes),
+            sorted(o.ok for o in outcomes_in),
+        )
+
+
+class TestRunLevelInFlightBound(unittest.TestCase):
+    """Behaviour 11: at most ``concurrency`` requests in flight at once."""
+
+    def _run(self, send, concurrency, request_count):
+        if run_level is None:
+            self.fail(
+                "anvilkit.stress.run_level is not implemented yet: "
+                "{}".format(_run_level_import_error)
+            )
+        return run_level(send, concurrency, request_count)
+
+    def test_concurrency_one_is_genuinely_serial(self):
+        # With one worker, the observed in-flight count can never exceed 1,
+        # and because every one of the 8 requests actually runs, the peak
+        # is exactly 1.
+        request_count = 8
+        send = _InFlightTracker(
+            [_success_outcome() for _ in range(request_count)]
+        )
+        self._run(send, 1, request_count)
+        self.assertEqual(send.calls, request_count)
+        self.assertEqual(send.peak, 1)
+
+    def test_peak_in_flight_never_exceeds_concurrency(self):
+        # The plan pins the bound, not the achieved concurrency: the peak
+        # must never exceed the level, whether or not the scheduler ever
+        # fills the pool.
+        for concurrency, request_count in ((2, 10), (3, 10), (4, 20)):
+            with self.subTest(
+                concurrency=concurrency, request_count=request_count
+            ):
+                send = _InFlightTracker(
+                    [_success_outcome() for _ in range(request_count)]
+                )
+                self._run(send, concurrency, request_count)
+                self.assertEqual(send.calls, request_count)
+                self.assertLessEqual(send.peak, concurrency)
+
+
+class TestRunLevelRaisingSend(unittest.TestCase):
+    """Behaviour 11: a ``send`` that raises is converted into a failure.
+
+    One thread must never abort the level: the exception is caught, the
+    request it was servicing comes back as a failed ``ChatOutcome``, and
+    the level still returns the full count.
+    """
+
+    def _run(self, send, concurrency, request_count):
+        if run_level is None:
+            self.fail(
+                "anvilkit.stress.run_level is not implemented yet: "
+                "{}".format(_run_level_import_error)
+            )
+        return run_level(send, concurrency, request_count)
+
+    def test_raising_send_is_converted_to_a_failed_outcome(self):
+        request_count = 6
+        send = _RaisingSend(
+            [_success_outcome() for _ in range(request_count)],
+            raise_count=1,
+        )
+        outcomes = self._run(send, 2, request_count)
+        self.assertEqual(len(outcomes), request_count)
+        self.assertEqual(send.raised, 1)
+        failed = [outcome for outcome in outcomes if not outcome.ok]
+        succeeded = [outcome for outcome in outcomes if outcome.ok]
+        self.assertEqual(len(failed), 1)
+        self.assertEqual(len(succeeded), request_count - 1)
+        self.assertIsInstance(failed[0].error, str)
+        self.assertTrue(failed[0].error)
+
+    def test_send_that_always_raises_does_not_abort_the_level(self):
+        # The strongest form: every request raises, yet the level returns
+        # the full count, all failed, none of them an exception.
+        request_count = 5
+        send = _RaisingSend(
+            [_success_outcome() for _ in range(request_count)],
+            raise_count=request_count,
+        )
+        outcomes = self._run(send, 3, request_count)
+        self.assertEqual(len(outcomes), request_count)
+        self.assertEqual(send.raised, request_count)
+        for outcome in outcomes:
+            self.assertFalse(outcome.ok)
+            self.assertIsInstance(outcome.error, str)
+            self.assertTrue(outcome.error)
 
 
 if __name__ == "__main__":
