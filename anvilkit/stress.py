@@ -16,7 +16,7 @@ import math
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 
 class StressError(Exception):
@@ -98,3 +98,78 @@ def log_path(root: Path, model_id: str, when: datetime) -> Path:
     safe = re.sub(r"[/\\:\s]", "-", model_id).strip("-")
     stamp = when.strftime("%Y%m%d-%H%M%S")
     return root / "logs" / "stress-{}-{}.log".format(safe, stamp)
+
+
+# Substrings, grouped by category, in the order they must be checked. ``http``
+# has no text: it is the fallback for anything carrying a status that no text
+# rule claimed first, so it is not a list here -- it is a slot between the
+# text rules.
+_OOM_SUBSTRINGS = (
+    # ``cuda out of memory`` is a superstring of ``out of memory``; the first
+    # entry already catches it, but the explicit entry documents the case.
+    "out of memory",
+    "cuda out of memory",
+    "outofmemoryerror",
+    "enginedeaderror",
+    "enginecore encountered an issue",
+    "no available memory",
+    "kv cache",
+)
+_TIMEOUT_SUBSTRINGS = ("timed out",)
+_CONNECTION_SUBSTRINGS = (
+    "connection refused",
+    "connection reset",
+    "broken pipe",
+)
+_PROTOCOL_SUBSTRINGS = (
+    "did not return json",
+    "non-object payload",
+    "malformed",
+    "no choices",
+)
+
+
+def classify_error(error: str, http_status: Optional[int]) -> str:
+    """Classify a failed request, best-effort, without discarding the raw text.
+
+    Returns one of ``"oom"``, ``"timeout"``, ``"http"``, ``"connection"``,
+    ``"protocol"``, ``"unknown"``. Matching is case-insensitive substring,
+    evaluated in the order the rules appear here: ``oom``, ``timeout``,
+    ``connection``, then ``http`` (any remaining failure that carries an
+    ``http_status``), then ``protocol``, then ``unknown``. The order is
+    load-bearing: an OOM that arrives as an HTTP 500 must classify as
+    ``oom``, not ``http``; a protocol-shaped message that also carries a
+    status classifies as ``http`` because ``http`` precedes ``protocol``.
+
+    This is explicitly best-effort. vLLM publishes no stable
+    machine-readable OOM identifier -- no reserved ``error.type`` value, no
+    dedicated HTTP status, no error code (see
+    ``doc/external/vllm/troubleshooting.md``). The substrings below are drawn
+    from that page's own transcripts; they are a heuristic, not a
+    specification, and a misclassification must be expected. The caller
+    therefore keeps the raw error string alongside the category so nothing
+    is lost when a guess is wrong.
+
+    Args:
+        error: the error text from a failed chat completion.
+        http_status: the HTTP status of the failure, if any; ``None`` when
+            the request failed without an HTTP response (e.g. the
+            connection dropped).
+
+    Returns:
+        One of the six category strings. Never raises; ``"unknown"`` is the
+        safe default.
+    """
+    text = error.lower()
+
+    if any(needle in text for needle in _OOM_SUBSTRINGS):
+        return "oom"
+    if any(needle in text for needle in _TIMEOUT_SUBSTRINGS):
+        return "timeout"
+    if any(needle in text for needle in _CONNECTION_SUBSTRINGS):
+        return "connection"
+    if http_status is not None:
+        return "http"
+    if any(needle in text for needle in _PROTOCOL_SUBSTRINGS):
+        return "protocol"
+    return "unknown"
