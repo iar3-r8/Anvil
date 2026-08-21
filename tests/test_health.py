@@ -1251,6 +1251,63 @@ class ChatOnceFailureTests(unittest.TestCase):
         self.assertAlmostEqual(1.5, outcome.latency_seconds, places=3)
 
 
+class ChatOnceEmptyReplyTests(unittest.TestCase):
+    """An empty reply is a failure only when the token budget was not the cause.
+
+    Behaviour 5 of plans/stress-test.md: under a fixed ``--max-tokens`` a
+    truncated (even empty) answer is the *expected* shape of a healthy model,
+    so ``finish_reason == "length"`` stays a success, while any other finish
+    reason on an empty reply must be reported as a failure. Text carried in
+    ``reasoning_content`` counts as a non-empty reply.
+    """
+
+    def setUp(self):
+        from anvilkit.health import chat_once
+
+        self.chat_once = chat_once
+
+    def _run(self, payload):
+        with mock.patch(
+            "urllib.request.urlopen",
+            side_effect=chat_responder(json_response(payload)),
+        ):
+            return self.chat_once(
+                PORT, MODEL, prompt=PROMPT, max_tokens=16, timeout=5.0
+            )
+
+    def test_empty_reply_truncated_by_the_token_budget_is_a_success(self):
+        """'length' means the model was still generating when the budget ran out."""
+        payload = chat_completion(content="")
+        payload["choices"][0]["finish_reason"] = "length"
+
+        outcome = self._run(payload)
+
+        self.assertTrue(outcome.ok)
+        self.assertIsNone(outcome.error)
+        self.assertIsNone(outcome.http_status)
+
+    def test_empty_reply_not_caused_by_the_token_budget_is_a_failure(self):
+        """finish_reason='stop' means the model chose to answer with nothing."""
+        payload = chat_completion(content="")
+        payload["choices"][0]["finish_reason"] = "stop"
+
+        with mock.patch("time.monotonic", FakeClock(10.0, 11.5)):
+            outcome = self._run(payload)
+
+        self.assertFalse(outcome.ok)
+        self.assertIsNone(outcome.http_status)
+        self.assertIn("the model returned an empty reply", outcome.error)
+        self.assertAlmostEqual(1.5, outcome.latency_seconds, places=3)
+
+    def test_reply_text_in_reasoning_content_is_a_success(self):
+        """vLLM's reasoning parsers may leave 'content' empty."""
+        outcome = self._run(chat_completion(content="", reasoning="pong"))
+
+        self.assertTrue(outcome.ok)
+        self.assertIsNone(outcome.error)
+        self.assertIsNone(outcome.http_status)
+
+
 def _strip_ansi(text):
     import re
 
