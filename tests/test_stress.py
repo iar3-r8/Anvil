@@ -2,7 +2,7 @@
 
 Written before the implementation (TDD).
 
-Current scope: behaviours 1-3 and 6-9 of plans/stress-test.md --
+Current scope: behaviours 1-3 and 6-10 of plans/stress-test.md --
 ``concurrency_levels(max_concurrency)`` derives the level series from a single
 maximum: 1, then each power of two up to the maximum, then the maximum itself
 if it is not already a power of two; ``percentile(values, p)`` is the
@@ -18,15 +18,23 @@ exhausted: a ``send`` that always fails ends in
 ``WarmUpResult(ok=False, attempts=<n>, elapsed_seconds≈budget,
 error=<last failure verbatim>)``, makes at least one attempt even with a
 zero budget, and never starts an attempt once the elapsed time has reached
-the budget.
+the budget; ``check_model_available(gateway, model_id)`` is a pure verdict
+over an already-fetched ``GatewayStatus`` (no I/O, no network) returning a
+``ModelAvailability(verdict, available, reason)`` -- an offline gateway, or
+an online gateway whose ``registry_error`` is set, is ``unreachable`` with
+the gateway's own error text verbatim as ``reason``; a named model that is
+an exact member of the registered ids is ``ok`` with ``reason=None``;
+otherwise it is ``unknown_model`` with ``available`` set to the registered
+ids (ascending).
 
-Behaviours 4, 5 and 10-16 land in this same file in later cycles.
+Behaviours 4, 5 and 11-16 land in this same file in later cycles.
 
 The module is a pure-function module for these behaviours: no network, no
 real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
 clock as spies and fakes; assertions are on returned data structures only.
 """
 
+import dataclasses
 import sys
 import tempfile
 import unittest
@@ -38,13 +46,29 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import stress  # noqa: E402
-from anvilkit.health import ChatOutcome  # noqa: E402
+from anvilkit.health import ChatOutcome, GatewayStatus, ModelStatus  # noqa: E402
 from anvilkit.stress import (  # noqa: E402
     classify_error,
     log_path,
     percentile,
     warm_up,
 )
+
+# Behaviour 10 (TDD red): these do not exist yet, so the import is guarded.
+# The new test classes turn the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_check_model_available_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import (
+        ModelAvailability,
+        check_model_available,
+    )
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _check_model_available_import_error = str(_err)
+    ModelAvailability = None
+    check_model_available = None
 
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
@@ -701,6 +725,201 @@ class TestWarmUpBudgetExhaustion(unittest.TestCase):
             all(interval == self.RETRY_INTERVAL for interval in
                 sleep_spy.intervals)
         )
+
+
+class TestCheckModelAvailableTable(unittest.TestCase):
+    """Behaviour 10: one row per case in the plan's verdict table.
+
+    A pure decision over hand-built ``GatewayStatus`` objects: no mocks,
+    no CLI, no network. The verdict ordering is load-bearing -- both
+    flavours of unreachability (offline gateway, unusable registry
+    payload) outrank membership, and a genuinely empty registry is
+    ``unknown_model``, not ``unreachable``.
+    """
+
+    def _decide(self, gateway, model_id):
+        if check_model_available is None:
+            self.fail(
+                "anvilkit.stress.check_model_available is not implemented "
+                "yet: {}".format(_check_model_available_import_error)
+            )
+        result = check_model_available(gateway, model_id)
+        if ModelAvailability is not None:
+            self.assertIsInstance(result, ModelAvailability)
+        return result
+
+    def _gateway(self, online, models=(), error=None, registry_error=None):
+        return GatewayStatus(
+            port=8080,
+            online=online,
+            models=[ModelStatus(mid, False) for mid in models],
+            error=error,
+            registry_error=registry_error,
+        )
+
+    def test_plan_table_rows(self):
+        cases = [
+            (
+                "registered model on an online gateway",
+                self._gateway(True, models=("a", "b")),
+                "a",
+                "ok",
+                ["a", "b"],
+                None,
+            ),
+            (
+                "unknown model on a non-empty registry",
+                self._gateway(True, models=("a", "b")),
+                "c",
+                "unknown_model",
+                ["a", "b"],
+                None,
+            ),
+            (
+                "offline gateway",
+                self._gateway(False, error="connection refused"),
+                "a",
+                "unreachable",
+                [],
+                "connection refused",
+            ),
+            (
+                "unusable registry payload",
+                self._gateway(
+                    True, registry_error="/v1/models did not return JSON"
+                ),
+                "a",
+                "unreachable",
+                [],
+                "/v1/models did not return JSON",
+            ),
+            (
+                "genuinely empty registry",
+                self._gateway(True),
+                "a",
+                "unknown_model",
+                [],
+                None,
+            ),
+        ]
+        for description, gateway, model_id, verdict, available, reason in cases:
+            with self.subTest(description=description):
+                result = self._decide(gateway, model_id)
+                self.assertEqual(result.verdict, verdict)
+                self.assertEqual(result.available, available)
+                self.assertEqual(result.reason, reason)
+
+    def test_registry_error_outranks_a_positive_membership(self):
+        # The ordering point: the gateway answered and the handed-in status
+        # even lists the named model, but the payload was flagged unusable,
+        # so the verdict must be unreachable, not ok.
+        gateway = self._gateway(
+            True, models=("a",), registry_error="/v1/models did not return JSON"
+        )
+        result = self._decide(gateway, "a")
+        self.assertEqual(result.verdict, "unreachable")
+        self.assertEqual(result.reason, "/v1/models did not return JSON")
+
+    def test_unreachable_carries_the_gateways_error_verbatim(self):
+        for error in (
+            "connection refused",
+            "timed out after 2.0s contacting /v1/models",
+        ):
+            with self.subTest(error=error):
+                result = self._decide(self._gateway(False, error=error), "a")
+                self.assertEqual(result.verdict, "unreachable")
+                self.assertEqual(result.reason, error)
+                self.assertEqual(result.available, [])
+
+    def test_exact_set_membership_never_prefix_or_suffix_matches(self):
+        for registered, requested in (
+            ("vendor/model-a-instruct", "vendor/model-a"),
+            ("vendor/model-a", "vendor/model-a-instruct"),
+            ("vendor/model-a", "vendor/model-a2"),
+        ):
+            with self.subTest(registered=registered, requested=requested):
+                result = self._decide(
+                    self._gateway(True, models=(registered,)), requested
+                )
+                self.assertEqual(result.verdict, "unknown_model")
+                self.assertEqual(result.available, [registered])
+
+    def test_available_ids_are_ascending(self):
+        # The plan's field contract: "the registered ids, ascending".
+        result = self._decide(self._gateway(True, models=("b", "a")), "a")
+        self.assertEqual(result.verdict, "ok")
+        self.assertEqual(result.available, ["a", "b"])
+
+
+class TestCheckModelAvailableEdges(unittest.TestCase):
+    """Edge cases called out in behaviour 10 of the plan."""
+
+    def _decide(self, gateway, model_id):
+        if check_model_available is None:
+            self.fail(
+                "anvilkit.stress.check_model_available is not implemented "
+                "yet: {}".format(_check_model_available_import_error)
+            )
+        return check_model_available(gateway, model_id)
+
+    def _gateway(self, online, models=(), error=None, registry_error=None):
+        return GatewayStatus(
+            port=8080,
+            online=online,
+            models=[ModelStatus(mid, False) for mid in models],
+            error=error,
+            registry_error=registry_error,
+        )
+
+    def test_never_raises_for_any_combination_of_status_fields(self):
+        # The error behaviour is "never raises": it is a pure verdict over
+        # data already in hand, and the verdict is always one of the three.
+        gateways = [
+            self._gateway(False, error="connection refused"),
+            self._gateway(True, registry_error="bad payload"),
+            self._gateway(True),
+            self._gateway(True, models=("a",)),
+            self._gateway(True, models=("a",), registry_error="bad payload"),
+        ]
+        for index, gateway in enumerate(gateways):
+            for model_id in ("a", "b", ""):
+                with self.subTest(gateway=index, model_id=model_id):
+                    result = self._decide(gateway, model_id)
+                    self.assertIn(
+                        result.verdict, {"ok", "unknown_model", "unreachable"}
+                    )
+
+    def test_hot_cold_state_does_not_change_the_verdict(self):
+        # The verdict is about registration, not load state: a model that
+        # is registered but swapped out is still stressable.
+        gateway = GatewayStatus(
+            port=8080,
+            online=True,
+            models=[ModelStatus("a", hot=True), ModelStatus("b", hot=False)],
+        )
+        for model_id in ("a", "b"):
+            with self.subTest(model_id=model_id):
+                if check_model_available is None:
+                    self.fail(
+                        "anvilkit.stress.check_model_available is not "
+                        "implemented yet: {}".format(
+                            _check_model_available_import_error
+                        )
+                    )
+                result = check_model_available(gateway, model_id)
+                self.assertEqual(result.verdict, "ok")
+
+
+class TestCheckModelAvailableResultType(unittest.TestCase):
+    """The result type contract from behaviour 10 of the plan."""
+
+    def test_model_availability_is_a_dataclass(self):
+        if ModelAvailability is None:
+            self.fail(
+                "anvilkit.stress.ModelAvailability is not implemented yet: "
+                "{}".format(_check_model_available_import_error)
+            )
+        self.assertTrue(dataclasses.is_dataclass(ModelAvailability))
 
 
 if __name__ == "__main__":
