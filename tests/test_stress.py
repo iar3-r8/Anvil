@@ -42,7 +42,8 @@ a level where every request failed reports ``None`` for all latency figures
 and ``0.0`` for both rates, and a zero wall time with successes yields
 ``None`` rates rather than an exception.
 
-Behaviours 4, 5 and 13-16 land in this same file in later cycles.
+Behaviour 14 (``format_report``) is covered below. Behaviours 4, 5 and 15-16
+land in this same file in later cycles.
 
 The module is a pure-function module for these behaviours: no network, no
 real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
@@ -128,6 +129,18 @@ except ImportError as _err:
     _run_stress_import_error = str(_err)
     StressReport = None
     run_stress = None
+
+# Behaviour 14 (TDD red): this does not exist yet, so the import is guarded.
+# The new test classes turn the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_format_report_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import format_report
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _format_report_import_error = str(_err)
+    format_report = None
 
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
@@ -1968,6 +1981,429 @@ class TestRunStressReportType(unittest.TestCase):
                 "{}".format(_run_stress_import_error)
             )
         self.assertTrue(dataclasses.is_dataclass(StressReport))
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 14: format_report renders the human report.
+#
+# The report is hand-built from the plan §15 shape: StressReport carries
+# ``model_id``, ``port``, ``started_at``, ``prompt``, ``max_tokens``,
+# ``requests_per_level``, ``warm_up``, ``levels``, ``completed`` and a
+# ``max_clean_concurrency`` figure (highest concurrency with zero failures,
+# ``None`` when even level 1 failed). The current dataclass does not have the
+# new fields yet; constructing with them is an acceptable named red for this
+# step.
+# ---------------------------------------------------------------------------
+
+_FORMAT_REPORT_FIELDS = (
+    "started_at",
+    "prompt",
+    "max_tokens",
+    "requests_per_level",
+    "max_clean_concurrency",
+)
+
+
+def _fr_summary(
+    concurrency,
+    succeeded=None,
+    failed=None,
+    latency_mean=1.1,
+    latency_p50=1.0,
+    latency_p95=1.4,
+    latency_p99=1.5,
+    latency_min=0.9,
+    latency_max=1.5,
+    requests_per_second=0.9,
+    tokens_per_second=115.2,
+    error_counts=None,
+    errors=None,
+):
+    """A hand-built ``LevelSummary`` with chosen fields.
+
+    Defaults are a clean level's figures, so callers pin exactly what they
+    need to vary.
+    """
+    if succeeded is None:
+        succeeded = 20 - (failed or 0)
+    return stress.LevelSummary(
+        concurrency=concurrency,
+        requests=succeeded + (failed or 0),
+        succeeded=succeeded,
+        failed=failed or 0,
+        latency_mean=latency_mean,
+        latency_p50=latency_p50,
+        latency_p95=latency_p95,
+        latency_p99=latency_p99,
+        latency_min=latency_min,
+        latency_max=latency_max,
+        requests_per_second=requests_per_second,
+        tokens_per_second=tokens_per_second,
+        error_counts=error_counts or {},
+        errors=errors or [],
+    )
+
+
+def _fr_report(model_id="model-a", port=8080, levels=None, **overrides):
+    """A hand-built ``StressReport`` in the plan §15 shape.
+
+    ``overrides`` supplies any field the current dataclass lacks (a named
+    red); once the dataclass is extended it also lets cases vary them.
+    """
+    warm = stress.WarmUpResult(
+        ok=True, attempts=1, elapsed_seconds=42.1, error=None
+    )
+    fields = {
+        "model_id": model_id,
+        "port": port,
+        "started_at": "2026-08-21T14:30:00Z",
+        "prompt": "count to ten",
+        "max_tokens": 128,
+        "requests_per_level": 20,
+        "warm_up": warm,
+        "levels": levels if levels is not None else [_fr_summary(1)],
+        "completed": True,
+        "max_clean_concurrency": None,
+    }
+    fields.update(overrides)
+    return stress.StressReport(**fields)
+
+
+def _fr_render(report, use_color=True):
+    if format_report is None:
+        raise AssertionError(
+            "anvilkit.stress.format_report is not implemented yet: "
+            + (_format_report_import_error or "missing")
+        )
+    return format_report(report, use_color=use_color)
+
+
+def _row_for(text, concurrency, okfail="20/0"):
+    """The table row that carries the level's figures for ``concurrency``.
+
+    The row is identified by its concurrency and its ok/fail split, so a
+    call for one level cannot be answered by another level's row.
+    """
+    for line in text.splitlines():
+        if str(concurrency) in line and okfail in line:
+            return line
+    return None
+
+
+class TestFormatReportHeaderAndWarmUp(unittest.TestCase):
+    """Behaviour 14: header (model, port, timestamp, request count) and the
+    warm-up line."""
+
+    def test_header_shows_model_port_timestamp_and_request_count(self):
+        report = _fr_report(
+            model_id="deepseek-ai/DeepSeek-V3.2", port=8123
+        )
+        text = _fr_render(report, use_color=False)
+        self.assertIn("deepseek-ai/DeepSeek-V3.2", text)
+        self.assertIn("8123", text)
+        # The timestamp is the report's ``started_at``, not the render time.
+        self.assertIn("2026-08-21T14:30:00Z", text)
+        # The per-level request count from the header.
+        self.assertIn("20", text)
+
+    def test_warm_up_line_shows_attempts_and_elapsed_when_ok(self):
+        report = _fr_report()
+        text = _fr_render(report, use_color=False)
+        self.assertIn("42.1", text)
+
+    def test_warm_up_line_shows_the_failure_when_not_ok(self):
+        report = _fr_report(
+            warm_up=stress.WarmUpResult(
+                ok=False,
+                attempts=3,
+                elapsed_seconds=120.5,
+                error="connect: connection refused",
+            )
+        )
+        text = _fr_render(report, use_color=False)
+        self.assertIn("connection refused", text)
+
+
+class TestFormatReportLevelTable(unittest.TestCase):
+    """Behaviour 14: the per-level table, one row per level, aligned."""
+
+    def test_each_level_row_carries_its_concurrency_and_figures(self):
+        # Distinct figures per level prove each row is its own level's.
+        levels = [
+            _fr_summary(
+                1,
+                latency_mean=0.5,
+                latency_p50=0.5,
+                latency_p95=0.5,
+                latency_p99=0.5,
+                latency_min=0.5,
+                latency_max=0.5,
+                requests_per_second=2.0,
+                tokens_per_second=256.0,
+            ),
+            _fr_summary(
+                4,
+                latency_mean=2.5,
+                latency_p50=2.5,
+                latency_p95=2.5,
+                latency_p99=2.5,
+                latency_min=2.5,
+                latency_max=2.5,
+                requests_per_second=0.5,
+                tokens_per_second=64.0,
+            ),
+        ]
+        report = _fr_report(levels=levels, max_clean_concurrency=4)
+        text = _fr_render(report, use_color=False)
+        row1 = _row_for(text, 1)
+        row4 = _row_for(text, 4)
+        self.assertIsNotNone(row1)
+        self.assertIsNotNone(row4)
+        self.assertIn("0.50", row1)
+        self.assertIn("2.00", row1)
+        self.assertIn("256.00", row1)
+        self.assertIn("2.50", row4)
+        self.assertIn("0.50", row4)
+        self.assertIn("64.00", row4)
+        # The all-failed column still shows the true 0.0 rates for the
+        # clean levels' siblings, but each row shows its OWN ok/fail split.
+        self.assertIn("20/0", row1)
+        self.assertIn("20/0", row4)
+
+    def test_unmeasurable_figures_render_dashes_never_fabricated_zeros(self):
+        # A level whose figures are all ``None`` (no successes, and no
+        # wall time to measure rates over): every numeric column must be
+        # ``-``, and a fabricated ``0.00`` must not appear anywhere in the
+        # report, because no figure is genuinely zero.
+        levels = [
+            _fr_summary(1),
+            _fr_summary(
+                4,
+                succeeded=0,
+                failed=20,
+                latency_mean=None,
+                latency_p50=None,
+                latency_p95=None,
+                latency_p99=None,
+                latency_min=None,
+                latency_max=None,
+                requests_per_second=None,
+                tokens_per_second=None,
+                error_counts={"connection": 20},
+                errors=["connection refused"],
+            ),
+        ]
+        report = _fr_report(levels=levels, max_clean_concurrency=1)
+        text = _fr_render(report, use_color=False)
+        row = _row_for(text, 4, okfail="0/20")
+        self.assertIsNotNone(row)
+        # Every unmeasurable column renders ``-``.
+        self.assertIn("-", row)
+        # ...and never a fabricated ``0.00``.
+        self.assertNotIn("0.00", text)
+
+    def test_all_failed_level_shows_true_zero_rates_as_zero(self):
+        # The summary contract: an all-failed level reports ``0.0`` for both
+        # rates (a true statement: nothing got through) and ``None`` for the
+        # latency figures. The dashes belong to the latency columns only;
+        # the rates are stated as zero.
+        levels = [
+            _fr_summary(
+                2,
+                succeeded=0,
+                failed=20,
+                latency_mean=None,
+                latency_p50=None,
+                latency_p95=None,
+                latency_p99=None,
+                latency_min=None,
+                latency_max=None,
+                requests_per_second=0.0,
+                tokens_per_second=0.0,
+                error_counts={"oom": 20},
+                errors=["CUDA out of memory"],
+            ),
+        ]
+        report = _fr_report(levels=levels, max_clean_concurrency=None)
+        text = _fr_render(report, use_color=False)
+        row = _row_for(text, 2, okfail="0/20")
+        self.assertIsNotNone(row)
+        # The true zero rates are stated as zero in some form (0.00, 0.0
+        # or 0), and the latency figures are dashes, not zeros.
+        self.assertRegex(row, r"\b0(\.0+)?\b")
+        self.assertIn("-", row)
+
+    def test_failing_level_lists_error_categories_and_raw_messages(self):
+        levels = [
+            _fr_summary(
+                2,
+                succeeded=10,
+                failed=10,
+                latency_mean=1.5,
+                latency_p50=1.4,
+                latency_p95=2.2,
+                latency_p99=2.4,
+                latency_min=1.1,
+                latency_max=2.4,
+                requests_per_second=0.4,
+                tokens_per_second=51.2,
+                error_counts={
+                    "connection": 6,
+                    "oom": 3,
+                    "server_error": 1,
+                },
+                errors=[
+                    "connection refused",
+                    "CUDA out of memory",
+                    "internal error",
+                ],
+            ),
+        ]
+        report = _fr_report(levels=levels, max_clean_concurrency=None)
+        text = _fr_render(report, use_color=False)
+        # Categories with their counts.
+        self.assertIn("connection", text)
+        self.assertIn("6", text)
+        self.assertIn("oom", text)
+        self.assertIn("3", text)
+        # The raw messages, verbatim.
+        self.assertIn("connection refused", text)
+        self.assertIn("CUDA out of memory", text)
+        self.assertIn("internal error", text)
+
+    def test_clean_level_lists_no_error_section(self):
+        report = _fr_report(levels=[_fr_summary(1)], max_clean_concurrency=1)
+        text = _fr_render(report, use_color=False)
+        self.assertNotIn("connection refused", text)
+        self.assertNotIn("error_counts", text)
+
+    def test_long_model_id_does_not_break_table_alignment(self):
+        long_id = (
+            "deepseek-ai/DeepSeek-V3.2-R1-SFT-Long-Horizon-"
+            "235B-A22B-Instruct-128K-vllm-awq-gptq"
+        )
+        report = _fr_report(
+            model_id=long_id,
+            levels=[_fr_summary(1), _fr_summary(2), _fr_summary(4)],
+            max_clean_concurrency=4,
+        )
+        text = _fr_render(report, use_color=False)
+        self.assertIn(long_id, text)
+        rows = [
+            _row_for(text, concurrency) for concurrency in (1, 2, 4)
+        ]
+        for row in rows:
+            self.assertIsNotNone(row)
+        # Every data row carries the same ok/fail split, so the split
+        # column must start at the same offset in each row regardless of
+        # the long model id in the header above the table.
+        positions = {row.index("20/0") for row in rows}
+        self.assertEqual(len(positions), 1)
+
+
+class TestFormatReportColor(unittest.TestCase):
+    """Behaviour 14: colour is suppressed under ``--no-color``."""
+
+    def test_no_color_suppresses_ansi_escapes(self):
+        report = _fr_report(
+            levels=[
+                _fr_summary(1),
+                _fr_summary(
+                    4,
+                    succeeded=0,
+                    failed=20,
+                    latency_mean=None,
+                    latency_p50=None,
+                    latency_p95=None,
+                    latency_p99=None,
+                    latency_min=None,
+                    latency_max=None,
+                    requests_per_second=0.0,
+                    tokens_per_second=0.0,
+                    error_counts={"oom": 20},
+                    errors=["CUDA out of memory"],
+                ),
+            ],
+            max_clean_concurrency=1,
+        )
+        text = _fr_render(report, use_color=False)
+        self.assertNotIn("\x1b[", text)
+
+
+class TestFormatReportClosingSummary(unittest.TestCase):
+    """Behaviour 14: the closing summary names the highest concurrency that
+    completed with zero failures."""
+
+    def test_closing_summary_names_highest_clean_concurrency(self):
+        # Clean through 8, failing at 16: the summary must name 8.
+        levels = [_fr_summary(concurrency) for concurrency in (1, 2, 4, 8)]
+        levels.append(
+            _fr_summary(
+                16,
+                succeeded=0,
+                failed=20,
+                latency_mean=None,
+                latency_p50=None,
+                latency_p95=None,
+                latency_p99=None,
+                latency_min=None,
+                latency_max=None,
+                requests_per_second=0.0,
+                tokens_per_second=0.0,
+                error_counts={"oom": 20},
+                errors=["CUDA out of memory"],
+            )
+        )
+        report = _fr_report(levels=levels, max_clean_concurrency=8)
+        text = _fr_render(report, use_color=False)
+        # The closing summary names the highest clean concurrency: 8.
+        # Allow both "concurrency 8" and "concurrency: 8" spellings.
+        self.assertRegex(text, r"concurrency\s*:?\s*8\b")
+        # And it must not overclaim the level that failed.
+        self.assertNotRegex(text, r"concurrency\s*:?\s*16\b")
+
+    def test_closing_summary_says_so_when_even_level_1_failed(self):
+        # Every level failed: there is no clean concurrency, and the
+        # summary must say so rather than naming a level.
+        levels = [
+            _fr_summary(
+                concurrency,
+                succeeded=0,
+                failed=20,
+                latency_mean=None,
+                latency_p50=None,
+                latency_p95=None,
+                latency_p99=None,
+                latency_min=None,
+                latency_max=None,
+                requests_per_second=0.0,
+                tokens_per_second=0.0,
+                error_counts={"connection": 20},
+                errors=["connection refused"],
+            )
+            for concurrency in (1, 2)
+        ]
+        report = _fr_report(levels=levels, max_clean_concurrency=None)
+        text = _fr_render(report, use_color=False)
+        self.assertNotRegex(text, r"concurrency\s*:?\s*1\b")
+        # The plan's wording for the no-clean case: say so explicitly.
+        self.assertRegex(text.lower(), r"no clean concurrency")
+
+    def test_never_raises(self):
+        # Pure rendering: an unusual but valid report must not raise.
+        report = _fr_report(
+            model_id="model-a",
+            levels=[],
+            max_clean_concurrency=None,
+            warm_up=stress.WarmUpResult(
+                ok=False,
+                attempts=0,
+                elapsed_seconds=0.0,
+                error="model never came up",
+            ),
+        )
+        # Must return a string without raising.
+        self.assertIsInstance(_fr_render(report, use_color=False), str)
 
 
 if __name__ == "__main__":
