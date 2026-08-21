@@ -42,8 +42,9 @@ a level where every request failed reports ``None`` for all latency figures
 and ``0.0`` for both rates, and a zero wall time with successes yields
 ``None`` rates rather than an exception.
 
-Behaviour 14 (``format_report``) is covered below. Behaviours 4, 5 and 15-16
-land in this same file in later cycles.
+Behaviours 14 (``format_report``) and 15 (``format_report_json``) are
+covered below. Behaviours 4, 5 and 16 land in this same file in later
+cycles.
 
 The module is a pure-function module for these behaviours: no network, no
 real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
@@ -52,6 +53,7 @@ thread-safe spy; assertions are on returned data structures only.
 """
 
 import dataclasses
+import json
 import sys
 import tempfile
 import threading
@@ -141,6 +143,18 @@ except ImportError as _err:
     # so the message is copied out into a module-level name first.
     _format_report_import_error = str(_err)
     format_report = None
+
+# Behaviour 15 (TDD red): this does not exist yet, so the import is guarded.
+# The new test classes turn the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_format_report_json_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import format_report_json
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _format_report_json_import_error = str(_err)
+    format_report_json = None
 
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
@@ -2404,6 +2418,233 @@ class TestFormatReportClosingSummary(unittest.TestCase):
         )
         # Must return a string without raising.
         self.assertIsInstance(_fr_render(report, use_color=False), str)
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 15: format_report_json renders the machine-readable summary.
+#
+# The output is a JSON document built as a dict and emitted with
+# ``json.dumps(..., indent=2)``. The contract is the round trip: the tests
+# parse the output with ``json.loads`` and assert on the PARSED structure,
+# never on the raw string. The plan's key names differ from the dataclass
+# field names in two places: ``model_id`` becomes the key ``"model"``, and
+# the six flat ``latency_*`` fields nest under the key ``"latency"``.
+# ---------------------------------------------------------------------------
+
+
+def _frj_render(report):
+    if format_report_json is None:
+        raise AssertionError(
+            "anvilkit.stress.format_report_json is not implemented yet: "
+            + (_format_report_json_import_error or "missing")
+        )
+    return format_report_json(report)
+
+
+def _frj_parse(report):
+    """Render and round-trip: the contract is that the output parses."""
+    return json.loads(_frj_render(report))
+
+
+class TestFormatReportJsonShape(unittest.TestCase):
+    """Behaviour 15: the document's top-level keys and values, parsed."""
+
+    def test_top_level_keys_match_the_plan_shape(self):
+        doc = _frj_parse(
+            _fr_report(
+                model_id="deepseek-ai/DeepSeek-V3.2",
+                port=8123,
+                max_clean_concurrency=8,
+            )
+        )
+        self.assertEqual(
+            sorted(doc),
+            [
+                "completed",
+                "levels",
+                "max_clean_concurrency",
+                "max_tokens",
+                "model",
+                "port",
+                "prompt",
+                "requests_per_level",
+                "started_at",
+                "warm_up",
+            ],
+        )
+
+    def test_top_level_values_pass_through(self):
+        # The field name differs from the JSON key: the dataclass carries
+        # ``model_id``, the document carries ``"model"``.
+        report = _fr_report(
+            model_id="deepseek-ai/DeepSeek-V3.2",
+            port=8123,
+            max_clean_concurrency=8,
+        )
+        doc = _frj_parse(report)
+        self.assertEqual(doc["model"], "deepseek-ai/DeepSeek-V3.2")
+        self.assertEqual(doc["port"], 8123)
+        self.assertEqual(doc["started_at"], "2026-08-21T14:30:00Z")
+        self.assertEqual(doc["prompt"], "count to ten")
+        self.assertEqual(doc["max_tokens"], 128)
+        self.assertEqual(doc["requests_per_level"], 20)
+        self.assertIs(doc["completed"], True)
+        self.assertEqual(doc["max_clean_concurrency"], 8)
+
+    def test_warm_up_object_round_trips(self):
+        report = _fr_report(
+            warm_up=stress.WarmUpResult(
+                ok=False,
+                attempts=3,
+                elapsed_seconds=61.5,
+                error="model never came up",
+            )
+        )
+        doc = _frj_parse(report)
+        self.assertEqual(
+            doc["warm_up"],
+            {"ok": False, "attempts": 3, "elapsed_seconds": 61.5, "error": "model never came up"},
+        )
+
+    def test_warm_up_error_is_null_when_ok(self):
+        doc = _frj_parse(_fr_report(max_clean_concurrency=1))
+        self.assertEqual(
+            doc["warm_up"],
+            {"ok": True, "attempts": 1, "elapsed_seconds": 42.1, "error": None},
+        )
+
+    def test_levels_preserve_order_and_carry_full_row(self):
+        # Distinct figures per level prove each object is its own level's.
+        levels = [
+            _fr_summary(1),
+            _fr_summary(4, latency_mean=2.2, latency_p50=2.0, latency_p95=2.4,
+                        latency_p99=2.5, latency_min=1.9, latency_max=2.5,
+                        requests_per_second=1.8, tokens_per_second=230.4),
+        ]
+        doc = _frj_parse(_frj_report(levels, max_clean_concurrency=4))
+        self.assertEqual(len(doc["levels"]), 2)
+        self.assertEqual(
+            doc["levels"][0],
+            {
+                "concurrency": 1,
+                "requests": 20,
+                "succeeded": 20,
+                "failed": 0,
+                "latency": {
+                    "mean": 1.1, "p50": 1.0, "p95": 1.4,
+                    "p99": 1.5, "min": 0.9, "max": 1.5,
+                },
+                "requests_per_second": 0.9,
+                "tokens_per_second": 115.2,
+                "error_counts": {},
+                "errors": [],
+            },
+        )
+        self.assertEqual(doc["levels"][1]["concurrency"], 4)
+        self.assertEqual(
+            doc["levels"][1]["latency"],
+            {"mean": 2.2, "p50": 2.0, "p95": 2.4,
+             "p99": 2.5, "min": 1.9, "max": 2.5},
+        )
+        self.assertEqual(doc["levels"][1]["requests_per_second"], 1.8)
+        self.assertEqual(doc["levels"][1]["tokens_per_second"], 230.4)
+
+    def test_level_error_fields_round_trip(self):
+        levels = [
+            _fr_summary(
+                2,
+                failed=5,
+                requests_per_second=0.4,
+                tokens_per_second=51.2,
+                error_counts={"oom": 3, "timeout": 2},
+                errors=["CUDA out of memory", "timed out"],
+            )
+        ]
+        doc = _frj_parse(_frj_report(levels, max_clean_concurrency=None))
+        row = doc["levels"][0]
+        self.assertEqual(row["requests"], 20)
+        self.assertEqual(row["succeeded"], 15)
+        self.assertEqual(row["failed"], 5)
+        self.assertEqual(row["error_counts"], {"oom": 3, "timeout": 2})
+        self.assertEqual(row["errors"], ["CUDA out of memory", "timed out"])
+
+    def test_empty_levels_round_trips_as_empty_list(self):
+        doc = _frj_parse(
+            _frj_report([], max_clean_concurrency=None)
+        )
+        self.assertEqual(doc["levels"], [])
+
+
+class TestFormatReportJsonEdgeCases(unittest.TestCase):
+    """Behaviour 15: the edge cases the plan pins."""
+
+    def test_absent_latency_figures_are_null_not_zero(self):
+        # An all-failed level: every latency figure is ``None`` on the
+        # summary, and the document must carry ``null`` for each -- a
+        # renderer that coerces ``None`` to ``0`` would fabricate latencies.
+        levels = [
+            _fr_summary(
+                1,
+                succeeded=0,
+                failed=20,
+                latency_mean=None,
+                latency_p50=None,
+                latency_p95=None,
+                latency_p99=None,
+                latency_min=None,
+                latency_max=None,
+                requests_per_second=0.0,
+                tokens_per_second=0.0,
+                error_counts={"connection": 20},
+                errors=["connection refused"],
+            )
+        ]
+        doc = _frj_parse(_frj_report(levels, max_clean_concurrency=None))
+        row = doc["levels"][0]
+        self.assertEqual(row["latency"], {
+            "mean": None, "p50": None, "p95": None,
+            "p99": None, "min": None, "max": None,
+        })
+        # The rates on an all-failed level are a TRUE zero, not absent:
+        # they must survive the round trip as 0.0, distinct from the nulls.
+        self.assertEqual(row["requests_per_second"], 0.0)
+        self.assertEqual(row["tokens_per_second"], 0.0)
+
+    def test_max_clean_concurrency_is_null_when_level_1_failed(self):
+        # Level 1 itself had failures, so there is no clean level to anchor
+        # on: ``max_clean_concurrency`` is legitimately ``None``.
+        levels = [
+            _fr_summary(
+                1,
+                succeeded=15,
+                failed=5,
+                error_counts={"timeout": 5},
+                errors=["timed out"],
+            )
+        ]
+        doc = _frj_parse(_frj_report(levels, max_clean_concurrency=None))
+        self.assertIsNone(doc["max_clean_concurrency"])
+
+    def test_raw_output_is_pure_json_with_no_python_repr_artifacts(self):
+        # The round trip is the contract; this guards the extra case where
+        # Python repr leaks into the emitted string (single quotes,
+        # ``None``/``True`` literals that are not JSON).
+        report = _fr_report(max_clean_concurrency=8)
+        raw = _frj_render(report)
+        self.assertIsInstance(raw, str)
+        json.loads(raw)  # must not raise
+        self.assertNotIn("None", raw)
+        self.assertNotIn("'", raw)
+        self.assertNotIn("True", raw)
+
+
+def _frj_report(levels, **overrides):
+    """A hand-built ``StressReport`` for the JSON cases.
+
+    A thin alias over ``_fr_report`` so the JSON section reads in terms of
+    its own shape without touching the behaviour-14 helpers.
+    """
+    return _fr_report(levels=levels, **overrides)
 
 
 if __name__ == "__main__":
