@@ -2,7 +2,7 @@
 
 Written before the implementation (TDD).
 
-Current scope: behaviours 1-3 and 6-8 of plans/stress-test.md --
+Current scope: behaviours 1-3 and 6-9 of plans/stress-test.md --
 ``concurrency_levels(max_concurrency)`` derives the level series from a single
 maximum: 1, then each power of two up to the maximum, then the maximum itself
 if it is not already a power of two; ``percentile(values, p)`` is the
@@ -13,9 +13,14 @@ id and an injected UTC timestamp; ``classify_error`` buckets a failure's
 text, best-effort; ``warm_up(send, timeout, retry_interval, sleep, now)``
 returns ``WarmUpResult(ok=True, attempts=1, elapsed_seconds=<measured>,
 error=None)`` when ``send`` answers on the very first call -- ``send`` runs
-exactly once and ``sleep`` never runs.
+exactly once and ``sleep`` never runs -- and gives up when the budget is
+exhausted: a ``send`` that always fails ends in
+``WarmUpResult(ok=False, attempts=<n>, elapsed_seconds≈budget,
+error=<last failure verbatim>)``, makes at least one attempt even with a
+zero budget, and never starts an attempt once the elapsed time has reached
+the budget.
 
-Behaviours 4, 5 and 9-16 land in this same file in later cycles.
+Behaviours 4, 5 and 10-16 land in this same file in later cycles.
 
 The module is a pure-function module for these behaviours: no network, no
 real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
@@ -566,6 +571,136 @@ class TestWarmUpRetriesUntilSuccess(unittest.TestCase):
                 )
                 self.assertIsInstance(result.elapsed_seconds, float)
                 self.assertEqual(result.elapsed_seconds, expected)
+
+
+class TestWarmUpBudgetExhaustion(unittest.TestCase):
+    """Behaviour 9: a ``send`` that never answers ends in a failed result.
+
+    The budget is checked before each attempt after the first, so no attempt
+    may start once the elapsed time has reached the budget; at least one
+    attempt is always made, even with a budget of zero; and the last
+    failure's text is carried through verbatim so the caller can tell the
+    user *why* the model never came up. The result is returned, never
+    raised.
+    """
+
+    BUDGET = 600.0
+    RETRY_INTERVAL = 5.0
+
+    def _run_warm_up(self, budget, in_flight_seconds, n_attempts):
+        # A ``send`` that always fails. The per-attempt error text varies
+        # (``attempt <k>: connection refused``) so a verbatim assertion on
+        # the *last* failure cannot pass by coincidence of identical texts.
+        # The clock advances by the in-flight time inside each send call and
+        # by the interval whenever warm_up sleeps, so every attempt-start
+        # time is deterministic.
+        def make_failure(k):
+            return ChatOutcome(
+                ok=False,
+                latency_seconds=float(in_flight_seconds),
+                error="attempt {}: connection refused".format(k),
+            )
+
+        clock = _FakeClock(start=100.0)
+        sleep_spy = _SleepSpy()
+        call_index = [0]
+
+        def on_call():
+            call_index[0] += 1
+            clock.advance(in_flight_seconds)
+
+        def sleeping(seconds):
+            sleep_spy(seconds)
+            clock.advance(seconds)
+
+        # Queue exactly the maximum number of attempts a correct
+        # implementation can make; if warm_up ever checks the budget too
+        # late (or not at all) the spy exhausts and the test fails fast
+        # with a clear message instead of hanging.
+        send = _SendSpy([make_failure(i) for i in range(1, n_attempts + 1)],
+                        on_call=on_call)
+        result = warm_up(
+            send, budget, self.RETRY_INTERVAL, sleeping, clock.now
+        )
+        return result, send, sleep_spy, clock
+
+    def test_budget_exhaustion_returns_failed_result_not_raises(self):
+        # The contract is a failed WarmUpResult, not an exception: the
+        # caller (a later behaviour) turns it into exit code 7.
+        result, _send, _sleep_spy, _clock = self._run_warm_up(
+            self.BUDGET, 1.0, 100
+        )
+        self.assertIsInstance(result, stress.WarmUpResult)
+        self.assertFalse(result.ok)
+
+    def test_budget_exhaustion_at_least_one_attempt_even_with_zero_budget(
+        self
+    ):
+        # Reporting "never tried" would be useless: the first attempt is
+        # always made, then the budget check stops any further attempts.
+        result, send, sleep_spy, _clock = self._run_warm_up(0.0, 1.0, 1)
+        self.assertFalse(result.ok)
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(send.calls, 1)
+        # No second attempt happens, so there is nothing to sleep before.
+        self.assertEqual(sleep_spy.intervals, [])
+
+    def test_budget_exhaustion_exact_count_for_scripted_timing(self):
+        # In-flight 1.0 s per attempt, interval 5.0 s, so attempt k starts
+        # at elapsed (k-1) * 6.0 s. Attempt 100 starts at 594.0 < 600.0
+        # and attempt 101 would start exactly at the budget, so it must
+        # not be made: exactly 100 attempts.
+        result, send, _sleep_spy, _clock = self._run_warm_up(
+            self.BUDGET, 1.0, 100
+        )
+        self.assertEqual(result.attempts, 100)
+        self.assertEqual(send.calls, 100)
+        # Elapsed is the full span to the end of the last attempt:
+        # 99 intervals of 5.0 plus 100 in-flight seconds of 1.0.
+        self.assertEqual(result.elapsed_seconds, 594.0 + 1.0)
+
+    def test_budget_exhaustion_no_attempt_starts_at_or_after_budget(self):
+        # The invariant behind the exact count: with the scripted timing,
+        # the last attempt that *may* start does so at 594.0, strictly
+        # before the 600.0 budget, and the one that would follow is
+        # refused. A weaker bound (no attempt *past* the budget) would
+        # still allow overshooting by a whole request timeout.
+        in_flight = 1.0
+        step = in_flight + self.RETRY_INTERVAL
+        last_start = (100 - 1) * step
+        next_start = 100 * step
+        self.assertLess(last_start, self.BUDGET)
+        self.assertGreaterEqual(next_start, self.BUDGET)
+        result, send, _sleep_spy, _clock = self._run_warm_up(
+            self.BUDGET, in_flight, 100
+        )
+        self.assertEqual(result.attempts, 100)
+        self.assertEqual(send.calls, 100)
+        self.assertLessEqual(result.elapsed_seconds, self.BUDGET + in_flight)
+
+    def test_budget_exhaustion_last_error_preserved_verbatim(self):
+        # The user must see WHY the model never came up, and it must be
+        # the *last* failure's text, not the first: the texts vary per
+        # attempt, so asserting on the final one is meaningful.
+        result, _send, _sleep_spy, _clock = self._run_warm_up(
+            self.BUDGET, 1.0, 100
+        )
+        self.assertEqual(
+            result.error, "attempt 100: connection refused"
+        )
+        self.assertNotEqual(result.error, "attempt 1: connection refused")
+
+    def test_budget_exhaustion_sleeps_only_between_attempts(self):
+        # One interval per gap between consecutive attempts; a failed last
+        # attempt does not get a trailing sleep after it.
+        result, send, sleep_spy, _clock = self._run_warm_up(
+            self.BUDGET, 1.0, 100
+        )
+        self.assertEqual(len(sleep_spy.intervals), result.attempts - 1)
+        self.assertTrue(
+            all(interval == self.RETRY_INTERVAL for interval in
+                sleep_spy.intervals)
+        )
 
 
 if __name__ == "__main__":
