@@ -19,7 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
 
-from anvilkit.health import ChatOutcome
+from anvilkit.health import ChatOutcome, GatewayStatus
 
 
 class StressError(Exception):
@@ -261,3 +261,65 @@ def warm_up(
                 error=last_error,
             )
         sleep(retry_interval)
+
+
+@dataclasses.dataclass
+class ModelAvailability:
+    """The verdict on whether a named model can be stressed right now.
+
+    Three verdicts, not a bool, because the two failures are different
+    problems for the caller: ``unknown_model`` is the user's typo and is
+    answerable by listing the registry, while ``unreachable`` is the
+    gateway's fault and is reported with the gateway's own error text
+    verbatim. ``available`` is the registered ids, ascending, so the
+    caller can offer corrections; it is empty when the ids are not
+    known.
+    """
+
+    verdict: str
+    available: List[str]
+    reason: Optional[str]
+
+
+def check_model_available(
+    gateway: GatewayStatus, model_id: str
+) -> ModelAvailability:
+    """Decide whether ``model_id`` can be stressed, over an already-fetched status.
+
+    A pure decision: no I/O, no network, never raises. The caller does the
+    probing and hands in the result. The verdict rules are evaluated in
+    order, and the order is load-bearing -- a set ``registry_error``
+    outranks membership, because when the ``/v1/models`` payload was
+    unusable, ``check_gateway`` returns an empty ``models`` list, and the
+    naive reading (empty registry, therefore the user's typo) would blame
+    the user for the gateway's malformed payload. The remaining two cases
+    only differ in whether ``model_id`` is an exact member of the
+    registered ids -- prefix and suffix never match -- and in which of
+    them the ids are reported; a genuinely empty registry is
+    ``unknown_model`` with no ids, not ``unreachable``.
+
+    Args:
+        gateway: the probe outcome, as returned by
+            ``health.check_gateway()``.
+        model_id: the model id the user named.
+
+    Returns:
+        A ``ModelAvailability``. ``reason`` carries the gateway's own
+        error text verbatim on ``unreachable`` and is ``None`` otherwise.
+    """
+    if not gateway.online:
+        return ModelAvailability(
+            verdict="unreachable", available=[], reason=gateway.error
+        )
+    if gateway.registry_error is not None:
+        # Outranks membership: see the docstring -- an empty ``models``
+        # list caused by an unusable payload is not a typo.
+        return ModelAvailability(
+            verdict="unreachable", available=[], reason=gateway.registry_error
+        )
+    available = sorted(model.id for model in gateway.models)
+    if model_id in available:
+        return ModelAvailability(verdict="ok", available=available, reason=None)
+    return ModelAvailability(
+        verdict="unknown_model", available=available, reason=None
+    )
