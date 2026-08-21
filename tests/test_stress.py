@@ -2,7 +2,7 @@
 
 Written before the implementation (TDD).
 
-Current scope: behaviours 1-3 and 6-7 of plans/stress-test.md --
+Current scope: behaviours 1-3 and 6-8 of plans/stress-test.md --
 ``concurrency_levels(max_concurrency)`` derives the level series from a single
 maximum: 1, then each power of two up to the maximum, then the maximum itself
 if it is not already a power of two; ``percentile(values, p)`` is the
@@ -15,7 +15,7 @@ returns ``WarmUpResult(ok=True, attempts=1, elapsed_seconds=<measured>,
 error=None)`` when ``send`` answers on the very first call -- ``send`` runs
 exactly once and ``sleep`` never runs.
 
-Behaviours 4, 5 and 8-16 land in this same file in later cycles.
+Behaviours 4, 5 and 9-16 land in this same file in later cycles.
 
 The module is a pure-function module for these behaviours: no network, no
 real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
@@ -471,6 +471,101 @@ class TestWarmUpFirstTrySuccess(unittest.TestCase):
         # There is no retry on this path, so sleep must never run at all.
         _result, _send = self._run_warm_up(32.5)
         self.assertEqual(self.sleep_spy.intervals, [])
+
+
+class TestWarmUpRetriesUntilSuccess(unittest.TestCase):
+    """Behaviour 8: a cold model that fails before it answers.
+
+    A scripted ``send`` fails twice and then succeeds; ``warm_up`` must keep
+    trying and report the successful outcome. Intermediate failures are not
+    errors; only budget exhaustion (behaviour 9) is, and this cycle's script
+    always succeeds long before the 600 s budget matters.
+    """
+
+    BUDGET = 600.0
+    RETRY_INTERVAL = 5.0
+
+    def _run_warm_up(self, failure_latencies, success_latency):
+        # Two canned failures with distinct texts, then one canned success.
+        # The clock advances by each request's in-flight time inside the send
+        # call and by the interval whenever warm_up sleeps, so the full
+        # wall-clock span is deterministic. Fresh fakes per call so subTests
+        # cannot leak into one another.
+        outcomes = [
+            ChatOutcome(
+                ok=False,
+                latency_seconds=float(latency),
+                error="connection refused",
+            )
+            for latency in failure_latencies
+        ] + [
+            ChatOutcome(
+                ok=True,
+                latency_seconds=float(success_latency),
+                prompt_tokens=7,
+                completion_tokens=128,
+            )
+        ]
+
+        clock = _FakeClock(start=100.0)
+        sleep_spy = _SleepSpy()
+        in_flight = list(failure_latencies) + [success_latency]
+        call_index = [0]
+
+        def on_call():
+            clock.advance(in_flight[call_index[0]])
+            call_index[0] += 1
+
+        def sleeping(seconds):
+            # The retry interval is wall-clock time between attempts.
+            sleep_spy(seconds)
+            clock.advance(seconds)
+
+        send = _SendSpy(outcomes, on_call=on_call)
+        result = warm_up(
+            send, self.BUDGET, self.RETRY_INTERVAL, sleeping, clock.now
+        )
+        return result, send, sleep_spy
+
+    def test_warm_up_retries_until_success_returns_ok_result(self):
+        result, send, _sleep_spy = self._run_warm_up([40.0, 60.0], 32.5)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.attempts, 3)
+        self.assertIsNone(result.error)
+        self.assertEqual(send.calls, 3)
+
+    def test_warm_up_retries_sleeps_interval_after_each_failure_not_after_success(
+        self
+    ):
+        # One sleep per intermediate failure; the success ends the loop, so
+        # there is no trailing sleep.
+        _result, _send, sleep_spy = self._run_warm_up([40.0, 60.0], 32.5)
+        self.assertEqual(
+            sleep_spy.intervals, [self.RETRY_INTERVAL, self.RETRY_INTERVAL]
+        )
+
+    def test_warm_up_retries_elapsed_is_full_wall_clock_span(self):
+        # Elapsed must cover every failed request's in-flight time, both
+        # retry intervals and the final request -- not just the first attempt.
+        for failure_latencies, success_latency in (
+            ([40.0, 60.0], 32.5),
+            ([0.0, 0.0], 120.0),
+            ([12.25, 3.5], 0.0),
+        ):
+            with self.subTest(
+                failure_latencies=failure_latencies,
+                success_latency=success_latency,
+            ):
+                result, _send, _sleep_spy = self._run_warm_up(
+                    failure_latencies, success_latency
+                )
+                expected = (
+                    sum(failure_latencies)
+                    + success_latency
+                    + 2 * self.RETRY_INTERVAL
+                )
+                self.assertIsInstance(result.elapsed_seconds, float)
+                self.assertEqual(result.elapsed_seconds, expected)
 
 
 if __name__ == "__main__":
