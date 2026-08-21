@@ -18,7 +18,7 @@ import math
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence
 
 from anvilkit.health import ChatOutcome, GatewayStatus
 
@@ -363,3 +363,132 @@ def run_level(
         max_workers=concurrency
     ) as executor:
         return list(executor.map(_one, range(request_count)))
+
+
+# ``errors`` shows the actual raw messages, but a level can fail hundreds of
+# times with the same text, so distinct messages are capped -- the *counts*
+# are never capped.
+_MAX_SHOWN_ERRORS = 5
+
+
+@dataclasses.dataclass
+class LevelSummary:
+    """The aggregated statistics of one concurrency level.
+
+    Every latency figure is drawn from successful outcomes only: a request
+    that fails quickly because the worker died would otherwise drag the mean
+    down and make an overloaded configuration look faster than a healthy
+    one. ``None`` means "not measurable" -- a level with no successes has no
+    latencies, and a zero wall time makes the rates undefined -- never a
+    fabricated ``0.0``. An all-failed level reports ``0.0`` for both rates
+    instead, which is a true statement (nothing got through), distinct from
+    "unmeasurable".
+    """
+
+    concurrency: int
+    requests: int
+    succeeded: int
+    failed: int
+    latency_mean: Optional[float]
+    latency_p50: Optional[float]
+    latency_p95: Optional[float]
+    latency_p99: Optional[float]
+    latency_min: Optional[float]
+    latency_max: Optional[float]
+    requests_per_second: Optional[float]
+    tokens_per_second: Optional[float]
+    error_counts: Dict[str, int]
+    errors: List[str]
+
+
+def summarise_level(
+    level: int, outcomes: List[ChatOutcome], wall_seconds: float
+) -> LevelSummary:
+    """Aggregate one level's outcomes into its statistics.
+
+    A pure aggregation over data already collected: no I/O, never raises.
+    Latency figures come from successful outcomes only (see
+    :class:`LevelSummary`); the rates use the level's wall-clock duration;
+    ``error_counts`` buckets the failures via :func:`classify_error`, and
+    ``errors`` keeps the distinct raw error strings, first-seen order,
+    capped at the first five so the report shows real messages without
+    growing without bound.
+
+    Args:
+        level: the concurrency of this level.
+        outcomes: every request's outcome, in submission order.
+        wall_seconds: the wall-clock duration of the level.
+
+    Returns:
+        A ``LevelSummary``.
+    """
+    successful = [o for o in outcomes if o.ok]
+    failed = [o for o in outcomes if not o.ok]
+    succeeded = len(successful)
+
+    latencies = [o.latency_seconds for o in successful]
+    if latencies:
+        latency_mean = sum(latencies) / len(latencies)
+        latency_p50 = percentile(latencies, 50)
+        latency_p95 = percentile(latencies, 95)
+        latency_p99 = percentile(latencies, 99)
+        latency_min = min(latencies)
+        latency_max = max(latencies)
+    else:
+        latency_mean = latency_p50 = latency_p95 = None
+        latency_p99 = latency_min = latency_max = None
+
+    if succeeded == 0:
+        # Nothing got through: 0.0 is a true statement, and it sidesteps
+        # 0/0 when the wall time is also zero.
+        requests_per_second: Optional[float] = 0.0
+        tokens_per_second: Optional[float] = 0.0
+    else:
+        requests_per_second = (
+            succeeded / wall_seconds if wall_seconds > 0 else None
+        )
+        # ``None`` completion tokens mean "no usage reported", which is
+        # distinct from a genuine 0, so only counts that were reported are
+        # summed. No successful outcome reporting usage makes the
+        # throughput unmeasurable, not zero.
+        reported = [
+            o.completion_tokens
+            for o in successful
+            if o.completion_tokens is not None
+        ]
+        if not reported:
+            tokens_per_second = None
+        else:
+            tokens_per_second = (
+                sum(reported) / wall_seconds if wall_seconds > 0 else None
+            )
+
+    error_counts: Dict[str, int] = {}
+    errors: List[str] = []
+    for outcome in failed:
+        # ``error`` is Optional on ChatOutcome; a failed outcome in
+        # practice always carries text, and "" classifies as "unknown".
+        category = classify_error(outcome.error or "", outcome.http_status)
+        error_counts[category] = error_counts.get(category, 0) + 1
+        raw = outcome.error or ""
+        # Only the *shown* messages are capped; the counting above runs
+        # over every failure regardless.
+        if len(errors) < _MAX_SHOWN_ERRORS and raw and raw not in errors:
+            errors.append(raw)
+
+    return LevelSummary(
+        concurrency=level,
+        requests=len(outcomes),
+        succeeded=succeeded,
+        failed=len(failed),
+        latency_mean=latency_mean,
+        latency_p50=latency_p50,
+        latency_p95=latency_p95,
+        latency_p99=latency_p99,
+        latency_min=latency_min,
+        latency_max=latency_max,
+        requests_per_second=requests_per_second,
+        tokens_per_second=tokens_per_second,
+        error_counts=error_counts,
+        errors=errors,
+    )
