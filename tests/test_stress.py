@@ -2,19 +2,24 @@
 
 Written before the implementation (TDD).
 
-Current scope: behaviours 1-3 of plans/stress-test.md --
+Current scope: behaviours 1-3 and 6-7 of plans/stress-test.md --
 ``concurrency_levels(max_concurrency)`` derives the level series from a single
 maximum: 1, then each power of two up to the maximum, then the maximum itself
 if it is not already a power of two; ``percentile(values, p)`` is the
 nearest-rank percentile (no interpolation): sort ascending, take index
 ``ceil(p/100 * n) - 1`` clamped to ``[0, n-1]``; ``log_path(root, model_id,
 when)`` derives the log file name under ``root/logs`` from a sanitised model
-id and an injected UTC timestamp.
+id and an injected UTC timestamp; ``classify_error`` buckets a failure's
+text, best-effort; ``warm_up(send, timeout, retry_interval, sleep, now)``
+returns ``WarmUpResult(ok=True, attempts=1, elapsed_seconds=<measured>,
+error=None)`` when ``send`` answers on the very first call -- ``send`` runs
+exactly once and ``sleep`` never runs.
 
-Behaviours 4, 5 and 6-16 land in this same file in later cycles.
+Behaviours 4, 5 and 8-16 land in this same file in later cycles.
 
-The module is a pure-function module for these behaviours: no mocks, no I/O,
-assertions on returned data structures only.
+The module is a pure-function module for these behaviours: no network, no
+real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
+clock as spies and fakes; assertions are on returned data structures only.
 """
 
 import sys
@@ -28,7 +33,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import stress  # noqa: E402
-from anvilkit.stress import classify_error, log_path, percentile  # noqa: E402
+from anvilkit.health import ChatOutcome  # noqa: E402
+from anvilkit.stress import (  # noqa: E402
+    classify_error,
+    log_path,
+    percentile,
+    warm_up,
+)
 
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
@@ -344,6 +355,122 @@ class TestClassifyErrorEdges(unittest.TestCase):
         for error, status in (("", None), ("", 500), ("???", 0), ("kv cache", 500)):
             with self.subTest(error=error, status=status):
                 self.assertIn(classify_error(error, status), known)
+
+
+class _FakeClock:
+    """A hand-advanced stand-in for the injected monotonic clock.
+
+    ``warm_up`` must never read a real clock; tests advance this by hand so
+    every elapsed figure is deterministic. Shared by behaviours 7-9.
+    """
+
+    def __init__(self, start=0.0):
+        self._value = float(start)
+
+    def now(self):
+        return self._value
+
+    def advance(self, seconds):
+        self._value += float(seconds)
+
+
+class _SendSpy:
+    """Records calls to the injected ``send`` and returns queued outcomes.
+
+    ``on_call`` runs once per call, just before the outcome is returned, so a
+    test can advance the fake clock by the request's in-flight time.
+    """
+
+    def __init__(self, outcomes, on_call=None):
+        self._outcomes = list(outcomes)
+        self._queued = len(self._outcomes)
+        self._on_call = on_call
+        self.calls = 0
+
+    def __call__(self, *args, **kwargs):
+        self.calls += 1
+        if not self._outcomes:
+            raise AssertionError(
+                "send called {} times but only {} outcomes were queued".format(
+                    self.calls, self._queued
+                )
+            )
+        outcome = self._outcomes.pop(0)
+        if self._on_call is not None:
+            self._on_call()
+        return outcome
+
+
+class _SleepSpy:
+    """Records every call to the injected ``sleep`` with its interval."""
+
+    def __init__(self):
+        self.intervals = []
+
+    def __call__(self, seconds):
+        self.intervals.append(seconds)
+
+
+class TestWarmUpFirstTrySuccess(unittest.TestCase):
+    """Behaviour 7: ``send`` answers on the very first call.
+
+    Only the first-try-success path is covered here; the retry path
+    (behaviour 8) and budget exhaustion (behaviour 9) land in later cycles.
+    """
+
+    BUDGET = 600.0
+    RETRY_INTERVAL = 5.0
+
+    def setUp(self):
+        self.clock = _FakeClock(start=100.0)
+        self.sleep_spy = _SleepSpy()
+
+    def _run_warm_up(self, in_flight_seconds):
+        # A canned success, built from the real ChatOutcome type. The clock
+        # advances by the in-flight time inside the send call, which is the
+        # only time that may pass between warm_up's own now() readings.
+        success = ChatOutcome(
+            ok=True,
+            latency_seconds=float(in_flight_seconds),
+            prompt_tokens=7,
+            completion_tokens=128,
+        )
+        send = _SendSpy(
+            [success],
+            on_call=lambda: self.clock.advance(in_flight_seconds),
+        )
+        result = warm_up(
+            send,
+            self.BUDGET,
+            self.RETRY_INTERVAL,
+            self.sleep_spy,
+            self.clock.now,
+        )
+        return result, send
+
+    def test_warm_up_first_try_success_returns_ok_result(self):
+        result, _send = self._run_warm_up(32.5)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.attempts, 1)
+        self.assertIsNone(result.error)
+
+    def test_warm_up_first_try_success_elapsed_measured_via_injected_clock(self):
+        # Elapsed comes from the injected now(), not from the outcome's own
+        # latency field and not from any real clock.
+        for in_flight in (0.0, 0.25, 32.5, 120.0):
+            with self.subTest(in_flight=in_flight):
+                result, _send = self._run_warm_up(in_flight)
+                self.assertIsInstance(result.elapsed_seconds, float)
+                self.assertEqual(result.elapsed_seconds, in_flight)
+
+    def test_warm_up_first_try_success_send_called_exactly_once(self):
+        _result, send = self._run_warm_up(32.5)
+        self.assertEqual(send.calls, 1)
+
+    def test_warm_up_first_try_success_sleep_never_called(self):
+        # There is no retry on this path, so sleep must never run at all.
+        _result, _send = self._run_warm_up(32.5)
+        self.assertEqual(self.sleep_spy.intervals, [])
 
 
 if __name__ == "__main__":
