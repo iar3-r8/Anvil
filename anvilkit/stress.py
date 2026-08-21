@@ -16,6 +16,7 @@ import concurrent.futures
 import dataclasses
 import math
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
@@ -491,4 +492,72 @@ def summarise_level(
         tokens_per_second=tokens_per_second,
         error_counts=error_counts,
         errors=errors,
+    )
+
+
+@dataclasses.dataclass
+class StressReport:
+    """The outcome of a whole stress run, one level summary per level.
+
+    ``warm_up`` is the exact ``WarmUpResult`` the run was handed, so its cost
+    is reported but never mixed into the per-level statistics. ``completed``
+    means the run reached the end of the level list; it is ``True`` even when
+    a level (or every level) failed, because a run that finished is one whose
+    findings -- including "dies at 4" -- can be read. A propagated
+    ``KeyboardInterrupt`` is the only way the run does not complete.
+    """
+
+    model_id: str
+    port: int
+    warm_up: WarmUpResult
+    levels: List[LevelSummary]
+    completed: bool
+
+
+def run_stress(
+    send: Callable[[], ChatOutcome],
+    levels: Sequence[int],
+    request_count: int,
+    warm_up_result: WarmUpResult,
+    model_id: str,
+    port: int,
+) -> StressReport:
+    """Assemble the whole run: every level, in ascending order, no early stop.
+
+    Each level runs via :func:`run_level` with its wall time measured by
+    ``time.monotonic`` and aggregated via :func:`summarise_level`; the report
+    carries one ``LevelSummary`` per input level, in the order the levels ran.
+
+    A level that fails completely is *recorded*, not a reason to stop: the
+    run continues so the report reads as the full progression. Only a
+    ``KeyboardInterrupt`` abandons the run, and it is deliberately not
+    caught, so a long run can be interrupted and the CLI maps it to its
+    own exit code.
+
+    Args:
+        send: one chat completion; may return a failed outcome or raise
+            (``run_level`` converts a raise into a failed outcome).
+        levels: the concurrency levels, in ascending order.
+        request_count: how many requests each level issues.
+        warm_up_result: the warm-up phase's outcome, carried through
+            unchanged.
+        model_id: the model id being stressed, for the report header.
+        port: the gateway port, for the report header.
+
+    Returns:
+        A ``StressReport`` with ``completed=True``, because reaching the end
+        of the level list is completion even when a level failed.
+    """
+    summaries: List[LevelSummary] = []
+    for level in levels:
+        start = time.monotonic()
+        outcomes = run_level(send, level, request_count)
+        wall = time.monotonic() - start
+        summaries.append(summarise_level(level, outcomes, wall))
+    return StressReport(
+        model_id=model_id,
+        port=port,
+        warm_up=warm_up_result,
+        levels=summaries,
+        completed=True,
     )
