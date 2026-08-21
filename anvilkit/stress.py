@@ -206,29 +206,38 @@ def warm_up(
     ``send`` is called, and while it keeps failing, ``sleep(retry_interval)``
     is called exactly once between each pair of attempts and another attempt
     is made. The first success ends the loop with ``ok=True`` and
-    ``error=None`` and no trailing sleep; a failure never raises, it only
-    queues another attempt (giving up on an exhausted budget is a later
-    behaviour). ``attempts`` counts every ``send`` call and
-    ``elapsed_seconds`` is the full wall-clock span from the start of the
-    first attempt to the end of the last, measured by the injected clock.
+    ``error=None`` and no trailing sleep. ``attempts`` counts every ``send``
+    call and ``elapsed_seconds`` is the full wall-clock span from the start
+    of the first attempt to the end of the last, measured by the injected
+    clock.
+
+    An attempt may start only while the elapsed time is strictly less than
+    the ``timeout`` budget. The first attempt is never gated by the budget,
+    so at least one attempt is always made even with ``timeout == 0.0``;
+    only the start of the *next* attempt is what the budget decides, and
+    since that start is one ``retry_interval`` past the last failure, the
+    decision can be made before sleeping -- which is also what keeps the
+    trailing sleep off the final failed attempt. On an exhausted budget the
+    result is returned, never raised, with the last failure's error text
+    verbatim so the caller can tell the user why the model never came up.
 
     ``sleep`` and ``now`` are injected rather than read from the process,
     which is what lets the elapsed time be exercised by an instant test.
 
     Args:
         send: one chat completion; returns an outcome, never raises.
-        timeout: the total warm-up budget, in seconds (used by later
-            behaviours; accepted here for signature stability).
+        timeout: the total warm-up budget, in seconds.
         retry_interval: the wall-clock pause between attempts, in seconds.
         sleep: the injected sleep.
         now: the injected monotonic clock.
 
     Returns:
-        A ``WarmUpResult``. Never raises; an intermediate failure is a
-        queued attempt, not an error.
+        A ``WarmUpResult``. Never raises; an intermediate failure within the
+        budget is a queued attempt, not an error.
     """
     start = now()
     attempts = 0
+    last_error: Optional[str] = None
     while True:
         attempts += 1
         outcome = send()
@@ -238,5 +247,17 @@ def warm_up(
                 attempts=attempts,
                 elapsed_seconds=now() - start,
                 error=None,
+            )
+        last_error = outcome.error
+        # The next attempt would start one interval past this failure; an
+        # attempt may start only while elapsed is strictly less than the
+        # budget, so refuse to sleep -- and therefore to start it -- when
+        # the start would land at or past the budget.
+        if now() - start + retry_interval >= timeout:
+            return WarmUpResult(
+                ok=False,
+                attempts=attempts,
+                elapsed_seconds=now() - start,
+                error=last_error,
             )
         sleep(retry_interval)
