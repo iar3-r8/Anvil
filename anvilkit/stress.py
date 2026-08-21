@@ -12,6 +12,7 @@ here; this module never prompts, never reads configuration and never calls
 ``sys.exit()`` -- those stay with the CLI.
 """
 
+import concurrent.futures
 import dataclasses
 import math
 import re
@@ -323,3 +324,42 @@ def check_model_available(
     return ModelAvailability(
         verdict="unknown_model", available=available, reason=None
     )
+
+
+def run_level(
+    send: Callable[[], ChatOutcome],
+    concurrency: int,
+    request_count: int,
+) -> List[ChatOutcome]:
+    """Run one concurrency level and return every request's outcome.
+
+    Dispatches ``request_count`` calls to ``send`` through a
+    ``ThreadPoolExecutor(max_workers=concurrency)``, so at most
+    ``concurrency`` are in flight at once -- concurrency 1 is genuinely
+    serial. The pool is sized to ``concurrency`` even when
+    ``concurrency > request_count``; only ``request_count`` requests are
+    submitted, so the level returns exactly ``request_count`` outcomes.
+
+    A ``send`` that raises is caught and converted into a failed outcome
+    (``ok=False`` with a non-empty ``error``), so one raising thread never
+    aborts the level and the full count is still returned. Results are
+    returned in submission order: ``executor.map`` over the request
+    indices, which is deterministic and keeps the Nth result paired with
+    the Nth submitted request. The executor is used as a context manager
+    so it is always shut down.
+    """
+
+    def _one(_index: int) -> ChatOutcome:
+        try:
+            return send()
+        except Exception as exc:
+            return ChatOutcome(
+                ok=False,
+                latency_seconds=0.0,
+                error="send raised: {}: {}".format(type(exc).__name__, exc),
+            )
+
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=concurrency
+    ) as executor:
+        return list(executor.map(_one, range(request_count)))
