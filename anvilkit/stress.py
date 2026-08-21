@@ -794,3 +794,39 @@ def format_report_json(report: StressReport) -> str:
         },
         indent=2,
     )
+
+
+def write_log(path: Path, text_report: str, json_report: str) -> None:
+    """Persist a finished run's report to ``path``; the log's only job.
+
+    One artefact, two destinations: the terminal already showed ``text_report``
+    and ``json_report``, so the log carries the same two, verbatim -- the text
+    report, then a separator line, then the JSON block. Re-rendering or
+    trimming here would make the log disagree with what the user just read,
+    which is worse than useless. The file therefore ends exactly with
+    ``json_report``, so a machine reader can take the block from the text to
+    the end of the file.
+
+    The parent directory is created if absent, at any depth under the run
+    root, and an existing file is overwritten: the derived path carries a
+    second-resolution timestamp, so a collision means the same path was
+    deliberately reused, and the new report must be the whole file.
+
+    Args:
+        path: the target file, e.g. as derived by :func:`log_path`.
+        text_report: the human-readable report, written verbatim.
+        json_report: the machine-readable report, written verbatim.
+
+    Raises:
+        StressError: the directory could not be created or the file could not
+            be written; the message names ``path`` so the caller can point
+            the user at the artefact that was not produced.
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            text_report + "\n" + ("=" * 70) + "\n" + json_report,
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        raise StressError("could not write log {}: {}".format(path, exc))
