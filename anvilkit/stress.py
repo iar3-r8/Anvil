@@ -14,6 +14,7 @@ here; this module never prompts, never reads configuration and never calls
 
 import concurrent.futures
 import dataclasses
+import json
 import math
 import re
 import time
@@ -735,3 +736,61 @@ def format_report(report: StressReport, use_color: bool = True) -> str:
 
     lines.append(_format_closing_line(report.max_clean_concurrency, use_color))
     return "\n".join(lines)
+
+
+def format_report_json(report: StressReport) -> str:
+    """Render a finished ``StressReport`` as a machine-readable JSON document.
+
+    The document is built as a ``dict`` and emitted with ``json.dumps`` --
+    never by string substitution -- so the output is valid JSON by
+    construction and round-trips through ``json.loads``. The key names follow
+    the plan's JSON block, which differs from the dataclass in two places:
+    ``model_id`` is serialised as ``"model"``, and the six flat
+    ``latency_*`` fields nest under ``"latency"``.
+
+    ``None`` figures stay ``None`` so they serialise as JSON ``null`` -- the
+    text report maps them to ``-``, but a machine reader must be able to tell
+    "not measurable" apart from a genuine ``0``.
+
+    Pure rendering: never raises.
+    """
+    return json.dumps(
+        {
+            "model": report.model_id,
+            "port": report.port,
+            "started_at": report.started_at,
+            "prompt": report.prompt,
+            "max_tokens": report.max_tokens,
+            "requests_per_level": report.requests_per_level,
+            "warm_up": {
+                "ok": report.warm_up.ok,
+                "attempts": report.warm_up.attempts,
+                "elapsed_seconds": report.warm_up.elapsed_seconds,
+                "error": report.warm_up.error,
+            },
+            "levels": [
+                {
+                    "concurrency": level.concurrency,
+                    "requests": level.requests,
+                    "succeeded": level.succeeded,
+                    "failed": level.failed,
+                    "latency": {
+                        "mean": level.latency_mean,
+                        "p50": level.latency_p50,
+                        "p95": level.latency_p95,
+                        "p99": level.latency_p99,
+                        "min": level.latency_min,
+                        "max": level.latency_max,
+                    },
+                    "requests_per_second": level.requests_per_second,
+                    "tokens_per_second": level.tokens_per_second,
+                    "error_counts": level.error_counts,
+                    "errors": level.errors,
+                }
+                for level in report.levels
+            ],
+            "completed": report.completed,
+            "max_clean_concurrency": report.max_clean_concurrency,
+        },
+        indent=2,
+    )
