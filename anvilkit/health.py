@@ -329,11 +329,11 @@ def chat_once(
     string substitution.
 
     Like :func:`test_model`, it never raises for a network or payload problem -
-    a request that fails under load is the very thing being measured - but it
-    stops where ``test_model`` goes on: it reports the payload it received and
-    leaves judging the reply (emptiness, finish reason) to the caller, because
-    under a fixed token budget a truncated answer is the expected shape of a
-    healthy model.
+    a request that fails under load is the very thing being measured. Its reply
+    judgement is the inverse of :func:`test_model`'s: under a fixed token
+    budget an empty reply truncated by the budget (``finish_reason ==
+    "length"``) is the expected shape of a healthy model, while an empty reply
+    for any other reason is a failure.
     """
     body = build_chat_request(model_id, prompt, max_tokens)
 
@@ -355,6 +355,20 @@ def chat_once(
         _check_completion_shape(payload)
     except _ProbeError as exc:
         return ChatOutcome(ok=False, latency_seconds=elapsed, error=str(exc))
+
+    # The one judgement chat_once makes, and it is the OPPOSITE of
+    # _parse_completion's rule, so do not "fix" it to match: under a fixed
+    # --max-tokens a reply truncated by the budget (finish_reason == "length")
+    # is the expected shape of a healthy model, while an empty reply for any
+    # other reason means the model chose to answer with nothing.
+    if _chat_reply_is_empty(payload) and (
+        payload["choices"][0].get("finish_reason") != "length"
+    ):
+        return ChatOutcome(
+            ok=False,
+            latency_seconds=elapsed,
+            error="the model returned an empty reply",
+        )
 
     prompt_tokens, completion_tokens = _parse_usage(payload)
 
@@ -646,6 +660,23 @@ def _parse_completion(payload: Any) -> str:
         )
 
     raise _ProbeError("the model returned an empty reply")
+
+
+def _chat_reply_is_empty(payload: Any) -> bool:
+    """Whether the completed chat carries no text at all.
+
+    ``reasoning_content`` counts as text: vLLM's reasoning parsers can leave
+    ``content`` empty while still answering, which must not read as the model
+    answering with nothing (mirrors :func:`_parse_completion`).
+    """
+    message = payload["choices"][0].get("message")
+    if not isinstance(message, dict):
+        return True
+
+    return not any(
+        isinstance(message.get(key), str) and message.get(key).strip()
+        for key in _CONTENT_KEYS
+    )
 
 
 def _check_completion_shape(payload: Any) -> None:
