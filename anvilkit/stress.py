@@ -201,13 +201,16 @@ def warm_up(
     sleep: Callable[[float], None],
     now: Callable[[], float],
 ) -> "WarmUpResult":
-    """Make a single warm-up attempt and report its outcome.
+    """Retry a cold model until it answers, and report the outcome.
 
-    ``send`` is called exactly once and its outcome is reported as-is:
-    success returns ``ok=True`` with ``error=None``, failure returns
-    ``ok=False`` with the outcome's error preserved verbatim. ``sleep`` is
-    never called on either path. Retry and budget handling land in later
-    behaviours.
+    ``send`` is called, and while it keeps failing, ``sleep(retry_interval)``
+    is called exactly once between each pair of attempts and another attempt
+    is made. The first success ends the loop with ``ok=True`` and
+    ``error=None`` and no trailing sleep; a failure never raises, it only
+    queues another attempt (giving up on an exhausted budget is a later
+    behaviour). ``attempts`` counts every ``send`` call and
+    ``elapsed_seconds`` is the full wall-clock span from the start of the
+    first attempt to the end of the last, measured by the injected clock.
 
     ``sleep`` and ``now`` are injected rather than read from the process,
     which is what lets the elapsed time be exercised by an instant test.
@@ -216,29 +219,24 @@ def warm_up(
         send: one chat completion; returns an outcome, never raises.
         timeout: the total warm-up budget, in seconds (used by later
             behaviours; accepted here for signature stability).
-        retry_interval: the wall-clock pause between attempts, in seconds
-            (used by later behaviours; accepted here for signature
-            stability).
-        sleep: the injected sleep (used by later behaviours).
+        retry_interval: the wall-clock pause between attempts, in seconds.
+        sleep: the injected sleep.
         now: the injected monotonic clock.
 
     Returns:
-        A ``WarmUpResult``. Never raises; a failed outcome is a failed
-        result with the error's text preserved.
+        A ``WarmUpResult``. Never raises; an intermediate failure is a
+        queued attempt, not an error.
     """
     start = now()
-    outcome = send()
-    elapsed = now() - start
-    if outcome.ok:
-        return WarmUpResult(
-            ok=True,
-            attempts=1,
-            elapsed_seconds=elapsed,
-            error=None,
-        )
-    return WarmUpResult(
-        ok=False,
-        attempts=1,
-        elapsed_seconds=elapsed,
-        error=outcome.error,
-    )
+    attempts = 0
+    while True:
+        attempts += 1
+        outcome = send()
+        if outcome.ok:
+            return WarmUpResult(
+                ok=True,
+                attempts=attempts,
+                elapsed_seconds=now() - start,
+                error=None,
+            )
+        sleep(retry_interval)
