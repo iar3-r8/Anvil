@@ -28,7 +28,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import stress  # noqa: E402
-from anvilkit.stress import log_path, percentile  # noqa: E402
+from anvilkit.stress import classify_error, log_path, percentile  # noqa: E402
 
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
@@ -242,6 +242,108 @@ class TestLogPathEdges(unittest.TestCase):
                 self.assertEqual(
                     path.name, "stress-model-x-20260821-143000.log"
                 )
+
+
+class TestClassifyErrorTable(unittest.TestCase):
+    """One row per category, straight from behaviour 6's table in the plan."""
+
+    def test_oom_substrings(self):
+        cases = [
+            "out of memory",
+            "outofmemoryerror",
+            "enginedeaderror",
+            "enginecore encountered an issue",
+            "no available memory",
+            "kv cache",
+        ]
+        for error in cases:
+            with self.subTest(error=error):
+                self.assertEqual(classify_error(error, None), "oom")
+
+    def test_timeout_substring(self):
+        for error in ("timed out", "the request timed out after 120.0s"):
+            with self.subTest(error=error):
+                self.assertEqual(classify_error(error, None), "timeout")
+
+    def test_connection_substrings(self):
+        for error in (
+            "connection refused",
+            "connection reset by peer",
+            "broken pipe",
+        ):
+            with self.subTest(error=error):
+                self.assertEqual(classify_error(error, None), "connection")
+
+    def test_protocol_substrings(self):
+        for error in (
+            "the response did not return json",
+            "non-object payload",
+            "malformed response",
+            "no choices",
+        ):
+            with self.subTest(error=error):
+                self.assertEqual(classify_error(error, None), "protocol")
+
+    def test_unknown_for_unrecognised_text(self):
+        for error in ("the model was rude", "a totally novel error"):
+            with self.subTest(error=error):
+                self.assertEqual(classify_error(error, None), "unknown")
+
+
+class TestClassifyErrorHttp(unittest.TestCase):
+    """The ``http`` bucket and the precedence of text matches over it."""
+
+    def test_unrecognised_text_with_status_is_http(self):
+        for status in (400, 404, 500, 502, 503):
+            with self.subTest(status=status):
+                self.assertEqual(
+                    classify_error("the model was rude", status), "http"
+                )
+
+    def test_oom_wins_over_http(self):
+        # The plan's load-bearing rule: an OOM arriving as HTTP 500 is
+        # classified as oom, not http.
+        for error in (
+            "CUDA out of memory",
+            "out of memory",
+            "no available memory",
+        ):
+            with self.subTest(error=error):
+                self.assertEqual(classify_error(error, 500), "oom")
+
+    def test_text_matches_win_over_http_in_declared_order(self):
+        self.assertEqual(classify_error("timed out", 504), "timeout")
+        self.assertEqual(classify_error("connection refused", 502), "connection")
+        # http sits before protocol in the table: a protocol-shaped message
+        # that also carries a status classifies as http.
+        self.assertEqual(classify_error("did not return json", 500), "http")
+
+
+class TestClassifyErrorEdges(unittest.TestCase):
+    """Edge cases called out in behaviour 6 of the plan."""
+
+    def test_empty_error_without_status_is_unknown(self):
+        self.assertEqual(classify_error("", None), "unknown")
+
+    def test_empty_error_with_status_is_http(self):
+        self.assertEqual(classify_error("", 500), "http")
+
+    def test_matching_is_case_insensitive(self):
+        cases = [
+            ("CUda oUt Of mEmOrY", None, "oom"),
+            ("TIMED OUT", None, "timeout"),
+            ("CONNECTION RESET BY PEER", None, "connection"),
+            ("MALFORMED", None, "protocol"),
+        ]
+        for error, status, expected in cases:
+            with self.subTest(error=error):
+                self.assertEqual(classify_error(error, status), expected)
+
+    def test_never_raises_and_always_returns_a_known_category(self):
+        known = {"oom", "timeout", "http", "connection", "protocol", "unknown"}
+        for error, status in (("", None), ("", 500), ("???", 0), ("kv cache", 500)):
+            with self.subTest(error=error, status=status):
+                self.assertIn(classify_error(error, status), known)
 
 
 if __name__ == "__main__":
