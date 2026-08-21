@@ -42,9 +42,9 @@ a level where every request failed reports ``None`` for all latency figures
 and ``0.0`` for both rates, and a zero wall time with successes yields
 ``None`` rates rather than an exception.
 
-Behaviours 14 (``format_report``) and 15 (``format_report_json``) are
-covered below. Behaviours 4, 5 and 16 land in this same file in later
-cycles.
+Behaviours 14 (``format_report``), 15 (``format_report_json``) and
+16 (``write_log``) are covered below. Behaviours 4 and 5 land in this
+same file in later cycles.
 
 The module is a pure-function module for these behaviours: no network, no
 real clock, no I/O. The warm-up tests inject ``send``, ``sleep`` and the
@@ -60,6 +60,7 @@ import threading
 import unittest
 from datetime import datetime
 from pathlib import Path
+from unittest import mock, TestCase
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -155,6 +156,18 @@ except ImportError as _err:
     # so the message is copied out into a module-level name first.
     _format_report_json_import_error = str(_err)
     format_report_json = None
+
+# Behaviour 16 (TDD red): this does not exist yet, so the import is guarded.
+# The new test classes turn the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_write_log_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import write_log
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _write_log_import_error = str(_err)
+    write_log = None
 
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
@@ -2645,6 +2658,202 @@ def _frj_report(levels, **overrides):
     its own shape without touching the behaviour-14 helpers.
     """
     return _fr_report(levels=levels, **overrides)
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 16: write_log persists the finished report to the derived path.
+#
+# Contract (plans/stress-test.md, section 7, behaviour 16):
+# ``write_log(path, text_report, json_report) -> None`` creates the parent
+# directory if absent and writes the text report, then a separator, then the
+# JSON summary block, into the file at ``path``. An existing file is
+# overwritten. Both forms are written VERBATIM -- the function renders
+# nothing. An unwritable directory raises ``StressError`` naming the path.
+#
+# The CLI concerns the plan attaches to this behaviour (``--no-log-file``
+# skips the call, ``--dry-run`` announces the path and writes nothing) are
+# behaviour 17's and are deliberately NOT tested here: at this level
+# ``write_log`` is simply called, or not.
+#
+# The unwritable-directory case mocks the write seam rather than using
+# ``os.chmod``: a chmod-based test silently passes for the wrong reason when
+# the suite runs as root (CI containers often do). ``pathlib.Path.write_text``
+# opens via a C-level path that a ``builtins.open`` patch does not intercept
+# (verified on this host), so BOTH ``builtins.open`` and ``Path.write_text``
+# are patched to fail -- whatever seam the implementation picks, the
+# ``PermissionError`` it would hit for real is simulated.
+# ---------------------------------------------------------------------------
+
+# A multi-line text report with a trailing blank line and a non-trivial JSON
+# document: the verbatim cases assert both survive intact.
+_wl_text_report = (
+    "stress run: deepseek-ai/DeepSeek-V3.2\n"
+    "port 8123, levels 1, 2, 4, 8\n"
+    "warm up: ok in 1 attempt (42.1s)\n"
+    "\n"
+    "concurrency  1  20/20 ok  1.10s mean  0.9 req/s\n"
+    "concurrency  4  15/20 ok  2.20s mean  1.8 req/s\n"
+)
+_wl_json_doc = {
+    "model": "deepseek-ai/DeepSeek-V3.2",
+    "port": 8123,
+    "completed": True,
+    "max_clean_concurrency": 1,
+    "levels": [
+        {"concurrency": 1, "succeeded": 20, "failed": 0},
+        {"concurrency": 4, "succeeded": 15, "failed": 5},
+    ],
+}
+_wl_json_report = json.dumps(_wl_json_doc, indent=2)
+
+
+def _wl_write(path, text_report, json_report):
+    """Call ``write_log`` or fail with the named red for a missing symbol."""
+    if write_log is None:
+        raise AssertionError(
+            "anvilkit.stress.write_log is not implemented yet: "
+            + (_write_log_import_error or "missing")
+        )
+    return write_log(path, text_report, json_report)
+
+
+def _wl_block_from_content(path, json_report):
+    """The JSON summary block of a written file, as a string.
+
+    The text report comes first, then a separator, then the JSON block, so
+    the block is the file content from the JSON text to the end. ``rindex``
+    keeps this honest even if the text report itself contained a brace.
+    """
+    content = path.read_text()
+    return content[content.rindex(json_report):]
+
+
+def _wl_block_parsed(path, json_report):
+    """The written JSON block, round-tripped: the contract is it parses."""
+    return json.loads(_wl_block_from_content(path, json_report))
+
+
+class TestWriteLogFileCreation(TestCase):
+    """Behaviour 16: the file lands at the path, parent created, no return."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+
+    def test_parent_directory_is_created_when_absent(self):
+        # Nested, not just ``logs``: the contract is "the parent directory is
+        # created if absent", at any depth under the run root.
+        path = self.root / "logs" / "nested" / "deeper" / "stress-model.log"
+        self.assertFalse(path.parent.exists())
+        _wl_write(path, _wl_text_report, _wl_json_report)
+        self.assertTrue(path.parent.is_dir())
+        self.assertTrue(path.is_file())
+
+    def test_returns_none(self):
+        path = self.root / "logs" / "stress-model.log"
+        self.assertIsNone(_wl_write(path, _wl_text_report, _wl_json_report))
+
+
+class TestWriteLogContent(TestCase):
+    """Behaviour 16: text report, separator, JSON block -- both verbatim."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.path = self.root / "logs" / "stress-model.log"
+
+    def test_text_report_first_then_separator_then_json_block(self):
+        # A literal ``\n`` sequence in the text report (backslash + n, not a
+        # newline) must survive verbatim: an implementation that re-parses
+        # or re-renders the report would corrupt it.
+        text_report = "TEXT-REPORT-ANCHOR\\nline two\n"
+        _wl_write(self.path, text_report, _wl_json_report)
+        content = self.path.read_text()
+        text_idx = content.index("TEXT-REPORT-ANCHOR")
+        json_idx = content.index(_wl_json_report)
+        self.assertLess(text_idx, json_idx)
+        self.assertIn(text_report, content)
+
+    def test_json_block_parses_and_matches_input(self):
+        _wl_write(self.path, _wl_text_report, _wl_json_report)
+        self.assertEqual(_wl_block_parsed(self.path, _wl_json_report), _wl_json_doc)
+
+    def test_text_report_written_verbatim(self):
+        # Multi-line, with a trailing blank line: no trimming, no
+        # re-flowing, no truncation.
+        _wl_write(self.path, _wl_text_report, _wl_json_report)
+        self.assertIn(_wl_text_report, self.path.read_text())
+
+    def test_json_block_written_verbatim(self):
+        # The emitted block is the argument's text: a reader that re-dumps
+        # with different indentation or key order writes different bytes.
+        _wl_write(self.path, _wl_text_report, _wl_json_report)
+        self.assertEqual(_wl_block_from_content(self.path, _wl_json_report), _wl_json_report)
+
+
+class TestWriteLogOverwrite(TestCase):
+    """Behaviour 16: an existing file at the path is overwritten."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = Path(self._tmp.name) / "logs" / "stress-model.log"
+        self.path.parent.mkdir(parents=True)
+
+    def test_existing_file_replaced_by_new_content(self):
+        first_text = "FIRST-RUN-REPORT\n"
+        first_json = json.dumps({"run": 1}, indent=2)
+        _wl_write(self.path, first_text, first_json)
+        self.assertTrue(self.path.is_file())
+
+        # The derived path carries a second-resolution timestamp, so real
+        # collisions are practically impossible -- but when the same path IS
+        # written again, the new report is the whole file: no appending.
+        second_text = "SECOND-RUN-REPORT\n"
+        second_json = json.dumps({"run": 2}, indent=2)
+        _wl_write(self.path, second_text, second_json)
+
+        content = self.path.read_text()
+        self.assertNotIn("FIRST-RUN-REPORT", content)
+        self.assertIn(second_text, content)
+        self.assertEqual(_wl_block_parsed(self.path, second_json), {"run": 2})
+
+
+class TestWriteLogErrors(TestCase):
+    """Behaviour 16: an unwritable directory raises StressError naming the path."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.path = self.root / "logs" / "stress-model.log"
+
+    def test_unwritable_directory_raises_stress_error_naming_the_path(self):
+        # Guarded before ``assertRaises`` so the named red, not
+        # "StressError not raised", is the failure while the symbol is
+        # missing (the behaviour-10 error cases do the same).
+        if write_log is None:
+            self.fail(
+                "anvilkit.stress.write_log is not implemented yet: "
+                "{}".format(_write_log_import_error)
+            )
+        # chmod(555) would be unreliable as root -- root writes anyway -- so
+        # the write seam is mocked to fail instead (see section comment).
+        with mock.patch(
+            "builtins.open",
+            side_effect=PermissionError(13, "Permission denied"),
+        ) as open_mock, mock.patch(
+            "pathlib.Path.write_text",
+            side_effect=PermissionError(13, "Permission denied"),
+        ) as write_text_mock:
+            with self.assertRaises(stress.StressError) as ctx:
+                _wl_write(self.path, _wl_text_report, _wl_json_report)
+        message = str(ctx.exception)
+        self.assertIn(str(self.path), message)
+        # The failure came from the write attempt, not from anywhere else.
+        self.assertTrue(open_mock.called or write_text_mock.called)
 
 
 if __name__ == "__main__":
