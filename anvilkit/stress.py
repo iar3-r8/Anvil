@@ -12,7 +12,8 @@ here; this module never prompts, never reads configuration and never calls
 ``sys.exit()`` -- those stay with the CLI.
 """
 
-from typing import List
+import math
+from typing import List, Sequence
 
 
 class StressError(Exception):
@@ -50,3 +51,30 @@ def concurrency_levels(max_concurrency: int) -> List[int]:
     if levels[-1] != max_concurrency:
         levels.append(max_concurrency)
     return levels
+
+
+def percentile(values: Sequence[float], p: float) -> float:
+    """Return the nearest-rank percentile of ``values`` for ``p`` (0-100).
+
+    Sorts ascending and takes the element at index ``ceil(p / 100 * n) - 1``,
+    clamped to ``[0, n - 1]`` so ``p == 0`` yields the minimum and
+    ``p == 100`` the maximum. Nearest-rank rather than interpolation is
+    deliberate: every reported figure is a latency that actually occurred,
+    which is what someone sizing hardware needs.
+
+    Args:
+        values: the latencies, in any order; must not be empty.
+        p: the percentile, 0-100.
+
+    Raises:
+        StressError: ``values`` is empty.
+    """
+    if not values:
+        raise StressError("values must not be empty")
+
+    ordered = sorted(values)
+    # The clamp handles p == 0 (rank 0 would index -1) and any rounding that
+    # pushes the rank past the last element.
+    rank = math.ceil(p / 100 * len(ordered)) - 1
+    index = max(0, min(len(ordered) - 1, rank))
+    return ordered[index]
