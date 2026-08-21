@@ -55,7 +55,7 @@ chmod +x anvil
 | `./anvil logs` | View Logs | Streams llama-swap orchestration logs and on-demand model outputs. Add `--no-follow` for a one-shot dump. |
 | `./anvil restart` | Restart | Restarts the llama-swap gateway container. |
 | `./anvil down` | Stop Stack | Stops all containers and cleans up any orphaned on-demand vLLM model containers. Add `--keep-orphans` to skip the sweep. |
-| `./anvil setup-repo PATH` | Provision | Injects Zoo Code settings, the `.roo` framework and VS Code recommendations into a target repository. See the [VS Code guide](2-setting-up-vscode-plugin.md). |
+| `./anvil setup-repo PATH` | Provision | Injects Zoo Code settings, the `.roo` framework and VS Code recommendations into a target repository. See the [VS Code guide](2-setting-up-vscode-plugin.md) — and [how the agents work](how-the-agents-work.md) for what the provisioned agent pipeline actually does. |
 
 Any arguments Anvil does not recognise are passed straight through to Docker
 Compose, so `./anvil up --force-recreate` and `./anvil logs llama-swap` work as

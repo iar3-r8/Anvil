@@ -1,57 +1,56 @@
-
-
 # <img  src="./assets/logo.png" style="vertical-align: bottom;" width="80" height="80"> <img  src="./assets/anvil.png" style="vertical-align: bottom;" height="80">
 
-**Anvil** provides everything teams need to self-host their own agentic coding environment. Eliminate commercial API expenses and secure your code intellectual property and data behind an air-gapped, high-throughput local backend stack powered by [llama-swap](https://github.com/mostlygeek/llama-swap), [Docker Compose](https://docs.docker.com/compose/), and [Zoo Code](https://www.zoocode.dev/).
+Anvil does two things: it runs local model inference behind the [llama-swap](https://github.com/mostlygeek/llama-swap) gateway, and it turns a repository into an agentic [Zoo Code](https://www.zoocode.dev/) pipeline that takes a task from intake to pull request under test-driven development.
 
 ---
 
-## Why Anvil?
+## What Anvil does
 
-Commercial AI coding assistants are powerful, but they come with two massive drawbacks for engineering teams: **unpredictable monthly token bills** and **data privacy compliance risks** associated with sending proprietary codebases and sometimes even data to external APIs. 
+**Run models locally.** `./anvil up` brings up the llama-swap gateway, which starts vLLM containers for your configured models on demand, plus a [Qdrant](https://qdrant.tech/) stack that gives your agent retrieval-augmented context over your codebase. Commands, flags and hardware sizing: [backend setup guide](doc/1-setting-up-backend.md).
 
-Anvil gives you a turnkey, production-grade alternative that runs completely on your own metal. 
+**Turn a repo into an agentic pipeline.** `./anvil setup-repo PATH` installs Zoo Code settings, a team of agent modes, the MCP servers that fetch documentation and check package registries, and an optional devcontainer. What the provisioned agents do: [how the agents work](doc/how-the-agents-work.md); installation steps: [VS Code plugin setup guide](doc/2-setting-up-vscode-plugin.md).
 
-### What's Under the Hood?
-* **Dynamic Model Routing:** Powered by [llama-swap](https://github.com/mostlygeek/llama-swap), a smart gateway that manages model lifecycles with TTL-based swapping, allowing multiple models to share limited GPU resources efficiently.
-* **High-Throughput Inference:** Child containers run [`vllm`](https://vllm.ai/) hosting optimized `Qwen2.5-Coder-7B` and `Qwen3.8-27B-FP8` reasoning models on-demand.
-* **Local Workspace RAG:** A dedicated text-embedding container paired with a [`Qdrant`](https://qdrant.tech/) vector database to provide deep codebase context to your agent.
-* **Frictionless UI Integration:** Pre-configured settings to tie the entire infrastructure directly into the [**Zoo Code**](https://www.zoocode.dev/) (formerly Roo Code) VS Code extension.
-* **Documentation-Grounded Planning:** The agent modes treat an unknown third-party interface as a blocking condition rather than something to guess at. Real vendor documentation is fetched through the [Oxylabs](https://dashboard.oxylabs.io/en/overview/scraper) MCP server, saved under `doc/external/` and cited in the plan, so tests are never written against an invented API.
+## Quick start
 
----
+* **Python 3.8+** — Anvil provisions its own virtual environment on first run; there is no manual `pip install`.
+* **Docker with Compose v2**, and the **NVIDIA Container Toolkit** on Linux hosts.
 
-## Getting Started
+```bash
+./anvil init                 # create .env (storage paths, gateway port, GPUs)
+./anvil up                   # start the llama-swap gateway and Qdrant
+./anvil status               # gateway health and model state
+./anvil setup-repo PATH      # provision your coding repository
+```
 
-### Prerequisites
-* **Python 3.8 or newer**, used by the `./anvil` command itself. Anvil provisions its own virtual environment on first run, so there is **no manual `pip install`** — just clone and run. `.venv/` is disposable and safe to delete; it will be rebuilt.
-* **Docker with Compose v2**, and the **NVIDIA Container Toolkit** on Linux hosts. See the backend guide for versions and hardware sizing.
+`./anvil doctor` reports what Anvil found on your machine — run it whenever something looks wrong.
 
-Run `./anvil doctor` at any point to check what Anvil found on your machine.
+## The pipeline
 
-To keep the setup process straightforward and clean, the documentation is split into two distinct layers: bringing up your infrastructure and configuring your editor.
+Anvil takes one task from intake to pull request: `intake (issue or description) → architect plans → red → green → docs → pull request`. Each stage is one mode:
 
-### Step 1: Spin Up Your Infrastructure
-Learn how to use the interactive `./anvil` helper script to generate your environment file, configure your GPU device allocations, and launch the multi-container backend stack.
+| Mode | Owns |
+| --- | --- |
+| **tdd-manager** | Intake, delegation, the red/green loop, and all git — it is the sole git actor in the pipeline. |
+| **architect** | The plan: a numbered list of independently testable behaviours, grounded in real documentation. |
+| **qna-tester** | The red step: tests that fail now, for the right reason. |
+| **code** | The green step: making exactly those tests pass, without touching the tests. |
+| **docs-manager** | Documentation, once the tests pass. |
 
-👉 **[Read the Backend Setup Guide](doc/1-setting-up-backend.md)**
+How each stage works, and why it is shaped this way: [how the agents work](doc/how-the-agents-work.md).
 
-### Step 2: Configure Your VS Code Extension
-Once your local backend engines are online, learn how to install the recommended extension workspace and configure your agentic setup in your own repository.
+## Why it is different
 
-`./anvil setup-repo` provisions the target repository and prompts for the optional
-integrations. Supply them as flags to run unattended — `--github-token`,
-`--anthropic-key`, `--oxylabs-username` and `--oxylabs-password` — or skip any of them
-with `--no-github`, `--no-anthropic` and `--no-oxylabs`. Re-running `setup-repo` is also
-the upgrade path for an already-provisioned repository: existing `.env` credentials are
-reused rather than re-prompted, and anything you added by hand — your own MCP
-servers, mode definitions in `.roomodes`, extension recommendations — survives the
-merge instead of being overwritten.
+* **Small context by design** — every behaviour is delegated to a fresh specialist mode, one behaviour at a time, so no agent's context window fills up ([how the agents work](doc/how-the-agents-work.md)).
+* **Nothing is guessed** — an unknown third-party interface is a blocking condition: the real documentation is fetched, saved under `doc/external/` and cited, so tests are never written against an invented API ([how the agents work](doc/how-the-agents-work.md)).
+* **The repo sets itself up** — re-running `setup-repo` upgrades a provisioned repo, merging rather than overwriting your hand edits ([VS Code plugin setup guide](doc/2-setting-up-vscode-plugin.md)).
 
-👉 **[Read the VS Code Plugin Setup Guide](doc/2-setting-up-vscode-plugin.md)**
+## Why self-host
 
----
+Commercial AI coding assistants bring two drawbacks to engineering teams: unpredictable monthly token bills, and the compliance risk of sending proprietary code to external APIs. Anvil removes both — the backend runs entirely on your own hardware, and the agents run against it.
 
-## Contribute
+## Documentation
 
-Check open issues and vote on features you want. Your feedback helps prioritise what gets built next.
+* [Backend setup guide](doc/1-setting-up-backend.md) — running the local stack: commands, flags, exit codes, hardware sizing.
+* [VS Code plugin setup guide](doc/2-setting-up-vscode-plugin.md) — provisioning a repository with `setup-repo`.
+* [How the agents work](doc/how-the-agents-work.md) — the agentic pipeline in depth: stages, loop mechanics, grounded planning.
+* [Testing](doc/3-testing.md) — dev-facing: how to run Anvil's own test suite.

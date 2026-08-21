@@ -42,6 +42,10 @@ and cites them in the plan. Everything adjacent is recorded as a single line in
 `doc/external/index.md`. Because that directory is committed, the research is
 reviewable in the pull request and is not re-fetched by every developer.
 
+For how these modes fit together into the full pipeline — the stages, the
+red/green loop and each agent's limits — see
+[how the agents work](how-the-agents-work.md).
+
 During `setup-repo` you are asked whether to enable it, and the prompt carries the
 signup link:
 
