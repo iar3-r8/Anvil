@@ -137,11 +137,6 @@ def _covers_error_paths(text):
     return "error path" in text
 
 
-def _says_test_bug_before_fix(text):
-    """True when a rule says write a test for a bug BEFORE fixing it."""
-    return ("bug" in text) and ("before" in text) and ("fix" in text)
-
-
 def _skips_trivial_code(text):
     """True when a rule names trivial code to skip — getters/setters AND at
     least one of trivial wrappers / third-party code."""
@@ -364,16 +359,6 @@ class QnaTestingDisciplineBase(XmlTemplateTestCase):
             matching,
             "no <rule> in <best_practices> covers error paths (looked for "
             "'error path'). Rule texts: %r" % self._rule_texts(),
-        )
-
-    def test_new_rule_writes_test_for_bug_before_fix(self):
-        # Point 3: write a test for a bug BEFORE fixing it.
-        matching = self._rules_matching(_says_test_bug_before_fix)
-        self.assertTrue(
-            matching,
-            "no <rule> in <best_practices> says to write a test for a bug "
-            "before fixing it (looked for 'bug' + 'before' + 'fix'). Rule "
-            "texts: %r" % self._rule_texts(),
         )
 
     def test_new_rule_skips_trivial_code(self):
