@@ -505,6 +505,13 @@ class StressReport:
     a level (or every level) failed, because a run that finished is one whose
     findings -- including "dies at 4" -- can be read. A propagated
     ``KeyboardInterrupt`` is the only way the run does not complete.
+
+    The metadata fields (``started_at``, ``prompt``, ``max_tokens``,
+    ``requests_per_level``, ``max_clean_concurrency``) are appended with
+    defaults so the run's own construction -- which knows none of them --
+    stays untouched: the CLI stamps them in once it has the values.
+    ``max_clean_concurrency`` is the highest concurrency that completed with
+    zero failures, ``None`` when even level 1 failed.
     """
 
     model_id: str
@@ -512,6 +519,11 @@ class StressReport:
     warm_up: WarmUpResult
     levels: List[LevelSummary]
     completed: bool
+    started_at: str = ""
+    prompt: str = ""
+    max_tokens: int = 0
+    requests_per_level: int = 0
+    max_clean_concurrency: Optional[int] = None
 
 
 def run_stress(
@@ -561,3 +573,165 @@ def run_stress(
         levels=summaries,
         completed=True,
     )
+
+
+# ANSI codes, mirroring ``anvilkit.health``'s convention; applied only while
+# ``use_color`` is set, so colourless output stays byte-identical to the
+# plain text.
+_GREEN = "\033[32m"
+_RED = "\033[31m"
+_RESET = "\033[0m"
+
+
+def _paint(text: str, code: str, use_color: bool) -> str:
+    """Wrap ``text`` in ``code``/reset, or return it untouched.
+
+    The single seam that keeps ``use_color=False`` free of every escape:
+    every coloured fragment in the report goes through here.
+    """
+    if not use_color:
+        return text
+    return "{}{}{}".format(code, text, _RESET)
+
+
+def _fmt_figure(value: Optional[float]) -> str:
+    """One numeric table cell: ``-`` when unmeasurable, two decimals otherwise.
+
+    ``None`` means "not measurable" (no successes, no wall time) and must
+    never be rendered as a fabricated ``0.00``; a genuine ``0.0`` (an
+    all-failed level's true zero rate) renders as ``0.00``.
+    """
+    if value is None:
+        return "-"
+    return "{:.2f}".format(value)
+
+
+def _format_warm_up_line(warm_up: WarmUpResult, use_color: bool) -> str:
+    if warm_up.ok:
+        text = "Warm-up: ok after {} attempt(s), {:.1f}s".format(
+            warm_up.attempts, warm_up.elapsed_seconds
+        )
+        return _paint(text, _GREEN, use_color)
+    # The failure's error text goes in verbatim: it is the *why* the model
+    # never came up, and paraphrasing would lose it.
+    text = "Warm-up: FAILED after {} attempt(s), {:.1f}s: {}".format(
+        warm_up.attempts, warm_up.elapsed_seconds, warm_up.error or ""
+    )
+    return _paint(text, _RED, use_color)
+
+
+def _format_level_failures(level: LevelSummary) -> List[str]:
+    """The failure block beneath a level that had failures.
+
+    Categories with their counts (insertion order, i.e. first-seen), then
+    the distinct raw messages. The block is indented under its row and the
+    level is named "level N", never "concurrency N", so the closing
+    summary's "highest clean concurrency" reading stays unambiguous.
+    """
+    lines = ["  Failures at level {}:".format(level.concurrency)]
+    for category, count in level.error_counts.items():
+        lines.append("    {}: {}".format(category, count))
+    for message in level.errors:
+        lines.append("    - {}".format(message))
+    return lines
+
+
+def _format_level_table(
+    levels: Sequence[LevelSummary], use_color: bool
+) -> List[str]:
+    lines: List[str] = []
+    labels = (
+        "concurrency",
+        "ok/fail",
+        "mean",
+        "p50",
+        "p95",
+        "p99",
+        "req/s",
+        "tok/s",
+    )
+    figure_fields = (
+        "latency_mean",
+        "latency_p50",
+        "latency_p95",
+        "latency_p99",
+        "requests_per_second",
+        "tokens_per_second",
+    )
+
+    rows: List[List[str]] = []
+    for level in levels:
+        cells = [str(level.concurrency),
+                 "{}/{}".format(level.succeeded, level.failed)]
+        for name in figure_fields:
+            cells.append(_fmt_figure(getattr(level, name)))
+        rows.append(cells)
+
+    # Column widths from the widest cell, header labels included: the
+    # ok/fail column therefore starts at the same offset in every row no
+    # matter how long the figures grow (the model id lives in the header
+    # and can never enter a row).
+    widths = [len(label) for label in labels]
+    for row in rows:
+        for index, cell in enumerate(row):
+            if len(cell) > widths[index]:
+                widths[index] = len(cell)
+
+    def render(cells: List[str], is_header: bool) -> str:
+        parts = [cell.rjust(widths[index]) for index, cell in enumerate(cells)]
+        if not is_header:
+            # Colour the ok/fail cell: green when the level had no failures.
+            parts[1] = _paint(
+                parts[1],
+                _GREEN if parts[1].strip().split("/")[-1] == "0" else _RED,
+                use_color,
+            )
+        return " | ".join(parts)
+
+    lines.append(render(list(labels), True))
+    for level, row in zip(levels, rows):
+        lines.append(render(row, False))
+        if level.failed:
+            lines.extend(_format_level_failures(level))
+    return lines
+
+
+def _format_closing_line(
+    max_clean_concurrency: Optional[int], use_color: bool
+) -> str:
+    if max_clean_concurrency is not None:
+        text = "Highest clean concurrency: {}".format(
+            max_clean_concurrency
+        )
+        return _paint(text, _GREEN, use_color)
+    return _paint(
+        "No clean concurrency (every level failed)", _RED, use_color
+    )
+
+
+def format_report(report: StressReport, use_color: bool = True) -> str:
+    """Render a finished ``StressReport`` as human-readable text.
+
+    Pure rendering: never raises, never reads the clock (the timestamp
+    shown is the report's own ``started_at``, stamped when the run began,
+    so the text is identical however late it is printed) and emits no
+    ANSI escapes at all when ``use_color`` is false, matching
+    ``health.format_status``. An empty level list, a failed warm-up and
+    all-``None`` figures all render, because each is a finding, not an
+    error.
+    """
+    lines: List[str] = []
+    lines.append("Stress test: {}".format(report.model_id))
+    lines.append("Port: {}".format(report.port))
+    if report.started_at:
+        lines.append("Started: {}".format(report.started_at))
+    lines.append("Requests per level: {}".format(report.requests_per_level))
+    lines.append(_format_warm_up_line(report.warm_up, use_color))
+
+    if report.levels:
+        lines.extend(_format_level_table(report.levels, use_color))
+    else:
+        lines.append("No levels ran.")
+
+    lines.append(_format_closing_line(report.max_clean_concurrency, use_color))
+    return "\n".join(lines)
