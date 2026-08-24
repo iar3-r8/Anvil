@@ -258,3 +258,75 @@ class TestQwen38BatchModel(unittest.TestCase):
                 self.MODEL_ID, block.get("cmdStop")
             ),
         )
+
+    # -- Behaviour 2: the batching flags are the ones under test -----------------
+    # All checks below are token-level on the folded ``cmd`` (whitespace-split).
+    # Token comparison is the only airtight form: "--max-num-seqs 1" is a substring
+    # prefix of "--max-num-seqs 16", so substring asserts could pass or fail by
+    # accident.
+
+    def _cmd_tokens(self):
+        """Return the folded ``cmd`` of the batch block split into tokens."""
+        block = self._load_batch_block()
+        cmd = block.get("cmd")
+        self.assertIsInstance(
+            cmd,
+            str,
+            "cmd in models[ {!r} ] must be a string, got {}".format(self.MODEL_ID, type(cmd).__name__),
+        )
+        return cmd.split()
+
+    @staticmethod
+    def _flag_values(tokens, flag):
+        """Return the value token following each occurrence of ``flag`` (or None if it dangles)."""
+        return [
+            tokens[i + 1] if i + 1 < len(tokens) else None
+            for i, tok in enumerate(tokens)
+            if tok == flag
+        ]
+
+    def test_cmd_has_max_num_seqs_64(self):
+        """cmd must carry the token pair ['--max-num-seqs', '64'] — the variable under test."""
+        tokens = self._cmd_tokens()
+        values = self._flag_values(tokens, "--max-num-seqs")
+        self.assertIn(
+            "64",
+            values,
+            "cmd must carry the token pair ['--max-num-seqs', '64']; "
+            "offending tokens found: {!r}".format(values),
+        )
+
+    def test_cmd_has_max_num_batched_tokens_16384(self):
+        """cmd must carry the token pair ['--max-num-batched-tokens', '16384']."""
+        tokens = self._cmd_tokens()
+        values = self._flag_values(tokens, "--max-num-batched-tokens")
+        self.assertIn(
+            "16384",
+            values,
+            "cmd must carry the token pair ['--max-num-batched-tokens', '16384']; "
+            "offending tokens found: {!r}".format(values),
+        )
+
+    def test_cmd_does_not_have_max_num_seqs_1(self):
+        """cmd must NOT carry the token pair ['--max-num-seqs', '1'] — the whole point of the block."""
+        tokens = self._cmd_tokens()
+        values = self._flag_values(tokens, "--max-num-seqs")
+        self.assertNotIn(
+            "1",
+            values,
+            "cmd must not carry the token pair ['--max-num-seqs', '1']; "
+            "offending tokens found: {!r}".format(values),
+        )
+
+    def test_cmd_has_max_num_seqs_exactly_once(self):
+        """cmd must contain the flag '--max-num-seqs' exactly once (duplicates are last-wins in vLLM)."""
+        tokens = self._cmd_tokens()
+        count = tokens.count("--max-num-seqs")
+        self.assertEqual(
+            count,
+            1,
+            "cmd must contain '--max-num-seqs' exactly once, found {} occurrence(s): {!r}".format(
+                count,
+                [tok for tok in tokens if tok == "--max-num-seqs"],
+            ),
+        )
