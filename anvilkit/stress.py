@@ -23,10 +23,8 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 from anvilkit.health import ChatOutcome, GatewayStatus
 
-# The fixed prompt every stress request carries. Trivially cheap to answer, so
-# the measurement is the gateway's plumbing under load, not the model's
-# creativity.
-DEFAULT_PROMPT = "Reply with the single word: pong"
+
+DEFAULT_PROMPT = "Write a 1 page essay about nature"
 
 
 class StressError(Exception):
