@@ -35,8 +35,10 @@ from .provision import ProvisionError, RepoPlan
 from .render import RenderError
 from .stress import (
     DEFAULT_PROMPT,
+    LevelEvent,
     StressError,
     StressReport,
+    WarmUpAttempt,
     WarmUpResult,
     check_model_available,
     concurrency_levels,
@@ -774,6 +776,51 @@ def _any_level_failed(report: "StressReport") -> bool:
     return any(level.failed for level in report.levels)
 
 
+def _print_warmup_attempt(
+    shared: Context, attempt: WarmUpAttempt
+) -> None:
+    """One indented line per failed warm-up attempt.
+
+    ``will_retry`` is the engine's own decision, so the line promises another
+    attempt only when one is really queued; a missing error reads as
+    ``no reason reported`` rather than an empty field.
+    """
+    line = "  warm-up attempt {} failed after {:.1f}s: {}".format(
+        attempt.attempt,
+        attempt.elapsed_seconds,
+        attempt.error or "no reason reported",
+    )
+    if attempt.will_retry:
+        line += "; retrying in {:g}s".format(_WARMUP_RETRY_INTERVAL)
+    shared.echo(line)
+
+
+def _print_level_event(shared: Context, event: LevelEvent) -> None:
+    """The default one-line-per-level start and finish.
+
+    The finish line is printed even for an all-failed level: zero successes
+    is a finding, not a reason to stay silent.
+    """
+    if event.phase == "start":
+        shared.echo(
+            "Level {}: sending {} requests".format(event.concurrency, event.requests)
+        )
+    else:
+        summary = event.summary
+        if summary is None:
+            # A finish always carries its summary; without one there is
+            # nothing truthful to print.
+            return
+        shared.echo(
+            "Level {}: {}/{} ok, {} failed".format(
+                event.concurrency,
+                summary.succeeded,
+                event.requests,
+                summary.failed,
+            )
+        )
+
+
 @app.command()
 def stress(
     ctx: typer.Context,
@@ -893,12 +940,20 @@ def stress(
                 model_name, port, warmup_timeout
             )
         )
+        if not as_json:
+            shared.echo(
+                "Warming up {} at http://localhost:{}\u2026".format(model_name, port)
+            )
+        # --json passes None rather than a quiet printer: with nothing that
+        # could print, the JSON document being the first byte on stdout is
+        # structural, not a discipline.
         warm_up_result = warm_up(
             send=send,
             timeout=warmup_timeout,
             retry_interval=_WARMUP_RETRY_INTERVAL,
             sleep=time.sleep,
             now=time.monotonic,
+            on_attempt=None if as_json else lambda a: _print_warmup_attempt(shared, a),
         )
         if not warm_up_result.ok:
             raise _fail(
@@ -921,6 +976,7 @@ def stress(
         warm_up_result=warm_up_result,
         model_id=model_name,
         port=port,
+        on_level=None if as_json else lambda e: _print_level_event(shared, e),
     )
     _stamp_report(report, prompt, max_tokens, requests)
 
