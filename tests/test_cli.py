@@ -1329,15 +1329,17 @@ class TestStress(CliCase):
         assert both that the CLI reached the collaborator and what it asked.
         """
         log_file = log_file if log_file is not None else self._log_file()
+        available = self.AVAILABLE
 
         class _Patches:
-            def __init__(self, report, log_file):
+            def __init__(self, report, log_file, available):
                 self._stack = contextlib.ExitStack()
                 self.check = None
                 self.check_model = None
                 self.warm = None
                 self.run = None
                 self.log = None
+                self.available = available
 
             def __enter__(self):
                 self._stack.__enter__()
@@ -1350,7 +1352,7 @@ class TestStress(CliCase):
                     mock.patch.object(
                         cli,
                         "check_model_available",
-                        return_value=stress_available(available=self.AVAILABLE),
+                        return_value=stress_available(available=self.available),
                     )
                 )
                 self.warm = self._stack.enter_context(
@@ -1367,7 +1369,7 @@ class TestStress(CliCase):
             def __exit__(self, *exc_info):
                 return self._stack.__exit__(*exc_info)
 
-        return _Patches(report, log_file)
+        return _Patches(report, log_file, available)
 
     def _clean_run_context(self, log_file=None):
         return self._run_context(clean_report(), log_file)
