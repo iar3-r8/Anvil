@@ -7,9 +7,8 @@ with a controlled ramp of chat completions.
 It derives the concurrency ramp from a single maximum instead of a hand-listed
 sequence, so the caller states one intent ("up to N in parallel") and the
 levels are the doubling series that makes each level a step up from the
-previous. Later behaviours add percentiles, warm-up, execution and reporting
-here; this module never prompts, never reads configuration and never calls
-``sys.exit()`` -- those stay with the CLI.
+previous. This module never prompts, never reads configuration and never
+calls ``sys.exit()`` -- those stay with the CLI.
 """
 
 import concurrent.futures
@@ -31,10 +30,12 @@ DEFAULT_PROMPT = "Reply with the single word: pong"
 
 
 class StressError(Exception):
-    """Any failure of a stress run.
+    """Any failure of a stress run that is Anvil's, not the model's.
 
-    A single exception type covers invalid input, a request failure and a
-    report-writing failure, so callers need only one ``except`` clause.
+    A single exception type covers the conditions that make a run impossible --
+    invalid input, an unwritable log path -- so callers need only one
+    ``except`` clause. A request that fails under load is the thing being
+    measured and is carried on its outcome, never raised.
     """
 
 
@@ -748,10 +749,11 @@ def format_report_json(report: StressReport) -> str:
 
     The document is built as a ``dict`` and emitted with ``json.dumps`` --
     never by string substitution -- so the output is valid JSON by
-    construction and round-trips through ``json.loads``. The key names follow
-    the plan's JSON block, which differs from the dataclass in two places:
-    ``model_id`` is serialised as ``"model"``, and the six flat
-    ``latency_*`` fields nest under ``"latency"``.
+    construction and round-trips through ``json.loads``. The key names differ
+    from the dataclass fields in two places, deliberately, so the document
+    keeps a stable machine-readable shape: ``model_id`` is serialised as
+    ``"model"``, and the six flat ``latency_*`` fields nest under
+    ``"latency"``.
 
     ``None`` figures stay ``None`` so they serialise as JSON ``null`` -- the
     text report maps them to ``-``, but a machine reader must be able to tell

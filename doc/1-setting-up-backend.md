@@ -55,6 +55,8 @@ chmod +x anvil
 | `./anvil logs` | View Logs | Streams llama-swap orchestration logs and on-demand model outputs. Add `--no-follow` for a one-shot dump. |
 | `./anvil restart` | Restart | Restarts the llama-swap gateway container. |
 | `./anvil down` | Stop Stack | Stops all containers and cleans up any orphaned on-demand vLLM model containers. Add `--keep-orphans` to skip the sweep. |
+| `./anvil test-model [MODEL_NAME]` | Test a Model | Sends one prompt to a model and reports whether it answered. Run without `MODEL_NAME` to list the registered ids. Add `--json` for machine-readable output. |
+| `./anvil stress MODEL_NAME` | Stress Test | Ramps a model from one concurrent request to `--max-concurrency` and reports latency and failures at each level, to the terminal and a log file. See [Stress testing a model](#stress-testing-a-model). |
 | `./anvil setup-repo PATH` | Provision | Injects Zoo Code settings, the `.roo` framework and VS Code recommendations into a target repository. See the [VS Code guide](2-setting-up-vscode-plugin.md) — and [how the agents work](how-the-agents-work.md) for what the provisioned agent pipeline actually does. |
 
 Any arguments Anvil does not recognise are passed straight through to Docker
@@ -71,7 +73,7 @@ rather than hanging.
 | Flag | Applies to | Purpose |
 | :--- | :--- | :--- |
 | `--yes`, `-y` | all | Accept every default; never prompt. |
-| `--llm-port N` | `init`, `status`, `setup-repo` | Gateway port. |
+| `--llm-port N` | `init`, `status`, `test-model`, `stress`, `setup-repo` | Gateway port. |
 | `--hf-home PATH` | `init` | Hugging Face cache directory. |
 | `--data-dir PATH` | `init` | Local data storage directory. |
 | `--gpu-generic ID` | `init` | Generic LLM GPU device id. |
@@ -104,8 +106,64 @@ Each failure class has its own code, so scripts can react to what went wrong:
 | `4` | Docker or Compose unavailable |
 | `5` | Provisioning failure (missing target directory or template) |
 | `6` | A required value was missing while running non-interactively |
+| `7` | Stress unavailable: the gateway could not be reached, the registry could not be read, or warm-up never succeeded within its budget. No results were produced. |
+| `8` | Stress failures: the run finished and produced a full report, but at least one request failed. This is a successful measurement, not an Anvil error. |
 
 When Docker itself fails, its own exit code is passed through unchanged.
+
+`stress` is the one command where the two "failure" codes mean different things: `7` says "I learned nothing", `8` says "I learned that your configuration breaks under load" — which is the entire purpose of the command, and the reason a CI job needs to be able to tell the two apart.
+
+### Stress testing a model
+
+`status` and `test-model` prove a model answers at all; `stress` proves it still
+answers under load, which is the question hardware sizing needs.
+
+```bash
+./anvil stress Qwen/Qwen3.8-27B-FP8
+```
+
+The command sends `--requests` (default `20`) identical requests at each level of
+a ramp derived from `--max-concurrency` (default `16`): concurrency 1, then each
+power of two up to the maximum, then the maximum itself if it is not a power of
+two — `16` gives `1, 2, 4, 8, 16`. Before measuring, a warm-up phase waits on the
+model until it answers (default budget `--warmup-timeout 600` seconds, retried
+every 5 s): llama-swap loads a cold model on the first request for it, and that
+load ([`doc/external/llama-swap/readme-endpoints.md`](external/llama-swap/readme-endpoints.md))
+would otherwise be counted as the level-1 latency. Warm-up is reported in the
+output but never enters the statistics; skip it with `--no-warmup` for a model
+you know is already hot, at the cost of skewing level 1.
+
+The report goes to the terminal and to a log file under `logs/`
+(`stress-<model>-<timestamp>.log`, gitignored), which carries the same text
+report followed by the JSON summary. `--log-file PATH` overrides the path,
+`--no-log-file` suppresses the file, and `--json` makes stdout carry only the
+JSON summary — nothing decorative precedes it, so it is pipeable, while the log
+file is still written.
+
+The report shows per-level latency figures (mean, p50, p95, p99 — nearest-rank,
+so every figure is a latency that actually occurred), requests/s and tokens/s,
+and a per-failure category (`oom`, `timeout`, `connection`, `http`, `protocol`,
+`unknown`) with the raw error text. The OOM category is best-effort substring
+matching: vLLM publishes no machine-readable OOM identifier
+([`doc/external/vllm/troubleshooting.md`](external/vllm/troubleshooting.md)), so
+the raw text is always retained alongside the label. The closing line names the
+highest concurrency that completed with zero failures.
+
+| Flag | Default | Meaning |
+| :--- | :--- | :--- |
+| `MODEL_NAME` | — | Model id as it appears in `./anvil status`. Omitting it lists the registered ids instead of running anything. |
+| `--max-concurrency N` | `16` | Highest concurrency level; the ramp is derived from it. |
+| `--requests N` | `20` | Requests sent at each level. |
+| `--prompt TEXT` | a fixed one-word reply | The prompt, identical for every request. |
+| `--max-tokens N` | `128` | Reply token ceiling, identical for every request. A reply truncated by this budget is a success for stress purposes. |
+| `--timeout SECONDS` | `120` | Per-request timeout during measurement. |
+| `--warmup-timeout SECONDS` | `600` | Total budget for a cold model to come up before measuring. |
+| `--no-warmup` | off | Skip warm-up; skews level 1 for a cold model. |
+| `--log-file PATH` | derived | Override the derived log path. |
+| `--no-log-file` | off | Print the report but write no log file. |
+| `--llm-port N` | resolved | Override the gateway port (same precedence as the other commands). |
+| `--json` | off | Emit only the JSON summary on stdout. |
+| `--yes`, `-y` | off | Never prompt. |
 
 ### Understanding Model Status
 

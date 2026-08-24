@@ -19,6 +19,7 @@ Anvil does two things: it runs local model inference behind the [llama-swap](htt
 ./anvil init                 # create .env (storage paths, gateway port, GPUs)
 ./anvil up                   # start the llama-swap gateway and Qdrant
 ./anvil status               # gateway health and model state
+./anvil stress MODEL         # measure latency and failures at increasing concurrency
 ./anvil setup-repo PATH      # provision your coding repository
 ```
 

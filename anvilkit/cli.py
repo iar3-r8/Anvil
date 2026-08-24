@@ -3,9 +3,9 @@
 Design rules for this module:
 
 * **it decides, it does not do.** Resolving values (flags, ``.env``, YAML,
-  prompts) happens here; the work happens in ``compose``, ``health``, ``provision``
-  and ``render``. That keeps this file readable and keeps those modules testable
-  without a CLI.
+  prompts) happens here; the work happens in ``compose``, ``health``, ``stress``,
+  ``provision`` and ``render``. That keeps this file readable and keeps those
+  modules testable without a CLI.
 * **every failure class gets its own exit code**, so a caller can react to
   whether the problem was configuration, docker, provisioning, or a missing
   interactive value.
@@ -597,7 +597,7 @@ def status(
 
 
 def _report_available_models(shared: Context, port: int) -> "typer.Exit":
-    """Explain which model ids ``test-model`` would accept.
+    """Explain which model ids ``test-model`` and ``stress`` would accept.
 
     A model id is long, case-sensitive and easy to mistype, so refusing with a
     bare "missing argument" would send the user to another command to find the

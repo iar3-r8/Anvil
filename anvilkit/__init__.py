@@ -9,9 +9,10 @@ environment and then delegates here. All behaviour lives in focused modules:
     render     - emit config.yaml / zoo-code-settings.json / mcp.json
     compose    - docker compose invocation
     health     - gateway and model status probing
+    stress     - concurrent-load measurement against a live gateway
     prompts    - interactive input, always bypassable by flags
     provision  - setup-repo orchestration
-    cli        - argparse wiring
+    cli        - typer wiring
 """
 
 __version__ = "2.0.0-dev"

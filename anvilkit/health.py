@@ -6,7 +6,9 @@ table or ``--json`` from one unchanged check.
 The module also answers a question the registry cannot: *does this model still
 generate?* ``check_gateway`` only reports what llama-swap has registered and
 loaded, which says nothing about whether the underlying vLLM worker can actually
-answer. :func:`test_model` sends one real completion to find out.
+answer. :func:`test_model` sends one real completion to find out, and
+:func:`chat_once` performs the same round trip for the stress runner,
+reporting an outcome instead of a verdict.
 """
 
 import dataclasses
@@ -556,7 +558,7 @@ def _read_chat(url: str, body: Mapping[str, Any], timeout: float) -> str:
         )
         # Carried on the exception, not parsed back out of the message:
         # chat_once lifts it into ChatOutcome.http_status, and the stress
-        # classifier (behaviour 6) needs the number separately from the text.
+        # classifier needs the number separately from the text.
         probe.http_status = exc.code
         raise probe from exc
     except socket.timeout as exc:
