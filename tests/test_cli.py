@@ -251,6 +251,7 @@ class TestSubcommandsExist(CliCase):
         "setup-repo",
         "init",
         "doctor",
+        "stress",
     )
 
     def registered_names(self):
@@ -261,7 +262,13 @@ class TestSubcommandsExist(CliCase):
         return set(command.commands)
 
     def test_all_expected_commands_are_registered(self):
-        self.assertLessEqual(set(self.EXPECTED), self.registered_names())
+        self.assertLessEqual(
+            set(self.EXPECTED),
+            self.registered_names(),
+            "missing commands: {}".format(
+                sorted(set(self.EXPECTED) - self.registered_names())
+            ),
+        )
 
     def test_no_unexpected_commands_are_registered(self):
         self.assertEqual(set(self.EXPECTED), self.registered_names())
@@ -1123,6 +1130,531 @@ class TestTestModel(CliCase):
         self.assertEqual(before, self.snapshot())
 
 
+# ---------------------------------------------------------------------------
+# stress (Behaviour 17 - TDD red)
+# ---------------------------------------------------------------------------
+#
+# The ``stress`` subcommand does not exist yet. Click's answer to a call of an
+# unknown command is exit code 2 - the SAME code as the usage errors this
+# behaviour must produce - so a test that merely asserted ``exit_code == 2``
+# would pass for the wrong reason right now. Every test in the class below
+# therefore starts from the red guard: a named failure while the subcommand is
+# missing, mirroring the guarded-import convention in ``test_stress.py``.
+#
+# The collaborator fakes are built from the REAL ``anvilkit.stress``
+# dataclasses, which are already implemented (behaviours 10, 12, 13, 14), and
+# every collaborator the CLI will call is patched in the namespace it will be
+# imported from - ``anvilkit.cli`` - so no assertion depends on the green's
+# import style.
+
+
+def stress_ok(port=8000):
+    from anvilkit import health
+
+    return health.GatewayStatus(port=port, online=True, models=[])
+
+
+def stress_gateway_with_models(port=8000, models=None):
+    """A gateway whose registry is the one ``_report_available_models`` lists."""
+    from anvilkit import health
+
+    return health.GatewayStatus(
+        port=port,
+        online=True,
+        models=[
+            health.ModelStatus(mid, True)
+            for mid in (models or ["org/alpha", "org/beta"])
+        ],
+    )
+
+
+def stress_unavailable(port=8000, reason="connection refused"):
+    from anvilkit import stress
+
+    return stress.ModelAvailability(
+        verdict="unreachable", available=[], reason=reason
+    )
+
+
+def stress_unknown_model(port=8000, available=None):
+    from anvilkit import stress
+
+    return stress.ModelAvailability(
+        verdict="unknown_model",
+        available=sorted(available or []),
+        reason=None,
+    )
+
+
+def stress_available(port=8000, available=None):
+    from anvilkit import stress
+
+    return stress.ModelAvailability(
+        verdict="ok", available=sorted(available or []), reason=None
+    )
+
+
+def warmup_ok():
+    from anvilkit import stress
+
+    return stress.WarmUpResult(
+        ok=True, attempts=3, elapsed_seconds=42.0, error=None
+    )
+
+
+def warmup_failed():
+    from anvilkit import stress
+
+    return stress.WarmUpResult(
+        ok=False,
+        attempts=5,
+        elapsed_seconds=120.0,
+        error="connection refused",
+    )
+
+
+def stress_level(concurrency, succeeded, failed=0, requests=None, wall=10.0):
+    from anvilkit import stress
+
+    return stress.LevelSummary(
+        concurrency=concurrency,
+        requests=requests if requests is not None else succeeded + failed,
+        succeeded=succeeded,
+        failed=failed,
+        latency_mean=0.5 if succeeded else None,
+        latency_p50=0.5 if succeeded else None,
+        latency_p95=1.0 if succeeded else None,
+        latency_p99=2.0 if succeeded else None,
+        latency_min=0.1 if succeeded else None,
+        latency_max=2.0 if succeeded else None,
+        requests_per_second=succeeded / wall if succeeded else 0.0,
+        tokens_per_second=None,
+        error_counts={"connection": failed} if failed else {},
+        errors=["connection refused"] * failed if failed else [],
+    )
+
+
+def clean_report():
+    from anvilkit import stress
+
+    return stress.StressReport(
+        model_id="org/alpha",
+        port=8000,
+        warm_up=warmup_ok(),
+        levels=[stress_level(1, 20), stress_level(2, 20), stress_level(4, 20)],
+        completed=True,
+        started_at="2026-08-21T12:00:00Z",
+        prompt="say pong",
+        max_tokens=128,
+        requests_per_level=20,
+        max_clean_concurrency=4,
+    )
+
+
+def failing_report():
+    from anvilkit import stress
+
+    return stress.StressReport(
+        model_id="org/alpha",
+        port=8000,
+        warm_up=warmup_ok(),
+        levels=[
+            stress_level(1, 20),
+            stress_level(2, 18, failed=2),
+            stress_level(4, 0, failed=20),
+        ],
+        completed=True,
+        started_at="2026-08-21T12:00:00Z",
+        prompt="say pong",
+        max_tokens=128,
+        requests_per_level=20,
+        max_clean_concurrency=1,
+    )
+
+
+def _registered_commands():
+    """The subcommands the typer app currently registers."""
+    import click
+
+    command = cli.typer.main.get_command(cli.app)
+    if not isinstance(command, click.Group):
+        return set()
+    return set(command.commands or {})
+
+
+def _require_stress_subcommand(message):
+    """The red guard.
+
+    Fails loudly - with a named message - while the ``stress`` subcommand is
+    missing. A bare ``exit_code == 2`` assertion cannot stand in for this
+    guard: typer/click answers "No such command 'stress'" with exit code 2,
+    the very code the usage-error cases must earn from the real command.
+    """
+    assert "stress" in _registered_commands(), (
+        "anvil stress subcommand is not implemented yet: {} (the 'stress' "
+        "subcommand is missing from the registered commands {}; "
+        "'No such command' would exit 2 and mask the real usage code)".format(
+            message, sorted(_registered_commands())
+        )
+    )
+
+
+class TestStress(CliCase):
+    """``stress`` runs the concurrency ramp and maps the outcome to an exit code.
+
+    Behaviour 17 of ``plans/stress-test.md``. The CLI decides; the ``stress``
+    module and ``health`` act. Every collaborator is patched in the namespace
+    the CLI will import it from (``anvilkit.cli`` for the stress functions,
+    ``cli.health`` for the probe, as ``TestTestModel`` does), and the fakes are
+    built from the real ``anvilkit.stress`` dataclasses.
+    """
+
+    MODEL = "org/alpha"
+    AVAILABLE = ["org/alpha", "org/beta"]
+
+    def setUp(self):
+        super().setUp()
+        self.write_env(LLM_PORT="8000")
+        _require_stress_subcommand(self.id())
+
+    def _log_file(self, name="stress.log"):
+        return self.project / "logs" / name
+
+    def _run_context(self, report, log_file=None):
+        """Probe ok, model available, warm-up ok, a canned report -- everything
+        past the verdict patched so only the wiring is under test.
+
+        Yields a context manager whose ``check``, ``check_model``, ``warm``,
+        ``run`` and ``log`` attributes are the patcher handles, so a test can
+        assert both that the CLI reached the collaborator and what it asked.
+        """
+        log_file = log_file if log_file is not None else self._log_file()
+
+        class _Patches:
+            def __init__(self, report, log_file):
+                self._stack = contextlib.ExitStack()
+                self.check = None
+                self.check_model = None
+                self.warm = None
+                self.run = None
+                self.log = None
+
+            def __enter__(self):
+                self._stack.__enter__()
+                self.check = self._stack.enter_context(
+                    mock.patch.object(
+                        cli.health, "check_gateway", return_value=stress_ok()
+                    )
+                )
+                self.check_model = self._stack.enter_context(
+                    mock.patch.object(
+                        cli,
+                        "check_model_available",
+                        return_value=stress_available(available=self.AVAILABLE),
+                    )
+                )
+                self.warm = self._stack.enter_context(
+                    mock.patch.object(cli, "warm_up", return_value=warmup_ok())
+                )
+                self.run = self._stack.enter_context(
+                    mock.patch.object(cli, "run_stress", return_value=report)
+                )
+                self.log = self._stack.enter_context(
+                    mock.patch.object(cli, "log_path", return_value=log_file)
+                )
+                return self
+
+            def __exit__(self, *exc_info):
+                return self._stack.__exit__(*exc_info)
+
+        return _Patches(report, log_file)
+
+    def _clean_run_context(self, log_file=None):
+        return self._run_context(clean_report(), log_file)
+
+    def _failing_run_context(self, log_file=None):
+        return self._run_context(failing_report(), log_file)
+
+    # -- case 1: dry-run ---------------------------------------------------
+
+    def test_dry_run_writes_nothing(self):
+        """Nothing is written to the repository, not even a log file."""
+        before = self.snapshot()
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()):
+            self.invoke(["--dry-run", "stress", self.MODEL])
+        self.assertEqual(before, self.snapshot())
+
+    def test_dry_run_sends_nothing(self):
+        """No warm-up and no measured request may go out under --dry-run."""
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()) as check, \
+             mock.patch.object(cli, "check_model_available") as check_model, \
+             mock.patch.object(cli, "warm_up") as warm, \
+             mock.patch.object(cli, "run_stress") as run, \
+             mock.patch.object(cli, "write_log") as write:
+            self.invoke(["--dry-run", "stress", self.MODEL])
+        # Nothing is sent: the probe is itself a network request, and the
+        # plan puts --dry-run (step 3) before the probe (step 4).
+        check.assert_not_called()
+        check_model.assert_not_called()
+        warm.assert_not_called()
+        run.assert_not_called()
+        write.assert_not_called()
+
+    def test_dry_run_announces_the_levels_and_request_count(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()):
+            result = self.invoke(["--dry-run", "stress", self.MODEL, "--requests", "3"])
+        # --max-concurrency defaults to 16, so the derived levels are 1,2,4,8,16.
+        for level in ("1", "2", "4", "8", "16"):
+            self.assertIn(level, result.output)
+        self.assertIn("3", result.output)
+
+    def test_dry_run_announces_the_resolved_port(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()):
+            result = self.invoke(["--dry-run", "stress", self.MODEL])
+        self.assertIn("8000", result.output)
+
+    def test_dry_run_announces_the_derived_log_path(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()):
+            result = self.invoke(["--dry-run", "stress", self.MODEL])
+        self.assertIn("logs", result.output)
+        self.assertIn(".log", result.output)
+
+    def test_dry_run_announces_the_request_body(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()):
+            result = self.invoke(
+                ["--dry-run", "stress", self.MODEL, "--prompt", "say pong", "--max-tokens", "64"]
+            )
+        body = health_build_chat_request("org/alpha", "say pong", 64)
+        self.assertIn(body["model"], result.output)
+        self.assertIn(body["messages"][0]["content"], result.output)
+        self.assertIn('"max_tokens": 64', result.output)
+
+    def test_dry_run_exits_zero(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()):
+            result = self.invoke(["--dry-run", "stress", self.MODEL])
+        self.assertEqual(0, result.exit_code)
+
+    # -- case 2: a clean run -------------------------------------------------
+
+    def test_a_clean_run_exits_zero(self):
+        with self._clean_run_context() as c:
+            result = self.invoke(["stress", self.MODEL])
+        self.assertEqual(0, result.exit_code)
+
+    def test_a_clean_run_prints_the_report(self):
+        with self._clean_run_context():
+            result = self.invoke(["stress", self.MODEL])
+        self.assertIn(self.MODEL, result.output)
+        self.assertIn("Port: 8000", result.output)
+        # The real text report carries one row per level; a clean level
+        # renders its ok/fail cell as "20/0" (20 succeeded, 0 failed).
+        # Asserted on the cell, not on column padding, which is the
+        # formatter's business.
+        self.assertEqual(3, result.output.count("20/0"))
+
+    def test_a_clean_run_writes_the_log_by_default(self):
+        target = self._log_file("clean.log")
+        with self._clean_run_context(log_file=target) as c:
+            self.invoke(["stress", self.MODEL, "--log-file", str(target)])
+        self.assertTrue(target.is_file(), "the log file was not written")
+        text = target.read_text(encoding="utf-8")
+        self.assertIn(self.MODEL, text)
+        self.assertIn("Port: 8000", text)
+        self.assertTrue(text.rstrip().endswith("}"), "the log must end with the JSON block")
+
+    def test_a_clean_run_warms_up_before_measuring(self):
+        with self._clean_run_context() as patches:
+            self.invoke(["stress", self.MODEL])
+            patches.warm.assert_called_once()
+            patches.run.assert_called_once()
+
+    def test_no_warmup_skips_warm_up(self):
+        with self._clean_run_context() as patches:
+            self.invoke(["stress", self.MODEL, "--no-warmup"])
+            patches.warm.assert_not_called()
+            patches.run.assert_called_once()
+
+    def test_json_output_is_pure_json_and_still_writes_the_log(self):
+        target = self._log_file("json.log")
+        with self._clean_run_context(log_file=target) as c:
+            result = self.invoke(["stress", self.MODEL, "--json", "--log-file", str(target)])
+        self.assertTrue(result.output.lstrip().startswith("{"))
+        payload = json.loads(result.output)
+        self.assertEqual(self.MODEL, payload["model"])
+        self.assertEqual(8000, payload["port"])
+        self.assertTrue(target.is_file(), "the log file is still written under --json")
+
+    # -- case 3: a run with failures ------------------------------------------
+
+    def test_a_run_with_failures_exits_with_the_failures_code(self):
+        """EXIT_STRESS_FAILURES is the literal 8 - the constant does not exist yet."""
+        with self._failing_run_context() as c:
+            result = self.invoke(["stress", self.MODEL])
+        self.assertEqual(8, result.exit_code)
+
+    def test_a_run_with_failures_prints_the_report(self):
+        with self._failing_run_context() as c:
+            result = self.invoke(["stress", self.MODEL])
+        self.assertIn(self.MODEL, result.output)
+        # The all-failed level is a finding, not a crash: its failures show.
+        self.assertIn("connection refused", result.output)
+
+    def test_a_run_with_failures_writes_the_log(self):
+        target = self._log_file("failures.log")
+        with self._failing_run_context(log_file=target) as c:
+            self.invoke(["stress", self.MODEL, "--log-file", str(target)])
+        self.assertTrue(target.is_file())
+        self.assertIn("connection refused", target.read_text(encoding="utf-8"))
+
+    def test_a_run_with_failures_under_json_exits_with_the_failures_code(self):
+        with self._failing_run_context() as c:
+            result = self.invoke(["stress", self.MODEL, "--json"])
+        self.assertEqual(8, result.exit_code)
+        payload = json.loads(result.output)
+        # The JSON document carries the failure, so a CI reader needs no text.
+        total_failed = sum(level["failed"] for level in payload["levels"])
+        self.assertGreater(total_failed, 0)
+
+    def test_no_log_file_suppresses_the_log(self):
+        with self._clean_run_context() as c:
+            self.invoke(["stress", self.MODEL, "--no-log-file"])
+        self.assertFalse((self.project / "logs").exists(), "--no-log-file must write nothing")
+
+    # -- case 4: warm-up failure ----------------------------------------------
+
+    def test_a_warmup_failure_exits_with_the_unavailable_code(self):
+        """EXIT_STRESS_UNAVAILABLE is the literal 7 - the constant does not exist yet."""
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_failed()) as warm, \
+             mock.patch.object(cli, "run_stress") as run, \
+             mock.patch.object(cli, "write_log") as write:
+            result = self.invoke(["stress", self.MODEL])
+        self.assertEqual(7, result.exit_code)
+        run.assert_not_called()
+        write.assert_not_called()
+
+    def test_a_warmup_failure_reports_the_reason(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_failed()):
+            result = self.invoke(["stress", self.MODEL])
+        self.assertIn("connection refused", result.output)
+
+    # -- case 5: no model named --------------------------------------------------
+
+    def test_a_missing_model_name_is_a_usage_error(self):
+        """Exit 2 here must be earned from the real command, so the guard above applies."""
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_gateway_with_models()) as check, \
+             mock.patch.object(cli, "check_model_available") as check_model, \
+             mock.patch.object(cli, "warm_up") as warm, \
+             mock.patch.object(cli, "run_stress") as run:
+            result = self.invoke(["stress"])
+        self.assertEqual(2, result.exit_code)
+        check_model.assert_not_called()
+        warm.assert_not_called()
+        run.assert_not_called()
+
+    def test_a_missing_model_name_lists_the_registry(self):
+        with mock.patch.object(
+            cli.health, "check_gateway", return_value=stress_gateway_with_models()
+        ):
+            result = self.invoke(["stress"])
+        self.assertIn("org/alpha", result.output)
+        self.assertIn("org/beta", result.output)
+
+    # -- case 6: unknown model -------------------------------------------------
+
+    def test_an_unknown_model_is_a_usage_error(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(cli, "check_model_available", return_value=stress_unknown_model(available=self.AVAILABLE)), \
+             mock.patch.object(cli, "warm_up") as warm, \
+             mock.patch.object(cli, "run_stress") as run:
+            result = self.invoke(["stress", "org/not-registered"])
+        self.assertEqual(2, result.exit_code)
+        warm.assert_not_called()
+        run.assert_not_called()
+
+    def test_an_unknown_model_names_the_model_and_lists_the_available_ids(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(cli, "check_model_available", return_value=stress_unknown_model(available=self.AVAILABLE)):
+            result = self.invoke(["stress", "org/not-registered"])
+        self.assertIn("org/not-registered", result.output)
+        self.assertIn("org/alpha", result.output)
+        self.assertIn("org/beta", result.output)
+
+    def test_an_unknown_model_with_an_empty_registry_says_so(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(cli, "check_model_available", return_value=stress_unknown_model(available=[])):
+            result = self.invoke(["stress", "org/not-registered"])
+        self.assertEqual(2, result.exit_code)
+        self.assertIn("org/not-registered", result.output)
+
+    # -- case 7: unreachable gateway --------------------------------------------
+
+    def test_an_unreachable_gateway_exits_with_the_unavailable_code(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(cli, "check_model_available", return_value=stress_unavailable(reason="connection refused")), \
+             mock.patch.object(cli, "warm_up") as warm, \
+             mock.patch.object(cli, "run_stress") as run:
+            result = self.invoke(["stress", self.MODEL])
+        self.assertEqual(7, result.exit_code)
+        warm.assert_not_called()
+        run.assert_not_called()
+
+    def test_an_unreachable_gateway_reports_the_port_and_the_verbatim_reason(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(cli, "check_model_available", return_value=stress_unavailable(reason="connection refused")):
+            result = self.invoke(["stress", self.MODEL])
+        self.assertIn("8000", result.output)
+        self.assertIn("connection refused", result.output)
+
+    # -- the collaborators are called with the resolved values -------------------
+
+    def test_the_resolved_port_reaches_check_gateway(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()) as check, \
+             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli, "run_stress", return_value=clean_report()), \
+             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+            self.invoke(["stress", self.MODEL])
+        called = check.call_args
+        self.assertEqual(8000, called[1]["port"] if called[1] else called[0][0])
+
+    def test_the_flag_port_wins_over_env(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()) as check, \
+             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli, "run_stress", return_value=clean_report()), \
+             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+            self.invoke(["stress", self.MODEL, "--llm-port", "9002"])
+        called = check.call_args
+        self.assertEqual(9002, called[1]["port"] if called[1] else called[0][0])
+
+    def test_the_named_model_reaches_check_model_available(self):
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)) as check_model, \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli, "run_stress", return_value=clean_report()), \
+             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+            self.invoke(["stress", self.MODEL])
+        called = check_model.call_args
+        self.assertEqual(self.MODEL, called[1]["model_id"] if "model_id" in (called[1] or {}) else called[0][1] if called[0] else None)
+
+    # -- verbose -----------------------------------------------------------------
+
+    def test_verbose_prints_progress(self):
+        with self._clean_run_context() as c:
+            result = self.invoke(["--verbose", "stress", self.MODEL])
+        self.assertGreater(len(result.output), 0)
+
+
+def health_build_chat_request(model_id, prompt, max_tokens):
+    from anvilkit import health
+
+    return health.build_chat_request(model_id, prompt, max_tokens)
+
+
 def health_default_prompt():
     from anvilkit import health
 
@@ -1610,6 +2142,99 @@ class TestRunEntryPoint(CliCase):
         self.write_env(LLM_PORT="8000")
         with mock.patch.object(cli.health, "test_model", return_value=failing_test()):
             _, output = self.run_cli(["test-model", "Qwen/Qwen3.6-35B-A3B-FP8"])
+        self.assertNotIn("Traceback", output)
+
+    # -- stress (Behaviour 17 red, run() entry-point mirror) -------------------
+    #
+    # ``run()`` calls the app with ``standalone_mode=False``: a ``typer.Exit(7)``
+    # or ``typer.Exit(8)`` raised inside ``stress`` must surface as the
+    # function's return value, not as a traceback. ``CliRunner`` cannot see
+    # that gap, so these mirrors exist. While the subcommand is missing, click
+    # raises ``UsageError`` and ``run()`` returns 2 - every mirror below
+    # therefore guards on the registered commands first.
+
+    def _stress_run(self, argv, **patch_returns):
+        _require_stress_subcommand(self.id())
+        defaults = dict(
+            status=stress_ok(),
+            check_model_available=stress_available(available=["org/alpha"]),
+            warm_up=warmup_ok(),
+            run_stress=clean_report(),
+            log_path=lambda *a, **k: Path(str(self.project / "logs" / "stress.log")),
+        )
+        defaults.update(patch_returns)
+        with mock.patch.object(
+            cli.health, "check_gateway", return_value=defaults.pop("status")
+        ), mock.patch.object(cli, "check_model_available", return_value=defaults.pop("check_model_available")), \
+             mock.patch.object(cli, "warm_up", return_value=defaults.pop("warm_up")), \
+             mock.patch.object(cli, "run_stress", return_value=defaults.pop("run_stress")), \
+             mock.patch.object(cli, "log_path", side_effect=defaults.pop("log_path")):
+            return self.run_cli(argv)
+
+    def test_stress_clean_run_exits_zero(self):
+        self.write_env(LLM_PORT="8000")
+        code, _ = self._stress_run(["stress", "org/alpha"])
+        self.assertEqual(cli.EXIT_OK, code)
+
+    def test_stress_clean_run_does_not_print_a_traceback(self):
+        self.write_env(LLM_PORT="8000")
+        _, output = self._stress_run(["stress", "org/alpha"])
+        self.assertNotIn("Traceback", output)
+
+    def test_stress_failing_run_exits_with_the_failures_code(self):
+        """EXIT_STRESS_FAILURES is the literal 8 - the constant does not exist yet."""
+        self.write_env(LLM_PORT="8000")
+        code, _ = self._stress_run(
+            ["stress", "org/alpha"],
+            run_stress=failing_report(),
+        )
+        self.assertEqual(8, code)
+
+    def test_stress_failing_run_does_not_print_a_traceback(self):
+        self.write_env(LLM_PORT="8000")
+        _, output = self._stress_run(
+            ["stress", "org/alpha"],
+            run_stress=failing_report(),
+        )
+        self.assertNotIn("Traceback", output)
+
+    def test_stress_missing_argument_exits_with_the_usage_code(self):
+        """Must be earned from the real command - 'No such command' would also exit 2."""
+        self.write_env(LLM_PORT="8000")
+        code, _ = self._stress_run(
+            ["stress"], status=stress_gateway_with_models()
+        )
+        self.assertEqual(cli.EXIT_USAGE, code)
+
+    def test_stress_missing_argument_lists_the_registry(self):
+        self.write_env(LLM_PORT="8000")
+        _, output = self._stress_run(
+            ["stress"], status=stress_gateway_with_models()
+        )
+        self.assertIn("org/alpha", output)
+
+    def test_stress_missing_argument_does_not_print_a_traceback(self):
+        self.write_env(LLM_PORT="8000")
+        _, output = self._stress_run(
+            ["stress"], status=stress_gateway_with_models()
+        )
+        self.assertNotIn("Traceback", output)
+
+    def test_stress_warmup_failure_exits_with_the_unavailable_code(self):
+        """EXIT_STRESS_UNAVAILABLE is the literal 7 - the constant does not exist yet."""
+        self.write_env(LLM_PORT="8000")
+        code, _ = self._stress_run(
+            ["stress", "org/alpha"],
+            warm_up=warmup_failed(),
+        )
+        self.assertEqual(7, code)
+
+    def test_stress_warmup_failure_does_not_print_a_traceback(self):
+        self.write_env(LLM_PORT="8000")
+        _, output = self._stress_run(
+            ["stress", "org/alpha"],
+            warm_up=warmup_failed(),
+        )
         self.assertNotIn("Traceback", output)
 
 
