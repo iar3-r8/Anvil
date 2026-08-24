@@ -31,7 +31,6 @@ import contextlib
 import io
 import sys
 import unittest
-import warnings
 from pathlib import Path
 from unittest import mock
 
@@ -135,6 +134,24 @@ class AskTests(PromptCase):
         self.assertEqual(value, "d")
 
 
+def _getpass_from_stdin(prompt=""):
+    """Stand in for getpass.getpass, reading the patched sys.stdin.
+
+    getpass ignores sys.stdin and opens /dev/tty, so under a real terminal the
+    suite blocks on the keyboard. Reading sys.stdin keeps the hidden-input path
+    on the same finite StringIO as every other prompt test.
+
+    Raising EOFError on exhaustion reproduces genuine EOF: click catches it at
+    termui.py:141 and raises Abort, which ask_required maps to PromptError. A
+    fake returning '' instead would spin click's re-prompt loop forever - the
+    exact trap the module docstring above describes.
+    """
+    line = sys.stdin.readline()
+    if not line:
+        raise EOFError
+    return line.rstrip("\n")
+
+
 class AskRequiredTests(PromptCase):
     """Values that may not be empty - the API-key loop at anvil:179."""
 
@@ -148,9 +165,14 @@ class AskRequiredTests(PromptCase):
         """
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors):
-            result, output = self.call(
-                prompts.ask_required, *args, hide_input=True, stdin=stdin, **kwargs
-            )
+            with mock.patch("getpass.getpass", _getpass_from_stdin):
+                result, output = self.call(
+                    prompts.ask_required,
+                    *args,
+                    hide_input=True,
+                    stdin=stdin,
+                    **kwargs,
+                )
         return result, output, errors.getvalue()
 
     def test_reprompts_until_a_value_is_given(self):
