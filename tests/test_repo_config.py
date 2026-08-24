@@ -243,7 +243,7 @@ class TestQwen38BatchModel(unittest.TestCase):
         self.assertEqual(
             block.get("proxy"),
             "http://vllm-${PORT}:${PORT}",
-            "proxy in models[ {!r} ] must be 'http://vllm-${PORT}:${PORT}', got {!r}".format(
+            "proxy in models[ {!r} ] must be 'http://vllm-${{PORT}}:{{PORT}}', got {!r}".format(
                 self.MODEL_ID, block.get("proxy")
             ),
         )
@@ -254,7 +254,7 @@ class TestQwen38BatchModel(unittest.TestCase):
         self.assertEqual(
             block.get("cmdStop"),
             "docker stop vllm-${PORT} || true",
-            "cmdStop in models[ {!r} ] must be 'docker stop vllm-${PORT} || true', got {!r}".format(
+            "cmdStop in models[ {!r} ] must be 'docker stop vllm-${{PORT}} || true', got {!r}".format(
                 self.MODEL_ID, block.get("cmdStop")
             ),
         )
