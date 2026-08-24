@@ -181,6 +181,18 @@ except ImportError as _err:
     _warm_up_attempt_import_error = str(_err)
     WarmUpAttempt = None
 
+# Behaviour 19 (TDD red): this does not exist yet, so the import is guarded.
+# The new test class turns the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_level_event_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import LevelEvent
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _level_event_import_error = str(_err)
+    LevelEvent = None
+
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
     """The level series for a given maximum, straight from the plan's table."""
@@ -3194,6 +3206,239 @@ class TestWarmUpAttemptCallback(unittest.TestCase):
                 on_attempt=loud,
             )
         self.assertIn("printer exploded", str(ctx.exception))
+
+
+class _LevelEventSpy:
+    """Records every ``LevelEvent`` handed to the ``on_level`` callback.
+
+    ``order`` is a shared list the spy appends a labelled entry to on every
+    call, so the exact event sequence over a multi-level run is asserted with
+    one sequence comparison rather than separate call counters -- the same
+    discipline ``TestWarmUpAttemptCallback`` uses for event-before-sleep
+    ordering.
+    """
+
+    def __init__(self, order):
+        self.events = []
+        self._order = order
+
+    def __call__(self, event):
+        self.events.append(event)
+        self._order.append("{}:{}".format(event.phase, event.concurrency))
+
+
+class TestRunStressLevelCallback(unittest.TestCase):
+    """Behaviour 19: ``run_stress`` reports each level's start and finish
+    through an optional ``on_level`` callback.
+
+    A new optional parameter, ``on_level``, is appended *last* with a default
+    of ``None``, so the existing ``TestRunStress*`` classes -- which call
+    ``run_stress`` positionally through ``port`` -- keep passing untouched.
+    For each level, in order: a ``"start"`` event fires **before** the level
+    runs (its ``summary`` is ``None``), the level runs exactly as today, and
+    a ``"finish"`` event fires **after** the summary is built and appended,
+    carrying the *identical* ``LevelSummary`` object that entered the report
+    (identity, not a copy). Both events are emitted from ``run_stress``'s own
+    loop on the calling thread -- the observable fact pinned here is the
+    event ordering, which is what makes "no per-request noise" structural.
+    """
+
+    LEVELS = [1, 2, 4]
+    REQUEST_COUNT = 3
+
+    def _fail_if_missing(self):
+        # Named red, following the file's discipline for missing symbols:
+        # every case in this class fails with a named assertion while the
+        # dataclass is unimplemented.
+        if LevelEvent is None:
+            self.fail(
+                "anvilkit.stress.LevelEvent is not implemented yet: "
+                "{}".format(_level_event_import_error)
+            )
+
+    def _run(self, send, levels, request_count, on_level=None):
+        """Drive ``run_stress``; ``on_level`` is passed as the seventh,
+        keyword argument -- exactly the appended-last position the plan pins."""
+        if run_stress is None:
+            self.fail(
+                "anvilkit.stress.run_stress is not implemented yet: "
+                "{}".format(_run_stress_import_error)
+            )
+        warm = stress.WarmUpResult(
+            ok=True, attempts=1, elapsed_seconds=10.0, error=None
+        )
+        if on_level is None:
+            return run_stress(
+                send, levels, request_count, warm, "model", 11434
+            )
+        return run_stress(
+            send,
+            levels,
+            request_count,
+            warm,
+            "model",
+            11434,
+            on_level=on_level,
+        )
+
+    def _clean_send(self, levels, request_count):
+        # Distinct per-level latencies so a level that got the wrong
+        # outcomes would show up in its summary's latency figures.
+        per_level = {level: float(level) for level in levels}
+        return _LevelSend(
+            [
+                [_ok_outcome(per_level[level]) for _ in range(request_count)]
+                for level in levels
+            ],
+            request_count,
+        )
+
+    def test_three_levels_six_events_in_start_finish_order(self):
+        # The pinned sequence for N levels: start(L1), finish(L1),
+        # start(L2), finish(L2), ... -- exactly one pair per level, in level
+        # order. The shared order list is the thread-local observable that
+        # stands in for "both events fire from run_stress's own loop".
+        self._fail_if_missing()
+        order = []
+        spy = _LevelEventSpy(order)
+        send = self._clean_send(self.LEVELS, self.REQUEST_COUNT)
+        self._run(send, self.LEVELS, self.REQUEST_COUNT, on_level=spy)
+        self.assertEqual(order, [
+            "start:1", "finish:1",
+            "start:2", "finish:2",
+            "start:4", "finish:4",
+        ])
+        self.assertEqual(len(spy.events), 6)
+
+    def test_start_events_carry_none_summary(self):
+        # "start" fires before the level runs, so its summary is None --
+        # there is nothing to report yet.
+        self._fail_if_missing()
+        spy = _LevelEventSpy(order=[])
+        send = self._clean_send(self.LEVELS, self.REQUEST_COUNT)
+        self._run(send, self.LEVELS, self.REQUEST_COUNT, on_level=spy)
+        starts = [e for e in spy.events if e.phase == "start"]
+        self.assertEqual([e.concurrency for e in starts], self.LEVELS)
+        for event in starts:
+            with self.subTest(concurrency=event.concurrency):
+                self.assertIsNone(event.summary)
+                self.assertEqual(event.requests, self.REQUEST_COUNT)
+
+    def test_finish_summary_is_the_object_in_the_report(self):
+        # The "finish" event carries the *identical* LevelSummary object that
+        # entered the report -- identity, not a copy -- so succeeded, failed
+        # and every latency figure are available to the printer.
+        self._fail_if_missing()
+        spy = _LevelEventSpy(order=[])
+        send = self._clean_send(self.LEVELS, self.REQUEST_COUNT)
+        report = self._run(
+            send, self.LEVELS, self.REQUEST_COUNT, on_level=spy
+        )
+        finishes = [e for e in spy.events if e.phase == "finish"]
+        self.assertEqual(len(finishes), len(report.levels))
+        for event, summary in zip(finishes, report.levels):
+            with self.subTest(concurrency=summary.concurrency):
+                self.assertEqual(event.concurrency, summary.concurrency)
+                self.assertEqual(event.requests, self.REQUEST_COUNT)
+                self.assertIs(event.summary, summary)
+
+    def test_finish_events_carry_full_summary_figures(self):
+        # A "finish" event's summary is a fully built one: per-level
+        # succeeded/failed counts and the latency figures that derive from
+        # the canned per-outcome latencies.
+        self._fail_if_missing()
+        spy = _LevelEventSpy(order=[])
+        send = self._clean_send(self.LEVELS, self.REQUEST_COUNT)
+        self._run(send, self.LEVELS, self.REQUEST_COUNT, on_level=spy)
+        finishes = {e.concurrency: e for e in spy.events if e.phase == "finish"}
+        for level in self.LEVELS:
+            with self.subTest(concurrency=level):
+                summary = finishes[level].summary
+                self.assertEqual(summary.requests, self.REQUEST_COUNT)
+                self.assertEqual(summary.succeeded, self.REQUEST_COUNT)
+                self.assertEqual(summary.failed, 0)
+                self.assertAlmostEqual(summary.latency_mean, float(level))
+                self.assertAlmostEqual(summary.latency_min, float(level))
+                self.assertAlmostEqual(summary.latency_max, float(level))
+
+    def test_all_failed_level_still_finishes_and_run_continues(self):
+        # A level where every request failed still gets its "finish" event
+        # (with failed == requests), and the run continues to later levels
+        # exactly as behaviour 13 requires.
+        self._fail_if_missing()
+        levels = [1, 2]
+        request_count = 2
+        send = _LevelSend(
+            [
+                [_failed_outcome("connection refused") for _ in range(request_count)],
+                [_ok_outcome(0.5) for _ in range(request_count)],
+            ],
+            request_count,
+        )
+        order = []
+        spy = _LevelEventSpy(order)
+        report = self._run(send, levels, request_count, on_level=spy)
+        self.assertEqual(order, [
+            "start:1", "finish:1",
+            "start:2", "finish:2",
+        ])
+        finishes = {e.concurrency: e for e in spy.events if e.phase == "finish"}
+        self.assertIs(finishes[1].summary, report.levels[0])
+        self.assertEqual(finishes[1].summary.succeeded, 0)
+        self.assertEqual(finishes[1].summary.failed, request_count)
+        # The run continued past the failed level to level 2.
+        self.assertIs(finishes[2].summary, report.levels[1])
+        self.assertEqual(finishes[2].summary.succeeded, request_count)
+        self.assertTrue(report.completed)
+
+    def test_zero_failure_level_still_finishes(self):
+        # The finish event is not conditional on there being something to
+        # complain about: a clean level gets its "finish" too.
+        self._fail_if_missing()
+        spy = _LevelEventSpy(order=[])
+        send = self._clean_send([1], self.REQUEST_COUNT)
+        report = self._run(send, [1], self.REQUEST_COUNT, on_level=spy)
+        self.assertEqual(len(spy.events), 2)
+        self.assertEqual(spy.events[0].phase, "start")
+        finish = spy.events[1]
+        self.assertEqual(finish.phase, "finish")
+        self.assertIs(finish.summary, report.levels[0])
+        self.assertEqual(finish.summary.failed, 0)
+        self.assertEqual(finish.summary.succeeded, self.REQUEST_COUNT)
+
+    def test_empty_levels_produce_no_events_and_empty_report(self):
+        # An empty levels sequence produces no events at all and still
+        # returns a report with an empty levels list.
+        self._fail_if_missing()
+        order = []
+        spy = _LevelEventSpy(order)
+        send = _LevelSend([], self.REQUEST_COUNT)
+        report = self._run(send, [], self.REQUEST_COUNT, on_level=spy)
+        self.assertEqual(order, [])
+        self.assertEqual(spy.events, [])
+        self.assertEqual(report.levels, [])
+        self.assertEqual(send.calls, 0)
+
+    def test_on_level_omitted_changes_nothing(self):
+        # ``on_level`` omitted entirely changes nothing: the report and the
+        # send call count match the same run with a spy attached. This is
+        # what keeps the existing TestRunStress* classes passing untouched.
+        self._fail_if_missing()
+        spy = _LevelEventSpy(order=[])
+        send_with = self._clean_send(self.LEVELS, self.REQUEST_COUNT)
+        report_with = self._run(
+            send_with, self.LEVELS, self.REQUEST_COUNT, on_level=spy
+        )
+        send_without = self._clean_send(self.LEVELS, self.REQUEST_COUNT)
+        report_without = self._run(send_without, self.LEVELS, self.REQUEST_COUNT)
+        self.assertEqual(
+            dataclasses.asdict(report_with),
+            dataclasses.asdict(report_without),
+        )
+        self.assertEqual(send_with.calls, send_without.calls)
+        # The spy run proves the callback did its job; the omitted run
+        # proves the absence of the parameter does not.
+        self.assertEqual(len(spy.events), 2 * len(self.LEVELS))
 
 
 if __name__ == "__main__":
