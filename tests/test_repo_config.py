@@ -420,3 +420,151 @@ class TestQwen38BatchModel(unittest.TestCase):
                     flag, count, self._flag_values(tokens, flag)
                 ),
             )
+
+    # -- Behaviour 4: the gateway concurrency cap is lifted identically on both --
+    # llama-swap caps in-flight requests per model at an internal default of 10;
+    # concurrencyLimit "any number greater than 0 will override the internal
+    # default value of 10" and requests beyond the limit receive HTTP 429
+    # (doc/external/llama-swap/configuration-reference.md). The stress ramp
+    # doubles (1, 2, 4, 8, 16, 32, ...), so without an explicit cap every level
+    # above 10 is refused by the gateway before vLLM sees it. The cap is a
+    # measurement-harness property, so it must be present, integer, > 0 and
+    # IDENTICAL on both blocks, or the A/B comparison is invalid.
+
+    BASELINE_ID = "Qwen/Qwen3.8-27B-FP8"
+
+    _GATEWAY_CAP_EXPLANATION = (
+        "llama-swap would then return HTTP 429 Too Many Requests above the cap, and the "
+        "stress report would measure the gateway rather than vLLM (anvilkit.stress "
+        "concurrency_levels() ramps 1, 2, 4, 8, 16, 32, ...)"
+    )
+
+    def _load_baseline_block(self):
+        """Return the baseline model block, failing with a message naming the key."""
+        models = self._load_config()
+        self.assertIn(
+            self.BASELINE_ID,
+            models,
+            "models dict must contain key {!r} (the baseline vLLM setup is missing)".format(
+                self.BASELINE_ID
+            ),
+        )
+        return models[self.BASELINE_ID]
+
+    @classmethod
+    def _concurrency_limit_of(cls, block, model_id):
+        """Return block['concurrencyLimit'] or None if absent or not a true int.
+
+        ``bool`` is a subclass of ``int`` in Python, so it is rejected explicitly:
+        ``true``/``false`` are not valid gateway caps.
+        """
+        if not isinstance(block, dict):
+            return None
+        value = block.get("concurrencyLimit")
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return value
+
+    def test_batch_block_has_concurrency_limit(self):
+        """The batch block must carry concurrencyLimit as a true int (> 0)."""
+        block = self._load_batch_block()
+        value = self._concurrency_limit_of(block, self.MODEL_ID)
+        self.assertIsNotNone(
+            value,
+            "concurrencyLimit is absent or not a true int in models[ {!r} ] (got {!r}); "
+            "with no limit greater than 0, llama-swap falls back to its internal default "
+            "of 10 and {}, invalidating the stress run on this setup".format(
+                self.MODEL_ID, block.get("concurrencyLimit"), self._GATEWAY_CAP_EXPLANATION
+            ),
+        )
+        self.assertGreater(
+            value,
+            0,
+            "concurrencyLimit in models[ {!r} ] is {} (not > 0); a zero limit falls back "
+            "to the internal default of 10, so {}".format(
+                self.MODEL_ID, value, self._GATEWAY_CAP_EXPLANATION
+            ),
+        )
+
+    def test_baseline_block_has_concurrency_limit(self):
+        """The baseline block must carry concurrencyLimit as a true int (> 0)."""
+        block = self._load_baseline_block()
+        value = self._concurrency_limit_of(block, self.BASELINE_ID)
+        self.assertIsNotNone(
+            value,
+            "concurrencyLimit is absent or not a true int in models[ {!r} ] (got {!r}); "
+            "with no limit greater than 0, llama-swap falls back to its internal default "
+            "of 10 and {}, so the control side of the comparison would be refused above 10 "
+            "while the batch side is not".format(
+                self.BASELINE_ID, block.get("concurrencyLimit"), self._GATEWAY_CAP_EXPLANATION
+            ),
+        )
+        self.assertGreater(
+            value,
+            0,
+            "concurrencyLimit in models[ {!r} ] is {} (not > 0); a zero limit falls back "
+            "to the internal default of 10, so {}".format(
+                self.BASELINE_ID, value, self._GATEWAY_CAP_EXPLANATION
+            ),
+        )
+
+    def test_concurrency_limits_equal_on_both_blocks(self):
+        """Both blocks must carry the SAME concurrencyLimit.
+
+        The cap is a measurement-harness property, not the variable under test:
+        an asymmetric cap invalidates the A/B comparison, because one side of the
+        ramp would then be refused by the gateway while the other is not.
+        """
+        batch_value = self._concurrency_limit_of(self._load_batch_block(), self.MODEL_ID)
+        baseline_value = self._concurrency_limit_of(self._load_baseline_block(), self.BASELINE_ID)
+        self.assertIsNotNone(
+            batch_value,
+            "concurrencyLimit is absent or not a true int in models[ {!r} ] (got {!r}); it "
+            "must be present on both blocks or the harness is asymmetric".format(
+                self.MODEL_ID, self._load_batch_block().get("concurrencyLimit")
+            ),
+        )
+        self.assertIsNotNone(
+            baseline_value,
+            "concurrencyLimit is absent or not a true int in models[ {!r} ] (got {!r}); it "
+            "must be present on both blocks or the harness is asymmetric".format(
+                self.BASELINE_ID, self._load_baseline_block().get("concurrencyLimit")
+            ),
+        )
+        self.assertEqual(
+            batch_value,
+            baseline_value,
+            "concurrencyLimit is {!r} on {!r} but {!r} on {!r}; the cap is a "
+            "measurement-harness property and must be identical on both blocks, "
+            "otherwise {} and one side of the comparison is refused above its cap".format(
+                batch_value,
+                self.MODEL_ID,
+                baseline_value,
+                self.BASELINE_ID,
+                self._GATEWAY_CAP_EXPLANATION,
+            ),
+        )
+
+    def test_concurrency_limit_at_least_64(self):
+        """The shared concurrencyLimit must be >= 64, above the stress ramp's useful range."""
+        batch_block = self._load_batch_block()
+        baseline_block = self._load_baseline_block()
+        for model_id, block in ((self.MODEL_ID, batch_block), (self.BASELINE_ID, baseline_block)):
+            value = self._concurrency_limit_of(block, model_id)
+            self.assertIsNotNone(
+                value,
+                "concurrencyLimit is absent or not a true int in models[ {!r} ] (got {!r}); "
+                "it must be an integer >= 64 so the gateway is never the binding "
+                "constraint — otherwise {}".format(
+                    model_id, block.get("concurrencyLimit"), self._GATEWAY_CAP_EXPLANATION
+                ),
+            )
+            self.assertGreaterEqual(
+                value,
+                64,
+                "concurrencyLimit in models[ {!r} ] is {}; the stress ramp doubles to 16 "
+                "and 32, so a cap below 64 makes {} and the report would reflect the "
+                "gateway, not the engine".format(
+                    model_id, value, self._GATEWAY_CAP_EXPLANATION
+                ),
+            )
