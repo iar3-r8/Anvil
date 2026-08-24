@@ -181,7 +181,10 @@ def _in_venv() -> bool:
 # Extra args are refused at the group level so an unknown command is a usage
 # error rather than being swallowed as an argument.
 app = typer.Typer(
-    help="Anvil - manage the local llama-swap backend and provision repositories.",
+    help=(
+        "Anvil - manage the local llama-swap backend and provision repositories.\n"
+        "Run 'anvil <command> --help' for detailed help on a command."
+    ),
     no_args_is_help=True,
     add_completion=False,
 )
