@@ -3423,6 +3423,15 @@ class TestRunStressLevelCallback(unittest.TestCase):
         # ``on_level`` omitted entirely changes nothing: the report and the
         # send call count match the same run with a spy attached. This is
         # what keeps the existing TestRunStress* classes passing untouched.
+        #
+        # One caveat the file's own discipline already documents (see the
+        # TestRunStressCleanRun docstring): the per-level wall time comes
+        # from ``time.monotonic`` inside ``run_stress`` and is not
+        # injectable, so two independent real-time runs measure different
+        # wall times and the ``requests_per_second`` /
+        # ``tokens_per_second`` figures can never be equal across them.
+        # The cross-run comparison below therefore drops exactly those two
+        # per-level fields and pins everything else, field by field.
         self._fail_if_missing()
         spy = _LevelEventSpy(order=[])
         send_with = self._clean_send(self.LEVELS, self.REQUEST_COUNT)
@@ -3431,9 +3440,34 @@ class TestRunStressLevelCallback(unittest.TestCase):
         )
         send_without = self._clean_send(self.LEVELS, self.REQUEST_COUNT)
         report_without = self._run(send_without, self.LEVELS, self.REQUEST_COUNT)
+        # Drop the wall-clock-derived rates: the only fields that may
+        # differ between two independent real-time runs.
+        with_rates = dataclasses.asdict(report_with)
+        without_rates = dataclasses.asdict(report_without)
+        for doc in (with_rates, without_rates):
+            for level in doc["levels"]:
+                del level["requests_per_second"]
+                del level["tokens_per_second"]
+        self.assertEqual(with_rates, without_rates)
+        # The load-bearing facts, pinned directly: same level count, same
+        # concurrency per level, same succeeded/failed per level, same
+        # completed flag, same warm-up, same send call count.
+        self.assertEqual(len(report_with.levels), len(self.LEVELS))
         self.assertEqual(
-            dataclasses.asdict(report_with),
-            dataclasses.asdict(report_without),
+            [level.concurrency for level in report_with.levels],
+            [level.concurrency for level in report_without.levels],
+        )
+        for with_level, without_level in zip(
+            report_with.levels, report_without.levels
+        ):
+            with self.subTest(concurrency=without_level.concurrency):
+                self.assertEqual(with_level.succeeded, without_level.succeeded)
+                self.assertEqual(with_level.failed, without_level.failed)
+        self.assertIs(report_with.completed, report_without.completed)
+        self.assertTrue(report_without.completed)
+        self.assertEqual(
+            dataclasses.asdict(report_with.warm_up),
+            dataclasses.asdict(report_without.warm_up),
         )
         self.assertEqual(send_with.calls, send_without.calls)
         # The spy run proves the callback did its job; the omitted run
