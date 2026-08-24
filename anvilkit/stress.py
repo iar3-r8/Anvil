@@ -553,6 +553,24 @@ def summarise_level(
 
 
 @dataclasses.dataclass
+class LevelEvent:
+    """One level's start or finish, reported to the optional ``on_level``
+    callback by :func:`run_stress`.
+
+    ``phase`` is ``"start"`` or ``"finish"`` -- no other value is emitted.
+    ``requests`` is the run's ``request_count``, the same figure in both
+    phases. ``summary`` is ``None`` on ``"start"`` (the level has not run,
+    there is nothing to report yet) and the level's ``LevelSummary`` on
+    ``"finish"``.
+    """
+
+    phase: str
+    concurrency: int
+    requests: int
+    summary: Optional[LevelSummary]
+
+
+@dataclasses.dataclass
 class StressReport:
     """The outcome of a whole stress run, one level summary per level.
 
@@ -590,6 +608,7 @@ def run_stress(
     warm_up_result: WarmUpResult,
     model_id: str,
     port: int,
+    on_level: Optional[Callable[[LevelEvent], None]] = None,
 ) -> StressReport:
     """Assemble the whole run: every level, in ascending order, no early stop.
 
@@ -603,6 +622,23 @@ def run_stress(
     caught, so a long run can be interrupted and the CLI maps it to its
     own exit code.
 
+    When ``on_level`` is given, each level reports two
+    :class:`LevelEvent`s: a ``"start"`` with ``summary=None`` **before** the
+    level runs, and a ``"finish"`` **after** the summary is built and
+    appended, carrying the very ``LevelSummary`` object that entered the
+    report. The identity is deliberate -- the event must never disagree with
+    the report about the numbers, and rebuilding a copy could. Both events
+    are emitted from this loop, on the calling thread, never from a worker
+    inside :func:`run_level`; that is what makes "no per-request noise" a
+    structural property rather than a formatting choice, and is also why the
+    callback needs no lock. An all-failed level still gets its ``"finish"``
+    -- the finish line is not conditional on there being something to
+    complain about -- and an empty ``levels`` sequence produces no events at
+    all. An exception raised by the callback is deliberately not caught, for
+    the same reason as ``warm_up``'s ``on_attempt``: a broken printer must
+    not silently swallow progress. ``on_level=None``, or omitted, changes
+    nothing: same report, same call counts.
+
     Args:
         send: one chat completion; may return a failed outcome or raise
             (``run_level`` converts a raise into a failed outcome).
@@ -612,6 +648,8 @@ def run_stress(
             unchanged.
         model_id: the model id being stressed, for the report header.
         port: the gateway port, for the report header.
+        on_level: optional reporter of level start/finish; ``None`` by
+            default, so existing positional callers are untouched.
 
     Returns:
         A ``StressReport`` with ``completed=True``, because reaching the end
@@ -619,10 +657,21 @@ def run_stress(
     """
     summaries: List[LevelSummary] = []
     for level in levels:
+        if on_level is not None:
+            on_level(
+                LevelEvent(phase="start", concurrency=level,
+                           requests=request_count, summary=None)
+            )
         start = time.monotonic()
         outcomes = run_level(send, level, request_count)
         wall = time.monotonic() - start
-        summaries.append(summarise_level(level, outcomes, wall))
+        summary = summarise_level(level, outcomes, wall)
+        summaries.append(summary)
+        if on_level is not None:
+            on_level(
+                LevelEvent(phase="finish", concurrency=level,
+                           requests=request_count, summary=summary)
+            )
     return StressReport(
         model_id=model_id,
         port=port,
