@@ -279,6 +279,17 @@ class TestSubcommandsExist(CliCase):
         for name in self.EXPECTED:
             self.assertIn(name, result.output)
 
+    def test_help_hints_at_per_command_help(self):
+        """Root --help must point users to 'anvil <command> --help'."""
+        result = self.invoke(["--help"])
+        self.assertEqual(0, result.exit_code)
+        self.assertIn(
+            "anvil <command> --help",
+            result.output,
+            "root help does not tell the user to run "
+            "'anvil <command> --help' for detailed per-command help",
+        )
+
 
 class TestDispatch(CliCase):
     """Each subcommand reaches the matching Compose operation."""
