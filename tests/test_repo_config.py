@@ -147,3 +147,114 @@ class TestQwen38CoderModel(unittest.TestCase):
         self.assertIn("--max-model-len 262144", cmd)
         self.assertIn("--disable-custom-all-reduce", cmd)
         self.assertEqual(old_model.get("type"), "proxy")
+
+
+class TestQwen38BatchModel(unittest.TestCase):
+    """Second-setup Behaviour 1: the Qwen/Qwen3.8-27B-FP8-batch block exists and is well-formed.
+
+    Written before the implementation (TDD step 1, plans/qwen38-concurrency-second-setup.md).
+    Loads the real config.yaml via yamlio.load() and asserts on parsed values only.
+    """
+
+    MODEL_ID = "Qwen/Qwen3.8-27B-FP8-batch"
+
+    def _load_config(self):
+        """Load config.yaml via yamlio.load() and return the ``models`` dict."""
+        data = yamlio.load(CONFIG_YAML)
+        self.assertIn("models", data, "config.yaml must contain a 'models' key")
+        return data["models"]
+
+    def _load_batch_block(self):
+        """Return the new model block, failing with a message naming the key."""
+        models = self._load_config()
+        self.assertIn(
+            self.MODEL_ID,
+            models,
+            "models dict must contain key {!r} (second vLLM setup is missing)".format(self.MODEL_ID),
+        )
+        return models[self.MODEL_ID]
+
+    def test_model_key_exists(self):
+        """The models dict must contain the key 'Qwen/Qwen3.8-27B-FP8-batch'."""
+        self._load_batch_block()
+
+    def test_model_key_distinct_from_existing_keys(self):
+        """The new id must differ from all three existing model keys, which must survive."""
+        models = self._load_config()
+        self.assertIn(
+            self.MODEL_ID,
+            models,
+            "models dict must contain key {!r}".format(self.MODEL_ID),
+        )
+        for existing in (
+            "Qwen/Qwen3.8-27B-FP8",
+            "Qwen/Qwen3.6-35B-A3B-FP8",
+            "lovedheart/Qwen3.5-9B-FP8",
+        ):
+            self.assertIn(
+                existing,
+                models,
+                "existing model key {!r} must still be present in models".format(existing),
+            )
+            self.assertNotEqual(
+                self.MODEL_ID,
+                existing,
+                "new model id {!r} must differ from existing key {!r}".format(self.MODEL_ID, existing),
+            )
+
+    def test_block_is_mapping(self):
+        """The new block must parse as a mapping, not a scalar or list."""
+        block = self._load_batch_block()
+        self.assertIsInstance(
+            block,
+            dict,
+            "models[ {!r} ] must be a mapping, got {}".format(self.MODEL_ID, type(block).__name__),
+        )
+
+    def test_cmd_is_string(self):
+        """``cmd`` must parse as a str (the YAML folded value, one logical line)."""
+        block = self._load_batch_block()
+        cmd = block.get("cmd")
+        self.assertIsInstance(
+            cmd,
+            str,
+            "cmd in models[ {!r} ] must be a string, got {}".format(self.MODEL_ID, type(cmd).__name__),
+        )
+
+    def test_model_type_and_check_endpoint(self):
+        """type must be 'proxy' and checkEndpoint must be '/v1/models'."""
+        block = self._load_batch_block()
+        self.assertEqual(
+            block.get("type"),
+            "proxy",
+            "type in models[ {!r} ] must be 'proxy', got {!r}".format(self.MODEL_ID, block.get("type")),
+        )
+        self.assertEqual(
+            block.get("checkEndpoint"),
+            "/v1/models",
+            "checkEndpoint in models[ {!r} ] must be '/v1/models', got {!r}".format(
+                self.MODEL_ID, block.get("checkEndpoint")
+            ),
+        )
+
+    def test_proxy_points_at_vllm_container(self):
+        """proxy must be 'http://vllm-${PORT}:${PORT}'."""
+        block = self._load_batch_block()
+        self.assertEqual(
+            block.get("proxy"),
+            "http://vllm-${PORT}:${PORT}",
+            "proxy in models[ {!r} ] must be 'http://vllm-${PORT}:${PORT}', got {!r}".format(
+                self.MODEL_ID, block.get("proxy")
+            ),
+        )
+
+    def test_cmd_stop_stops_vllm_container(self):
+        """cmdStop must be 'docker stop vllm-${PORT} || true'."""
+        block = self._load_batch_block()
+        self.assertEqual(
+            block.get("cmdStop"),
+            "docker stop vllm-${PORT} || true",
+            "cmdStop in models[ {!r} ] must be 'docker stop vllm-${PORT} || true', got {!r}".format(
+                self.MODEL_ID, block.get("cmdStop")
+            ),
+        )
