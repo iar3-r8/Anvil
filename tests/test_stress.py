@@ -169,6 +169,18 @@ except ImportError as _err:
     _write_log_import_error = str(_err)
     write_log = None
 
+# Behaviour 18 (TDD red): this does not exist yet, so the import is guarded.
+# The new test class turns the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_warm_up_attempt_import_error = None
+try:  # noqa: E402
+    from anvilkit.stress import WarmUpAttempt
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _warm_up_attempt_import_error = str(_err)
+    WarmUpAttempt = None
+
 
 class TestConcurrencyLevelsTable(unittest.TestCase):
     """The level series for a given maximum, straight from the plan's table."""
@@ -2854,6 +2866,324 @@ class TestWriteLogErrors(TestCase):
         self.assertIn(str(self.path), message)
         # The failure came from the write attempt, not from anywhere else.
         self.assertTrue(open_mock.called or write_text_mock.called)
+
+
+class _AttemptSpy:
+    """Records every ``WarmUpAttempt`` handed to the ``on_attempt`` callback.
+
+    ``order`` is a shared list the test also appends to from a wrapped
+    ``sleep``, so event-before-sleep ordering is asserted with a single,
+    sequence-based comparison rather than two separate call counters.
+    """
+
+    def __init__(self, order):
+        self.events = []
+        self._order = order
+
+    def __call__(self, event):
+        self.events.append(event)
+        self._order.append("event")
+
+
+class TestWarmUpAttemptCallback(unittest.TestCase):
+    """Behaviour 18: ``warm_up`` reports each failed attempt through an
+    optional ``on_attempt`` callback.
+
+    A new optional parameter, ``on_attempt``, is appended *last* with a
+    default of ``None``, so the thirteen existing warm-up tests -- which
+    call ``warm_up`` positionally through ``now`` -- keep passing untouched.
+    For every attempt whose outcome is *not* ok, the callback is called
+    exactly once with a ``WarmUpAttempt(attempt, elapsed_seconds, error,
+    will_retry)``; the pinned order is: ``send()`` fails, ``elapsed_seconds``
+    is read from the injected ``now()``, the budget decision fixes
+    ``will_retry``, and only then does ``on_attempt`` fire -- before
+    ``sleep(retry_interval)`` on the retry path and before the failed
+    ``WarmUpResult`` is returned when the budget is spent. A *successful*
+    attempt fires no event at all: the report's own "ok after N attempt(s)"
+    line must not be double-reported.
+    """
+
+    BUDGET = 600.0
+    RETRY_INTERVAL = 5.0
+
+    def _run_warm_up(
+        self,
+        latencies,
+        errors,
+        in_flight,
+        on_attempt=None,
+        budget=None,
+        end_with_success=True,
+    ):
+        """Drive ``warm_up`` with a scripted failure sequence.
+
+        ``latencies``/``errors`` are parallel lists describing the failing
+        attempts; ``in_flight`` is the wall-clock time each failed request
+        takes; when ``end_with_success`` is true a canned success is queued
+        after the failures, otherwise the script runs out of failures and
+        the exhausted-budget result is reached. The clock advances inside
+        each send call and by the interval whenever warm_up sleeps, so every
+        elapsed figure is deterministic. ``on_attempt`` is passed as the
+        sixth, keyword argument -- exactly the position the plan pins.
+        """
+        outcomes = [
+            ChatOutcome(
+                ok=False,
+                latency_seconds=float(latency),
+                error=error,
+            )
+            for latency, error in zip(latencies, errors)
+        ]
+        if end_with_success:
+            outcomes.append(
+                ChatOutcome(
+                    ok=True,
+                    latency_seconds=float(in_flight),
+                    prompt_tokens=7,
+                    completion_tokens=128,
+                )
+            )
+
+        if budget is None:
+            budget = self.BUDGET
+        clock = _FakeClock(start=100.0)
+        sleep_spy = _SleepSpy()
+        order = []
+        call_index = [0]
+
+        def on_call():
+            clock.advance(float(in_flight))
+            call_index[0] += 1
+
+        def sleeping(seconds):
+            sleep_spy(seconds)
+            order.append("sleep")
+            clock.advance(seconds)
+
+        send = _SendSpy(outcomes, on_call=on_call)
+        if on_attempt is None:
+            result = warm_up(
+                send, budget, self.RETRY_INTERVAL, sleeping, clock.now
+            )
+        else:
+            result = warm_up(
+                send,
+                budget,
+                self.RETRY_INTERVAL,
+                sleeping,
+                clock.now,
+                on_attempt=on_attempt,
+            )
+        return result, send, sleep_spy, order
+
+    def _fail_if_missing(self):
+        # Named red, following the file's discipline for missing symbols:
+        # every case in this class fails with a named assertion while the
+        # dataclass is unimplemented, and the kwarg tests additionally pin
+        # the appended-last position of the parameter.
+        if WarmUpAttempt is None:
+            self.fail(
+                "anvilkit.stress.WarmUpAttempt is not implemented yet: "
+                "{}".format(_warm_up_attempt_import_error)
+            )
+
+    def test_first_try_success_fires_no_event_and_no_sleep(self):
+        # A successful attempt produces no event at all; first-try success
+        # therefore calls the callback zero times and sleep zero times.
+        self._fail_if_missing()
+        events = _AttemptSpy(order=[])
+        result, send, sleep_spy, _order = self._run_warm_up(
+            [], [], in_flight=32.5, on_attempt=events
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(send.calls, 1)
+        self.assertEqual(events.events, [])
+        self.assertEqual(sleep_spy.intervals, [])
+
+    def test_two_failures_then_success_fires_exactly_two_events(self):
+        # Exactly one event per failed attempt: attempts 1 and 2, both
+        # ``will_retry=True`` (a third attempt follows), and the success
+        # that ends the retry sequence fires none.
+        self._fail_if_missing()
+        events = _AttemptSpy(order=[])
+        result, send, sleep_spy, _order = self._run_warm_up(
+            [40.0, 60.0],
+            ["connection refused", "timeout"],
+            in_flight=40.0,
+            on_attempt=events,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.attempts, 3)
+        self.assertEqual(send.calls, 3)
+        self.assertEqual(len(events.events), 2)
+        first, second = events.events
+        self.assertEqual(first.attempt, 1)
+        self.assertTrue(first.will_retry)
+        self.assertEqual(second.attempt, 2)
+        self.assertTrue(second.will_retry)
+
+    def test_event_fields_carried_verbatim_including_none_and_empty_error(self):
+        # ``error`` is the failed outcome's error text verbatim -- including
+        # ``None`` and ``""`` -- and ``elapsed_seconds`` is read from the
+        # injected clock after the failed send returned, not from the
+        # outcome's latency field.
+        self._fail_if_missing()
+        events = _AttemptSpy(order=[])
+        result, _send, _sleep_spy, _order = self._run_warm_up(
+            [1.0, 2.0, 3.0],
+            [None, "", "boom"],
+            in_flight=10.0,
+            on_attempt=events,
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(len(events.events), 3)
+        # Clock advances 10.0 inside each send: after failures 1, 2, 3 the
+        # elapsed readings are 10.0, 20.0, 30.0 regardless of the canned
+        # per-outcome latencies (1.0/2.0/3.0).
+        expected = [
+            (1, 10.0, None, True),
+            (2, 20.0, "", True),
+            (3, 30.0, "boom", True),
+        ]
+        for event, (attempt, elapsed, error, will_retry) in zip(
+            events.events, expected
+        ):
+            with self.subTest(attempt=attempt):
+                self.assertIsInstance(event, WarmUpAttempt)
+                self.assertEqual(event.attempt, attempt)
+                self.assertEqual(event.elapsed_seconds, elapsed)
+                self.assertEqual(event.error, error)
+                self.assertIs(event.error, error)
+                self.assertEqual(event.will_retry, will_retry)
+
+    def test_each_event_fires_before_its_sleep(self):
+        # Pinned order: the budget decision fixes ``will_retry`` first, then
+        # ``on_attempt`` fires, and only then does ``sleep`` run.
+        self._fail_if_missing()
+        order = []
+        events = _AttemptSpy(order=order)
+        _result, _send, _sleep_spy, _ = self._run_warm_up(
+            [40.0, 60.0],
+            ["connection refused", "timeout"],
+            in_flight=40.0,
+            on_attempt=events,
+        )
+        self.assertEqual(order, ["event", "sleep", "event", "sleep"])
+
+    def test_exhausted_budget_final_event_has_will_retry_false(self):
+        # The budget decision is made before the event, so the last event of
+        # an exhausted budget carries ``will_retry=False`` -- and no event
+        # is ever followed by a further event for the same attempt, because
+        # the failed result is returned right after it.
+        self._fail_if_missing()
+        order = []
+        events = _AttemptSpy(order=order)
+        # In-flight 1.0 s, interval 5.0 s, budget 6.0 s: attempt 1 starts
+        # at 0.0, attempt 2 would start at 6.0 >= 6.0 budget, so exactly
+        # one attempt, one failed result, one final event.
+        result, send, sleep_spy, _ = self._run_warm_up(
+            [1.0, 1.0],
+            ["attempt 1: connection refused", "unreachable"],
+            in_flight=1.0,
+            on_attempt=events,
+            budget=6.0,
+            end_with_success=False,
+        )
+        self.assertFalse(result.ok)
+        self.assertEqual(result.attempts, 1)
+        self.assertEqual(send.calls, 1)
+        self.assertEqual(len(events.events), 1)
+        event = events.events[0]
+        self.assertEqual(event.attempt, 1)
+        self.assertEqual(event.elapsed_seconds, 1.0)
+        self.assertEqual(event.error, "attempt 1: connection refused")
+        self.assertFalse(event.will_retry)
+        # The event precedes the returned failed result, and there is no
+        # sleep after a refused attempt.
+        self.assertEqual(order, ["event"])
+        self.assertEqual(sleep_spy.intervals, [])
+
+    def test_exhausted_budget_mixed_will_retry_flags_in_order(self):
+        # Table-driven over budgets so the ``will_retry`` flag is pinned for
+        # both outcomes: every intermediate event is True, only the final
+        # event is False, and the result is byte-for-byte what it is today.
+        self._fail_if_missing()
+        cases = [
+            # (budget, in-flight, expected attempts, expected flag tail)
+            (12.0, 1.0, 2, [True, False]),
+            (18.0, 1.0, 3, [True, True, False]),
+        ]
+        for budget, in_flight, n_attempts, flags in cases:
+            with self.subTest(
+                budget=budget, in_flight=in_flight, n_attempts=n_attempts
+            ):
+                events = _AttemptSpy(order=[])
+                result, send, sleep_spy, _order = self._run_warm_up(
+                    [in_flight] * (n_attempts + 1),
+                    ["e"] * (n_attempts + 1),
+                    in_flight=in_flight,
+                    on_attempt=events,
+                    budget=budget,
+                    end_with_success=False,
+                )
+                self.assertFalse(result.ok)
+                self.assertEqual(result.attempts, n_attempts)
+                self.assertEqual(send.calls, n_attempts)
+                self.assertEqual(len(events.events), n_attempts)
+                self.assertEqual(
+                    [event.will_retry for event in events.events], flags
+                )
+                self.assertEqual(
+                    [event.attempt for event in events.events],
+                    list(range(1, n_attempts + 1)),
+                )
+                self.assertEqual(
+                    sleep_spy.intervals,
+                    [self.RETRY_INTERVAL] * (n_attempts - 1),
+                )
+
+    def test_on_attempt_omitted_changes_nothing(self):
+        # ``on_attempt`` omitted entirely changes nothing: the result, send
+        # call count and sleep calls match the same run with a spy attached.
+        # This is what keeps the thirteen existing positional tests passing.
+        self._fail_if_missing()
+        events = _AttemptSpy(order=[])
+        result_with, send_with, sleep_with, _ = self._run_warm_up(
+            [40.0, 60.0],
+            ["connection refused", "timeout"],
+            in_flight=40.0,
+            on_attempt=events,
+        )
+        result_without, send_without, sleep_without, _ = self._run_warm_up(
+            [40.0, 60.0], ["connection refused", "timeout"], in_flight=40.0
+        )
+        self.assertEqual(
+            dataclasses.asdict(result_with),
+            dataclasses.asdict(result_without),
+        )
+        self.assertEqual(send_with.calls, send_without.calls)
+        self.assertEqual(sleep_with.intervals, sleep_without.intervals)
+        # The spy run proves the callback did its job; the omitted run
+        # proves the absence of the parameter does not.
+        self.assertEqual(len(events.events), 2)
+
+    def test_callback_exception_propagates_not_caught(self):
+        # A printer that throws is a defect in the caller, and warm_up must
+        # not swallow it: the exception propagates out of warm_up.
+        self._fail_if_missing()
+
+        def loud(_event):
+            raise RuntimeError("printer exploded")
+
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run_warm_up(
+                [1.0],
+                ["connection refused"],
+                in_flight=1.0,
+                on_attempt=loud,
+            )
+        self.assertIn("printer exploded", str(ctx.exception))
 
 
 if __name__ == "__main__":
