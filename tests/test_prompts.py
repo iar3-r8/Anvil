@@ -138,6 +138,21 @@ class AskTests(PromptCase):
 class AskRequiredTests(PromptCase):
     """Values that may not be empty - the API-key loop at anvil:179."""
 
+    def call_hidden(self, *args, stdin="", **kwargs):
+        """Run ask_required(hide_input=True), capturing stdout and stderr.
+
+        stderr is captured and asserted empty because the defect this
+        guards against announced itself there: getpass.fallback_getpass
+        does a raw print to sys.stderr (getpass.py:125) that
+        warnings.catch_warnings() cannot suppress.
+        """
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            result, output = self.call(
+                prompts.ask_required, *args, hide_input=True, stdin=stdin, **kwargs
+            )
+        return result, output, errors.getvalue()
+
     def test_reprompts_until_a_value_is_given(self):
         value, _ = self.call(prompts.ask_required, "Key", stdin="\n\nsecret\n")
         self.assertEqual(value, "secret")
@@ -165,17 +180,44 @@ class AskRequiredTests(PromptCase):
 
         self.assertIn("Anthropic API Key", str(ctx.exception))
 
-    def test_hidden_input_does_not_echo_the_secret(self):
-        # getpass warns that it cannot disable echo without a TTY, which is
-        # expected here and irrelevant to the assertion.
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            value, output = self.call(
-                prompts.ask_required, "Key", hide_input=True, stdin="s3cret\n"
-            )
-
+    def test_hidden_input_returns_the_typed_value(self):
+        value, _output, _errors = self.call_hidden("Key", stdin="s3cret\n")
         self.assertEqual(value, "s3cret")
+
+    def test_hidden_input_does_not_echo_the_secret(self):
+        """The prompt is shown but the secret is never written to stdout.
+
+        Caveat (assumption A1, plan §6): with getpass.getpass faked, this
+        proves click does not echo the value back through its prompt-building
+        or error paths - not terminal echo suppression, which is a termios
+        property only testable against a real PTY.
+        """
+        _value, output, _errors = self.call_hidden("Key", stdin="s3cret\n")
+        self.assertIn("Key", output)
         self.assertNotIn("s3cret", output)
+
+    def test_hidden_input_leaks_nothing_to_stderr(self):
+        """The primary RED assertion: captured stderr is exactly empty.
+
+        getpass.fallback_getpass does a raw print to sys.stderr
+        (getpass.py:125) that warnings.catch_warnings() cannot suppress, so
+        this assertion fails until getpass.getpass is faked in the GREEN step.
+        """
+        _value, _output, errors = self.call_hidden("Key", stdin="s3cret\n")
+        self.assertEqual(errors, "")
+
+    def test_hidden_input_eof_raises_prompt_error_naming_the_key(self):
+        """Exhausted stdin raises PromptError promptly, without looping."""
+        with self.assertRaises(prompts.PromptError) as ctx:
+            self.call_hidden("Key", stdin="")
+        self.assertIn("Key", str(ctx.exception))
+
+    def test_hidden_input_empty_line_reprompts(self):
+        """A blank answer re-prompts; the value is taken on the next line."""
+        value, output, errors = self.call_hidden("Key", stdin="\ns3cret\n")
+        self.assertEqual(value, "s3cret")
+        self.assertEqual(output.count("Key"), 2)
+        self.assertEqual(errors, "")
 
 
 class ConfirmTests(PromptCase):
