@@ -330,3 +330,93 @@ class TestQwen38BatchModel(unittest.TestCase):
                 [tok for tok in tokens if tok == "--max-num-seqs"],
             ),
         )
+
+    # -- Behaviour 3: the identity bridge is present and correctly oriented -----
+    # llama-swap uses the models key as the model id in API requests and forwards
+    # that id upstream to vLLM; vLLM matches the incoming model field against its
+    # served name, which defaults to the --model argument. The bridge is
+    # --model <real Hugging Face path> + --served-model-name <gateway id>.
+    # A missing or swapped bridge makes every request to this block 404 at the
+    # vLLM worker (plan §1.5).
+
+    WEIGHTS_PATH = "Qwen/Qwen3.8-27B-FP8"
+
+    def test_cmd_model_is_weights_path(self):
+        """cmd must carry the token pair ['--model', <Hugging Face path>] — the real weights."""
+        tokens = self._cmd_tokens()
+        values = self._flag_values(tokens, "--model")
+        self.assertEqual(
+            values,
+            [self.WEIGHTS_PATH],
+            "cmd must carry exactly ['--model', {!r}] (the real Hugging Face path, not the "
+            "-batch gateway id); --model value token(s) found: {!r}".format(
+                self.WEIGHTS_PATH, values
+            ),
+        )
+
+    def test_cmd_served_model_name_is_gateway_id(self):
+        """cmd must carry ['--served-model-name', <models key>]; its absence 404s every request.
+
+        The value must equal the models key exactly, because llama-swap forwards
+        that id upstream and vLLM serves under --model by default.
+        """
+        tokens = self._cmd_tokens()
+        values = self._flag_values(tokens, "--served-model-name")
+        if not values:
+            self.fail(
+                "cmd must carry ['--served-model-name', {!r}]; the flag is absent, so every "
+                "request to this block would 404 at the vLLM worker, which serves {!r} by "
+                "default while llama-swap forwards {!r}".format(
+                    self.MODEL_ID, self.WEIGHTS_PATH, self.MODEL_ID
+                )
+            )
+        self.assertEqual(
+            values,
+            [self.MODEL_ID],
+            "cmd must carry exactly ['--served-model-name', {!r}] (the models key); "
+            "--served-model-name value token(s) found: {!r}".format(self.MODEL_ID, values),
+        )
+
+    def test_cmd_identity_flags_not_swapped(self):
+        """--model and --served-model-name must be correctly oriented — each asserted individually.
+
+        The two values are different strings, so a transposed pair fails this test
+        and both of the single-flag tests above; the value of each flag is checked
+        against its own expected token.
+        """
+        tokens = self._cmd_tokens()
+        model_values = self._flag_values(tokens, "--model")
+        served_values = self._flag_values(tokens, "--served-model-name")
+        self.assertNotEqual(
+            model_values,
+            served_values,
+            "--model and --served-model-name carry the same value token(s) {!r}; the identity "
+            "bridge is transposed (expected --model {!r} and --served-model-name {!r})".format(
+                model_values, self.WEIGHTS_PATH, self.MODEL_ID
+            ),
+        )
+        self.assertEqual(
+            model_values,
+            [self.WEIGHTS_PATH],
+            "--model must be {!r} (not the gateway id); found {!r}".format(self.WEIGHTS_PATH, model_values),
+        )
+        self.assertEqual(
+            served_values,
+            [self.MODEL_ID],
+            "--served-model-name must be {!r} (not the Hugging Face path); found {!r}".format(
+                self.MODEL_ID, served_values
+            ),
+        )
+
+    def test_cmd_identity_flags_appear_exactly_once(self):
+        """--model and --served-model-name must each appear exactly once (duplicates are last-wins)."""
+        tokens = self._cmd_tokens()
+        for flag in ("--model", "--served-model-name"):
+            count = tokens.count(flag)
+            self.assertEqual(
+                count,
+                1,
+                "cmd must contain {!r} exactly once, found {} occurrence(s); values: {!r}".format(
+                    flag, count, self._flag_values(tokens, flag)
+                ),
+            )
