@@ -2914,6 +2914,7 @@ class TestWarmUpAttemptCallback(unittest.TestCase):
         on_attempt=None,
         budget=None,
         end_with_success=True,
+        order=None,
     ):
         """Drive ``warm_up`` with a scripted failure sequence.
 
@@ -2925,6 +2926,10 @@ class TestWarmUpAttemptCallback(unittest.TestCase):
         each send call and by the interval whenever warm_up sleeps, so every
         elapsed figure is deterministic. ``on_attempt`` is passed as the
         sixth, keyword argument -- exactly the position the plan pins.
+        When ``order`` is given, the wrapped ``sleep`` appends to that same
+        list instead of a private one, so a test can share one list between
+        the ``on_attempt`` spy and the sleep wrapper and assert the exact
+        interleaving of events and sleeps.
         """
         outcomes = [
             ChatOutcome(
@@ -2948,7 +2953,8 @@ class TestWarmUpAttemptCallback(unittest.TestCase):
             budget = self.BUDGET
         clock = _FakeClock(start=100.0)
         sleep_spy = _SleepSpy()
-        order = []
+        if order is None:
+            order = []
         call_index = [0]
 
         def on_call():
@@ -3059,16 +3065,20 @@ class TestWarmUpAttemptCallback(unittest.TestCase):
 
     def test_each_event_fires_before_its_sleep(self):
         # Pinned order: the budget decision fixes ``will_retry`` first, then
-        # ``on_attempt`` fires, and only then does ``sleep`` run.
+        # ``on_attempt`` fires, and only then does ``sleep`` run. The list is
+        # shared between the spy and the wrapped sleep, so one sequence
+        # assertion covers the full interleaving.
         self._fail_if_missing()
         order = []
         events = _AttemptSpy(order=order)
-        _result, _send, _sleep_spy, _ = self._run_warm_up(
+        _result, _send, _sleep_spy, shared_order = self._run_warm_up(
             [40.0, 60.0],
             ["connection refused", "timeout"],
             in_flight=40.0,
             on_attempt=events,
+            order=order,
         )
+        self.assertIs(shared_order, order)
         self.assertEqual(order, ["event", "sleep", "event", "sleep"])
 
     def test_exhausted_budget_final_event_has_will_retry_false(self):
