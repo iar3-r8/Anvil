@@ -1650,6 +1650,565 @@ class TestStress(CliCase):
             result = self.invoke(["--verbose", "stress", self.MODEL])
         self.assertGreater(len(result.output), 0)
 
+    # -- default progress lines (addendum, behaviours 20-24 in one red) -------------
+    #
+    # The callbacks already exist in anvilkit.stress (behaviours 18 and 19,
+    # green); what is missing is the CLI wiring: an announcement before
+    # warm-up, one line per failed attempt, and one line per level start and
+    # finish, all through shared.echo. The patches below are given
+    # side_effects that fire the callback the CLI is expected to hand them,
+    # with hand-built stress.WarmUpAttempt / stress.LevelEvent events, and
+    # then return the canned fakes from this class. The helpers record what
+    # the CLI actually passed and print nothing of their own, so every red
+    # here is a named assertion: either the call_args say no callback was
+    # handed, or the expected line is not in the output. The --json
+    # pipeability, log-content and --verbose coexistence invariants are
+    # folded in as assertions, per the process post-mortem: one feature,
+    # one red.
+
+    def _warm_side_effect(self, events, return_value):
+        """A warm_up stand-in that fires on_attempt with hand-built events.
+
+        Fires the callback the CLI actually handed (``None`` while the wiring
+        is missing) and returns the plain canned ``return_value``, so the CLI
+        sees a normal fake. It never prints and never raises: a missing
+        callback is asserted by the test on the patch handle's call_args, and
+        a line that is never fired simply never reaches the output.
+        """
+
+        def _warm(*args, **kwargs):
+            # on_attempt is the sixth parameter of the real warm_up; accept
+            # it positionally or by keyword so the fake cannot depend on the
+            # green's calling style.
+            on_attempt = kwargs.get("on_attempt", args[5] if len(args) >= 6 else None)
+            if on_attempt is not None:
+                for event in events:
+                    on_attempt(event)
+            return return_value
+
+        return _warm
+
+    def _levels_side_effect(self, report, return_value):
+        """A run_stress stand-in that fires on_level with start/finish
+        events built from the canned report's own summaries.
+
+        ``requests`` comes from the CLI's own ``request_count`` kwarg (the
+        real ``run_stress`` carries it in both phases) so ``--requests`` is
+        honoured; the finish event still carries the canned summary, which
+        is where the ok/failed counts live.
+        """
+        from anvilkit import stress
+
+        def _run(*args, **kwargs):
+            # on_level is the seventh parameter of the real run_stress.
+            on_level = kwargs.get("on_level", args[6] if len(args) >= 7 else None)
+            if on_level is not None:
+                request_count = kwargs.get(
+                    "request_count", args[2] if len(args) >= 3 else None
+                )
+                for summary in report.levels:
+                    requests = (
+                        request_count
+                        if request_count is not None
+                        else summary.requests
+                        if summary.requests is not None
+                        else summary.succeeded + summary.failed
+                    )
+                    on_level(
+                        stress.LevelEvent(
+                            phase="start",
+                            concurrency=summary.concurrency,
+                            requests=requests,
+                            summary=None,
+                        )
+                    )
+                    on_level(
+                        stress.LevelEvent(
+                            phase="finish",
+                            concurrency=summary.concurrency,
+                            requests=requests,
+                            summary=summary,
+                        )
+                    )
+            return return_value
+
+        return _run
+
+    def test_the_warmup_announcement_is_printed_before_warm_up(self):
+        """Plain run: 'Warming up <model> at http://localhost:<port>…' before warm_up."""
+        from anvilkit import stress
+
+        events = [
+            stress.WarmUpAttempt(1, 12.3, "connection refused", will_retry=True),
+            stress.WarmUpAttempt(2, 18.7, "connection refused", will_retry=False),
+        ]
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(
+                 cli, "warm_up",
+                 side_effect=self._warm_side_effect(events, warmup_failed()),
+             ) as warm, \
+             mock.patch.object(cli, "run_stress"), \
+             mock.patch.object(cli, "write_log"):
+            result = self.invoke(["stress", self.MODEL])
+        warm_kwargs = (
+            warm.call_args[1] if warm.call_args and warm.call_args[1] else {}
+        )
+        self.assertIsNotNone(
+            warm_kwargs.get("on_attempt"),
+            "cli.warm_up was not handed an on_attempt callback "
+            "(call kwargs: {!r})".format(warm_kwargs),
+        )
+        announcement = "Warming up {} at http://localhost:8000…".format(self.MODEL)
+        self.assertIn(
+            announcement, result.output,
+            "the warm-up announcement is missing from the default output:\n"
+            + result.output,
+        )
+        # The announcement precedes the warm-up work, not the report.
+        self.assertLess(result.output.index(announcement), result.output.index("Warm-up"))
+
+    def test_warmup_retry_lines_are_printed_per_failed_attempt(self):
+        """One indented line per failed attempt, verbatim error and elapsed."""
+        from anvilkit import stress
+
+        events = [
+            stress.WarmUpAttempt(1, 12.3, "connection refused", will_retry=True),
+            stress.WarmUpAttempt(2, 18.7, "", will_retry=True),
+            stress.WarmUpAttempt(3, 25.0, None, will_retry=False),
+        ]
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(
+                 cli, "warm_up",
+                 side_effect=self._warm_side_effect(events, warmup_failed()),
+             ) as warm, \
+             mock.patch.object(cli, "run_stress"), \
+             mock.patch.object(cli, "write_log"):
+            result = self.invoke(["stress", self.MODEL])
+        warm_kwargs = (
+            warm.call_args[1] if warm.call_args and warm.call_args[1] else {}
+        )
+        self.assertIsNotNone(
+            warm_kwargs.get("on_attempt"),
+            "cli.warm_up was not handed an on_attempt callback "
+            "(call kwargs: {!r})".format(warm_kwargs),
+        )
+        output = result.output
+        # The interval is the CLI's _WARMUP_RETRY_INTERVAL (5.0 -> '5' under :g).
+        self.assertIn(
+            "  warm-up attempt 1 failed after 12.3s: connection refused; "
+            "retrying in {0:g}s".format(cli._WARMUP_RETRY_INTERVAL),
+            output,
+            "the retrying attempt line is missing:\n" + output,
+        )
+        # A None or empty error renders as 'no reason reported'.
+        self.assertIn(
+            "  warm-up attempt 2 failed after 18.7s: no reason reported; "
+            "retrying in {0:g}s".format(cli._WARMUP_RETRY_INTERVAL),
+            output,
+            "a missing error must read 'no reason reported':\n" + output,
+        )
+        # The budget-exhausted attempt omits the retry clause.
+        self.assertIn(
+            "  warm-up attempt 3 failed after 25.0s: no reason reported",
+            output,
+            "the final attempt line is missing:\n" + output,
+        )
+        self.assertNotIn(
+            "attempt 3 failed after 25.0s: no reason reported; retrying",
+            output,
+            "will_retry=False must not promise another attempt",
+        )
+
+    def test_warmup_retry_lines_precede_the_failure_message_and_exit_seven(self):
+        """The retry lines do not replace the existing failure: order, stderr ❌, exit 7."""
+        from anvilkit import stress
+
+        events = [
+            stress.WarmUpAttempt(1, 12.3, "connection refused", will_retry=True),
+            stress.WarmUpAttempt(2, 120.0, "connection refused", will_retry=False),
+        ]
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(
+                 cli, "warm_up",
+                 side_effect=self._warm_side_effect(events, warmup_failed()),
+             ), \
+             mock.patch.object(cli, "run_stress") as run, \
+             mock.patch.object(cli, "write_log") as write:
+            result = self.invoke(["stress", self.MODEL])
+        output = result.output
+        self.assertEqual(7, result.exit_code)
+        run.assert_not_called()
+        write.assert_not_called()
+        self.assertIn("❌ Warm-up failed after 5 attempt(s): connection refused", output)
+        self.assertIn(
+            "  warm-up attempt 1 failed",
+            output,
+            "the retry line is missing:\n" + output,
+        )
+        self.assertLess(
+            output.index("  warm-up attempt 1 failed"),
+            output.index("❌ Warm-up failed"),
+            "the retry lines must precede the existing failure message:\n" + output,
+        )
+
+    def test_a_plain_run_prints_no_warmup_announcement_when_no_warmup(self):
+        """--no-warmup skips the phase, so nothing about warm-up is announced."""
+        with self._clean_run_context() as c:
+            result = self.invoke(["stress", self.MODEL, "--no-warmup"])
+        c.warm.assert_not_called()
+        self.assertNotIn(
+            "Warming up", result.output,
+            "--no-warmup must not announce a warm-up that never runs:\n" + result.output,
+        )
+
+    def test_dry_run_prints_no_warmup_announcement_and_sends_nothing(self):
+        """--dry-run returns before the probe: no announcement, nothing sent."""
+        with mock.patch.object(cli.health, "check_gateway") as check, \
+             mock.patch.object(cli, "warm_up") as warm, \
+             mock.patch.object(cli, "run_stress") as run:
+            result = self.invoke(["--dry-run", "stress", self.MODEL])
+        check.assert_not_called()
+        warm.assert_not_called()
+        run.assert_not_called()
+        self.assertNotIn("Warming up", result.output)
+
+    def test_a_clean_run_prints_one_line_per_level_start_and_finish(self):
+        """Start line before the requests go out, finish line from the summary."""
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(
+                 cli, "run_stress",
+                 side_effect=self._levels_side_effect(clean_report(), clean_report()),
+             ) as run, \
+             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+            result = self.invoke(["stress", self.MODEL])
+        run.assert_called_once()
+        run_kwargs = (
+            run.call_args[1] if run.call_args and run.call_args[1] else {}
+        )
+        self.assertIsNotNone(
+            run_kwargs.get("on_level"),
+            "cli.run_stress was not handed an on_level callback "
+            "(call kwargs: {!r})".format(run_kwargs),
+        )
+        output = result.output
+        for level in ("1", "2", "4"):
+            start = "Level {}: sending 20 requests".format(level)
+            finish = "Level {}: 20/20 ok, 0 failed".format(level)
+            self.assertIn(start, output, "the level start line is missing:\n" + output)
+            self.assertIn(finish, output, "the level finish line is missing:\n" + output)
+            self.assertLess(
+                output.index(start), output.index(finish),
+                "the start line must precede its finish line:\n" + output,
+            )
+        # No per-request noise: exactly one start and one finish line per level.
+        self.assertEqual(
+            6, output.count("Level "),
+            "expected one start and one finish line per level, got:\n" + output,
+        )
+
+    def test_a_failing_run_still_prints_the_all_failed_level_finish_line(self):
+        """Zero successes is a finding, not a reason to stay silent."""
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(
+                 cli, "run_stress",
+                 side_effect=self._levels_side_effect(failing_report(), failing_report()),
+             ) as run, \
+             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+            result = self.invoke(["stress", self.MODEL])
+        self.assertEqual(8, result.exit_code)
+        run_kwargs = (
+            run.call_args[1] if run.call_args and run.call_args[1] else {}
+        )
+        self.assertIsNotNone(
+            run_kwargs.get("on_level"),
+            "cli.run_stress was not handed an on_level callback "
+            "(call kwargs: {!r})".format(run_kwargs),
+        )
+        output = result.output
+        self.assertIn(
+            "Level 4: 0/20 ok, 20 failed", output,
+            "an all-failed level must still print its finish line:\n" + output,
+        )
+        self.assertIn(
+            "Level 2: 18/20 ok, 2 failed",
+            output,
+            "a partially failed level must still print its finish line:\n" + output,
+        )
+        # The request count in the start line follows --requests.
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(
+                 cli, "run_stress",
+                 side_effect=self._levels_side_effect(clean_report(), clean_report()),
+             ), \
+             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+            result = self.invoke(["stress", self.MODEL, "--requests", "7"])
+        self.assertIn(
+            "Level 1: sending 7 requests", result.output,
+            "the start line must carry the --requests figure:\n" + result.output,
+        )
+
+    def test_json_runs_pass_no_callbacks_and_stay_pure_json(self):
+        """--json: warm_up and run_stress receive None, so the document is first."""
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()) as warm, \
+             mock.patch.object(cli, "run_stress", return_value=clean_report()) as run, \
+             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+            result = self.invoke(["stress", self.MODEL, "--json"])
+        warm.assert_called_once()
+        run.assert_called_once()
+        warm_kwargs = warm.call_args[1] if warm.call_args[1] else {}
+        run_kwargs = run.call_args[1] if run.call_args[1] else {}
+        self.assertIsNone(
+            warm_kwargs.get("on_attempt", None),
+            "--json must hand warm_up no on_attempt callback (got {!r})".format(
+                warm_kwargs.get("on_attempt")
+            ),
+        )
+        self.assertIsNone(
+            run_kwargs.get("on_level", None),
+            "--json must hand run_stress no on_level callback (got {!r})".format(
+                run_kwargs.get("on_level")
+            ),
+        )
+        self.assertTrue(
+            result.output.lstrip().startswith("{"),
+            "stdout must still be pure JSON under --json:\n" + result.output[:400],
+        )
+        payload = json.loads(result.output)
+        self.assertEqual(self.MODEL, payload["model"])
+        self.assertNotIn("Warming up", result.output)
+        self.assertNotIn("Level 1: sending", result.output)
+
+    def test_json_warmup_failure_exits_seven_with_empty_stdout(self):
+        """A --json warm-up failure: ❌ on stderr, exit 7, stdout stays empty."""
+        # A separate runner captures the streams apart: the invariant is
+        # about stderr, and the class runner mixes them into one buffer.
+        runner = CliRunner(mix_stderr=False)
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_failed()) as warm, \
+             mock.patch.object(cli, "run_stress") as run, \
+             mock.patch.object(cli, "write_log") as write:
+            result = runner.invoke(cli.app, ["stress", self.MODEL, "--json"])
+        warm.assert_called_once()
+        warm_kwargs = (
+            warm.call_args[1] if warm.call_args and warm.call_args[1] else {}
+        )
+        self.assertIsNone(warm_kwargs.get("on_attempt", None))
+        run.assert_not_called()
+        write.assert_not_called()
+        self.assertEqual(7, result.exit_code)
+        self.assertEqual(
+            "", result.output,
+            "stdout must stay empty for a --json run that produced no results:\n"
+            + result.output,
+        )
+        self.assertIn("❌ Warm-up failed", result.stderr, "the failure must still be reported")
+
+    def test_progress_lines_never_reach_the_log_file(self):
+        """The noisiest default run still writes a log with only the two reports."""
+        from anvilkit import stress
+
+        events = [
+            stress.WarmUpAttempt(1, 12.3, "connection refused", will_retry=True),
+            stress.WarmUpAttempt(2, 30.5, "connection refused", will_retry=False),
+        ]
+        target = self._log_file("progress.log")
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(
+                 cli, "warm_up",
+                 side_effect=self._warm_side_effect(events, warmup_ok()),
+             ), \
+             mock.patch.object(
+                 cli, "run_stress",
+                 side_effect=self._levels_side_effect(failing_report(), failing_report()),
+             ), \
+             mock.patch.object(cli, "log_path", return_value=target):
+            self.invoke(["stress", self.MODEL])
+        self.assertTrue(target.is_file(), "the log file was not written")
+        text = target.read_text(encoding="utf-8")
+        self.assertTrue(
+            text.startswith("Stress test: {}".format(self.MODEL)),
+            "the log must still start with the report header:\n" + text[:200],
+        )
+        self.assertNotIn("Warming up", text)
+        self.assertNotIn("warm-up attempt", text)
+        self.assertNotIn("Level 1: sending", text)
+        self.assertTrue(
+            text.rstrip().endswith("}"),
+            "the log must still end with the JSON block:\n" + text[-200:],
+        )
+
+    def test_verbose_runs_carry_both_the_detail_lines_and_the_default_lines(self):
+        """--verbose keeps its three detail lines; the default lines coexist."""
+        from anvilkit import stress
+
+        events = [
+            stress.WarmUpAttempt(1, 12.3, "connection refused", will_retry=True),
+            stress.WarmUpAttempt(2, 30.5, "connection refused", will_retry=False),
+        ]
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=self.AVAILABLE),
+             ), \
+             mock.patch.object(
+                 cli, "warm_up",
+                 side_effect=self._warm_side_effect(events, warmup_ok()),
+             ), \
+             mock.patch.object(
+                 cli, "run_stress",
+                 side_effect=self._levels_side_effect(clean_report(), clean_report()),
+             ), \
+             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+            verbose = self.invoke(["--verbose", "stress", self.MODEL])
+        output = verbose.output
+        self.assertIn(
+            "warming up {} at http://localhost:8000 (budget 600.0s)".format(self.MODEL),
+            output,
+            "the existing --verbose warming-up detail line is missing:\n" + output,
+        )
+        self.assertIn(
+            "measuring {} at http://localhost:8000 (20 requests per level, timeout 120.0s)".format(
+                self.MODEL
+            ),
+            output,
+            "the existing --verbose measuring detail line is missing:\n" + output,
+        )
+        self.assertIn(
+            "log written to {}".format(self._log_file()),
+            output,
+            "the existing --verbose log detail line is missing:\n" + output,
+        )
+        # The detail line (lower-case) and the default line (capitalised) are
+        # distinct strings; a plain run carries the default line without the
+        # detail line.
+        self.assertIn(
+            "Warming up {} at http://localhost:8000…".format(self.MODEL),
+            output,
+            "the default warm-up announcement is missing from the --verbose output:\n"
+            + output,
+        )
+        with self._clean_run_context():
+            plain = self.invoke(["stress", self.MODEL])
+        self.assertIn(
+            "Warming up {} at http://localhost:8000…".format(self.MODEL),
+            plain.output,
+            "the default warm-up announcement is missing from the plain output:\n"
+            + plain.output,
+        )
+        self.assertNotIn(
+            "warming up {} at http://localhost:8000 (budget".format(self.MODEL),
+            plain.output,
+            "the detail line must stay --verbose-only:\n" + plain.output,
+        )
+        self.assertNotIn("measuring {} at http://localhost:8000".format(self.MODEL), plain.output)
+
+    def run_cli(self, argv):
+        """Invoke ``run()`` exactly as ``python -m anvilkit.cli`` does.
+
+        Mirrors ``TestRunEntryPoint.run_cli``: ``standalone_mode=False`` is
+        the entry path the behavior-17 precedent pinned, which CliRunner
+        (standalone mode) cannot see.
+        """
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "argv", ["anvil"] + argv):
+            with contextlib.redirect_stderr(stderr):
+                with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    code = cli.run()
+        return code, stdout.getvalue() + stderr.getvalue()
+
+    def test_run_entrypoint_clean_run_prints_the_progress_lines(self):
+        """run() with standalone_mode=False: the progress lines reach stdout."""
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=["org/alpha"]),
+             ), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(
+                 cli, "run_stress",
+                 side_effect=self._levels_side_effect(clean_report(), clean_report()),
+             ), \
+             mock.patch.object(
+                 cli, "log_path",
+                 side_effect=lambda *a, **k: Path(str(self.project / "logs" / "stress.log")),
+             ):
+            code, output = self.run_cli(["stress", "org/alpha"])
+        self.assertEqual(cli.EXIT_OK, code)
+        self.assertIn(
+            "Warming up org/alpha at http://localhost:8000…", output,
+            "the warm-up announcement is missing from the run() entrypoint output:\n"
+            + output,
+        )
+        self.assertIn("Level 1: sending 20 requests", output)
+        self.assertIn("Level 1: 20/20 ok, 0 failed", output)
+        self.assertNotIn("Traceback", output)
+
+    def test_run_entrypoint_json_stays_pure_json(self):
+        """run() with --json: no progress line may precede the document."""
+        with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
+             mock.patch.object(
+                 cli, "check_model_available",
+                 return_value=stress_available(available=["org/alpha"]),
+             ), \
+             mock.patch.object(cli, "warm_up", return_value=warmup_ok()) as warm, \
+             mock.patch.object(cli, "run_stress", return_value=clean_report()) as run, \
+             mock.patch.object(
+                 cli, "log_path",
+                 side_effect=lambda *a, **k: Path(str(self.project / "logs" / "stress.log")),
+             ):
+            code, output = self.run_cli(["stress", "org/alpha", "--json"])
+        self.assertEqual(cli.EXIT_OK, code)
+        warm_kwargs = warm.call_args[1] if warm.call_args[1] else {}
+        run_kwargs = run.call_args[1] if run.call_args[1] else {}
+        self.assertIsNone(warm_kwargs.get("on_attempt", None))
+        self.assertIsNone(run_kwargs.get("on_level", None))
+        self.assertTrue(
+            output.lstrip().startswith("{"),
+            "stdout must be pure JSON under --json via the run() entrypoint:\n"
+            + output[:400],
+        )
+        self.assertEqual("org/alpha", json.loads(output)["model"])
+
 
 def health_build_chat_request(model_id, prompt, max_tokens):
     from anvilkit import health
