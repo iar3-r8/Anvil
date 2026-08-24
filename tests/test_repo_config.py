@@ -568,3 +568,145 @@ class TestQwen38BatchModel(unittest.TestCase):
                     model_id, value, self._GATEWAY_CAP_EXPLANATION
                 ),
             )
+
+    # -- Behaviour 5: the new setup is isolated from the running system ----------
+    # The two setups must never coexist. llama-swap's matrix solver gives the
+    # isolation for free: "A model that appears in no set can only run on its own"
+    # (doc/external/llama-swap/configuration-reference.md). Leaving the new id out
+    # of matrix.vars, matrix.sets and hooks.on_startup.preload is therefore the
+    # MECHANISM that guarantees requesting it evicts the baseline, and vice versa
+    # (plan §1.6). The block is brought up on demand by the first stress request,
+    # by design — it must not be preloaded.
+
+    def test_batch_id_absent_from_preload(self):
+        """hooks.on_startup.preload must NOT contain the new id.
+
+        Preloading it would start the second vLLM container at gateway boot and
+        the two setups would be co-resident, which the experiment forbids.
+        """
+        data = yamlio.load(CONFIG_YAML)
+        preload = (data.get("hooks") or {}).get("on_startup", {}).get("preload", [])
+        self.assertNotIn(
+            self.MODEL_ID,
+            preload,
+            "hooks.on_startup.preload must not contain {!r} (found in {!r}): the two "
+            "setups must never be co-resident — the user runs them independently, one "
+            "at a time, so the batch block must be brought up on demand by the first "
+            "request, not preloaded at startup (plan §1.6)".format(self.MODEL_ID, preload),
+        )
+
+    def test_batch_id_absent_from_matrix_vars_values(self):
+        """The new id must be absent from every VALUE in matrix.vars.
+
+        A var that names the new id would fold it into the running set, so the
+        matrix solver could schedule it alongside the baseline.
+        """
+        data = yamlio.load(CONFIG_YAML)
+        matrix_vars = (data.get("matrix") or {}).get("vars", {})
+        self.assertIsInstance(
+            matrix_vars,
+            dict,
+            "matrix.vars must be a mapping, got {}".format(type(matrix_vars).__name__),
+        )
+        for var_name, var_value in matrix_vars.items():
+            self.assertNotEqual(
+                var_value,
+                self.MODEL_ID,
+                "matrix.vars.{0} names {1!r}: the two setups must never be co-resident "
+                "— a var that references the batch id would schedule it inside the "
+                "running set (plan §1.6)".format(var_name, var_value),
+            )
+
+    def test_batch_id_absent_from_matrix_sets_expressions(self):
+        """The new id must not appear in any matrix.sets expression.
+
+        The sets values are DSL strings ("generic & coder & nomic"), so this is a
+        substring search across every set expression, not a list membership test.
+        A model that appears in some set is schedulable with the others — the
+        whole point is that this one appears in none.
+        """
+        data = yamlio.load(CONFIG_YAML)
+        matrix_sets = (data.get("matrix") or {}).get("sets", {})
+        self.assertIsInstance(
+            matrix_sets,
+            dict,
+            "matrix.sets must be a mapping, got {}".format(type(matrix_sets).__name__),
+        )
+        for set_name, expression in matrix_sets.items():
+            self.assertIsInstance(
+                expression,
+                str,
+                "matrix.sets.{} must be a DSL expression string, got {!r}".format(
+                    set_name, expression
+                ),
+            )
+            self.assertNotIn(
+                self.MODEL_ID,
+                expression,
+                "matrix.sets.{0} expression {1!r} references {2!r}: a model in a set "
+                "can run with the set's other models, but the two setups must never be "
+                "co-resident — the batch id must appear in no set (plan §1.6)".format(
+                    set_name, expression, self.MODEL_ID
+                ),
+            )
+
+    def test_matrix_vars_coder_unchanged(self):
+        """matrix.vars.coder must still equal the baseline id, not the new one.
+
+        If the coder var pointed at the batch id, the day-to-day setup would be
+        the stress-test setup and the A/B comparison would have no control.
+        """
+        data = yamlio.load(CONFIG_YAML)
+        coder_id = (data.get("matrix") or {}).get("vars", {}).get("coder")
+        self.assertEqual(
+            coder_id,
+            self.BASELINE_ID,
+            "matrix.vars.coder must still be {!r}, got {!r}: the running system's "
+            "coder is the baseline, and the batch block is the isolated stress "
+            "target only (plan §1.6)".format(self.BASELINE_ID, coder_id),
+        )
+
+    def test_read_models_coder_topology_unchanged(self):
+        """config.read_models() must still report the baseline coder id and 262144 window.
+
+        Anvil's rendered Zoo Code settings depend on both values, so either one
+        drifting would corrupt every provisioned repo even though the vLLM side
+        would keep working.
+        """
+        from anvilkit.config import read_models  # noqa: E402
+
+        topology = read_models(CONFIG_YAML)
+        self.assertEqual(
+            topology.coder_id,
+            self.BASELINE_ID,
+            "read_models().coder_id must be {!r}, got {!r}: Anvil's rendered Zoo "
+            "Code settings depend on it, so the batch id must not leak into the "
+            "running system's topology".format(self.BASELINE_ID, topology.coder_id),
+        )
+        self.assertEqual(
+            topology.coder_context_window,
+            262144,
+            "read_models().coder_context_window must be 262144, got {!r}: Anvil's "
+            "rendered Zoo Code settings depend on it".format(
+                topology.coder_context_window
+            ),
+        )
+
+    def test_preload_ids_all_exist_in_models(self):
+        """Every id in hooks.on_startup.preload must still be a key in models.
+
+        A preload id that no longer exists is a startup-time config break: the
+        gateway would try to boot a model it cannot find.
+        """
+        data = yamlio.load(CONFIG_YAML)
+        models = data.get("models", {})
+        preload = (data.get("hooks") or {}).get("on_startup", {}).get("preload", [])
+        for model_id in preload:
+            self.assertIn(
+                model_id,
+                models,
+                "preloaded id {!r} is not a key in models: llama-swap requires preload "
+                "ids to match keys in the models section, so this would break startup".format(
+                    model_id
+                ),
+            )
