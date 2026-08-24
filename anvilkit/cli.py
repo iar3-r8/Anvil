@@ -3,9 +3,9 @@
 Design rules for this module:
 
 * **it decides, it does not do.** Resolving values (flags, ``.env``, YAML,
-  prompts) happens here; the work happens in ``compose``, ``health``, ``provision``
-  and ``render``. That keeps this file readable and keeps those modules testable
-  without a CLI.
+  prompts) happens here; the work happens in ``compose``, ``health``, ``stress``,
+  ``provision`` and ``render``. That keeps this file readable and keeps those
+  modules testable without a CLI.
 * **every failure class gets its own exit code**, so a caller can react to
   whether the problem was configuration, docker, provisioning, or a missing
   interactive value.
@@ -16,10 +16,13 @@ Interactivity is decided in exactly one place, :func:`_is_interactive`, and pass
 down. Together with ``--yes`` this makes Anvil scriptable.
 """
 
+import json
 import os
 import sys
+import time
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple
 
 import click
 import typer
@@ -30,6 +33,22 @@ from .config import ConfigError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
 from .render import RenderError
+from .stress import (
+    DEFAULT_PROMPT,
+    LevelEvent,
+    StressError,
+    StressReport,
+    WarmUpAttempt,
+    WarmUpResult,
+    check_model_available,
+    concurrency_levels,
+    format_report,
+    format_report_json,
+    log_path,
+    run_stress,
+    warm_up,
+    write_log,
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -41,6 +60,11 @@ EXIT_CONFIG = 3
 EXIT_DOCKER = 4
 EXIT_PROVISION = 5
 EXIT_PROMPT = 6
+# Stress: 7 means no results were produced at all; 8 means the run finished
+# and found failures, which is a successful measurement, so it gets its own
+# code rather than reusing EXIT_ERROR.
+EXIT_STRESS_UNAVAILABLE = 7
+EXIT_STRESS_FAILURES = 8
 
 ENV_FILENAME = ".env"
 SETTINGS_FILENAME = "anvil.yaml"
@@ -575,7 +599,7 @@ def status(
 
 
 def _report_available_models(shared: Context, port: int) -> "typer.Exit":
-    """Explain which model ids ``test-model`` would accept.
+    """Explain which model ids ``test-model`` and ``stress`` would accept.
 
     A model id is long, case-sensitive and easy to mistype, so refusing with a
     bare "missing argument" would send the user to another command to find the
@@ -688,6 +712,295 @@ def test_model(
         # not of Anvil, so it takes the generic error code rather than one of
         # the configuration or docker codes.
         raise typer.Exit(EXIT_ERROR)
+
+
+# ---------------------------------------------------------------------------
+# stress
+# ---------------------------------------------------------------------------
+
+# Warm-up paces its retry attempts; the interval is deliberately short because
+# a load in progress surfaces as a connection error within seconds, not a
+# long hang.
+_WARMUP_RETRY_INTERVAL = 5.0
+
+
+def _stress_send(
+    port: int,
+    model_id: str,
+    prompt: str,
+    max_tokens: int,
+    timeout: float,
+) -> "Callable[[], 'health.ChatOutcome']":
+    """The one-argument-free ``send`` that warm-up and the runner both call.
+
+    Binds the gateway call so the stress module never learns the wire format
+    or the port; ``chat_once`` already never raises for a failed request.
+    """
+    def send() -> "health.ChatOutcome":
+        return health.chat_once(
+            port=port,
+            model_id=model_id,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            timeout=timeout,
+        )
+
+    return send
+
+
+def _stamp_report(
+    report: "StressReport",
+    prompt: str,
+    max_tokens: int,
+    requests: int,
+) -> None:
+    """Fill the metadata fields the runner does not know.
+
+    ``run_stress`` builds the report without the run's parameters, so the CLI
+    stamps them in before rendering; the timestamp is the run's start, not the
+    print time, so the report reads identically however late it is shown.
+    """
+    report.started_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    report.prompt = prompt
+    report.max_tokens = max_tokens
+    report.requests_per_level = requests
+    clean = [
+        level.concurrency
+        for level in report.levels
+        if level.failed == 0
+    ]
+    report.max_clean_concurrency = max(clean) if clean else None
+
+
+def _any_level_failed(report: "StressReport") -> bool:
+    return any(level.failed for level in report.levels)
+
+
+def _print_warmup_attempt(
+    shared: Context, attempt: WarmUpAttempt
+) -> None:
+    """One indented line per failed warm-up attempt.
+
+    ``will_retry`` is the engine's own decision, so the line promises another
+    attempt only when one is really queued; a missing error reads as
+    ``no reason reported`` rather than an empty field.
+    """
+    line = "  warm-up attempt {} failed after {:.1f}s: {}".format(
+        attempt.attempt,
+        attempt.elapsed_seconds,
+        attempt.error or "no reason reported",
+    )
+    if attempt.will_retry:
+        line += "; retrying in {:g}s".format(_WARMUP_RETRY_INTERVAL)
+    shared.echo(line)
+
+
+def _print_level_event(shared: Context, event: LevelEvent) -> None:
+    """The default one-line-per-level start and finish.
+
+    The finish line is printed even for an all-failed level: zero successes
+    is a finding, not a reason to stay silent.
+    """
+    if event.phase == "start":
+        shared.echo(
+            "Level {}: sending {} requests".format(event.concurrency, event.requests)
+        )
+    else:
+        summary = event.summary
+        if summary is None:
+            # A finish always carries its summary; without one there is
+            # nothing truthful to print.
+            return
+        shared.echo(
+            "Level {}: {}/{} ok, {} failed".format(
+                event.concurrency,
+                summary.succeeded,
+                event.requests,
+                summary.failed,
+            )
+        )
+
+
+@app.command()
+def stress(
+    ctx: typer.Context,
+    model_name: Optional[str] = typer.Argument(
+        None,
+        metavar="MODEL_NAME",
+        help="The model id to stress, as it appears in 'anvil status'.",
+    ),
+    max_concurrency: int = typer.Option(
+        16, "--max-concurrency", min=1, help="Highest concurrency level; the ramp is derived from it."
+    ),
+    requests: int = typer.Option(
+        20, "--requests", min=1, help="Requests sent at each level."
+    ),
+    prompt: str = typer.Option(
+        DEFAULT_PROMPT, "--prompt", help="Fixed prompt, identical for every request."
+    ),
+    max_tokens: int = typer.Option(
+        128, "--max-tokens", min=1, help="Reply token ceiling, identical for every request."
+    ),
+    timeout: float = typer.Option(
+        120.0, "--timeout", help="Seconds per measured request."
+    ),
+    warmup_timeout: float = typer.Option(
+        600.0,
+        "--warmup-timeout",
+        help="Total seconds allowed for a cold model to come up before measuring.",
+    ),
+    no_warmup: bool = typer.Option(
+        False, "--no-warmup", help="Skip warm-up; skews level 1 for a cold model."
+    ),
+    log_file: Optional[Path] = typer.Option(
+        None, "--log-file", help="Override the derived log path."
+    ),
+    no_log_file: bool = typer.Option(
+        False, "--no-log-file", help="Print the report but write no log."
+    ),
+    llm_port: Optional[int] = typer.Option(
+        None, "--llm-port", min=1, max=65535, help="Override the gateway port."
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Emit only the JSON summary; nothing decorative precedes it."
+    ),
+    assume_yes: bool = typer.Option(False, "--yes", "-y", help="Never prompt."),
+) -> None:
+    """Ramp a model from one concurrent request to the maximum and report where it breaks.
+
+    'status' and 'test-model' prove the model answers at all; this proves it
+    still answers under load, which is the question hardware sizing needs.
+    """
+    shared = _context(ctx, assume_yes)
+
+    try:
+        port = shared.resolve_port(llm_port)
+    except ConfigError as exc:
+        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+
+    # Same reasoning as test-model: checked here so the refusal can list the
+    # registry, and it precedes --dry-run for the same reason.
+    if model_name is None:
+        raise _report_available_models(shared, port)
+
+    if shared.dry_run:
+        # --dry-run precedes the probe: the probe itself is a network request,
+        # so announcing the plan must not touch the gateway at all.
+        body = health.build_chat_request(model_name, prompt, max_tokens)
+        derived = log_path(shared.root, model_name, datetime.utcnow())
+        shared.echo("Would stress {}:".format(model_name))
+        shared.echo("  levels: {}".format(", ".join(str(l) for l in concurrency_levels(max_concurrency))))
+        shared.echo("  requests per level: {}".format(requests))
+        shared.echo("  gateway port: {}".format(port))
+        shared.echo("  log file: {}".format(derived))
+        shared.echo(health.format_request(port, body))
+        return
+
+    # --json must be pipeable, so nothing decorative may precede it.
+    if not as_json:
+        _banner(shared)
+
+    status = health.check_gateway(port)
+    availability = check_model_available(status, model_id=model_name)
+
+    if availability.verdict == "unknown_model":
+        lines = [
+            "❌ Model {!r} is not registered on the gateway at port {}.".format(
+                model_name, port
+            )
+        ]
+        if availability.available:
+            lines.append("   Available models:")
+            for model_id in availability.available:
+                lines.append("     - {}".format(model_id))
+        else:
+            lines.append(
+                "   The registry on port {} is empty.".format(port)
+            )
+        raise _fail("\n".join(lines), EXIT_USAGE)
+
+    if availability.verdict == "unreachable":
+        # The gateway's own text is the diagnosis; paraphrase would lose it.
+        raise _fail(
+            "❌ The gateway on port {} could not be reached: {}".format(
+                port, availability.reason or "no reason reported"
+            ),
+            EXIT_STRESS_UNAVAILABLE,
+        )
+
+    send = _stress_send(port, model_name, prompt, max_tokens, timeout)
+
+    if no_warmup:
+        warm_up_result = WarmUpResult(
+            ok=True, attempts=0, elapsed_seconds=0.0, error=None
+        )
+    else:
+        shared.detail(
+            "warming up {} at http://localhost:{} (budget {}s)".format(
+                model_name, port, warmup_timeout
+            )
+        )
+        if not as_json:
+            shared.echo(
+                "Warming up {} at http://localhost:{}\u2026".format(model_name, port)
+            )
+        # --json passes None rather than a quiet printer: with nothing that
+        # could print, the JSON document being the first byte on stdout is
+        # structural, not a discipline.
+        warm_up_result = warm_up(
+            send=send,
+            timeout=warmup_timeout,
+            retry_interval=_WARMUP_RETRY_INTERVAL,
+            sleep=time.sleep,
+            now=time.monotonic,
+            on_attempt=None if as_json else lambda a: _print_warmup_attempt(shared, a),
+        )
+        if not warm_up_result.ok:
+            raise _fail(
+                "❌ Warm-up failed after {} attempt(s): {}".format(
+                    warm_up_result.attempts,
+                    warm_up_result.error or "no reason reported",
+                ),
+                EXIT_STRESS_UNAVAILABLE,
+            )
+
+    shared.detail(
+        "measuring {} at http://localhost:{} ({} requests per level, timeout {}s)".format(
+            model_name, port, requests, timeout
+        )
+    )
+    report = run_stress(
+        send=send,
+        levels=concurrency_levels(max_concurrency),
+        request_count=requests,
+        warm_up_result=warm_up_result,
+        model_id=model_name,
+        port=port,
+        on_level=None if as_json else lambda e: _print_level_event(shared, e),
+    )
+    _stamp_report(report, prompt, max_tokens, requests)
+
+    if as_json:
+        shared.echo(format_report_json(report))
+    else:
+        shared.echo(format_report(report, use_color=shared.use_color))
+
+    if not no_log_file:
+        target = log_file if log_file is not None else log_path(
+            shared.root, model_name, datetime.utcnow()
+        )
+        write_log(
+            target,
+            format_report(report, use_color=False),
+            format_report_json(report),
+        )
+        shared.detail("log written to {}".format(target))
+
+    if _any_level_failed(report):
+        # A run that finished and found failures is a successful measurement;
+        # its own code says "I learned something bad" rather than "I learned
+        # nothing".
+        raise typer.Exit(EXIT_STRESS_FAILURES)
 
 
 # ---------------------------------------------------------------------------
@@ -1244,6 +1557,9 @@ def run() -> int:
     except PromptError as exc:
         typer.echo("❌ {}".format(exc), err=True)
         return EXIT_PROMPT
+    except StressError as exc:
+        typer.echo("❌ {}".format(exc), err=True)
+        return EXIT_STRESS_UNAVAILABLE
     except RenderError as exc:
         typer.echo("❌ {}".format(exc), err=True)
         return EXIT_CONFIG

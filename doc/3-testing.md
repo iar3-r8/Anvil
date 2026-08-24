@@ -21,12 +21,13 @@ never touches the network, the Docker daemon, or your home directory.
 
 ## Checking the CLI against a real host
 
-Two commands inspect actual behaviour without starting or changing anything:
+Commands that inspect actual behaviour without starting or changing anything:
 
 ```bash
 ./anvil doctor                                   # what Anvil found on this host
 ./anvil --dry-run up                             # the docker command that would run
 ./anvil --dry-run setup-repo /tmp/scratch --yes  # the files that would be written
+./anvil --dry-run stress MODEL                   # the levels, port and log path that would be used
 ```
 
 ## When to run
