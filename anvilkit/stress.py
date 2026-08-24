@@ -203,12 +203,31 @@ class WarmUpResult:
     error: Optional[str]
 
 
+@dataclasses.dataclass
+class WarmUpAttempt:
+    """One failed warm-up attempt, reported to the optional ``on_attempt``
+    callback before the loop sleeps (or gives up).
+
+    ``error`` is the failed outcome's error text verbatim -- including
+    ``None`` and ``""`` -- so the printer, not the engine, decides how a
+    missing reason reads. ``will_retry`` is the negation of the budget
+    decision: ``True`` when the loop is about to sleep and try again,
+    ``False`` on the final attempt of an exhausted budget.
+    """
+
+    attempt: int
+    elapsed_seconds: float
+    error: Optional[str]
+    will_retry: bool
+
+
 def warm_up(
     send: Callable[[], "ChatOutcome"],
     timeout: float,
     retry_interval: float,
     sleep: Callable[[float], None],
     now: Callable[[], float],
+    on_attempt: Optional[Callable[[WarmUpAttempt], None]] = None,
 ) -> "WarmUpResult":
     """Retry a cold model until it answers, and report the outcome.
 
@@ -233,22 +252,42 @@ def warm_up(
     ``sleep`` and ``now`` are injected rather than read from the process,
     which is what lets the elapsed time be exercised by an instant test.
 
+    When ``on_attempt`` is given, every failed attempt reports a
+    :class:`WarmUpAttempt` to it -- after the failed ``send`` returned and
+    the budget decision was made, but before the retry ``sleep`` runs or the
+    exhausted result is returned. A successful attempt reports nothing,
+    even the success that ends a retry sequence: the report's own "ok after
+    N attempt(s)" line would otherwise be double-reported. An exception
+    raised by the callback is deliberately not caught -- a broken printer
+    must not silently swallow progress. ``on_attempt=None`` changes
+    nothing: same result, same call counts, same sleeps.
+
     Args:
         send: one chat completion; returns an outcome, never raises.
         timeout: the total warm-up budget, in seconds.
         retry_interval: the wall-clock pause between attempts, in seconds.
         sleep: the injected sleep.
         now: the injected monotonic clock.
+        on_attempt: optional reporter of failed attempts; ``None`` by
+            default, so existing positional callers are untouched.
 
     Returns:
-        A ``WarmUpResult``. Never raises; an intermediate failure within the
-        budget is a queued attempt, not an error.
+        A ``WarmUpResult``. Never raises for a failed model; an
+        intermediate failure within the budget is a queued attempt, not an
+        error. (An exception raised *by* ``on_attempt`` is not one of
+        those: it propagates.)
     """
     start = now()
     attempts = 0
     last_error: Optional[str] = None
+    # Time spent inside ``send`` calls only, accumulated per attempt: the
+    # event's elapsed is the model's in-flight time so far, which excludes
+    # the retry pauses -- waits are Anvil's own, and the retry lines report
+    # them separately.
+    attempt_time = 0.0
     while True:
         attempts += 1
+        send_started = now()
         outcome = send()
         if outcome.ok:
             return WarmUpResult(
@@ -258,11 +297,22 @@ def warm_up(
                 error=None,
             )
         last_error = outcome.error
+        attempt_time += now() - send_started
         # The next attempt would start one interval past this failure; an
         # attempt may start only while elapsed is strictly less than the
         # budget, so refuse to sleep -- and therefore to start it -- when
         # the start would land at or past the budget.
-        if now() - start + retry_interval >= timeout:
+        will_retry = now() - start + retry_interval < timeout
+        if on_attempt is not None:
+            on_attempt(
+                WarmUpAttempt(
+                    attempt=attempts,
+                    elapsed_seconds=attempt_time,
+                    error=last_error,
+                    will_retry=will_retry,
+                )
+            )
+        if not will_retry:
             return WarmUpResult(
                 ok=False,
                 attempts=attempts,
