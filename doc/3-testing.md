@@ -37,5 +37,5 @@ Commands that inspect actual behaviour without starting or changing anything:
 - Before opening a pull request.
 
 > Conventions for *writing* tests (TDD cycle, what may not be asserted on, the
-> stdin and `CliRunner` pitfalls) live in
+> stdin, `CliRunner` and `getpass` pitfalls) live in
 > [`.roo/rules/coding-guidelines.md`](../.roo/rules/coding-guidelines.md).
