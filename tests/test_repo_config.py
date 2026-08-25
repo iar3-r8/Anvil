@@ -692,6 +692,105 @@ class TestQwen38BatchModel(unittest.TestCase):
             ),
         )
 
+    # -- Behaviour 6: the control block stays pinned ------------------------------
+    # This section exists to FAIL LOUDLY if someone "helpfully fixes" the
+    # baseline's --max-num-seqs (or its sibling scheduling flags). The whole
+    # value of the A/B stress experiment (anvil stress "Qwen/Qwen3.8-27B-FP8"
+    # vs "Qwen/Qwen3.8-27B-FP8-batch") is that the baseline is the CONTROL:
+    # it must keep --max-num-seqs 1 so that the --max-num-seqs 64 variant is
+    # the only variable (plan section 1.1, 2). A changed baseline destroys the
+    # comparison — the two reports would then measure two different
+    # schedulers, not one variable. DO NOT delete these tests as redundant.
+    #
+    # Note: the baseline block also carries concurrencyLimit: 64 — that was
+    # added as a measurement-harness property in Behaviour 4 and is
+    # intentional and pinned by the Behaviour 4 tests above. Only the vLLM
+    # scheduling flags are pinned here.
+
+    _CONTROL_LOST_EXPLANATION = (
+        "the baseline is the CONTROL of the A/B stress comparison: it must keep "
+        "--max-num-seqs 1 so that the --max-num-seqs 64 batch block is the only "
+        "variable under test — if this drifts, the two stress reports measure two "
+        "different schedulers and the A/B comparison no longer has a control "
+        "(plan sections 1.1 and 2). Do not 'fix' this drift; fix the block instead."
+    )
+
+    def _baseline_cmd_tokens(self):
+        """Return the folded ``cmd`` of the baseline block split into tokens."""
+        block = self._load_baseline_block()
+        cmd = block.get("cmd")
+        self.assertIsInstance(
+            cmd,
+            str,
+            "cmd in models[ {!r} ] must be a string, got {}".format(
+                self.BASELINE_ID, type(cmd).__name__
+            ),
+        )
+        return cmd.split()
+
+    def test_baseline_cmd_has_max_num_seqs_1_exactly_once(self):
+        """Baseline cmd must carry the token pair ['--max-num-seqs', '1'] exactly once.
+
+        This test exists to fail loudly if someone "helpfully fixes" the
+        baseline's --max-num-seqs: a changed baseline destroys the A/B
+        experiment's control, so DO NOT delete this test as redundant. The
+        baseline also carries concurrencyLimit: 64 (added in Behaviour 4) —
+        that is an intentional harness property, not a scheduling flag, and
+        is pinned by the Behaviour 4 tests instead.
+        """
+        tokens = self._baseline_cmd_tokens()
+        count = tokens.count("--max-num-seqs")
+        self.assertEqual(
+            count,
+            1,
+            "baseline cmd must contain '--max-num-seqs' exactly once, found {} "
+            "occurrence(s): {!r}; {} — offending value token(s): {!r}".format(
+                count,
+                [tok for tok in tokens if tok == "--max-num-seqs"],
+                self._CONTROL_LOST_EXPLANATION,
+                self._flag_values(tokens, "--max-num-seqs"),
+            ),
+        )
+        values = self._flag_values(tokens, "--max-num-seqs")
+        self.assertEqual(
+            values,
+            ["1"],
+            "baseline cmd must carry the token pair ['--max-num-seqs', '1']; "
+            "value token(s) found: {!r}; {} — a drifted --max-num-seqs means the "
+            "batch block is no longer the only variable, so the experiment's "
+            "control is gone".format(
+                values, self._CONTROL_LOST_EXPLANATION
+            ),
+        )
+
+    def test_baseline_cmd_pinned_scheduling_flags(self):
+        """Baseline cmd must keep --tensor-parallel-size 2, --max-model-len 262144 and --kv-cache-dtype fp8.
+
+        These are the other pinned control flags: the batch block copies all of
+        them verbatim (plan section 2), so the only variable between the two
+        setups is --max-num-seqs. If any of these drifts in the baseline, the
+        A/B comparison no longer isolates batching and has no valid control.
+        The baseline also carries concurrencyLimit: 64 (Behaviour 4) —
+        intentional, harness-only; only vLLM scheduling flags are pinned here.
+        """
+        tokens = self._baseline_cmd_tokens()
+        pinned = {
+            "--tensor-parallel-size": "2",
+            "--max-model-len": "262144",
+            "--kv-cache-dtype": "fp8",
+        }
+        for flag, expected in pinned.items():
+            values = self._flag_values(tokens, flag)
+            self.assertEqual(
+                values,
+                [expected],
+                "baseline cmd must carry the token pair [{!r}, {!r}] exactly once; "
+                "value token(s) found: {!r}; {} — the batch block copies every "
+                "flag except --max-num-seqs, so a drift here adds a second "
+                "variable to the experiment and destroys the control".format(
+                    flag, expected, values, self._CONTROL_LOST_EXPLANATION
+                ),
+            )
     def test_preload_ids_all_exist_in_models(self):
         """Every id in hooks.on_startup.preload must still be a key in models.
 
