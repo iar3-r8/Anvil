@@ -78,8 +78,12 @@ models:
     proxy: http://vllm-${PORT}:${PORT}
     type: proxy
 
+  # A/B stress control: --max-num-seqs 1 is deliberate (single-request scheduling);
+  # do not "fix" it. concurrencyLimit is a harness property and must stay equal to
+  # Qwen/Qwen3.8-27B-FP8-batch.
   "Qwen/Qwen3.8-27B-FP8":
     checkEndpoint: /v1/models
+    concurrencyLimit: 64
     cmd: >
       docker run --rm --runtime=nvidia
       --gpus '"device=${env.LLM_DEVICE_ID_1},${env.LLM_DEVICE_ID_2}"'
@@ -100,6 +104,39 @@ models:
       --tool-call-parser qwen3_coder
       --enable-prefix-caching
       --max-num-seqs 1
+      --max-num-batched-tokens 16384
+    cmdStop: "docker stop vllm-${PORT} || true"
+    proxy: http://vllm-${PORT}:${PORT}
+    type: proxy
+
+  # Stress-only A/B variant of the block above: same weights, --max-num-seqs 64.
+  # Deliberately absent from preload and from the matrix — that omission keeps it
+  # from coexisting with the baseline. --served-model-name bridges the gateway id
+  # to the weights path. Not a production model.
+  "Qwen/Qwen3.8-27B-FP8-batch":
+    checkEndpoint: /v1/models
+    concurrencyLimit: 64
+    cmd: >
+      docker run --rm --runtime=nvidia
+      --gpus '"device=${env.LLM_DEVICE_ID_1},${env.LLM_DEVICE_ID_2}"'
+      -e HF_TOKEN=${env.HF_TOKEN}
+      --network llm-network
+      --name vllm-${PORT}
+      -v ${env.HF_HOME}:/root/.cache/huggingface
+      vllm/vllm-openai:latest
+      --model Qwen/Qwen3.8-27B-FP8
+      --served-model-name Qwen/Qwen3.8-27B-FP8-batch
+      --host 0.0.0.0
+      --port ${PORT}
+      --tensor-parallel-size 2
+      --max-model-len 262144
+      --gpu-memory-utilization 0.90
+      --kv-cache-dtype fp8
+      --reasoning-parser qwen3
+      --enable-auto-tool-choice
+      --tool-call-parser qwen3_coder
+      --enable-prefix-caching
+      --max-num-seqs 64
       --max-num-batched-tokens 16384
     cmdStop: "docker stop vllm-${PORT} || true"
     proxy: http://vllm-${PORT}:${PORT}
