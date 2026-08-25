@@ -78,6 +78,9 @@ models:
     proxy: http://vllm-${PORT}:${PORT}
     type: proxy
 
+  # A/B stress control: --max-num-seqs 1 is deliberate (single-request scheduling);
+  # do not "fix" it. concurrencyLimit is a harness property and must stay equal to
+  # Qwen/Qwen3.8-27B-FP8-batch.
   "Qwen/Qwen3.8-27B-FP8":
     checkEndpoint: /v1/models
     concurrencyLimit: 64
@@ -106,6 +109,10 @@ models:
     proxy: http://vllm-${PORT}:${PORT}
     type: proxy
 
+  # Stress-only A/B variant of the block above: same weights, --max-num-seqs 64.
+  # Deliberately absent from preload and from the matrix — that omission keeps it
+  # from coexisting with the baseline. --served-model-name bridges the gateway id
+  # to the weights path. Not a production model.
   "Qwen/Qwen3.8-27B-FP8-batch":
     checkEndpoint: /v1/models
     concurrencyLimit: 64

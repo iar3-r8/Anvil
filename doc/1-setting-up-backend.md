@@ -165,6 +165,38 @@ highest concurrency that completed with zero failures.
 | `--json` | off | Emit only the JSON summary on stdout. |
 | `--yes`, `-y` | off | Never prompt. |
 
+### The two Qwen3.8 setups
+
+`config.yaml` carries two blocks that run the same `Qwen/Qwen3.8-27B-FP8` weights,
+differing only in scheduler settings. They form an A/B pair for `stress`, not two
+production models:
+
+| Model id | `--max-num-seqs` | Role |
+| :--- | :--- | :--- |
+| `Qwen/Qwen3.8-27B-FP8` | `1` | The production coder (`matrix.vars.coder`, preloaded at startup) — and the **control** of the A/B comparison. Its `--max-num-seqs 1` is deliberate; changing it destroys the comparison. |
+| `Qwen/Qwen3.8-27B-FP8-batch` | `64` | A **stress-only variant** of the same weights, present so continuous batching can be measured against the control. Do not use it as a production model. |
+
+The two setups run **independently, one at a time**. The `-batch` id is
+deliberately absent from `hooks.on_startup.preload` and from `matrix.vars`/`matrix.sets`
+— that omission is the mechanism that guarantees a request for one setup evicts the
+other. Do not add the `-batch` id to those lists.
+
+Both blocks carry an identical `concurrencyLimit: 64`. llama-swap caps in-flight
+requests per model (default 10, rejecting the excess with HTTP 429), so without the
+explicit cap the stress ramp would be refused by the gateway above concurrency 10 and
+the report would measure llama-swap rather than vLLM. The cap is a property of the
+measurement harness, not the variable under test, which is why it must stay equal on
+both blocks.
+
+To run the comparison:
+
+```bash
+./anvil stress Qwen/Qwen3.8-27B-FP8         # control: --max-num-seqs 1
+./anvil stress Qwen/Qwen3.8-27B-FP8-batch   # variant: --max-num-seqs 64
+```
+
+Run separately, never concurrently.
+
 ### Understanding Model Status
 
 When you run `./anvil status`, you'll see models listed as:
