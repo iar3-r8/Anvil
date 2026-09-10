@@ -165,6 +165,24 @@ highest concurrency that completed with zero failures.
 | `--json` | off | Emit only the JSON summary on stdout. |
 | `--yes`, `-y` | off | Never prompt. |
 
+### The Qwen3.8 coder
+
+The production coder is `Qwen/Qwen3.8-27B-FP8` (`matrix.vars.coder`, preloaded at
+startup), running with **continuous batching** (`--max-num-seqs 64`).
+
+The block originally ran with `--max-num-seqs 1` (single-request scheduling), and a
+separate `-batch` variant block existed so the two schedulers could be compared with
+`stress`. That comparison is over: the batched scheduler was measured as much more
+efficient and is now the only one (round-three decision,
+[`plans/qwen38-concurrency-second-setup.md`](../plans/qwen38-concurrency-second-setup.md)).
+The `-batch` block and its `--served-model-name` bridge are retired; do not
+resurrect them.
+
+The block carries `concurrencyLimit: 64`. llama-swap caps in-flight requests per
+model (default 10, rejecting the excess with HTTP 429), so without the explicit cap
+the stress ramp would be refused by the gateway above concurrency 10 and the report
+would measure llama-swap rather than vLLM.
+
 ### Understanding Model Status
 
 When you run `./anvil status`, you'll see models listed as:

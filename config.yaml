@@ -78,8 +78,13 @@ models:
     proxy: http://vllm-${PORT}:${PORT}
     type: proxy
 
+  # The production coder runs with continuous batching (--max-num-seqs 64): the
+  # batched scheduler was stress-tested against the old --max-num-seqs 1 control
+  # and measured as much more efficient (plans/qwen38-concurrency-second-setup.md,
+  # round three). concurrencyLimit is a measurement-harness property.
   "Qwen/Qwen3.8-27B-FP8":
     checkEndpoint: /v1/models
+    concurrencyLimit: 64
     cmd: >
       docker run --rm --runtime=nvidia
       --gpus '"device=${env.LLM_DEVICE_ID_1},${env.LLM_DEVICE_ID_2}"'
@@ -99,7 +104,7 @@ models:
       --enable-auto-tool-choice
       --tool-call-parser qwen3_coder
       --enable-prefix-caching
-      --max-num-seqs 1
+      --max-num-seqs 64
       --max-num-batched-tokens 16384
     cmdStop: "docker stop vllm-${PORT} || true"
     proxy: http://vllm-${PORT}:${PORT}
