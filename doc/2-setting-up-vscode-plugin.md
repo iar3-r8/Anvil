@@ -155,10 +155,33 @@ For a fully sandboxed coding session — isolated filesystem, no access to your
 host credentials, and all MCP runtimes pre-installed — open the repo in VS Code
 and click **Reopen in Container**.
 
-The container runs with `--network=host` so `localhost` still reaches the gateway
-on the host. The Docker socket is **not** mounted, so `./anvil up` and
-`./anvil down` must be run from the host. The GitHub token is injected via
-`remoteEnv` from the host `${GITHUB_TOKEN}` environment variable.
+The container joins the gateway's own bridge network (`--network=llm-network`)
+instead of running with `--network=host`. That is what lets the LLM be reached
+by container name rather than through the host's port mapping.
+
+**Provisioning for the container:** `setup-repo` renders Zoo Code URLs with the
+host's perspective by default (`http://localhost:<LLM_PORT>/v1`). When the repo
+will be worked on inside a dev container, pass `--container` so the rendered
+`zoo-code-settings.json` points at the llm-network container names instead:
+
+- `openAiBaseUrl` / embedder base URL: `http://llama-swap-service:8080/v1`
+- `codebaseIndexQdrantUrl`: `http://coder_qdrant-service:6333`
+
+```bash
+./anvil setup-repo <target-repo> --container --yes
+```
+
+The flag is explicit — `setup-repo` never guesses — because one repository
+cannot serve both a host editor and a container editor with the same settings
+file, and `zoo-code-settings.json` is rewritten wholesale on every run. If you
+switch between the two environments, re-run `setup-repo` with (or without)
+`--container` to flip the URLs.
+
+The gateway stack must be running (`./anvil up`) before the container's LLM
+calls can resolve, since the container names exist only on that network. The
+Docker socket is **not** mounted, so `./anvil up` and `./anvil down` must be
+run from the host. The GitHub token is injected via `remoteEnv` from the host
+`${GITHUB_TOKEN}` environment variable.
 
 See [`.devcontainer/devcontainer.json`](../.devcontainer/devcontainer.json) for
 details.

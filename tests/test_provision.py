@@ -181,6 +181,23 @@ class ArtifactTests(ProvisionCase):
         self.assertEqual(local["openAiCustomModelInfo"]["contextWindow"], 262144)
         self.assertIn("8000", local["openAiBaseUrl"])
 
+    def test_container_target_zoo_settings_point_at_the_gateway_containers(self):
+        """container_target=True re-points every rendered URL at llm-network."""
+        self.provision(repo_plan=plan(container_target=True))
+
+        settings = self.read_json("zoo-code-settings.json")
+        local = settings["providerProfiles"]["apiConfigs"]["llama_swap"]
+        index_config = settings["globalSettings"]["codebaseIndexConfig"]
+
+        self.assertEqual(local["openAiBaseUrl"], "http://llama-swap-service:8080/v1")
+        self.assertEqual(
+            index_config["codebaseIndexOpenAiCompatibleBaseUrl"],
+            "http://llama-swap-service:8080/v1",
+        )
+        self.assertEqual(
+            index_config["codebaseIndexQdrantUrl"], "http://coder_qdrant-service:6333"
+        )
+
     def test_declined_anthropic_points_architect_at_the_local_profile(self):
         self.provision()
 

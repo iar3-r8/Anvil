@@ -6,7 +6,7 @@
     },
 
     "runArgs": [
-        "--network=host",
+        "--network=llm-network",
         "--security-opt=no-new-privileges:true",
         "--cap-drop=ALL",
         "--shm-size=2g"

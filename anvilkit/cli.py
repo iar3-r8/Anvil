@@ -1310,6 +1310,12 @@ def setup_repo(
     no_oxylabs: bool = typer.Option(
         False, "--no-oxylabs", help="Skip Oxylabs documentation scraping entirely."
     ),
+    container: bool = typer.Option(
+        False,
+        "--container",
+        help="Render Zoo Code URLs for a dev container on the gateway's "
+        "llm-network (llama-swap-service:8080) instead of localhost.",
+    ),
     assume_yes: bool = typer.Option(
         False, "--yes", "-y", help="Accept every default without prompting."
     ),
@@ -1361,6 +1367,7 @@ def setup_repo(
         github_token=token,
         oxylabs_username=oxylabs_username,
         oxylabs_password=oxylabs_password,
+        container_target=container,
     )
 
     try:

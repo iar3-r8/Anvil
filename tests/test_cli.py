@@ -2266,6 +2266,18 @@ class TestSetupRepo(CliCase):
         plan = self.captured_plan(["setup-repo", self.target, "--yes"])
         self.assertEqual(8000, plan.port)
 
+    def test_container_target_defaults_to_false(self):
+        """Host-side setup-repo keeps rendering localhost URLs."""
+        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+
+        self.assertFalse(plan.container_target)
+
+    def test_container_flag_sets_container_target(self):
+        """--container re-points the rendered URLs at the llm-network containers."""
+        plan = self.captured_plan(["setup-repo", self.target, "--yes", "--container"])
+
+        self.assertTrue(plan.container_target)
+
     def test_plan_carries_the_context_window_from_config_yaml(self):
         from anvilkit import config
 

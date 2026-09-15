@@ -9,6 +9,8 @@ services:
     profiles: [ "coder" ]
     volumes:
       - ${DATA_DIR}/qdrant_storage:/qdrant/storage
+    networks:
+      - llm-network
 
   llama-swap:
     image: ghcr.io/mostlygeek/llama-swap:unified-cuda

@@ -34,6 +34,16 @@ class RenderError(Exception):
     """A template is missing, malformed, or lacks an expected structure."""
 
 
+# Container names on the gateway's llm-network, matching the container_name
+# values in docker-compose.yml (pinned by tests/test_repo_devcontainer.py).
+# Inside that network the gateway always listens on 8080, so the host-side
+# LLM_PORT mapping does not apply.
+_GATEWAY_CONTAINER = "llama-swap-service"
+_GATEWAY_INTERNAL_PORT = 8080
+_QDRANT_CONTAINER = "coder_qdrant-service"
+_QDRANT_INTERNAL_PORT = 6333
+
+
 def zoo_code_settings(
     port: int,
     context_window: int,
@@ -44,11 +54,24 @@ def zoo_code_settings(
     anthropic_api_key: str,
     anthropic_model_id: str,
     use_anthropic_for_frontier_modes: bool,
+    container_target: bool = False,
 ) -> str:
-    """Render ``zoo-code-settings.json`` as a JSON string."""
+    """Render ``zoo-code-settings.json`` as a JSON string.
+
+    ``container_target`` switches the URLs from the host perspective
+    (``localhost:<LLM_PORT>``) to the llm-network perspective
+    (``llama-swap-service:8080`` / ``coder_qdrant-service:6333``), for
+    repositories opened inside a dev container that joins the gateway's
+    bridge network.
+    """
     settings = _load_zoo_template(context_window)
 
-    base_url = "http://localhost:{}/v1".format(port)
+    if container_target:
+        base_url = "http://{}:{}/v1".format(_GATEWAY_CONTAINER, _GATEWAY_INTERNAL_PORT)
+        qdrant_url = "http://{}:{}".format(_QDRANT_CONTAINER, _QDRANT_INTERNAL_PORT)
+    else:
+        base_url = "http://localhost:{}/v1".format(port)
+        qdrant_url = None  # keep the template's localhost:6333 default
 
     profiles = settings["providerProfiles"]
     api_configs = profiles["apiConfigs"]
@@ -77,6 +100,8 @@ def zoo_code_settings(
 
     index_config = settings["globalSettings"]["codebaseIndexConfig"]
     index_config["codebaseIndexOpenAiCompatibleBaseUrl"] = base_url
+    if qdrant_url:
+        index_config["codebaseIndexQdrantUrl"] = qdrant_url
     if embedder_model_id:
         index_config["codebaseIndexEmbedderModelId"] = embedder_model_id
 

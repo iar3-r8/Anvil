@@ -59,6 +59,7 @@ class RepoPlan:
         github_token: str = "",
         oxylabs_username: str = "",
         oxylabs_password: str = "",
+        container_target: bool = False,
     ) -> None:
         self.port = port
         self.context_window = context_window
@@ -69,6 +70,7 @@ class RepoPlan:
         self.anthropic_api_key = anthropic_api_key
         self.anthropic_model_id = anthropic_model_id
         self.use_anthropic_for_frontier_modes = use_anthropic_for_frontier_modes
+        self.container_target = container_target
         self.github_token = github_token
         self.oxylabs_username = oxylabs_username
         self.oxylabs_password = oxylabs_password
@@ -765,8 +767,14 @@ def _write_zoo_settings(
         anthropic_api_key=repo_plan.anthropic_api_key,
         anthropic_model_id=repo_plan.anthropic_model_id,
         use_anthropic_for_frontier_modes=repo_plan.use_anthropic_for_frontier_modes,
+        container_target=repo_plan.container_target,
     )
 
+    if repo_plan.container_target:
+        report(
+            "   ↳ 🌐 Gateway target: llm-network container names "
+            "(dev container setup)"
+        )
     if repo_plan.use_anthropic_for_frontier_modes:
         report(
             "   ↳ 🧠 Architect mode: {} (Anthropic)".format(
