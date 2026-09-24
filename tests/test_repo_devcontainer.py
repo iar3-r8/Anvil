@@ -28,12 +28,13 @@ from anvilkit import yamlio  # noqa: E402
 
 
 COMPOSE_YAML = REPO_ROOT / "docker-compose.yml"
-DEVCONTAINER_JSON = REPO_ROOT / ".devcontainer" / "devcontainer.json"
+TEMPLATE_DEVCONTAINER_JSON = REPO_ROOT / "templates" / "devcontainer" / "devcontainer.json"
 NETWORK = "llm-network"
+ADD_HOST_ARG = "--add-host=host.docker.internal:host-gateway"
 
 
 def _load_devcontainer():
-    return json.loads(DEVCONTAINER_JSON.read_text(encoding="utf-8"))
+    return json.loads(TEMPLATE_DEVCONTAINER_JSON.read_text(encoding="utf-8"))
 
 
 def _compose_service(name):
@@ -44,19 +45,22 @@ def _compose_service(name):
     return services[name]
 
 
-class TestDevcontainerJoinsLlmNetwork(unittest.TestCase):
-    """The sandbox container shares the gateway's bridge network."""
+class TestTemplateDevcontainerUsesHostGatewayAddressing(unittest.TestCase):
+    """The provisioned template devcontainer reaches the gateway via host-gateway."""
 
-    def test_run_args_use_the_llm_network(self):
+    def test_run_args_have_host_gateway_add_host(self):
         run_args = _load_devcontainer()["runArgs"]
 
-        self.assertIn("--network={}".format(NETWORK), run_args)
+        self.assertIn(ADD_HOST_ARG, run_args)
 
-    def test_run_args_no_longer_use_host_networking(self):
-        """--network=host would silently break the container-name URLs again."""
+    def test_run_args_have_no_network_flag(self):
+        """Any --network entry (host or bridge) would break host-gateway addressing."""
         run_args = _load_devcontainer()["runArgs"]
 
-        self.assertNotIn("--network=host", run_args)
+        self.assertFalse(
+            any(arg.startswith("--network") for arg in run_args),
+            "unexpected --network flag in runArgs: {}".format(run_args),
+        )
 
 
 class TestComposeServicesAreOnTheLlmNetwork(unittest.TestCase):
