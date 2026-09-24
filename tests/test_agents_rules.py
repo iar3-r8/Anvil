@@ -51,6 +51,15 @@ _BULLET_RE = re.compile(r"^\s*[-*+]\s+")
 # Deliberately loose so the green step has latitude in the exact wording.
 _SIMPLICITY_TITLE_STEMS = ("simpl", "kiss")
 
+# A ``##`` heading names the B8 communication section (plans/
+# cut-agent-context-cost.md, behaviour 8) when its title carries this
+# stem. The plan recommends ``## Communication``. Deliberately disjoint
+# from ``_SIMPLICITY_TITLE_STEMS``: a new heading carrying a ``simpl`` or
+# ``kiss`` stem would make ``_simplicity_section_lines`` bind to the wrong
+# section and the eight KISS assertions would fail. The B8 block's
+# collision test asserts the new heading stays out of those stems.
+_COMMUNICATION_TITLE_STEMS = ("communication",)
+
 
 # --------------------------------------------------------------------------- #
 # Markdown parsing helpers
@@ -143,6 +152,61 @@ def _simplicity_section_lines(body_lines):
             end = idx
             break
     return body_lines[start:end]
+
+
+def _communication_section(body_lines):
+    # type: (List[str]) -> Optional[Tuple[str, List[str]]]
+    """The ``(heading title, section body lines)`` of the first ``##``
+    heading whose title names the communication section
+    (``_COMMUNICATION_TITLE_STEMS``), up to the next ``##`` or top-level
+    heading. ``None`` when no such section exists — the red state.
+
+    Binds on a stem disjoint from ``_SIMPLICITY_TITLE_STEMS``; the
+    collision test is what keeps the green step from choosing a heading
+    that would steal ``_simplicity_section_lines``' binding."""
+    for idx, line in enumerate(body_lines):
+        match = _HEADING_RE.match(line)
+        if (
+            match
+            and len(match.group(1)) == 2
+            and any(
+                stem in match.group(2).lower()
+                for stem in _COMMUNICATION_TITLE_STEMS
+            )
+        ):
+            title = match.group(2)
+            end = len(body_lines)
+            for jdx in range(idx + 1, len(body_lines)):
+                next_match = _HEADING_RE.match(body_lines[jdx])
+                if next_match and len(next_match.group(1)) <= 2:
+                    end = jdx
+                    break
+            return title, body_lines[idx + 1:end]
+    return None
+
+
+def _communication_section_text(body_lines):
+    # type: (List[str]) -> str
+    """A communication section's body as one lower-cased string ("" when
+    the section is absent, so a missing section fails the content
+    assertions with the empty section printed)."""
+    found = _communication_section(body_lines)
+    if found is None:
+        return ""
+    return " ".join(found[1]).lower()
+
+
+def _top_level_headings(body_lines):
+    # type: (List[str]) -> List[str]
+    """The titles of every ``##`` heading in the body — the diagnostic a
+    missing-section assertion prints so a reviewer sees what the green
+    step actually named things."""
+    titles = []
+    for line in body_lines:
+        match = _HEADING_RE.match(line)
+        if match and len(match.group(1)) == 2:
+            titles.append(match.group(2))
+    return titles
 
 
 def _mcp_hygiene_intro_lines(body_lines):
@@ -390,6 +454,155 @@ class AgentsRulesBase(unittest.TestCase):
                 "subsection spans %d..%d) — the B7 bullets were placed "
                 "outside the section"
                 % (title, section[0], section[1], span[0], span[1]),
+            )
+
+    # -- B8 (plans/cut-agent-context-cost.md): communication style -- #
+    #
+    # A new ``##`` section (recommended heading: ``## Communication``)
+    # stating: lead with the concrete thing; state the consequence before
+    # the mechanism; name what is at stake — in chat, subtask reports and
+    # pull request descriptions. The substantive part is the tension
+    # sentence: clearer writing is usually shorter, so the two goals
+    # mostly agree, but where they conflict clarity wins for anything a
+    # human reads and brevity wins for anything only a model reads. That
+    # sentence gets its own named test so a green step that lands the
+    # three style rules and skips the tension still goes red. Stems are
+    # deliberately loose; the tension is matched on several short stems
+    # ("clarity", "brevity", "human", "model", "conflict") rather than
+    # one long phrase.
+
+    def test_communication_section_exists_with_a_top_level_heading(self):
+        found = _communication_section(self.body_lines)
+        self.assertIsNotNone(
+            found,
+            "no top-level (##) heading naming the communication section "
+            "(recommended: '## Communication') was found in %s. "
+            "Top-level headings present: %r"
+            % (self.template_path, _top_level_headings(self.body_lines)),
+        )
+
+    def test_communication_section_leads_with_the_concrete_thing(self):
+        text = _communication_section_text(self.body_lines)
+        self.assertIn(
+            "concrete",
+            text,
+            "no communication rule says to lead with the concrete thing. "
+            "Section: %r" % text,
+        )
+
+    def test_communication_section_states_consequence_before_mechanism(self):
+        text = _communication_section_text(self.body_lines)
+        consequence = text.find("consequence")
+        mechanism = text.find("mechanism")
+        self.assertTrue(
+            consequence != -1 and mechanism != -1 and consequence < mechanism,
+            "no communication rule states the consequence before the "
+            "mechanism (expected 'consequence' to occur in the section "
+            "text before 'mechanism'). Section: %r" % text,
+        )
+
+    def test_communication_section_names_what_is_at_stake(self):
+        text = _communication_section_text(self.body_lines)
+        self.assertIn(
+            "stake",
+            text,
+            "no communication rule names what is at stake. "
+            "Section: %r" % text,
+        )
+
+    def test_communication_section_applies_to_chat_subtask_reports_and_pull_requests(
+        self,
+    ):
+        text = _communication_section_text(self.body_lines)
+        self.assertTrue(
+            ("chat" in text)
+            and ("subtask" in text)
+            and ("pull request" in text),
+            "the communication rules must apply to chat, subtask reports "
+            "and pull request descriptions. Section: %r" % text,
+        )
+
+    def test_communication_section_states_the_clarity_vs_brevity_tension(
+        self,
+    ):
+        # The substantive part of B8: without this sentence the style
+        # rules read as "be brief" and lose the point. Named on its own
+        # so a green step that lands the three style rules and skips the
+        # tension still goes red.
+        text = _communication_section_text(self.body_lines)
+        self.assertTrue(
+            ("clarity" in text) and ("brevity" in text),
+            "the clarity-vs-brevity tension is missing: where the "
+            "communication rules and the cost goal conflict, clarity "
+            "must win for anything a human reads and brevity for "
+            "anything only a model reads. Section: %r" % text,
+        )
+        self.assertTrue(
+            ("human" in text) and ("model" in text),
+            "the tension sentence must name both readers — clarity wins "
+            "for anything a HUMAN reads, brevity for anything only a "
+            "MODEL reads. Section: %r" % text,
+        )
+        self.assertIn(
+            "conflict",
+            text,
+            "the tension sentence must state that the two goals "
+            "sometimes conflict (and name which wins where). "
+            "Section: %r" % text,
+        )
+
+    def test_communication_heading_does_not_use_a_simplicity_stem(self):
+        # Trap guard: a new heading like "## Keep It Simple: Communicating"
+        # would carry a simpl/kiss stem and _simplicity_section_lines
+        # would bind to the wrong section, failing the KISS assertions.
+        found = _communication_section(self.body_lines)
+        self.assertIsNotNone(
+            found,
+            "no ## heading naming the communication section exists in "
+            "%s, so its heading cannot be checked for a simpl/kiss "
+            "collision. Top-level headings present: %r"
+            % (self.template_path, _top_level_headings(self.body_lines)),
+        )
+        title = found[0]
+        self.assertFalse(
+            any(stem in title.lower() for stem in _SIMPLICITY_TITLE_STEMS),
+            "the new communication heading %r carries a simpl/kiss stem; "
+            "_simplicity_section_lines would bind to the wrong section "
+            "and the eight KISS assertions would fail" % title,
+        )
+        self.assertIsNotNone(
+            _simplicity_section_lines(self.body_lines),
+            "with the communication section present, the KISS section "
+            "no longer resolves to a simpl/kiss-stemmed heading",
+        )
+
+    def test_kiss_section_still_resolves_with_its_six_bullets(self):
+        # Survival pin for the eight existing KISS assertions: the
+        # communication section must not rename, remove or displace
+        # "## Keep It Simple (KISS)" or any of its six bullets.
+        section = _section_lines(self.body_lines, 2, "Keep It Simple (KISS)")
+        self.assertIsNotNone(
+            section,
+            "the ## Keep It Simple (KISS) section no longer resolves — "
+            "the new communication section must not rename or displace it",
+        )
+        bullets = _bullets_text(section)
+        for marker in (
+            "simpl",
+            "solution",
+            "optimi",
+            "happy path",
+            "fail",
+            "safe",
+            "log",
+            "unexpected",
+            "edge case",
+        ):
+            self.assertIn(
+                marker,
+                bullets,
+                "a KISS bullet is missing (expected marker %r). "
+                "Bullets: %r" % (marker, bullets),
             )
 
     # -- the behaviour: a ## simplicity section with six assertive bullets -- #
