@@ -37,7 +37,16 @@
     <rule>Usage documentation must mirror the current, working implementation.</rule>
     <rule>Keep the documentation tree flat: one guide per concern.</rule>
     <rule>Never document a flag or command from memory. Confirm it against the code first.</rule>
+    <rule>Module docstrings explain why, not what. State what the module replaces and which defect it fixes; the code already says what it does.</rule>
+    <rule>Comment the surprising, not the obvious. A comment earns its place by explaining a non-obvious constraint (a GNU-only flag, a library's EOF behaviour, an ordering requirement). Do not narrate the code.</rule>
+    <rule>Keep README.md and doc/ accurate; detailed guides live in doc/.</rule>
+    <rule>Record architectural decisions and their rationale in plans/, so a later reader does not re-litigate a settled question.</rule>
   </best_practices>
+
+  <documentation_finalisation>
+    <rule>Once all tests are written and passing, ask the user whether to switch to Docs Manager mode to finalize documentation (README, doc/ directory, usage guides).</rule>
+    <rule>Always ask the user whether to document the current commit or the current branch before starting documentation work.</rule>
+  </documentation_finalisation>
 
   <constraints>
     <file_scoping>

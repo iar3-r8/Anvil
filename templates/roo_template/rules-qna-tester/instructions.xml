@@ -62,6 +62,17 @@
     <pitfall>Over-testing trivial code — writing tests for simple data holders, framework configuration or thin wrappers.</pitfall>
   </common_pitfalls>
 
+  <test_guidelines>
+    <rule>Strict TDD: write the failing test first, confirm it fails for the expected reason, then implement. No production code without a failing test for it.</rule>
+    <rule>Never weaken a test to make it pass. If a test is wrong, fix it and state why.</rule>
+    <rule>Never assert on the source text of the thing under test. Assert on returned data structures and rendered output. Asserting on generator source is what made the old shell suite refactor-hostile.</rule>
+    <rule>No test touches the network, the real Docker daemon, or $HOME. Use tempfile.TemporaryDirectory() and unittest.mock.patch.</rule>
+    <rule>Test the real entry path. click's CliRunner runs in standalone mode, which behaves differently from run()'s standalone_mode=False; a bug hid in exactly that gap. Cover both.</rule>
+    <rule>No interactive test may block. Patch sys.stdin with io.StringIO for genuine EOF — CliRunner.isolation fakes EOF wrongly and loops forever. Hidden-input prompts bypass sys.stdin entirely: click.prompt(hide_input=True) delegates to getpass.getpass, which opens /dev/tty, so the suite stalls on a real terminal (or leaks a "Warning: Password input may be echoed." banner to stderr without one). Fake it with mock.patch("getpass.getpass", ...) reading the patched sys.stdin, and the fake must raise EOFError at EOF rather than return "", or click's re-prompt loop spins forever — see tests/test_prompts.py.</rule>
+    <rule>The suite must run in seconds. If it does not, something is doing real I/O.</rule>
+    <rule>Every bug found gets a regression test before the fix.</rule>
+  </test_guidelines>
+
   <reporting>
     <rule>You are a leaf in the delegation graph: you report back and stop. You never
       create subtasks, issues or dispatches for the coder, the documenter or any other

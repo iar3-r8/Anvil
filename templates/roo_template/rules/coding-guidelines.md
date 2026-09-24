@@ -32,5 +32,8 @@ trigger: always_on
 - Once all tests are written and passing, ask the user whether to switch to **Docs Manager** mode to finalize documentation (README, doc/ directory, usage guides).
 - Always ask the user whether to document the current commit or the current branch before starting documentation work.
 
+## Where guidance belongs
+Mode-specific guidance (rules that only one mode needs) belongs in that mode's `rules-{slug}/` directory, not in these shared always-on files.
+
 
 
