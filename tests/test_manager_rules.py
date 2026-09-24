@@ -81,6 +81,24 @@ RED expectation for B4 (this commit): the two new-location assertions fail
 on assertion — no verification or practice states the targeted-test rule
 yet. The full-suite-gate guard passes now and must keep passing after the
 green step.
+
+B5 of the same plan is covered here too: the sequencing constraint — a
+behaviour that invalidates an existing test cannot be sequenced before
+the cycle that rewrites that test, because the pre-commit discipline
+makes such a green step uncommittable (plan §3 applies the constraint to
+this plan's own ordering). The plan (§5, B5) requires it in BOTH
+``<to_architect><payload>`` (so the architect sequences the plan
+accordingly) and ``<loop_control>`` (so the manager enforces it while
+looping); two separate assertions cover the two locations, so a failure
+names exactly which one is missing.
+
+RED expectation for B5 (this commit): the two location assertions fail on
+assertion — no payload item and no ``<loop_control>`` element states the
+constraint yet. The existing payload-item survival test in
+``tests/test_templates_rules.py``
+(``test_existing_to_architect_payload_items_still_present``) passes now
+and must keep passing: B5 adds a fifth requirement to the payload, it
+does not disturb the four markers that test pins.
 """
 
 import re
@@ -979,6 +997,205 @@ class ManagerTargetedTestTemplateTests(TargetedTestRuleTests):
 
 class ManagerTargetedTestLocalTests(TargetedTestRuleTests):
     """B4: the anvil repo's OWN tdd-manager rules carry the same rule.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B5 of plans/cut-agent-context-cost.md — the sequencing constraint: a
+# behaviour that invalidates an existing test cannot be sequenced before
+# the cycle that rewrites that test
+# --------------------------------------------------------------------------- #
+
+def _says_invalidating_behaviour_cannot_precede_rewrite_cycle(text):
+    """True when a ``<item>`` or a ``<loop_control>`` content element
+    states the B5 sequencing constraint: a behaviour that invalidates an
+    existing test cannot be sequenced before the cycle that rewrites
+    that test.
+
+    Stems (all on lower-cased, whitespace-collapsed input):
+      * the invalidation, both halves:
+          ``"invalidat"`` (invalidates/invalidating/invalidation) and
+          (``"test"`` | ``"assert"``);
+      * the ordering, all three:
+          ``"sequenc"`` (sequence/sequenced/sequencing), an ordering word
+          (``"before"`` | ``"after"`` | ``"precede"`` | ``"prior"`` |
+          ``"follow"``), and ``"cycl"`` (cycle/cycles).
+
+    Cross-match check (verified against both files at red time): neither
+    ``"invalidat"`` nor ``"sequenc"`` occurs in either file's text — the
+    only ``"sequenc"`` hit in the raw file is the ``<consequence>`` tag
+    name, which ``itertext`` never returns. So no existing element can
+    match, including ``<loop_control>``'s failure-handling and ambiguity
+    cases, which talk about re-planning, regressions and the architect
+    (the ``regression`` case carries "test" + "cycle", but no
+    ``"invalidat"`` and no ``"sequenc"``).
+    """
+    invalidation = (
+        ("invalidat" in text)
+        and (("test" in text) or ("assert" in text))
+    )
+    ordering = (
+        ("sequenc" in text)
+        and (
+            ("before" in text)
+            or ("after" in text)
+            or ("precede" in text)
+            or ("prior" in text)
+            or ("follow" in text)
+        )
+        and ("cycl" in text)
+    )
+    return invalidation and ordering
+
+
+class SequencingConstraintTests(XmlTemplateTestCase):
+    """Shared assertions for B5 (plan §5, B5), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B5 adds the sequencing constraint — a behaviour that invalidates an
+    existing test cannot be sequenced before the cycle that rewrites
+    that test — in BOTH ``<to_architect><payload>`` and
+    ``<loop_control>``. The plan is explicit: stated in only one of the
+    two places fails, naming the missing one; so the two locations are
+    covered by two separate assertions rather than one combined check.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only the
+    two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _loop_control_candidates(self):
+        """The ``<loop_control>`` content elements the B5 rule may live
+        in: every leaf element (the ``<case>``, ``<criterion>``,
+        ``<hard_stop>``, ``<invariant>``, ``<ledger>`` and similar
+        elements where the text actually lives), plus
+        ``<loop_control>`` itself as a fallback for text written
+        directly under it.
+
+        The leaf elements are scanned individually rather than their
+        containers (``<failure_handling>``, ``<ambiguity_handling>``,
+        ``<termination>``) as a whole, so the match cannot be assembled
+        out of stems scattered across two elements. Returns ``None``
+        when the document has no ``<loop_control>`` at all.
+        """
+        loop_control = self.root.find(".//loop_control")
+        if loop_control is None:
+            return None
+        candidates = [
+            element
+            for element in loop_control.iter()
+            if element is not loop_control and len(element) == 0
+        ]
+        candidates.append(loop_control)
+        return candidates
+
+    def test_architect_payload_states_sequencing_constraint(self):
+        # RED on this commit: no <to_architect><payload><item> tells the
+        # architect to sequence a behaviour that invalidates an existing
+        # test at or after the cycle that rewrites that test. The
+        # constraint belongs in BOTH this payload item and
+        # <loop_control> (see
+        # test_loop_control_states_sequencing_constraint); this
+        # assertion covers the payload half, so its failure names the
+        # missing location as <to_architect><payload>.
+        payload = _architect_payload_items(self.root)
+        self.assertTrue(
+            payload,
+            "<delegation_contract> has no <to_architect><payload><item> elements",
+        )
+        matching = [
+            i
+            for i in payload
+            if _says_invalidating_behaviour_cannot_precede_rewrite_cycle(
+                _element_text(i)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "the sequencing constraint is MISSING from "
+            "<to_architect><payload> (looked for 'invalidat'+"
+            "('test'|'assert') + 'sequenc'+"
+            "('before'|'after'|'precede'|'prior'|'follow')+'cycl'). B5 "
+            "requires it in BOTH <to_architect><payload> and "
+            "<loop_control>; the missing location here is "
+            "<to_architect><payload>. Payload item texts: %r"
+            % [_element_text(i) for i in payload],
+        )
+
+    def test_loop_control_states_sequencing_constraint(self):
+        # RED on this commit: no element of <loop_control> states the
+        # sequencing constraint. The manager must enforce it while
+        # looping: a behaviour that invalidates an existing test cannot
+        # be sequenced before the cycle that rewrites that test, because
+        # the pre-commit discipline makes such a green step
+        # uncommittable, so getting the order wrong forces a mid-flight
+        # re-plan.
+        #
+        # Note for the green step: <loop_control> already contains
+        # failure-handling and ambiguity cases that talk about
+        # re-planning and the architect (green_still_failing,
+        # plan_ambiguous_but_requirement_clear); none of them carries
+        # the 'invalidat' + 'sequenc' stems, so they do not satisfy this
+        # assertion.
+        candidates = self._loop_control_candidates()
+        self.assertIsNotNone(
+            candidates,
+            "document has no <loop_control> element; the sequencing "
+            "constraint has nowhere to live in the loop rules",
+        )
+        matching = [
+            element
+            for element in candidates
+            if _says_invalidating_behaviour_cannot_precede_rewrite_cycle(
+                _element_text(element)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "the sequencing constraint is MISSING from <loop_control> "
+            "(looked for 'invalidat'+('test'|'assert') + "
+            "'sequenc'+('before'|'after'|'precede'|'prior'|'follow')"
+            "'cycl' in every leaf element of <loop_control> and in the "
+            "element itself). B5 requires it in BOTH <to_architect>"
+            "<payload> and <loop_control>; the missing location here is "
+            "<loop_control>. The existing failure-handling and ambiguity "
+            "cases talk about re-planning and the architect without "
+            "stating this constraint, so they do not qualify. Every "
+            "candidate's text: %r"
+            % [_element_text(element) for element in candidates],
+        )
+
+
+class ManagerSequencingTemplateTests(SequencingConstraintTests):
+    """B5: the tdd-manager TEMPLATE carries the sequencing constraint."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerSequencingLocalTests(SequencingConstraintTests):
+    """B5: the anvil repo's OWN tdd-manager rules carry the same
+    constraint.
 
     ``.roo`` is gitignored, so the local copy is absent on a fresh clone
     (and on CI). ``setUp`` skips every local test cleanly in that case;
