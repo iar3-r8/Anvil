@@ -384,6 +384,14 @@
         guessing.</rationale>
     </practice>
 
+    <practice priority="high">
+      <rule>Keep subtask messages brief: give the behaviour, the failure and the constraints,
+        and rationale in one or two sentences pointing to the plan, not the argument
+        restated.</rule>
+      <rationale>The plan is named in every brief, so restating its reasoning is paid for on
+        every subtask.</rationale>
+    </practice>
+
     <practice priority="medium">
       <rule>Commit between every step, with detail on what was done.</rule>
       <rationale>The history must show each test failing before it passes.</rationale>
