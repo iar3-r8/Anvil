@@ -34,16 +34,6 @@ class RenderError(Exception):
     """A template is missing, malformed, or lacks an expected structure."""
 
 
-# Container names on the gateway's llm-network, matching the container_name
-# values in docker-compose.yml (pinned by tests/test_repo_devcontainer.py).
-# Inside that network the gateway always listens on 8080, so the host-side
-# LLM_PORT mapping does not apply.
-_GATEWAY_CONTAINER = "llama-swap-service"
-_GATEWAY_INTERNAL_PORT = 8080
-_QDRANT_CONTAINER = "coder_qdrant-service"
-_QDRANT_INTERNAL_PORT = 6333
-
-
 def zoo_code_settings(
     port: int,
     context_window: int,
@@ -59,16 +49,16 @@ def zoo_code_settings(
     """Render ``zoo-code-settings.json`` as a JSON string.
 
     ``container_target`` switches the URLs from the host perspective
-    (``localhost:<LLM_PORT>``) to the llm-network perspective
-    (``llama-swap-service:8080`` / ``coder_qdrant-service:6333``), for
-    repositories opened inside a dev container that joins the gateway's
-    bridge network.
+    (``localhost:<LLM_PORT>``) to host-gateway addressing
+    (``host.docker.internal:<LLM_PORT>`` / ``host.docker.internal:6333``),
+    for repositories opened inside a dev container that reaches the host
+    via ``--add-host=host.docker.internal:host-gateway``.
     """
     settings = _load_zoo_template(context_window)
 
     if container_target:
-        base_url = "http://{}:{}/v1".format(_GATEWAY_CONTAINER, _GATEWAY_INTERNAL_PORT)
-        qdrant_url = "http://{}:{}".format(_QDRANT_CONTAINER, _QDRANT_INTERNAL_PORT)
+        base_url = "http://host.docker.internal:{}/v1".format(port)
+        qdrant_url = "http://host.docker.internal:6333"
     else:
         base_url = "http://localhost:{}/v1".format(port)
         qdrant_url = None  # keep the template's localhost:6333 default

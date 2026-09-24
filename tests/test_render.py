@@ -476,12 +476,13 @@ class TestTemplatesStayInSync(unittest.TestCase):
 
 
 class TestZooSettingsContainerTarget(unittest.TestCase):
-    """``container_target=True`` re-points the rendered URLs at the llm-network
-    container names instead of ``localhost``, for repos opened inside a dev
-    container that shares the gateway's bridge network.
+    """``container_target=True`` re-points the rendered URLs at
+    ``host.docker.internal`` (reaching the host via the devcontainer's
+    ``--add-host=host.docker.internal:host-gateway``) with the host-mapped
+    LLM port, instead of ``localhost``.
     """
 
-    def test_gateway_urls_use_the_gateway_container_name_and_internal_port(self):
+    def test_gateway_urls_use_host_docker_internal_and_the_host_port(self):
         settings = json.loads(
             render.zoo_code_settings(**anthropic_settings(container_target=True))
         )
@@ -489,13 +490,16 @@ class TestZooSettingsContainerTarget(unittest.TestCase):
         profile = settings["providerProfiles"]["apiConfigs"]["llama_swap"]
         index_config = settings["globalSettings"]["codebaseIndexConfig"]
 
-        self.assertEqual(profile["openAiBaseUrl"], "http://llama-swap-service:8080/v1")
+        self.assertEqual(
+            profile["openAiBaseUrl"],
+            "http://host.docker.internal:{}/v1".format(GOLDEN_PORT),
+        )
         self.assertEqual(
             index_config["codebaseIndexOpenAiCompatibleBaseUrl"],
-            "http://llama-swap-service:8080/v1",
+            "http://host.docker.internal:{}/v1".format(GOLDEN_PORT),
         )
 
-    def test_qdrant_url_uses_the_qdrant_container_name(self):
+    def test_qdrant_url_uses_host_docker_internal(self):
         settings = json.loads(
             render.zoo_code_settings(**anthropic_settings(container_target=True))
         )
@@ -503,19 +507,19 @@ class TestZooSettingsContainerTarget(unittest.TestCase):
         index_config = settings["globalSettings"]["codebaseIndexConfig"]
 
         self.assertEqual(
-            index_config["codebaseIndexQdrantUrl"], "http://coder_qdrant-service:6333"
+            index_config["codebaseIndexQdrantUrl"], "http://host.docker.internal:6333"
         )
 
-    def test_container_target_ignores_the_host_llm_port(self):
-        # The host-side LLM_PORT must not leak into a container-targeted URL;
-        # inside llm-network the gateway always listens on 8080.
+    def test_container_target_uses_the_host_llm_port(self):
+        # The host-side LLM_PORT must reach the sandbox through the host
+        # mapping, so the container-target URL uses exactly the passed port.
         settings = json.loads(
             render.zoo_code_settings(**anthropic_settings(container_target=True, port=9999))
         )
 
         profile = settings["providerProfiles"]["apiConfigs"]["llama_swap"]
 
-        self.assertEqual(profile["openAiBaseUrl"], "http://llama-swap-service:8080/v1")
+        self.assertEqual(profile["openAiBaseUrl"], "http://host.docker.internal:9999/v1")
 
     def test_default_target_stays_on_localhost(self):
         settings = json.loads(render.zoo_code_settings(**anthropic_settings()))

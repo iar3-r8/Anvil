@@ -1313,8 +1313,8 @@ def setup_repo(
     container: bool = typer.Option(
         False,
         "--container",
-        help="Render Zoo Code URLs for a dev container on the gateway's "
-        "llm-network (llama-swap-service:8080) instead of localhost.",
+        help="Render Zoo Code URLs for a dev container reaching the host via "
+        "host.docker.internal (host-mapped LLM_PORT) instead of localhost.",
     ),
     assume_yes: bool = typer.Option(
         False, "--yes", "-y", help="Accept every default without prompting."
