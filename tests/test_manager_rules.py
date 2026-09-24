@@ -69,18 +69,39 @@ suite is run before committing. The plan (§5, B4) places the rule in the
 step 6 / step 7 ``<verification>`` elements AND as a
 ``<best_practices><practice>``; this test requires BOTH locations, because
 the workflow copy is what the manager actually sees mid-cycle and the
-practice copy is the form that survives B6's condensation. A separate
-guard asserts that the pre-existing full-suite-before-commit gate in step
-7's verification ("Run the full suite yourself, not only the new tests.
-Commit only on green.") still stands: B4 bounds that gate, it does not
-replace it (plan §9). If the targeted-test rule is present but the
-full-suite gate is gone, the guard fails naming the missing gate — the
-rule must not be readable as licence to commit on a targeted run.
+practice copy is the form that survives B6's condensation.
 
 RED expectation for B4 (this commit): the two new-location assertions fail
 on assertion — no verification or practice states the targeted-test rule
-yet. The full-suite-gate guard passes now and must keep passing after the
-green step.
+yet.
+
+B10 of the same plan is covered here too: the full-suite gate moves from
+every commit to before the pull request (plan §5, B10). Only the
+*frequency* of the gate changes — the gate is moved, not removed. The
+B4-era guard (full suite before every commit) is rewritten, not deleted:
+it now asserts the full suite is mandatory before the pull request /
+before shipping, with the location rule that gives the green step
+latitude — the <termination> criteria, step 10's description, the
+before_shipping checklist items, the practices, or step 7's verification
+(accepted only as latitude, since B10 says the practice and step 7's
+verification must move together). <termination>'s existing "The full
+suite passes at the branch tip, verified by you." is exactly the
+surviving form of the gate, so the repointed assertion is GREEN on
+arrival. Three further assertions pin what must not be lost: the full
+suite is ALSO run whenever a change could plausibly affect other modules
+(RED on arrival — the half that has no home in the file yet); the manager
+still verifies red and green by running the suite itself and a red step
+is a genuine assertion failure, not a collection error (GREEN on arrival
+— the pre-existing practice survives verbatim in substance); and the
+branch tip is still gated before shipping (GREEN on arrival). The B4
+survival guard ("full suite before committing") is gone: B10 removes it
+on purpose, and the green step will reword step 7's verification and the
+targeted-test practice so the file no longer claims a commit gate.
+
+RED expectation for B10 (this commit): the affects-other-modules half
+fails on assertion — no element states it yet. The shipping-gate,
+verify-yourself and branch-tip assertions pass now and must keep passing
+after the green step.
 
 B5 of the same plan is covered here too: the sequencing constraint — a
 behaviour that invalidates an existing test cannot be sequenced before
@@ -842,24 +863,102 @@ def _says_run_targeted_tests_while_iterating(text):
     return narrowed and while_iterating
 
 
-def _says_full_suite_required_before_commit(text):
-    """True when a ``<verification>`` text states the pre-existing
-    full-suite-before-commit gate (step 7, plan line 106): the full
-    suite is run, and the commit happens only on green.
+def _says_full_suite_mandatory_before_shipping(text):
+    """True when a text states the moved full-suite gate (B10, plan §5):
+    the full suite is run and must pass before the pull request is
+    opened / before shipping.
+
+    This is B10's rewrite of the B4 full-suite-before-commit predicate:
+    only the *frequency* of the gate changes — from before every commit
+    to before the pull request — so the predicate keeps the same two
+    halves and merely swaps the commit term for a shipping term. The
+    surviving form of the gate already lives in ``<loop_control>``
+    ``<termination>`` ("The full suite passes at the branch tip,
+    verified by you." — the branch tip is verified before shipping), and
+    the location rule (see
+    ``test_full_suite_gate_stated_before_shipping``) also accepts step
+    10, the ``before_shipping`` checklist and a ``<practice>``, so the
+    green step has latitude in where it states the gate.
 
     Stems (all on lower-cased, whitespace-collapsed input):
       * the run: ``"full"`` + (``"suite"`` | ``"tests"``);
-      * the gate: a commit term (``"commit"`` | ``"green"``) plus an
-        only-if-green form (``"only"`` | ``"before"``) — "Commit only on
-        green" carries ``"commit"`` + ``"green"`` + ``"only"`` and no
-        other existing verification carries them together.
+      * the gate: a shipping term (``"pull request"`` | ``"shipping"`` |
+        ``"ship"`` | ``"branch tip"``) plus a precondition form
+        (``"before"`` | ``"only"`` | ``"must"`` | ``"pass"``).
+
+    Cross-match check (verified against both files at red time): the
+    only element carrying the run half today is ``<termination>``'s
+    branch-tip criterion, which also carries the gate half — so this
+    predicate is GREEN on arrival and stays green for any honest
+    rewording of the gate at any accepted location. Nothing else in
+    either file says "full suite" or "full tests" at all.
     """
     full_run = ("full" in text) and (("suite" in text) or ("tests" in text))
     gate = (
-        (("commit" in text) or ("green" in text))
-        and (("only" in text) or ("before" in text))
+        (
+            ("pull request" in text)
+            or ("shipping" in text)
+            or ("ship" in text)
+            or ("branch tip" in text)
+        )
+        and (("before" in text) or ("only" in text) or ("must" in text)
+             or ("pass" in text))
     )
     return full_run and gate
+
+
+def _says_full_suite_also_when_change_affects_other_modules(text):
+    """True when a text states the other half of B10: the full suite is
+    ALSO run whenever a change could plausibly affect other modules (or
+    when the manager is unsure) — the middle ground between the old
+    every-commit gate and the new pull-request gate.
+
+    Stems (all on lower-cased, whitespace-collapsed input):
+      * the trigger, any one of: ``"other modul"`` (other modules /
+        another module), ``"affect"`` (affects/affected/impact-free
+        alternative), ``"beyond"`` (beyond the targeted file),
+        ``"unsur"`` (unsure);
+      * the action, any one of: ``"full"`` + (``"suite"`` | ``"tests"``),
+        ``"re-run"`` (re-run the full suite).
+
+    The trigger must be paired with the action, so a sentence that
+    merely mentions modules or merely tells the manager to run the full
+    suite does not match. RED on arrival: no element in either file
+    states this half yet.
+    """
+    trigger = (
+        ("other modul" in text)
+        or ("affect" in text)
+        or ("beyond" in text)
+        or ("unsur" in text)
+    )
+    action = (
+        (("full" in text) and (("suite" in text) or ("tests" in text)))
+        or ("re-run" in text)
+    )
+    return trigger and action
+
+
+def _says_manager_verifies_suite_itself_and_red_is_real_failure(text):
+    """True when a ``<practice>`` text is the pre-existing "Verify red
+    and green by running the suite yourself" rule, with its assertion
+    that a collection or import error is not a red step.
+
+    B10 changes the *frequency* of the full-suite gate only; this rule
+    — the manager runs the suite itself and verifies green, and a red
+    step is a genuine assertion failure, not a collection error — must
+    survive.
+
+    Stems (all on lower-cased, whitespace-collapsed input):
+      * the self-verification: ``"yourself"`` + (``"red"`` | ``"green"``);
+      * the genuine-red half: (``"collection"`` | ``"import"``) +
+        ``"red step"``.
+    """
+    verify = ("yourself" in text) and (("red" in text) or ("green" in text))
+    genuine_red = (
+        (("collection" in text) or ("import" in text)) and ("red step" in text)
+    )
+    return verify and genuine_red
 
 
 class TargetedTestRuleTests(XmlTemplateTestCase):
@@ -870,11 +969,18 @@ class TargetedTestRuleTests(XmlTemplateTestCase):
     while iterating; the full suite before committing) must appear in
     BOTH the step 6 / step 7 ``<verification>`` elements and as a
     ``<best_practices><practice>`` — the plan names both locations, so
-    the test requires both. A separate guard asserts the pre-existing
-    full-suite-before-commit gate in step 7's verification survives:
-    plan §9 lists it as bounded, never weakened, and the missing-gate
-    failure names the gate explicitly so the targeted-test rule can
-    never be read as licence to commit on a targeted run.
+    the test requires both.
+
+    B10 of the same plan (plan §5, B10) moves the full-suite gate from
+    every commit to before the pull request, and this class carries the
+    rewritten guard: the full suite must still be stated as mandatory
+    before the pull request / before shipping (in the
+    ``<termination>`` criteria, step 10, the ``before_shipping``
+    checklist, a ``<practice>`` or step 7's verification), it is also
+    run whenever a change could plausibly affect other modules, the
+    manager still verifies red and green by running the suite itself,
+    and the branch tip is still gated before shipping. Only the
+    *frequency* of the gate changes — the gate is moved, not removed.
 
     The class itself is collected by ``unittest`` because its name
     matches the default ``Test`` suffix; ``setUp`` skips it, so only
@@ -968,41 +1074,215 @@ class TargetedTestRuleTests(XmlTemplateTestCase):
             % [_element_text(p) for p in practices],
         )
 
-    def test_full_suite_before_commit_gate_still_stated(self):
-        # GREEN on this commit; the assertion that protects rigour.
-        # Step 7's existing verification says "Run the full suite
-        # yourself, not only the new tests. Commit only on green."
-        # (plan line 106). B4 bounds that gate — targeted tests while
-        # iterating — but must not delete it. If the gate is gone while
-        # the targeted-test rule exists, the manager is left with
-        # licence to commit on a targeted run, and this failure says
-        # so explicitly rather than as a wording nit.
-        verifications = self._step_verifications(["6", "7"])
+    # -- B10 (plan §5, B10): the full-suite gate moves from every commit
+    # to before the pull request -- #
+
+    def _shipping_gate_candidates(self):
+        """(label, element) pairs for every place the B10 full-suite
+        shipping gate may live, each scanned individually so a match can
+        never be assembled from stems scattered across two sentences:
+
+        * the ``<loop_control><termination>`` ``<criterion>`` leaves —
+          the surviving form of the gate already lives here ("The full
+          suite passes at the branch tip, verified by you.");
+        * step 10's description (the ship step);
+        * the ``before_shipping`` ``<quality_checklist>`` items;
+        * every ``<best_practices>`` ``<practice>``;
+        * step 7's ``<verification>`` — accepted only as latitude: B10
+          says the practice and step 7's verification "must move
+          together", so if the green step rewords the step 7 text to
+          point at the pull request it is still the gate, not drift.
+        """
+        candidates = []
+        termination = self.root.find(".//loop_control/termination")
+        if termination is not None:
+            candidates.extend(
+                ("termination/criterion[%d]" % (index + 1), criterion)
+                for index, criterion in enumerate(termination.findall("criterion"))
+            )
+        for step in _all_steps(self.root):
+            number = _step_number(step)
+            if number == "10" and step.find("description") is not None:
+                candidates.append(("step 10/description", step.find("description")))
+            if number == "7" and step.find("verification") is not None:
+                candidates.append(("step 7/verification", step.find("verification")))
+        for category in self.root.findall(".//quality_checklist/category"):
+            if (category.get("name") or "") != "before_shipping":
+                continue
+            candidates.extend(
+                ("before_shipping/item", item) for item in category.findall("item")
+            )
+        candidates.extend(
+            ("best_practices/practice[%d]" % (index + 1), practice)
+            for index, practice in enumerate(
+                self.root.findall(".//best_practices/practice")
+            )
+        )
+        return candidates
+
+    def test_full_suite_gate_stated_before_shipping(self):
+        # B10 rewrite of test_full_suite_before_commit_gate_still_stated
+        # (B4) — renamed and repointed, not deleted: only the *frequency*
+        # of the gate changes. GREEN on arrival in the
+        # <loop_control><termination> criterion "The full suite passes at
+        # the branch tip, verified by you." — that is exactly the
+        # surviving form of the gate (the branch tip is verified before
+        # shipping), so this assertion is already satisfied and stays
+        # green for any honest rewording at any accepted location. If
+        # the gate has been removed while the targeted-test rule
+        # (test_step_verifications_state_targeted_tests_while_iterating)
+        # stands, the manager is left with licence to open the pull
+        # request on a targeted run, and this failure says so
+        # explicitly rather than as a wording nit.
+        candidates = self._shipping_gate_candidates()
         self.assertTrue(
-            verifications,
-            "neither <step number='6'> nor <step number='7'> has a "
-            "<verification> element; the full-suite-before-commit gate "
-            "has nowhere to live in the workflow",
+            candidates,
+            "no termination criteria, step 10 description, "
+            "before_shipping items, practices or step 7 verification "
+            "exist; the full-suite shipping gate has nowhere to live",
         )
         matching = [
-            (number, element)
-            for number, element in verifications
-            if _says_full_suite_required_before_commit(_element_text(element))
+            (where, element)
+            for where, element in candidates
+            if _says_full_suite_mandatory_before_shipping(_element_text(element))
         ]
         self.assertTrue(
             matching,
-            "the full-suite-before-commit gate has been REMOVED from step "
-            "6/7 <verification> — the rule to run the FULL suite (not only "
-            "the new tests) before committing is gone. This is not a "
-            "wording nit: without it the B4 targeted-test rule reads as "
-            "licence to commit on a targeted run (looked for 'full'+"
-            "('suite'|'tests') + ('commit'|'green') + ('only'|'before')). "
-            "Plan §9: the full-suite-before-commit rule is bounded by B4, "
-            "never weakened. Every step 6/7 <verification> text: %r"
-            % [
-                ("step " + number, _element_text(element))
-                for number, element in verifications
-            ],
+            "the full-suite gate has been REMOVED from every shipping "
+            "location — the rule that the FULL suite (not only the new "
+            "tests) is run and verified before the pull request / before "
+            "shipping is gone. This is not a wording nit: without it the "
+            "B4 targeted-test rule reads as licence to open the pull "
+            "request on a targeted run (looked for 'full'+('suite'|"
+            "'tests') + ('pull request'|'shipping'|'ship'|'branch tip') "
+            "+ ('before'|'only'|'must'|'pass') in the <termination> "
+            "criteria, step 10, the before_shipping items, the practices "
+            "and step 7's verification). Plan §5 (B10): the gate is "
+            "moved, not removed. Every candidate's text: %r"
+            % [(where, _element_text(element)) for where, element in candidates],
+        )
+
+    def test_full_suite_also_stated_when_change_affects_other_modules(self):
+        # RED on this commit: B10's other half — the full suite is ALSO
+        # run whenever a change could plausibly affect other modules (or
+        # the manager is unsure) — is stated nowhere yet. This is what
+        # makes the frequency change honest: a regression outside the
+        # targeted file still has a named check, at a lower frequency.
+        candidates = [
+            ("step %s/description" % _step_number(step), step.find("description"))
+            for step in _all_steps(self.root)
+            if step.find("description") is not None
+        ]
+        candidates.extend(
+            ("best_practices/practice[%d]" % (index + 1), practice)
+            for index, practice in enumerate(
+                self.root.findall(".//best_practices/practice")
+            )
+        )
+        candidates.extend(
+            ("termination/criterion[%d]" % (index + 1), criterion)
+            for index, criterion in enumerate(
+                self.root.findall(".//loop_control/termination/criterion")
+            )
+        )
+        for category in self.root.findall(".//quality_checklist/category"):
+            if (category.get("name") or "") != "before_shipping":
+                continue
+            candidates.extend(
+                ("before_shipping/item", item) for item in category.findall("item")
+            )
+        self.assertTrue(
+            candidates,
+            "no workflow descriptions, practices, termination criteria "
+            "or before_shipping items exist; the affects-other-modules "
+            "half of the gate has nowhere to live",
+        )
+        matching = [
+            (where, element)
+            for where, element in candidates
+            if _says_full_suite_also_when_change_affects_other_modules(
+                _element_text(element)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "no element states the other half of the B10 gate: the full "
+            "suite is ALSO run whenever a change could plausibly affect "
+            "other modules (or the manager is unsure) (looked for "
+            "('other modul'|'affect'|'beyond'|'unsur') + ('full'+"
+            "('suite'|'tests')|'re-run'). Every candidate's text: %r"
+            % [(where, _element_text(element)) for where, element in candidates],
+        )
+
+    def test_manager_still_verifies_suite_itself_and_red_is_real_failure(self):
+        # GREEN on this commit; B10 changes the *frequency* of the
+        # full-suite gate only. This practice — "Verify red and green by
+        # running the suite yourself: a subtask's claim is a hypothesis,
+        # and a collection or import error is not a red step" — must
+        # survive: the manager still runs the suite itself and verifies
+        # green, and a red step is still a genuine assertion failure,
+        # not a collection error. If it has gone, the failure says so
+        # explicitly — it is not a wording nit.
+        practices = self.root.findall(".//best_practices/practice")
+        self.assertTrue(practices, "<best_practices> has no <practice> elements")
+        matching = [
+            p
+            for p in practices
+            if _says_manager_verifies_suite_itself_and_red_is_real_failure(
+                _element_text(p)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "the pre-existing 'Verify red and green by running the suite "
+            "yourself' <practice> has been REMOVED or mangled beyond "
+            "recognition — B10 moves the full-suite gate from every "
+            "commit to before the pull request; it does not drop the "
+            "manager's own verification of green, nor its confirmation "
+            "that a red step is a genuine assertion failure, not a "
+            "collection or import error (looked for 'yourself'+"
+            "('red'|'green') + ('collection'|'import')+'red step'). "
+            "Existing practice texts: %r"
+            % [_element_text(p) for p in practices],
+        )
+
+    def test_branch_tip_still_gated_before_shipping(self):
+        # GREEN on this commit: <loop_control><termination> still
+        # carries the criterion that the full suite passes at the branch
+        # tip, verified by the manager. This is the branch-tip half of
+        # the surviving gate (plan §5, B10: "step 10 may not ship on an
+        # unverified tip"). Scanned per-criterion so the match cannot be
+        # assembled from stems scattered across two criteria.
+        termination = self.root.find(".//loop_control/termination")
+        self.assertIsNotNone(
+            termination,
+            "<loop_control> has no <termination> element; the branch-tip "
+            "gate has nowhere to live",
+        )
+        criteria = termination.findall("criterion")
+        self.assertTrue(criteria, "<termination> has no <criterion> elements")
+        matching = [
+            criterion
+            for criterion in criteria
+            if (
+                ("full" in _element_text(criterion))
+                and (("suite" in _element_text(criterion))
+                     or ("tests" in _element_text(criterion)))
+                and ("branch tip" in _element_text(criterion))
+                and (("verified" in _element_text(criterion))
+                     or ("by you" in _element_text(criterion)))
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "<termination> no longer gates shipping on a verified "
+            "branch tip — the criterion that the full suite passes at "
+            "the branch tip, verified by the manager, is gone (looked "
+            "for 'full'+('suite'|'tests') + 'branch tip' + "
+            "('verified'|'by you') per criterion). Plan §5 (B10): step "
+            "10 may not ship on an unverified tip. Every criterion's "
+            "text: %r"
+            % [_element_text(criterion) for criterion in criteria],
         )
 
 
