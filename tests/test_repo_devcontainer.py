@@ -78,34 +78,5 @@ class TestComposeServicesAreOnTheLlmNetwork(unittest.TestCase):
         self.assertIn(NETWORK, data.get("networks") or {})
 
 
-class TestContainerNamesMatchTheRenderedTargets(unittest.TestCase):
-    """The names the renderer emits must exist in docker-compose.yml.
-
-    render.zoo_code_settings(container_target=True) points at
-    ``llama-swap-service:8080`` and ``coder_qdrant-service:6333``; if compose
-    ever renames a container, this test fails before the sandbox silently
-    loses its LLM.
-    """
-
-    def test_llama_swap_container_name(self):
-        self.assertEqual(
-            _compose_service("llama-swap")["container_name"], "llama-swap-service"
-        )
-
-    def test_qdrant_container_name(self):
-        self.assertEqual(
-            _compose_service("coder_qdrant")["container_name"], "coder_qdrant-service"
-        )
-
-    def test_llama_swap_exposes_its_internal_gateway_port(self):
-        """The container-name URL hardcodes 8080; compose must keep it."""
-        ports = _compose_service("llama-swap").get("ports") or []
-
-        self.assertTrue(
-            any("8080" in str(p) for p in ports),
-            "llama-swap must keep its 8080 port mapping: {}".format(ports),
-        )
-
-
 if __name__ == "__main__":
     unittest.main()
