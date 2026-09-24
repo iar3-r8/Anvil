@@ -25,7 +25,13 @@ The same stages, in the same order, as the one-line flow in the README.
 The tdd-manager delegates **one behaviour at a time** to a **fresh** specialist
 mode. A subtask has no memory of the conversation that came before — it receives
 a self-contained message (goal, plan path, branch, test command) and reports back
-— so no single agent accumulates a task's worth of context.
+— so no single agent accumulates a task's worth of context. The delegation is
+brief on purpose: the behaviour, the failure and the constraints, with rationale
+pointing at the plan rather than restating it. One deliberate exception to the
+one-behaviour rule: behaviours that are pure boundary pins on existing behaviour
+and need no production change may be batched into a single subtask; the
+architect marks which ones those are in the plan, and the manager still commits
+them separately if the ledger needs it.
 
 The durable state is the plan file, `plans/{task-slug}.md`. The architect's
 numbered behaviour list is the loop's **ledger**, and the ledger lives in that
@@ -54,7 +60,9 @@ and the ledger stays accurate.
 
 - **Owns:** the plan at `plans/{task-slug}.md` — a numbered list of
   independently testable behaviours, each with inputs, outputs, edge cases and
-  error behaviour, with every third-party fact cited.
+  error behaviour, with every third-party fact cited. The plan also marks which
+  behaviours are pure boundary pins with no production change, so the manager
+  can batch them into one subtask.
 - **May edit:** the plan file.
 - **Must not do:** plan against an unknown third-party interface (it is a
   **blocking** condition — see [Grounded planning](#grounded-planning)); write
@@ -93,12 +101,26 @@ red step — the behaviour was never actually expressed as a test — so the
 tdd-manager re-delegates to qna-tester with the verbatim output and commits
 nothing.
 
-**Green** is verified by running the **full** suite, not only the new tests. A
-test is **never weakened** to reach green. Each red and each green gets its own
-commit, and a red is **never squashed** into its green: the commit history alone
-then proves every test failed before it passed, which is the whole point of the
-discipline. Nothing is committed on any failure path, so the history contains
-only an intentional red or a verified green.
+**Green** is committed when the **targeted** tests are green: while iterating
+inside the red/green loop, only the targeted test file is run. The **full
+suite** is the gate before the pull request, and it is also run whenever a
+change could affect other modules — the tdd-manager runs it itself, verifies it
+green, and the branch must pass it at the tip before shipping. That is a
+deliberate trade: a regression outside the targeted file can now land in a
+commit and sit in the history until the end-of-branch run, instead of blocking
+the commit that caused it; the branch cannot ship with it, and bisecting still
+finds it. The argument is in
+[`plans/cut-agent-context-cost.md`](../plans/cut-agent-context-cost.md) §B10.
+A test is **never weakened** to reach green. Each red and each green
+gets its own commit, and a red is **never squashed** into its green: the commit
+history alone then proves every test failed before it passed, which is the
+whole point of the discipline. Nothing is committed on any failure path, so
+the history contains only an intentional red or a verified green.
+
+Sequencing follows the same logic: a behaviour that invalidates an existing
+test may not be planned **before** the cycle that rewrites that test — such a
+step could turn green on paper and still be uncommittable, so the plan orders
+the rewrite cycle first.
 
 If the coder claims a test is wrong, the claim is not granted: it goes back to
 qna-tester as a **new red step** carrying the coder's argument, and the qna-tester
@@ -153,6 +175,52 @@ All four MCP servers (github, git, oxylabs, package-registry) are configured in
 `.roo/mcp.json`; `github` needs a personal access token, and `oxylabs` is written
 disabled when its credentials are declined — see
 [VS Code plugin setup guide](2-setting-up-vscode-plugin.md) for both.
+
+## Where the rules live
+
+Every subtask loads its rules from `.roo/` in two layers:
+
+- **Shared, always-on** — `.roo/rules/` (`AGENTS.md`, `architecture.md`,
+  `coding-guidelines.md`), loaded by every mode on every subtask. It is the
+  most expensive context in the pipeline, so it holds only what every mode
+  genuinely needs: the code-change process, MCP call hygiene, the KISS rules,
+  the communication style, and the cross-cutting language and safety rules.
+- **Per-mode** — `.roo/rules-{slug}/`, loaded only by that mode. Mode-specific
+  guidance belongs here, not in the shared files: the test-writing
+  conventions live in `rules-qna-tester/`, the documentation conventions and
+  the documentation-finalisation rules in `rules-docs-manager/`, and the
+  module-by-module project structure table in
+  `rules-architect/project-structure.md` — loaded only by the architect, the
+  only mode that needs it.
+
+The tdd-manager's rule file is additionally capped: it stays at or below a
+12,288 B byte ceiling asserted by
+[`tests/test_manager_rules.py`](../tests/test_manager_rules.py). A byte-count
+assertion normally violates the "never assert on the source text" convention;
+here size *is* the requirement — the defect is that the file is too large and
+every tdd-manager subtask pays for it — so the ceiling bounds the size while
+the phrase predicates in the same tests bound the loss. The full argument is
+in [`plans/cut-agent-context-cost.md`](../plans/cut-agent-context-cost.md) §6.
+
+### The two copies, and the one place they diverge
+
+Anvil provisions rule files from `templates/roo_template/` (tracked) into a
+target's `.roo/` (gitignored). In this repo's own tree the two sides march
+together: the four XML rule files are asserted **byte-identical** by
+[`tests/test_rules_mirror.py`](../tests/test_rules_mirror.py), the guard that
+turns "forgot the `.roo/` copy" into a red test instead of silent drift.
+
+The one deliberate exception is the shared markdown pair,
+`rules/architecture.md` and `rules/coding-guidelines.md`. When the
+mode-specific content left the local shared files, it left the local copies
+only: the template side is a placeholder scaffold, filled in per repo by
+`/update_roo_rules`, so there was nothing to move. Instead the template's
+`coding-guidelines.md` carries a one-line note telling the filling-in agent to
+put mode-specific guidance in that mode's `rules-{slug}/` directory.
+
+The measured effect: the shared `.roo/rules/` fell from 12,679 B to 9,818 B,
+and per-subtask load dropped 35% for tdd-manager, 12% for docs-manager, 7% for
+qna-tester and 2% for architect.
 
 ## What lands in your repo
 

@@ -6,10 +6,10 @@
     },
 
     "runArgs": [
-        "--network=llm-network",
         "--security-opt=no-new-privileges:true",
         "--cap-drop=ALL",
-        "--shm-size=2g"
+        "--shm-size=2g",
+        "--add-host=host.docker.internal:host-gateway"
     ],
 
     "remoteUser": "vscode",
