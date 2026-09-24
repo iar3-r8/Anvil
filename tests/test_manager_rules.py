@@ -137,6 +137,21 @@ the loss.
 RED expectation for B6 (this commit): the byte-ceiling assertion fails
 for both the template and the local copy (22,959 bytes against a
 12,288-byte ceiling), reporting the actual byte count and the overage.
+
+B11 of the same plan is covered here too: the coder's report must not
+demand a full-suite run. Behaviour 10 moved the full-suite gate to the
+pull request, but <to_code><required_report> still says "whether the
+full suite passes" unconditionally, so a coder reading its own contract
+runs the full suite every cycle to answer it. The test fails only on an
+unconditional mention: a conditional mention ("if you ran it", "when a
+change could affect other modules") and a total removal of the mention
+both pass. A guard pins the command-run/output evidence the manager
+verifies, which B11 must not cost.
+
+RED expectation for B11 (this commit): the <to_code> assertion fails on
+assertion - the current item carries no conditionality marker. The
+<to_qna_tester> assertion and the command-evidence guard are GREEN on
+arrival and must keep passing after the green step.
 """
 
 import re
@@ -1598,6 +1613,213 @@ class ManagerByteCeilingLocalTests(ByteCeilingTests):
     (and on CI). ``setUp`` skips every local test cleanly in that case; when
     the file is provisioned, the assertion runs exactly as written above in
     the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B11 of plans/cut-agent-context-cost.md — the coder's report must not demand
+# a full-suite run
+# --------------------------------------------------------------------------- #
+
+def _mentions_full_suite(text):
+    """True when a ``<required_report>`` item's text mentions running the full
+    suite / full tests."""
+    return ("full" in text) and (("suite" in text) or ("tests" in text))
+
+
+def _mentions_full_suite_conditionally(text):
+    """True when a ``<required_report>`` item's text mentions the full suite
+    only conditionally — "if you ran it", "when a change could affect other
+    modules", "only when ..." — rather than demanding it unconditionally.
+
+    Behaviour 11 requires the *conditionality*, not the removal of the phrase:
+    a report that says "the full-suite result, if you ran it" is exactly the
+    fix, and a report that drops the mention entirely is also acceptable. So
+    the RED assertion is the *absence* of a conditional marker on an item that
+    still mentions the full suite — a test that bans the phrase would force a
+    worse rule than one that requires the conditionality.
+
+    Stems (all on lower-cased, whitespace-collapsed input): any conditional /
+    contingency marker — ``"if"`` (if / if you ran), ``"when"`` (when),
+    ``"you ran"`` (the conditional's likely subject), ``"could affect"`` (the
+    B10 trigger), ``"only"`` (only when / only if). The predicate is
+    deliberately loose so the green step has latitude in how it phrases the
+    condition.
+    """
+    return (
+        ("if" in text)
+        or ("when" in text)
+        or ("you ran" in text)
+        or ("could affect" in text)
+        or ("only" in text)
+    )
+
+
+def _says_command_run_and_output(text):
+    """True when a ``<required_report>`` item's text reports the command that
+    was run and its output — the evidence the manager verifies.
+
+    Stems (all on lower-cased, whitespace-collapsed input): ``"command"`` +
+    (``"ran"`` | ``"run"``) + ``"output"``. All three must be present, so an
+    item that mentions a command but not its output (or vice versa) does not
+    match.
+    """
+    return (
+        ("command" in text)
+        and (("ran" in text) or ("run" in text))
+        and ("output" in text)
+    )
+
+
+class CoderReportFullSuiteTests(XmlTemplateTestCase):
+    """Shared assertions for B11 (plan §5), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B11 fixes the contradiction behaviour 10 left behind: the full-suite
+    gate moved from every commit to before the pull request, but
+    ``<to_code><required_report>`` still says "whether the full suite
+    passes" unconditionally, so a coder reading its own contract runs the
+    full suite every cycle to answer it. The fix makes the mention
+    conditional (or drops it); it must not cost the command-run / output
+    evidence the manager verifies.
+
+    The class itself is collected by ``unittest`` because its name matches
+    the default ``Test`` suffix; ``setUp`` skips it, so only the two
+    concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _required_report_items(self, party):
+        """The ``<item>`` elements of ``<to_{party}><required_report>``, or an
+        empty list when that report element is absent (its absence is part of
+        the red state)."""
+        report = self.root.find(
+            ".//delegation_contract/to_%s/required_report" % party
+        )
+        if report is None:
+            return None, []
+        return report, report.findall("item")
+
+    def test_to_code_report_does_not_demand_unconditional_full_suite(self):
+        # RED on this commit: <to_code><required_report> currently says
+        # "whether the full suite passes" with no condition, so a coder
+        # reading its own contract runs the full suite every cycle. B11
+        # (plan §5) fixes this by making the mention conditional ("if you
+        # ran it", "when a change could affect other modules") or dropping
+        # it. The predicate fails only on an item that MENTIONS the full
+        # suite without a conditional marker — it does not ban the phrase.
+        report, items = self._required_report_items("code")
+        self.assertIsNotNone(
+            report,
+            "<delegation_contract> has no <to_code><required_report> element",
+        )
+        self.assertTrue(
+            items,
+            "<to_code><required_report> has no <item> elements",
+        )
+        offenders = [
+            _element_text(item)
+            for item in items
+            if _mentions_full_suite(_element_text(item))
+            and not _mentions_full_suite_conditionally(_element_text(item))
+        ]
+        self.assertFalse(
+            offenders,
+            "<to_code><required_report> demands a full-suite run "
+            "unconditionally — behaviour 10 moved the full-suite gate to "
+            "before the pull request and to 'when a change could affect "
+            "other modules', so the coder's report must state the full-suite "
+            "result only conditionally (e.g. 'if you ran it') or not at all, "
+            "not as a blanket requirement. Offending item text: %r"
+            % offenders,
+        )
+
+    def test_qna_tester_report_does_not_demand_unconditional_full_suite(self):
+        # GREEN on arrival: <to_qna_tester><required_report> does not mention
+        # the full suite at all, so it does not have the same problem. This
+        # pins that it stays clean — the qna-tester's evidence is the command
+        # run and the verbatim failure output, not a full-suite result.
+        report, items = self._required_report_items("qna_tester")
+        self.assertIsNotNone(
+            report,
+            "<delegation_contract> has no "
+            "<to_qna_tester><required_report> element",
+        )
+        self.assertTrue(
+            items,
+            "<to_qna_tester><required_report> has no <item> elements",
+        )
+        offenders = [
+            _element_text(item)
+            for item in items
+            if _mentions_full_suite(_element_text(item))
+            and not _mentions_full_suite_conditionally(_element_text(item))
+        ]
+        self.assertFalse(
+            offenders,
+            "<to_qna_tester><required_report> demands a full-suite run "
+            "unconditionally — the qna-tester's red evidence is the command "
+            "run and the verbatim failure output, not a full-suite result "
+            "(offending item text: %r)" % offenders,
+        )
+
+    def test_to_code_report_still_reports_command_run_and_output(self):
+        # GREEN on arrival: B11 must not cost the evidence the manager
+        # verifies — the coder still reports the command it ran and its
+        # output. If this has gone, the failure says so explicitly; it is
+        # not a wording nit.
+        report, items = self._required_report_items("code")
+        self.assertIsNotNone(
+            report,
+            "<delegation_contract> has no <to_code><required_report> element",
+        )
+        self.assertTrue(
+            items,
+            "<to_code><required_report> has no <item> elements",
+        )
+        matching = [
+            _element_text(item)
+            for item in items
+            if _says_command_run_and_output(_element_text(item))
+        ]
+        self.assertTrue(
+            matching,
+            "<to_code><required_report> no longer reports the command run and "
+            "its output — B11 must not cost this evidence, which is what the "
+            "manager verifies (looked for 'command'+'ran'/'run'+'output'). "
+            "Item texts: %r" % [_element_text(item) for item in items],
+        )
+
+
+class ManagerCoderReportTemplateTests(CoderReportFullSuiteTests):
+    """B11: the tdd-manager TEMPLATE carries the conditional full-suite
+    report requirement."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerCoderReportLocalTests(CoderReportFullSuiteTests):
+    """B11: the anvil repo's OWN tdd-manager rules carry the same rule.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case; when
+    the file is provisioned, the full assertion set runs exactly as written
+    above in the base class.
     """
 
     template_path = LOCAL_TDD_MANAGER
