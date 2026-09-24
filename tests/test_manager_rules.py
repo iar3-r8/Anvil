@@ -99,6 +99,23 @@ constraint yet. The existing payload-item survival test in
 (``test_existing_to_architect_payload_items_still_present``) passes now
 and must keep passing: B5 adds a fifth requirement to the payload, it
 does not disturb the four markers that test pins.
+
+B6 of the same plan is covered here too: the shrink's byte ceiling. The
+tdd-manager instructions file is 22,959 bytes and every tdd-manager
+subtask pays for it, so the ceiling — 12 KB, a named module constant —
+is asserted directly on the file's byte count. That is the one sanctioned
+exception to this module's "never on raw bytes" convention (plan §6):
+size is the observable being controlled, so the ceiling is the
+requirement itself, not a proxy for one; it reads no phrase and
+constrains no wording, so the green step keeps full latitude in the
+prose. The ceiling never stands alone — the phrase predicates of this
+module and of ``tests/test_templates_rules.py`` run alongside it and
+bound the loss: the ceiling bounds the size, the phrase predicates bound
+the loss.
+
+RED expectation for B6 (this commit): the byte-ceiling assertion fails
+for both the template and the local copy (22,959 bytes against a
+12,288-byte ceiling), reporting the actual byte count and the overage.
 """
 
 import re
@@ -1201,6 +1218,106 @@ class ManagerSequencingLocalTests(SequencingConstraintTests):
     (and on CI). ``setUp`` skips every local test cleanly in that case;
     when the file is provisioned, the full assertion set runs exactly as
     written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B6 of plans/cut-agent-context-cost.md — the shrink: a byte ceiling on
+# the tdd-manager instructions file
+# --------------------------------------------------------------------------- #
+
+# The byte ceiling for ``rules-tdd-manager/instructions.xml`` (both copies).
+#
+# plans/cut-agent-context-cost.md §5 (B6) sets the ceiling at 12 KB: the
+# file is 22,959 bytes today and every tdd-manager subtask pays for it.
+# §6 records why a byte-count assertion is the one sanctioned exception
+# to "never assert on the source text of the thing under test": the
+# ceiling is not a proxy for a requirement — size is the observable being
+# controlled, so the ceiling is the requirement itself. It is also the
+# narrowest assertion possible: one number against one threshold; it reads
+# no phrase and constrains no wording, so the green step keeps full
+# latitude in the prose.
+#
+# The ceiling never stands alone. The phrase predicates of this module and
+# of tests/test_templates_rules.py run alongside it and prove no rule was
+# lost: the ceiling bounds the size, the phrase predicates bound the loss.
+# A document emptied to zero bytes cannot pass this test either: it fails
+# to parse in XmlTemplateTestCase.setUp before the assertion runs, and its
+# root tag and ten contiguous steps are asserted by
+# test_document_parses_with_instructions_root and
+# test_workflow_still_has_ten_contiguous_steps.
+TDD_MANAGER_BYTE_CEILING = 12_288  # 12 KB, per plans/cut-agent-context-cost.md §5 (B6)
+
+
+class ByteCeilingTests(XmlTemplateTestCase):
+    """Shared assertion for B6 (plan §5, B6), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    One narrow assertion: the file's byte count is at or below
+    TDD_MANAGER_BYTE_CEILING. It reads no phrase and constrains no
+    wording — that latitude is the point, and it is why the assertion is
+    defensible (plan §6). Over the ceiling, the test fails reporting the
+    actual byte count and the overage, not just "too big".
+
+    Parsing is inherited from XmlTemplateTestCase.setUp, so a malformed or
+    emptied document fails at load time rather than passing silently; the
+    root tag and the ten contiguous steps are asserted by
+    TaskSplittingDutyTests, not re-asserted here.
+
+    The class itself is collected by ``unittest`` because its name matches
+    the default ``Test`` suffix; ``setUp`` skips it, so only the two
+    concrete subclasses run the assertion.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def test_file_is_at_or_below_byte_ceiling(self):
+        actual = self.template_path.stat().st_size
+        self.assertLessEqual(
+            actual,
+            TDD_MANAGER_BYTE_CEILING,
+            "%s is %d bytes; the ceiling is %d bytes — %d bytes over. "
+            "plans/cut-agent-context-cost.md §5 (B6): the file is too "
+            "large and every tdd-manager subtask pays for it. Condense it "
+            "— do not delete an element the phrase predicates in this "
+            "module or in tests/test_templates_rules.py match."
+            % (
+                self.template_path,
+                actual,
+                TDD_MANAGER_BYTE_CEILING,
+                actual - TDD_MANAGER_BYTE_CEILING,
+            ),
+        )
+
+
+class ManagerByteCeilingTemplateTests(ByteCeilingTests):
+    """B6: the tdd-manager TEMPLATE is at or below the byte ceiling."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerByteCeilingLocalTests(ByteCeilingTests):
+    """B6: the anvil repo's OWN tdd-manager rules are at or below the byte
+    ceiling.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case; when
+    the file is provisioned, the assertion runs exactly as written above in
+    the base class.
     """
 
     template_path = LOCAL_TDD_MANAGER
