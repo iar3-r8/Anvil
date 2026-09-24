@@ -58,7 +58,7 @@ You are a leaf: report back and stop. Do not create subtasks for other modes.
 <item>Make exactly those tests pass, changing no test file and adding nothing the tests do not demand; if a test looks wrong, report it, never edit it.</item>
 </payload>
 <required_report>
-<item>Source file paths with one-line descriptions; the command run and output; whether the full suite passes.</item>
+<item>Source file paths with one-line descriptions; the command run and output; the full-suite result if you ran it.</item>
 <item>Any test believed wrong, flagged and not edited; any behaviour added beyond the tests, with justification.</item>
 </required_report>
 </to_code>
