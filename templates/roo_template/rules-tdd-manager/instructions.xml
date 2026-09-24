@@ -103,7 +103,8 @@
         nothing the tests do not demand.
       </description>
       <verification>
-        Run the full suite yourself, not only the new tests. Commit only on green.
+        While iterating, run the targeted test file, not the full suite. Run the full
+        suite yourself, not only the new tests. Commit only on green.
       </verification>
       <then>Commit the green step using the green format in commit_convention.</then>
       <escalation>
@@ -355,6 +356,13 @@
       <rule>Verify red and green by running the suite yourself.</rule>
       <rationale>A subtask's claim is a hypothesis. Your value is judging whether the failure
         is the right failure.</rationale>
+    </practice>
+
+    <practice priority="high">
+      <rule>Run the targeted test file while iterating in the red/green loop; run the full
+        suite only as the gate before committing.</rule>
+      <rationale>Re-running the full suite on every iteration pays for unchanged code; the
+        narrowed run keeps the loop cheap without loosening the commit gate.</rationale>
     </practice>
 
     <practice priority="high">
