@@ -16,6 +16,10 @@ When asked to change code, follow these principles:
 ## MCP server or tool usage
 When using a tool with unknown argument, ask the user to get missing information
 
+- **Prefer narrow queries**: ask for only what the question needs; a broad query returns more context than gets read.
+- **Request the smallest page size that answers the question**: extra pages cost context without adding signal.
+- **Keep issue comments short**: because every `add_issue_comment` echoes the body back, a long comment is paid for on arrival and again on every later turn.
+
 ### Github
 When using the github MCP, use the user <Github user> and repository <Repository Name>
 
