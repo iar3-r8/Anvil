@@ -179,6 +179,10 @@
           Mark in the plan which behaviours are no-production-change boundary pins, so the
           manager can batch them into one subtask without re-deriving which qualify.
         </item>
+        <item>
+          Sequence the plan so a behaviour that invalidates an existing test never
+          precedes the cycle that rewrites that test.
+        </item>
       </payload>
       <required_report>
         <item>The plan path.</item>
@@ -312,6 +316,10 @@
       <case name="regression">
         A previously green test breaks. It is a regression owned by the current green step:
         back to code within the same cycle.
+      </case>
+      <case name="invalidation_before_rewrite">
+        Sequencing a behaviour that invalidates an existing test before the cycle that
+        rewrites it is uncommittable: sequence the rewrite cycle first.
       </case>
       <invariant>
         Nothing is committed on any failure path. The history contains only an intentional red
