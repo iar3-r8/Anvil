@@ -51,3 +51,11 @@ knowledge gap, not to browse.
 - **Fail safely**: On an unexpected state, raise a clear controlled error or return a safe default — never a silent bug, never a crash that loses data.
 - **Log unexpected states**: Log unexpected states, so how often a rare case really happens is known, not guessed.
 - **Handle a rare edge case only when real users or real data hit it** — exception: a data-loss or security risk is fixed immediately.
+
+## Communication
+
+- **Lead with the concrete thing**: the specific value, path or failure first; the general comes after.
+- **Consequence before mechanism**: say what happens and why it matters before explaining how it happens.
+- **Name what is at stake**: the cost, data or trust that is lost if the reader gets it wrong.
+- **It applies everywhere a reader meets this work**: chat replies, subtask reports and pull request descriptions.
+- **The clarity-versus-brevity tension**: clearer writing is usually shorter, so this and the cost goal mostly agree — where they conflict, clarity wins for anything a human reads and brevity wins for anything only a model reads.
