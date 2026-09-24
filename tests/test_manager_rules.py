@@ -38,6 +38,17 @@ same phrase predicates the new-content tests use). Both files were verified
 on 2026-08-20 to contain no digits-plus-"line(s)" phrase in any pre-existing
 element, so scoping the guard to the added elements keeps it precise without
 excluding any pre-existing text that could trip it.
+
+B2 of ``plans/cut-agent-context-cost.md`` is also covered here: the batching
+rule for no-production-change behaviours. It is additive — one more
+``<practice priority="high">``, one more ``<to_architect><payload><item>``,
+plus a guard that the pre-existing "One behaviour per cycle" practice
+survives, because B2 bounds that rule rather than replacing it.
+
+RED expectation for B2 (this commit): the two new-content assertions fail on
+assertion for the right reason — neither the batching practice nor the
+payload item exists yet. The survival guard passes now and must keep
+passing after the green step.
 """
 
 import re
@@ -355,6 +366,175 @@ class ManagerTaskSplittingTemplateTests(TaskSplittingDutyTests):
 class ManagerTaskSplittingLocalTests(TaskSplittingDutyTests):
     """Behaviour 3: the anvil repo's OWN tdd-manager rules carry the same
     duty.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case; when
+    the file is provisioned, the full assertion set runs exactly as written
+    above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B2 of plans/cut-agent-context-cost.md — the batching rule for
+# no-production-change behaviours
+# --------------------------------------------------------------------------- #
+
+def _says_no_production_change_behaviours_may_batch(text):
+    """True when a ``<practice>``'s text states that behaviours which need no
+    production change (pure boundary pins on existing behaviour) may be
+    batched into one subtask.
+
+    Stems (all lower-cased, whitespace-collapsed input):
+      * the thing being batched: ``"batch"``
+      * the qualification, any one of:
+          - no production change: ``"production"`` +
+            (``"chang"`` | ``"modif"``)
+          - a pure boundary pin: ``"pin"``
+    Both the thing and at least one qualification must be present, so a
+    practice that merely mentions batching something else (e.g. commits) does
+    not match.
+    """
+    batches = ("batch" in text)
+    qualification = (
+        ("pin" in text)
+        or (("production" in text)
+            and (("chang" in text) or ("modif" in text)))
+    )
+    return batches and qualification
+
+
+def _says_architect_must_mark_batchable_behaviours(text):
+    """True when a ``<to_architect><payload><item>``'s text tells the
+    architect to mark, in the plan, the behaviours that may be batched (the
+    no-production-change ones), so the manager need not re-derive which
+    qualify.
+
+    Stems:
+      * the action: ``"mark"`` (covers "marked", "marks")
+      * the subject: ``"batch"``
+    Both must be present, so an item about marking something unrelated (e.g.
+    assumptions) does not match.
+    """
+    return ("mark" in text) and ("batch" in text)
+
+
+def _says_one_behaviour_per_cycle(text):
+    """True when a ``<practice>``'s text is the pre-existing "One behaviour
+    per cycle" rule that B2 bounds but must not delete.
+
+    Stems: ``"behaviour"``/``"behavior"`` + ``"cycle"``; ``"one"`` or
+    ``"single"`` when present confirms the unit. "cycle" is the distinctive
+    stem — no other practice uses it.
+    """
+    behaviour = ("behaviour" in text) or ("behavior" in text)
+    return behaviour and ("cycle" in text)
+
+
+class BatchingRuleTests(XmlTemplateTestCase):
+    """Shared assertions for B2 (plan §5, B2), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B2 is additive and bounds the pre-existing "One behaviour per cycle"
+    practice without replacing it: the new batching practice and the new
+    architect payload item must appear, and the one-behaviour-per-cycle
+    practice must survive. Each failure message names exactly which element
+    is missing, and the one-behaviour-per-cycle failure says so explicitly —
+    it is not a wording nit.
+
+    The class itself is collected by ``unittest`` because its name matches
+    the default ``Test`` suffix; ``setUp`` skips it, so only the two
+    concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def test_best_practices_has_high_priority_batching_practice(self):
+        # A <practice priority="high"> in <best_practices> stating that
+        # behaviours which are pure boundary pins on existing behaviour,
+        # needing no production change, may be batched into one subtask.
+        practices = self.root.findall(".//best_practices/practice")
+        self.assertTrue(practices, "<best_practices> has no <practice> elements")
+        matching = [
+            p
+            for p in practices
+            if p.get("priority") == "high"
+            and _says_no_production_change_behaviours_may_batch(_element_text(p))
+        ]
+        self.assertTrue(
+            matching,
+            "no <practice priority='high'> in <best_practices> states that "
+            "no-production-change (pure boundary-pin) behaviours may be "
+            "batched into one subtask (looked for 'batch' + 'pin' | "
+            "'production'+'chang'/'modif'). Existing practice texts: %r"
+            % [_element_text(p) for p in practices],
+        )
+
+    def test_architect_payload_tells_architect_to_mark_batchable_behaviours(self):
+        # A <to_architect><payload><item> telling the architect to mark the
+        # batchable (no-production-change) behaviours in the plan, so the
+        # manager can batch without re-deriving which ones qualify.
+        payload = _architect_payload_items(self.root)
+        self.assertTrue(
+            payload,
+            "<delegation_contract> has no <to_architect><payload><item> elements",
+        )
+        matching = [
+            i for i in payload
+            if _says_architect_must_mark_batchable_behaviours(_element_text(i))
+        ]
+        self.assertTrue(
+            matching,
+            "no <to_architect><payload><item> tells the architect to mark the "
+            "no-production-change behaviours as batchable in the plan "
+            "(looked for 'mark' + 'batch'). Payload item texts: %r"
+            % [_element_text(i) for i in payload],
+        )
+
+    def test_one_behaviour_per_cycle_practice_still_present(self):
+        # B2 bounds the pre-existing "One behaviour per cycle" practice; it
+        # does not replace it. If this practice has gone, the failure must
+        # say so explicitly — a reader must not mistake this for a wording
+        # nit.
+        practices = self.root.findall(".//best_practices/practice")
+        self.assertTrue(practices, "<best_practices> has no <practice> elements")
+        matching = [
+            p for p in practices
+            if _says_one_behaviour_per_cycle(_element_text(p))
+        ]
+        self.assertTrue(
+            matching,
+            "the pre-existing 'One behaviour per cycle' <practice> has been "
+            "REMOVED or mangled beyond recognition — B2 is meant to bound it, "
+            "not replace it (looked for 'behaviour'/'behavior' + 'cycle'). "
+            "This is not a wording nit: the batching practice does not "
+            "restore the one-behaviour-per-cycle discipline. Existing "
+            "practice texts: %r"
+            % [_element_text(p) for p in practices],
+        )
+
+
+class ManagerBatchingTemplateTests(BatchingRuleTests):
+    """B2: the tdd-manager TEMPLATE carries the batching rule."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerBatchingLocalTests(BatchingRuleTests):
+    """B2: the anvil repo's OWN tdd-manager rules carry the same rule.
 
     ``.roo`` is gitignored, so the local copy is absent on a fresh clone
     (and on CI). ``setUp`` skips every local test cleanly in that case; when
