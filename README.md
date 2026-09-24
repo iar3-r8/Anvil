@@ -41,7 +41,7 @@ How each stage works, and why it is shaped this way: [how the agents work](doc/h
 
 ## Why it is different
 
-* **Small context by design** — every behaviour is delegated to a fresh specialist mode, one behaviour at a time, so no agent's context window fills up ([how the agents work](doc/how-the-agents-work.md)).
+* **Small context by design** — every behaviour is delegated to a fresh specialist mode, one behaviour at a time, and the rules each subtask loads are sized to match, so no agent's context window fills up ([how the agents work](doc/how-the-agents-work.md)).
 * **Nothing is guessed** — an unknown third-party interface is a blocking condition: the real documentation is fetched, saved under `doc/external/` and cited, so tests are never written against an invented API ([how the agents work](doc/how-the-agents-work.md)).
 * **The repo sets itself up** — re-running `setup-repo` upgrades a provisioned repo, merging rather than overwriting your hand edits ([VS Code plugin setup guide](doc/2-setting-up-vscode-plugin.md)).
 
