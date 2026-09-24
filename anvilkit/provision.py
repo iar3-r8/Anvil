@@ -771,10 +771,7 @@ def _write_zoo_settings(
     )
 
     if repo_plan.container_target:
-        report(
-            "   ↳ 🌐 Gateway target: llm-network container names "
-            "(dev container setup)"
-        )
+        report("   ↳ 🌐 Gateway target: host.docker.internal (dev container setup)")
     if repo_plan.use_anthropic_for_frontier_modes:
         report(
             "   ↳ 🧠 Architect mode: {} (Anthropic)".format(
