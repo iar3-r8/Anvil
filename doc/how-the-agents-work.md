@@ -101,10 +101,17 @@ red step — the behaviour was never actually expressed as a test — so the
 tdd-manager re-delegates to qna-tester with the verbatim output and commits
 nothing.
 
-**Green** is verified by running the **full** suite, not only the new tests.
-While iterating inside the red/green loop, only the **targeted** test file is
-run — the full suite stays the gate before committing, never a shortcut away
-from it. A test is **never weakened** to reach green. Each red and each green
+**Green** is committed when the **targeted** tests are green: while iterating
+inside the red/green loop, only the targeted test file is run. The **full
+suite** is the gate before the pull request, and it is also run whenever a
+change could affect other modules — the tdd-manager runs it itself, verifies it
+green, and the branch must pass it at the tip before shipping. That is a
+deliberate trade: a regression outside the targeted file can now land in a
+commit and sit in the history until the end-of-branch run, instead of blocking
+the commit that caused it; the branch cannot ship with it, and bisecting still
+finds it. The argument is in
+[`plans/cut-agent-context-cost.md`](../plans/cut-agent-context-cost.md) §B10.
+A test is **never weakened** to reach green. Each red and each green
 gets its own commit, and a red is **never squashed** into its green: the commit
 history alone then proves every test failed before it passed, which is the
 whole point of the discipline. Nothing is committed on any failure path, so
