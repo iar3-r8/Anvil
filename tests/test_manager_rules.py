@@ -62,6 +62,25 @@ the requirement, length is what is bounded (plan §9).
 RED expectation for B3 (this commit): the concision-rule assertion fails on
 assertion — no preamble or practice states the rule yet. The self-contained
 survival guard passes now and must keep passing after the green step.
+
+B4 of the same plan is covered here too: the targeted-test rule — while
+iterating, the targeted test file (or single test) is run, and the full
+suite is run before committing. The plan (§5, B4) places the rule in the
+step 6 / step 7 ``<verification>`` elements AND as a
+``<best_practices><practice>``; this test requires BOTH locations, because
+the workflow copy is what the manager actually sees mid-cycle and the
+practice copy is the form that survives B6's condensation. A separate
+guard asserts that the pre-existing full-suite-before-commit gate in step
+7's verification ("Run the full suite yourself, not only the new tests.
+Commit only on green.") still stands: B4 bounds that gate, it does not
+replace it (plan §9). If the targeted-test rule is present but the
+full-suite gate is gone, the guard fails naming the missing gate — the
+rule must not be readable as licence to commit on a targeted run.
+
+RED expectation for B4 (this commit): the two new-location assertions fail
+on assertion — no verification or practice states the targeted-test rule
+yet. The full-suite-gate guard passes now and must keep passing after the
+green step.
 """
 
 import re
@@ -731,6 +750,235 @@ class ManagerConcisionTemplateTests(ConcisionRuleTests):
 
 class ManagerConcisionLocalTests(ConcisionRuleTests):
     """B3: the anvil repo's OWN tdd-manager rules carry the same rule.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B4 of plans/cut-agent-context-cost.md — the targeted-test rule: run the
+# targeted test file while iterating, the full suite before committing
+# --------------------------------------------------------------------------- #
+
+def _says_run_targeted_tests_while_iterating(text):
+    """True when a ``<verification>`` or ``<practice>`` text states the
+    B4 rule: while iterating, the targeted test (file / single test) is
+    run.
+
+    Stems (all on lower-cased, whitespace-collapsed input):
+      * the thing being run, any one of:
+          ``"target"`` (targeted/target/test file), ``"single test"``,
+          ``"new tests"``, ``"failing tests"``;
+      * the temporal scope, any one of:
+          ``"while"`` (while iterating), ``"iterat"`` (iterating/
+          iteration), ``"per cycl"`` (per cycle / each cycle),
+          ``"red/green"`` (the red/green loop).
+    Both halves must be present, so a verification that merely tells the
+    manager to run something (the existing "Run the suite yourself" of
+    step 6) or that merely mentions iteration without a narrowed run does
+    not match. Verified against both files at red time: no existing
+    element carries any of the "thing" stems together with any of the
+    temporal stems.
+    """
+    narrowed = (
+        ("target" in text)
+        or ("single test" in text)
+        or ("new tests" in text)
+        or ("failing tests" in text)
+    )
+    while_iterating = (
+        ("while" in text)
+        or ("iterat" in text)
+        or ("per cycl" in text)
+        or ("red/green" in text)
+    )
+    return narrowed and while_iterating
+
+
+def _says_full_suite_required_before_commit(text):
+    """True when a ``<verification>`` text states the pre-existing
+    full-suite-before-commit gate (step 7, plan line 106): the full
+    suite is run, and the commit happens only on green.
+
+    Stems (all on lower-cased, whitespace-collapsed input):
+      * the run: ``"full"`` + (``"suite"`` | ``"tests"``);
+      * the gate: a commit term (``"commit"`` | ``"green"``) plus an
+        only-if-green form (``"only"`` | ``"before"``) — "Commit only on
+        green" carries ``"commit"`` + ``"green"`` + ``"only"`` and no
+        other existing verification carries them together.
+    """
+    full_run = ("full" in text) and (("suite" in text) or ("tests" in text))
+    gate = (
+        (("commit" in text) or ("green" in text))
+        and (("only" in text) or ("before" in text))
+    )
+    return full_run and gate
+
+
+class TargetedTestRuleTests(XmlTemplateTestCase):
+    """Shared assertions for B4 (plan §5, B4), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B4 is additive: the targeted-test rule (run the targeted test file
+    while iterating; the full suite before committing) must appear in
+    BOTH the step 6 / step 7 ``<verification>`` elements and as a
+    ``<best_practices><practice>`` — the plan names both locations, so
+    the test requires both. A separate guard asserts the pre-existing
+    full-suite-before-commit gate in step 7's verification survives:
+    plan §9 lists it as bounded, never weakened, and the missing-gate
+    failure names the gate explicitly so the targeted-test rule can
+    never be read as licence to commit on a targeted run.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only
+    the two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _step_verifications(self, numbers):
+        """The ``<verification>`` elements of the workflow steps whose
+        ``number`` attribute is in *numbers* (step 6 and step 7), each
+        labelled with its step number for the failure diagnostic. Steps
+        missing a ``<verification>`` are not fabricated — their absence
+        is part of the red state."""
+        candidates = []
+        for step in _all_steps(self.root):
+            if _step_number(step) not in numbers:
+                continue
+            verification = step.find("verification")
+            if verification is not None:
+                candidates.append((_step_number(step), verification))
+        return candidates
+
+    def _targeted_rule_verification_candidates(self):
+        """Step 6 / step 7 ``<verification>`` elements, for the red
+        assertion that the targeted-test rule is absent there today."""
+        return self._step_verifications(["6", "7"])
+
+    def test_step_verifications_state_targeted_tests_while_iterating(self):
+        # RED on this commit: the plan says the rule "belongs in
+        # <step number='6'> / <step number='7'> <verification>", and
+        # today neither verification mentions running the targeted test
+        # file while iterating — step 6 says "Run the suite yourself"
+        # (the full suite, on the red step) and step 7 says "Run the
+        # full suite yourself, not only the new tests. Commit only on
+        # green." (the gate, which the next test pins). The green step
+        # must add the narrowed run to one of these two verifications.
+        candidates = self._targeted_rule_verification_candidates()
+        self.assertTrue(
+            candidates,
+            "neither <step number='6'> nor <step number='7'> has a "
+            "<verification> element; the targeted-test rule has nowhere "
+            "to live in the workflow",
+        )
+        matching = [
+            (number, element)
+            for number, element in candidates
+            if _says_run_targeted_tests_while_iterating(_element_text(element))
+        ]
+        self.assertTrue(
+            matching,
+            "no <verification> in <step number='6'> or <step number='7'> "
+            "states the targeted-test rule (run the targeted test file / "
+            "single test while iterating; the full suite is run before "
+            "committing) (looked for ('target'|'single test'|'new tests'|"
+            "'failing tests') + ('while'|'iterat'|'per cycl'|'red/green'). "
+            "Note: 'run the full suite' alone is the gate, not this rule "
+            "— it carries no 'target' stem. Every candidate's text: %r"
+            % [
+                ("step " + number, _element_text(element))
+                for number, element in candidates
+            ],
+        )
+
+    def test_best_practices_has_high_priority_targeted_test_practice(self):
+        # RED on this commit: no <practice priority="high"> states the
+        # targeted-test rule yet. The practice form is what must survive
+        # B6's condensation, so the plan wants it there even though the
+        # workflow verifications carry the same rule.
+        practices = self.root.findall(".//best_practices/practice")
+        self.assertTrue(practices, "<best_practices> has no <practice> elements")
+        matching = [
+            p
+            for p in practices
+            if p.get("priority") == "high"
+            and _says_run_targeted_tests_while_iterating(_element_text(p))
+        ]
+        self.assertTrue(
+            matching,
+            "no <practice priority='high'> in <best_practices> states the "
+            "targeted-test rule (run the targeted test file / single test "
+            "while iterating; the full suite is run before committing) "
+            "(looked for ('target'|'single test'|'new tests'|'failing "
+            "tests') + ('while'|'iterat'|'per cycl'|'red/green'). Existing "
+            "practice texts: %r"
+            % [_element_text(p) for p in practices],
+        )
+
+    def test_full_suite_before_commit_gate_still_stated(self):
+        # GREEN on this commit; the assertion that protects rigour.
+        # Step 7's existing verification says "Run the full suite
+        # yourself, not only the new tests. Commit only on green."
+        # (plan line 106). B4 bounds that gate — targeted tests while
+        # iterating — but must not delete it. If the gate is gone while
+        # the targeted-test rule exists, the manager is left with
+        # licence to commit on a targeted run, and this failure says
+        # so explicitly rather than as a wording nit.
+        verifications = self._step_verifications(["6", "7"])
+        self.assertTrue(
+            verifications,
+            "neither <step number='6'> nor <step number='7'> has a "
+            "<verification> element; the full-suite-before-commit gate "
+            "has nowhere to live in the workflow",
+        )
+        matching = [
+            (number, element)
+            for number, element in verifications
+            if _says_full_suite_required_before_commit(_element_text(element))
+        ]
+        self.assertTrue(
+            matching,
+            "the full-suite-before-commit gate has been REMOVED from step "
+            "6/7 <verification> — the rule to run the FULL suite (not only "
+            "the new tests) before committing is gone. This is not a "
+            "wording nit: without it the B4 targeted-test rule reads as "
+            "licence to commit on a targeted run (looked for 'full'+"
+            "('suite'|'tests') + ('commit'|'green') + ('only'|'before')). "
+            "Plan §9: the full-suite-before-commit rule is bounded by B4, "
+            "never weakened. Every step 6/7 <verification> text: %r"
+            % [
+                ("step " + number, _element_text(element))
+                for number, element in verifications
+            ],
+        )
+
+
+class ManagerTargetedTestTemplateTests(TargetedTestRuleTests):
+    """B4: the tdd-manager TEMPLATE carries the targeted-test rule."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerTargetedTestLocalTests(TargetedTestRuleTests):
+    """B4: the anvil repo's OWN tdd-manager rules carry the same rule.
 
     ``.roo`` is gitignored, so the local copy is absent on a fresh clone
     (and on CI). ``setUp`` skips every local test cleanly in that case;
