@@ -152,6 +152,29 @@ RED expectation for B11 (this commit): the <to_code> assertion fails on
 assertion - the current item carries no conditionality marker. The
 <to_qna_tester> assertion and the command-evidence guard are GREEN on
 arrival and must keep passing after the green step.
+
+B1 of ``plans/skip-trivial-steps.md`` is also covered here: the skip
+judgement — a pipeline step whose cost exceeds its value may be skipped
+on judgement; when in doubt, the full step is run (the fail-safe); and
+the skip decision and its reason are recorded in the ledger. It is
+additive: one more ``<practice priority="high">`` in
+``<best_practices>``.
+
+RED expectation for B1 (this commit): the skip-judgement practice
+assertion fails on assertion for both the template and the local copy —
+no ``<practice>`` carries the skip licence, the fail-safe and the
+recording together. The qualitative-only guard (the added practice
+carries no numeric threshold, reusing ``_DIGIT_LINE_THRESHOLD``) and the
+pure predicate unit tests pass now and must keep passing after the green
+step.
+
+Cross-match check for B1 (verified against both files on 2026-09-24 with
+grep -ic): ``skip``, ``doubt``, ``unsure``, ``uncertain``, ``judge``,
+``worth``, ``cost`` and ``value`` appear NOWHERE in either file (all
+return 0), and the recording stems that DO occur (``record`` x2,
+``ledger`` x5, ``justif`` x1) are AND-ed with those absent stems, so the
+predicate cannot match any pre-existing element — the red is genuine,
+not vacuously green.
 """
 
 import re
@@ -1820,6 +1843,266 @@ class ManagerCoderReportLocalTests(CoderReportFullSuiteTests):
     (and on CI). ``setUp`` skips every local test cleanly in that case; when
     the file is provisioned, the full assertion set runs exactly as written
     above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B1 of plans/skip-trivial-steps.md — the skip judgement, its fail-safe
+# and its audit trail
+# --------------------------------------------------------------------------- #
+
+def _says_skip_judgement_with_failsafe_and_recording(text):
+    """True when a ``<practice>``'s text states the B1 skip licence in full:
+    a pipeline step whose cost exceeds its value may be skipped on
+    judgement; when in doubt, the full step is run; and the skip decision
+    and its reason are recorded in the ledger.
+
+    Stems (all on lower-cased, whitespace-collapsed input), four halves:
+      * the licence: ``"skip"`` (skip/skipped/skipping);
+      * the judgement, any one of: ``"judge"`` (judge/judgement/judgment),
+        ``"worth"`` (worth), ``"value"`` (value/values), ``"cost"``
+        (cost/costs);
+      * the fail-safe, any one of: ``"doubt"`` (doubt/doubtful),
+        ``"unsure"`` (unsure), ``"uncertain"`` (uncertain);
+      * the audit trail, any one of: ``"record"`` (record/recorded/
+        records), ``"ledger"`` (ledger), ``"justif"`` (justify/justified/
+        justification).
+
+    All four halves are required in the SAME text, so a practice that
+    merely mentions "skip" (or merely records something, or merely
+    hedges) does not match — the match cannot be assembled from stems
+    scattered across two practices.
+
+    Cross-match check (verified against both files at red time, 2026-09-24):
+    none of ``"skip"``, ``"doubt"``, ``"unsure"``, ``"uncertain"``,
+    ``"judge"``, ``"worth"``, ``"cost"`` or ``"value"`` occurs anywhere in
+    either file (grep -ic returns 0 for each), and the recording stems
+    that do occur (``record``, ``ledger``, ``justif``) are AND-ed with the
+    absent halves, so no pre-existing element can match — the red is
+    genuine, not vacuously green.
+    """
+    licence = ("skip" in text)
+    judgement = (
+        ("judge" in text)
+        or ("worth" in text)
+        or ("value" in text)
+        or ("cost" in text)
+    )
+    failsafe = (
+        ("doubt" in text)
+        or ("unsure" in text)
+        or ("uncertain" in text)
+    )
+    recording = (
+        ("record" in text)
+        or ("ledger" in text)
+        or ("justif" in text)
+    )
+    return licence and judgement and failsafe and recording
+
+
+def _missing_skip_judgement_halves(text):
+    """Return the names of the halves of the B1 rule absent from *text*.
+
+    Returns an empty list when the text states the full rule (the same
+    four halves ``_says_skip_judgement_with_failsafe_and_recording``
+    requires), so the two helpers can never disagree about whether a
+    practice qualifies.
+    """
+    missing = []
+    if "skip" not in text:
+        missing.append("the skip licence ('skip')")
+    if not (
+        ("judge" in text)
+        or ("worth" in text)
+        or ("value" in text)
+        or ("cost" in text)
+    ):
+        missing.append("a judgement term ('judge'/'worth'/'value'/'cost')")
+    if not (
+        ("doubt" in text)
+        or ("unsure" in text)
+        or ("uncertain" in text)
+    ):
+        missing.append(
+            "the fail-safe clause ('doubt'/'unsure'/'uncertain')"
+        )
+    if not (
+        ("record" in text)
+        or ("ledger" in text)
+        or ("justif" in text)
+    ):
+        missing.append(
+            "a recording term ('record'/'ledger'/'justif')"
+        )
+    return missing
+
+
+class SkipJudgementTests(XmlTemplateTestCase):
+    """Shared assertions for B1 (plan §6, B1), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B1 is additive: one more ``<practice priority="high">`` in
+    ``<best_practices>`` stating that a pipeline step whose cost
+    exceeds its value may be skipped on judgement; when in doubt, the
+    full step is run; and the skip decision and its reason are recorded
+    in the ledger. All three statements must live in the same practice
+    text, so the match cannot be assembled from stems scattered across
+    two practices.
+
+    The failure diagnostic lists every existing practice's text and
+    names which of the four halves (skip licence / judgement / fail-safe
+    / recording) each one is missing, and the licence-without-fail-safe
+    case is called out explicitly — it is the missing fail-safe, not a
+    wording nit.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only the
+    two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _added_practices(self):
+        """The ``<best_practices>`` practices that state the B1 skip
+        licence in full (all four halves in the same text)."""
+        practices = self.root.findall(".//best_practices/practice")
+        return [
+            p
+            for p in practices
+            if _says_skip_judgement_with_failsafe_and_recording(
+                _element_text(p)
+            )
+        ]
+
+    def test_best_practices_has_high_priority_skip_judgement_practice(self):
+        # RED on this commit: no <practice priority="high"> states the
+        # skip licence, its fail-safe and its audit trail together.
+        # B1 of plans/skip-trivial-steps.md: a pipeline step whose cost
+        # exceeds its value may be skipped on judgement; when in doubt,
+        # the full step is run; the skip decision and its reason are
+        # recorded in the ledger.
+        practices = self.root.findall(".//best_practices/practice")
+        self.assertTrue(practices, "<best_practices> has no <practice> elements")
+        matching = [
+            p
+            for p in practices
+            if p.get("priority") == "high"
+            and _says_skip_judgement_with_failsafe_and_recording(
+                _element_text(p)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "no <practice priority='high'> in <best_practices> states the "
+            "skip judgement in full: a pipeline step whose cost exceeds "
+            "its value may be skipped on judgement (looked for 'skip' + "
+            "('judge'|'worth'|'value'|'cost') + ('doubt'|'unsure'|"
+            "'uncertain') + ('record'|'ledger'|'justif'), all in the same "
+            "text). A practice merely mentioning 'skip' does not count. "
+            "Every existing practice, with its missing half(s): %r"
+            % [
+                {
+                    "text": _element_text(p),
+                    "priority": p.get("priority"),
+                    "missing": _missing_skip_judgement_halves(
+                        _element_text(p)
+                    ),
+                }
+                for p in practices
+            ],
+        )
+
+    def test_skip_licence_always_carries_the_failsafe(self):
+        # RED on this commit together with the practice above: no
+        # practice carries the skip licence, so none can be missing the
+        # fail-safe. The guard that matters on arrival is the
+        # inverse — a practice stating the licence WITHOUT the
+        # "when in doubt, the full step is run" clause must fail, and
+        # the failure must name it as the missing fail-safe, not a
+        # wording nit: a skip licence without its fail-safe is worse
+        # than no rule at all (plan §4: B1 is first for this reason).
+        #
+        # This assertion is a pure predicate unit test (it needs no
+        # parsed document); it pins the diagnostic so the green step's
+        # failure message cannot degrade into a wording nit.
+        licence_without_failsafe = (
+            "A pipeline step whose cost exceeds its value may be skipped "
+            "on judgement, and the skip decision is recorded in the ledger."
+        )
+        self.assertTrue(
+            "skip" in licence_without_failsafe,
+            "test fixture regression: the fixture no longer carries the "
+            "skip licence",
+        )
+        self.assertEqual(
+            _missing_skip_judgement_halves(licence_without_failsafe),
+            ["the fail-safe clause ('doubt'/'unsure'/'uncertain')"],
+            "a practice stating the skip licence WITHOUT the 'when in "
+            "doubt' clause must be reported as missing the FAIL-SAFE — "
+            "that is the whole point of B1, not a wording nit",
+        )
+        self.assertFalse(
+            _says_skip_judgement_with_failsafe_and_recording(
+                licence_without_failsafe
+            ),
+            "the predicate must NOT accept the skip licence without its "
+            "fail-safe clause",
+        )
+
+    def test_added_texts_carry_no_numeric_threshold(self):
+        # QUALITATIVE-ONLY GUARD (plan §6, B1, "Edge — qualitative
+        # only"): the user's decision is judgement with examples, never
+        # a number. The guard scans ONLY the element this plan adds —
+        # the skip-judgement practice identified by the same phrase
+        # predicate the new-content test uses — reusing
+        # ``_DIGIT_LINE_THRESHOLD`` (the behaviour-3 precedent), so no
+        # pre-existing element is in scope and nothing is excluded by
+        # accident. Passes now (no added element exists yet, so the
+        # scan set is empty) and must keep passing after the green
+        # step.
+        offenders = [
+            _element_text(p)
+            for p in self._added_practices()
+            if _DIGIT_LINE_THRESHOLD.search(_element_text(p))
+        ]
+        self.assertFalse(
+            offenders,
+            "the newly added skip-judgement practice states a numeric "
+            "threshold; B1 must stay qualitative — judgement with "
+            "examples, never a number (plans/skip-trivial-steps.md §1, "
+            "precedent plans/kiss-agent-rules.md). Offending text: %r"
+            % offenders,
+        )
+
+
+class ManagerSkipJudgementTemplateTests(SkipJudgementTests):
+    """B1: the tdd-manager TEMPLATE carries the skip judgement."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerSkipJudgementLocalTests(SkipJudgementTests):
+    """B1: the anvil repo's OWN tdd-manager rules carry the same rule.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
     """
 
     template_path = LOCAL_TDD_MANAGER
