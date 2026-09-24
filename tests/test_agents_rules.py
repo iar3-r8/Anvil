@@ -1,4 +1,6 @@
-"""Tests for the AGENTS.md rule files (plans/kiss-agent-rules.md, behaviour 1).
+"""Tests for the AGENTS.md rule files.
+
+plans/kiss-agent-rules.md, behaviour 1:
 
 Behaviour 1 adds one new top-level section — a ``##`` heading naming simplicity,
 for example ``## Keep It Simple`` — to both copies of the shared always-on agent
@@ -143,6 +145,61 @@ def _simplicity_section_lines(body_lines):
     return body_lines[start:end]
 
 
+def _mcp_hygiene_intro_lines(body_lines):
+    # type: (List[str]) -> Optional[List[str]]
+    """The lines under ``## MCP server or tool usage`` that come BEFORE the
+    first ``###`` subsection — where plans/cut-agent-context-cost.md (B7)
+    places the new hygiene bullets.
+
+    Slicing here (instead of the whole section) is what keeps a bullet added
+    under ``### Github`` or ``### Oxylabs`` from passing: it lands in a
+    subsection, not the intro. ``None`` when the ``##`` section or either
+    subsection is missing — a red state that the placement test reports."""
+    section = _section_lines(body_lines, 2, "MCP server or tool usage")
+    if section is None:
+        return None
+    intro = []
+    for line in section:
+        match = _HEADING_RE.match(line)
+        if match and len(match.group(1)) == 3:
+            break
+        intro.append(line)
+    return intro
+
+
+def _heading_span(body_lines, level, title):
+    # type: (List[str], int, str) -> Optional[Tuple[int, int]]
+    """The ``(start, end)`` body-line indices of the first heading of
+    *level* whose title equals *title* (case-insensitive): ``start`` is the
+    line after the heading, ``end`` the index of the next heading of the
+    same or a higher level (the body's end when there is none). ``None``
+    when the heading is absent.
+
+    The indices are what the orphan test needs — the surviving-subsection
+    tests call ``_section_lines`` over the whole body, so they cannot tell
+    a ``###`` subsection nested under ``## MCP server or tool usage`` from
+    one that has been pushed under some other ``##`` heading."""
+    start = None
+    for idx, line in enumerate(body_lines):
+        match = _HEADING_RE.match(line)
+        if (
+            match
+            and len(match.group(1)) == level
+            and match.group(2).lower() == title.lower()
+        ):
+            start = idx + 1
+            break
+    if start is None:
+        return None
+    end = len(body_lines)
+    for idx in range(start, len(body_lines)):
+        match = _HEADING_RE.match(body_lines[idx])
+        if match and len(match.group(1)) <= level:
+            end = idx
+            break
+    return start, end
+
+
 # --------------------------------------------------------------------------- #
 # Base test case: loads and parses one AGENTS.md file
 # --------------------------------------------------------------------------- #
@@ -245,6 +302,94 @@ class AgentsRulesBase(unittest.TestCase):
                 bullets,
                 "an Oxylabs bullet is missing or was altered (expected "
                 "marker %r). Bullets: %r" % (marker, bullets),
+            )
+
+    # -- B7 (plans/cut-agent-context-cost.md): MCP call hygiene -- #
+    #
+    # Three bullets under the existing ``## MCP server or tool usage`` section:
+    # prefer narrow queries; request the smallest page size that answers the
+    # question; keep issue comments short BECAUSE every add_issue_comment
+    # echoes the body back. The stems are deliberately loose so the green
+    # step can word the bullets naturally; the echo-back reason is the
+    # substance, so it is matched on two separate stems ("echo" plus
+    # "add_issue_comment") rather than one long phrase.
+
+    def test_mcp_hygiene_bullets_exist_before_the_subsections(self):
+        intro = _mcp_hygiene_intro_lines(self.body_lines)
+        self.assertIsNotNone(
+            intro,
+            "cannot locate the intro of the ## MCP server or tool usage "
+            "section (the section or a ### subsection is missing) in %s"
+            % self.template_path,
+        )
+        self.assertTrue(
+            any(_BULLET_RE.match(line) for line in intro),
+            "no bullets sit under ## MCP server or tool usage before its "
+            "first ### subsection — the B7 hygiene bullets are missing. "
+            "Intro lines: %r" % intro,
+        )
+
+    def test_mcp_hygiene_bullets_prefer_narrow_queries(self):
+        text = _section_text(_mcp_hygiene_intro_lines(self.body_lines))
+        self.assertIn(
+            "narrow",
+            text,
+            "no MCP hygiene bullet says to prefer narrow queries. "
+            "Section intro: %r" % text,
+        )
+
+    def test_mcp_hygiene_bullets_request_smallest_page_size(self):
+        text = _section_text(_mcp_hygiene_intro_lines(self.body_lines))
+        self.assertIn(
+            "smallest page size",
+            text,
+            "no MCP hygiene bullet says to request the smallest page size "
+            "that answers the question. Section intro: %r" % text,
+        )
+
+    def test_mcp_hygiene_bullets_keep_issue_comments_short(self):
+        text = _section_text(_mcp_hygiene_intro_lines(self.body_lines))
+        self.assertTrue(
+            ("issue comment" in text) and ("short" in text),
+            "no MCP hygiene bullet says to keep issue comments short. "
+            "Section intro: %r" % text,
+        )
+
+    def test_mcp_hygiene_bullets_explain_the_add_issue_comment_echo_cost(
+        self,
+    ):
+        text = _section_text(_mcp_hygiene_intro_lines(self.body_lines))
+        self.assertTrue(
+            ("add_issue_comment" in text) and ("echo" in text),
+            "no MCP hygiene bullet carries the causal clause: because every "
+            "add_issue_comment echoes the body back, a long comment is paid "
+            "for on arrival and again on every later turn. "
+            "Section intro: %r" % text,
+        )
+
+    def test_mcp_hygiene_bullets_do_not_orphan_the_subsections(self):
+        section = _heading_span(
+            self.body_lines, 2, "MCP server or tool usage"
+        )
+        self.assertIsNotNone(
+            section,
+            "the ## MCP server or tool usage section is missing in %s, so "
+            "the B7 bullets have nowhere valid to live" % self.template_path,
+        )
+        for title in ("Github", "Oxylabs"):
+            span = _heading_span(self.body_lines, 3, title)
+            self.assertIsNotNone(
+                span,
+                "the ### %s subsection is missing — the B7 bullets must "
+                "not orphan it" % title,
+            )
+            self.assertTrue(
+                section[0] < span[0] and span[1] <= section[1],
+                "the ### %s subsection is no longer nested inside ## MCP "
+                "server or tool usage (section spans body lines %d..%d, "
+                "subsection spans %d..%d) — the B7 bullets were placed "
+                "outside the section"
+                % (title, section[0], section[1], span[0], span[1]),
             )
 
     # -- the behaviour: a ## simplicity section with six assertive bullets -- #
