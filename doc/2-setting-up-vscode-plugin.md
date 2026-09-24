@@ -155,17 +155,17 @@ For a fully sandboxed coding session — isolated filesystem, no access to your
 host credentials, and all MCP runtimes pre-installed — open the repo in VS Code
 and click **Reopen in Container**.
 
-The container joins the gateway's own bridge network (`--network=llm-network`)
-instead of running with `--network=host`. That is what lets the LLM be reached
-by container name rather than through the host's port mapping.
+The container reaches the host through `host.docker.internal`
+(`--add-host=host.docker.internal:host-gateway`) instead of joining a
+compose network, so the LLM is reached via the host's published ports.
 
 **Provisioning for the container:** `setup-repo` renders Zoo Code URLs with the
 host's perspective by default (`http://localhost:<LLM_PORT>/v1`). When the repo
 will be worked on inside a dev container, pass `--container` so the rendered
-`zoo-code-settings.json` points at the llm-network container names instead:
+`zoo-code-settings.json` points at the host instead:
 
-- `openAiBaseUrl` / embedder base URL: `http://llama-swap-service:8080/v1`
-- `codebaseIndexQdrantUrl`: `http://coder_qdrant-service:6333`
+- `openAiBaseUrl` / embedder base URL: `http://host.docker.internal:<LLM_PORT>/v1`
+- `codebaseIndexQdrantUrl`: `http://host.docker.internal:6333`
 
 ```bash
 ./anvil setup-repo <target-repo> --container --yes
@@ -178,7 +178,7 @@ switch between the two environments, re-run `setup-repo` with (or without)
 `--container` to flip the URLs.
 
 The gateway stack must be running (`./anvil up`) before the container's LLM
-calls can resolve, since the container names exist only on that network. The
+calls can resolve, since they go out through the host's published ports. The
 Docker socket is **not** mounted, so `./anvil up` and `./anvil down` must be
 run from the host. The GitHub token is injected via `remoteEnv` from the host
 `${GITHUB_TOKEN}` environment variable.

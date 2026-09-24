@@ -1,18 +1,15 @@
-"""Tests for the repo-level devcontainer and compose wiring (llm-network).
+"""Tests for the provisioned devcontainer and the compose network.
 
-The devcontainer sandbox joins the gateway's own bridge network
-(``llm-network``) instead of running with ``--network=host``.  That is what
-lets the provisioned Zoo Code settings address the LLM by container name
-(``llama-swap-service:8080``) rather than by ``localhost`` plus the host-side
-``LLM_PORT`` mapping.
+The provisioned devcontainer (``templates/devcontainer/devcontainer.json``)
+reaches the LLM stack through the host instead of joining the compose
+network: ``--add-host=host.docker.internal:host-gateway`` and no
+``--network`` argument. That is what lets the container-target Zoo Code
+settings address the gateway and Qdrant at ``host.docker.internal`` plus the
+host-mapped ports.
 
-These tests load the *real* ``.devcontainer/devcontainer.json`` and
-``docker-compose.yml`` — the same way ``tests/test_repo_config.py`` loads the
-real ``config.yaml`` — so a drift back to host networking is caught.
-
-Container names are asserted from ``docker-compose.yml`` itself (the single
-source of truth for ``container_name``), never duplicated by hand here: the
-test fails the moment compose and the renderer disagree.
+These tests load the *real* template file and ``docker-compose.yml`` — the
+same way ``tests/test_repo_config.py`` loads the real ``config.yaml`` — so a
+drift back to joining a compose network or to host networking is caught.
 """
 
 import json
@@ -64,7 +61,9 @@ class TestTemplateDevcontainerUsesHostGatewayAddressing(unittest.TestCase):
 
 
 class TestComposeServicesAreOnTheLlmNetwork(unittest.TestCase):
-    """Both gateway services sit on llm-network, so names resolve across it."""
+    """The gateway services talk to each other by name over llm-network;
+    the devcontainer sandbox does not join that network and reaches the
+    services via the host's published ports."""
 
     def test_llama_swap_is_on_the_network(self):
         self.assertIn(NETWORK, _compose_service("llama-swap").get("networks") or [])
