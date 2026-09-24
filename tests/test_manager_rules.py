@@ -49,6 +49,19 @@ RED expectation for B2 (this commit): the two new-content assertions fail on
 assertion for the right reason — neither the batching practice nor the
 payload item exists yet. The survival guard passes now and must keep
 passing after the green step.
+
+B3 of the same plan is covered here too: the brief-concision rule for
+subtask messages — a brief gives the behaviour, the failure and the
+constraints, and gives rationale in one or two sentences with a pointer to
+the plan rather than reproducing the argument. It may live in the
+``<delegation_contract><preamble>`` or as a ``<best_practices><practice>``;
+the test accepts either location. A guard asserts the pre-existing "Write
+self-contained subtask messages" practice survives: self-containedness is
+the requirement, length is what is bounded (plan §9).
+
+RED expectation for B3 (this commit): the concision-rule assertion fails on
+assertion — no preamble or practice states the rule yet. The self-contained
+survival guard passes now and must keep passing after the green step.
 """
 
 import re
@@ -540,6 +553,189 @@ class ManagerBatchingLocalTests(BatchingRuleTests):
     (and on CI). ``setUp`` skips every local test cleanly in that case; when
     the file is provisioned, the full assertion set runs exactly as written
     above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B3 of plans/cut-agent-context-cost.md — the brief-concision rule for
+# subtask messages
+# --------------------------------------------------------------------------- #
+
+def _says_brief_gives_essentials_and_points_to_plan(text):
+    """True when a ``<preamble>`` or ``<practice>`` text states the
+    brief-concision rule: the subtask brief gives the behaviour, the
+    failure and the constraints, and the rationale is one or two
+    sentences with a pointer to the plan rather than the argument
+    reproduced.
+
+    Stems (all on lower-cased, whitespace-collapsed input):
+      * half 1 — the essentials that must be given, all three:
+        ``"behav"`` (behaviour/behavior), ``"failure"``, ``"constrain"``
+        (constraints/constraint);
+      * half 2 — the bound on the rationale: ``"rationale"`` +
+        ``"plan"`` + a pointer concept (``"point"`` | ``"refer"`` |
+        ``"cit"``) + a no-reproduction concept (``"reproduc"`` |
+        ``"restat"`` | ``"repeat"`` | ``"rather than"`` | ``"instead"``
+        | ``"not"``).
+
+    The ``"not"`` disjunct is deliberately weak: it is one member of a
+    long AND, so it cannot cross-match on its own; it keeps the
+    predicate alive if the rule is phrased "not the argument" rather
+    than "rather than reproducing the argument". No existing preamble
+    or practice text satisfies all the stems together (verified
+    against the file at red time), so the match is not vacuous.
+    """
+    essentials = (
+        ("behav" in text) and ("failure" in text) and ("constrain" in text)
+    )
+    plan_pointer = (
+        ("rationale" in text)
+        and ("plan" in text)
+        and (("point" in text) or ("refer" in text) or ("cit" in text))
+    )
+    not_restate = (
+        ("reproduc" in text)
+        or ("restat" in text)
+        or ("repeat" in text)
+        or ("rather than" in text)
+        or ("instead" in text)
+        or ("not" in text)
+    )
+    return essentials and plan_pointer and not_restate
+
+
+def _says_write_self_contained_subtask_messages(text):
+    """True when a ``<practice>``'s text is the pre-existing "Write
+    self-contained subtask messages" rule that B3 bounds, not replaces.
+
+    Stems: ``"self-contain"`` (self-contained/self-containedness) +
+    ``"subtask"``. Both appear in the rule sentence itself, so an
+    honest condensation of the practice keeps the match while deleting
+    the practice breaks it.
+    """
+    return ("self-contain" in text) and ("subtask" in text)
+
+
+class ConcisionRuleTests(XmlTemplateTestCase):
+    """Shared assertions for B3 (plan §5, B3), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B3 adds the brief-concision rule — the brief gives the behaviour,
+    the failure and the constraints; the rationale is one or two
+    sentences with a pointer to the plan, not the argument reproduced.
+    The plan allows the rule to live in the
+    ``<delegation_contract><preamble>`` or as a ``<best_practices>``
+    ``<practice>``; the test accepts either location so the green step
+    is not forced into one spot. The pre-existing "Write
+    self-contained subtask messages" practice must survive:
+    self-containedness is the requirement, length is what is bounded
+    (plan §9) — if it has gone, the failure says so explicitly rather
+    than as a wording nit.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only
+    the two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _concision_rule_candidates(self):
+        """The elements that may carry the B3 rule: the delegation
+        preamble first, then every ``<best_practices>`` practice, each
+        labelled with a human-readable location for the failure
+        diagnostic."""
+        candidates = []
+        preamble = self.root.find(".//delegation_contract/preamble")
+        if preamble is not None:
+            candidates.append(("delegation_contract/preamble", preamble))
+        practices = self.root.findall(".//best_practices/practice")
+        candidates.extend(
+            ("best_practices/practice[%d]" % (index + 1), practice)
+            for index, practice in enumerate(practices)
+        )
+        return candidates
+
+    def test_concision_rule_present_in_preamble_or_practice(self):
+        # The rule may live in the <delegation_contract><preamble> or
+        # as a <best_practices><practice>; accept either location.
+        candidates = self._concision_rule_candidates()
+        self.assertTrue(
+            candidates,
+            "neither <delegation_contract><preamble> nor "
+            "<best_practices> exists; nothing to check the rule against",
+        )
+        matching = [
+            (where, element)
+            for where, element in candidates
+            if _says_brief_gives_essentials_and_points_to_plan(
+                _element_text(element)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "no <delegation_contract><preamble> or <best_practices>"
+            "<practice> states the brief-concision rule (the brief gives "
+            "the behaviour, the failure and the constraints; the rationale "
+            "is one or two sentences with a pointer to the plan, not the "
+            "argument reproduced) (looked for 'behav'+'failure'+'constrain' "
+            "+ 'rationale'+'plan'+('point'|'refer'|'cit') + "
+            "('reproduc'|'restat'|'repeat'|'rather than'|'instead'|'not'). "
+            "Every candidate's text: %r"
+            % [(where, _element_text(element)) for where, element in candidates],
+        )
+
+    def test_self_contained_subtask_messages_practice_still_present(self):
+        # B3 bounds the pre-existing "Write self-contained subtask
+        # messages" practice; it does not replace it. Self-containedness
+        # is the requirement, length is what is bounded (plan §9). If
+        # this practice has gone, the failure must say so explicitly —
+        # a reader must not mistake this for a wording nit.
+        practices = self.root.findall(".//best_practices/practice")
+        self.assertTrue(practices, "<best_practices> has no <practice> elements")
+        matching = [
+            p for p in practices
+            if _says_write_self_contained_subtask_messages(_element_text(p))
+        ]
+        self.assertTrue(
+            matching,
+            "the pre-existing 'Write self-contained subtask messages' "
+            "<practice> has been REMOVED or mangled beyond recognition — "
+            "B3 is meant to bound it (self-containedness is the "
+            "requirement; length is what is bounded), not replace it "
+            "(looked for 'self-contain' + 'subtask'). This is not a "
+            "wording nit: the concision rule does not restore the "
+            "self-contained discipline. Existing practice texts: %r"
+            % [_element_text(p) for p in practices],
+        )
+
+
+class ManagerConcisionTemplateTests(ConcisionRuleTests):
+    """B3: the tdd-manager TEMPLATE carries the brief-concision rule."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerConcisionLocalTests(ConcisionRuleTests):
+    """B3: the anvil repo's OWN tdd-manager rules carry the same rule.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
     """
 
     template_path = LOCAL_TDD_MANAGER
