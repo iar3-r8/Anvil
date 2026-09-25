@@ -917,5 +917,137 @@ class B7IssueFilingTests(HarvestCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# B8 — the mirror obligation is recorded
+# --------------------------------------------------------------------------- #
+
+class B8MirrorObligationTests(HarvestCommandTestCase):
+    """B8 (plans/harvest-roo-templates.md): the body records the mirror
+    obligation.
+
+    Any adopted change to the four rule XMLs must land in BOTH
+    ``templates/roo_template/`` (tracked) and the local ``.roo/`` copy
+    (gitignored), and the body names ``tests/test_rules_mirror.py`` as the
+    guard that goes red otherwise. Rationale: ``.roo/*`` is gitignored, so
+    only the template side ever shows in a diff; the mirror test is the only
+    thing that catches a half-applied change.
+
+    Assertions are a boundary-anchored whole token for the guard path, a
+    windowed phrase predicate for the both-copies obligation (case-
+    insensitive, tolerant of "both" / "two copies" / "both sides" / "both
+    trees" and of the two path tokens sitting on either side of the
+    "both" phrase), and an any-of predicate for the four rule XML paths or a
+    collective "the rule XMLs" reference — loose enough for prose latitude,
+    specific enough that the current body fails all three.
+
+    Expected red reason: the current body is the B1 frontmatter plus the
+    Inventory, Comparison, Classifying findings, Confirming the shortlist and
+    Filing the issue sections (B1-B7) only. ``tests/test_rules_mirror.py``
+    appears nowhere; no sentence pairs a "both"/"two copies" phrase with both
+    the ``templates/roo_template/`` and ``.roo/`` tokens (the one "both
+    sides" on the new-section line names no path at all); and neither any of
+    the four rule XML paths nor a "rule XMLs" reference appears — so all
+    three tests fail.
+    """
+
+    command_path = COMMAND_PATH
+
+    #: The guard module, named as a whole token (a markdown link such as
+    #: ``tests/test_rules_mirror.py:39`` still satisfies it — the trailing
+    #: anchor only excludes a longer identifier, not a line-number suffix).
+    GUARD_TOKEN = "tests/test_rules_mirror.py"
+
+    #: The template side of the mirror pair.
+    TEMPLATE_TOKEN = "templates/roo_template/"
+
+    #: The local side: ``.roo/`` or ``.roo`` followed by a word boundary, so
+    #: ``.roo/``, "the local .roo copy" and "the .roo directory" all pass,
+    #: while ``.roomodes`` (no boundary between the o and the m) never does.
+    LOCAL_RE = re.compile(r"(?<!\w)\.roo\b")
+
+    #: The "both copies" phrasing the green step may pick.
+    BOTH_RE = re.compile(
+        r"\b(?:both|two\s+copies)\b"
+        r"|\bboth\s+(?:copies|sides|trees|places)\b",
+        re.IGNORECASE,
+    )
+
+    #: The window around a "both" phrase that must also name both copies:
+    #: the obligation is one statement, not two distant mentions (B6
+    #: windowed-predicate precedent).
+    _BOTH_WINDOW_BACK = 120
+    _BOTH_WINDOW_FORWARD = 160
+
+    #: The four rule XMLs, exactly the relative paths in
+    #: tests/test_rules_mirror.py MIRROR_PAIRS.
+    RULE_XML_TOKENS = (
+        "rules-tdd-manager/instructions.xml",
+        "rules-architect/instructions.xml",
+        "rules-qna-tester/instructions.xml",
+        "rules-docs-manager/guidelines.xml",
+    )
+
+    #: A collective reference to the four files ("the four rule XMLs").
+    RULE_XMLS_RE = re.compile(r"\brule\s+xmls?\b", re.IGNORECASE)
+
+    def test_body_names_mirror_guard_test(self):
+        # B8 output: the body names tests/test_rules_mirror.py as the guard
+        # that goes red when a rule XML is updated on one side only.
+        self.assertTrue(
+            re.search(
+                r"(?<!\w)" + re.escape(self.GUARD_TOKEN) + r"(?!\w)",
+                self.body,
+            ) is not None,
+            "body does not name %s as the guard for the rule-XML mirror"
+            % self.GUARD_TOKEN,
+        )
+
+    def _both_copies_obligation_named(self):
+        """True iff a "both copies" phrase sits within one statement of
+        BOTH path tokens — the template side and the local ``.roo/`` side —
+        in either order."""
+        for match in self.BOTH_RE.finditer(self.body):
+            window = self.body[
+                max(0, match.start() - self._BOTH_WINDOW_BACK):
+                match.end() + self._BOTH_WINDOW_FORWARD
+            ]
+            if re.search(
+                r"(?<!\w)" + re.escape(self.TEMPLATE_TOKEN), window
+            ) and self.LOCAL_RE.search(window):
+                return True
+        return False
+
+    def test_body_requires_changes_to_land_in_both_copies(self):
+        # B8 output: any adopted change to the rule XMLs must land in BOTH
+        # templates/roo_template/ and the local .roo/ copy — the plan's own
+        # phrasing, with "two copies" / "both sides" / "both trees" as the
+        # latitude the green step may pick.
+        self.assertTrue(
+            self._both_copies_obligation_named(),
+            "body does not require an adopted change to land in both "
+            "copies (templates/roo_template/ and the local .roo/) — a "
+            "'both'/'two copies'/'both sides' statement naming both path "
+            "tokens is missing",
+        )
+
+    def test_body_names_the_rule_xmls(self):
+        # B8 output: the obligation is about the four rule XMLs — the body
+        # names at least one of the four paths from MIRROR_PAIRS, or refers
+        # to "the rule XMLs" collectively.
+        named = any(
+            re.search(r"(?<!\w)" + re.escape(token), self.body) is not None
+            for token in self.RULE_XML_TOKENS
+        )
+        self.assertTrue(
+            named or self.RULE_XMLS_RE.search(self.body) is not None,
+            "body does not name any of the four rule XMLs "
+            "(rules-tdd-manager/instructions.xml, "
+            "rules-architect/instructions.xml, "
+            "rules-qna-tester/instructions.xml, "
+            "rules-docs-manager/guidelines.xml) nor refer to 'the rule "
+            "XMLs' collectively",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
