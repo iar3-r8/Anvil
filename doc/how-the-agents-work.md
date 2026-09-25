@@ -16,9 +16,14 @@ flowchart TD
     D -->|next behaviour| C
     D -->|ledger complete| E[Docs - docs-manager documents]
     E --> F[Push and pull request]
+    B -.->|single self-evident behaviour: plan skipped, recorded| C
+    C -.->|obvious behaviour: dedicated cycle skipped, recorded| D
+    E -.->|no interface change, self-evident code: skip recorded| F
 ```
 
-The same stages, in the same order, as the one-line flow in the README.
+The solid edges are the main path; the dotted edges are the skips, detailed in
+[Skipping a step](#skipping-a-step). The same stages, in the same order, as the
+one-line flow in the README.
 
 ## Small context by design
 
@@ -49,9 +54,10 @@ and the ledger stays accurate.
 ### tdd-manager
 
 - **Owns:** intake (an issue or a direct description must exist before work
-  begins), the branch, delegation, the red/green loop, and all of git. It is the
-  **sole git actor**: it creates the branch, commits after each red and each
-  green, pushes, and opens the pull request.
+  begins), the branch, delegation, the red/green loop, the judgement of which
+  steps are worth running, and all of git. It is the **sole git actor**: it
+  creates the branch, commits after each red and each green, pushes, and opens
+  the pull request.
 - **May edit:** the plan file's ledger — plan files only.
 - **Must not do:** write production code, tests or documentation itself; let a
   subtask commit; accept a red step that is not a genuine assertion failure.
@@ -62,7 +68,8 @@ and the ledger stays accurate.
   independently testable behaviours, each with inputs, outputs, edge cases and
   error behaviour, with every third-party fact cited. The plan also marks which
   behaviours are pure boundary pins with no production change, so the manager
-  can batch them into one subtask.
+  can batch them into one subtask, and which have no non-obvious input, output,
+  edge or error, so their dedicated test cycle may be skipped.
 - **May edit:** the plan file.
 - **Must not do:** plan against an unknown third-party interface (it is a
   **blocking** condition — see [Grounded planning](#grounded-planning)); write
@@ -114,8 +121,12 @@ finds it. The argument is in
 A test is **never weakened** to reach green. Each red and each green
 gets its own commit, and a red is **never squashed** into its green: the commit
 history alone then proves every test failed before it passed, which is the
-whole point of the discipline. Nothing is committed on any failure path, so
-the history contains only an intentional red or a verified green.
+whole point of the discipline. The one exception is a skip recorded in the
+ledger (see [Skipping a step](#skipping-a-step)): a behaviour whose dedicated
+cycle is skipped has no red and no green to commit, and the record of that skip
+stands in place of the pair. On any failure path nothing is committed, so the
+history contains only an intentional red, a verified green, or the record of a
+justified skip.
 
 Sequencing follows the same logic: a behaviour that invalidates an existing
 test may not be planned **before** the cycle that rewrites that test — such a
@@ -126,6 +137,29 @@ If the coder claims a test is wrong, the claim is not granted: it goes back to
 qna-tester as a **new red step** carrying the coder's argument, and the qna-tester
 decides. If the test changes, that change is itself a red step with its own
 commit.
+
+## Skipping a step
+
+The pipeline is not a ritual: a step whose cost exceeds its value may be
+skipped on judgement, and that judgement belongs to the tdd-manager, which alone
+decides what gets delegated. The bound is a fail-safe, not a threshold — when in
+doubt, the full step runs, and there is no line count, file count or behaviour
+count that triggers a skip; the rules give examples (a string change, a rename)
+rather than numbers. And a skip is never silent: the decision and its reason are
+recorded in the ledger, which is what keeps it auditable in the pull request.
+
+Three sites instantiate the general rule. For a **single self-evident
+behaviour**, the full plan is skipped, but the numbered behaviour list still
+exists — inline in the ledger — and the architect's blocking validation gate
+still applies whenever a plan *is* written. For an **obvious behaviour** — no
+non-obvious input, output, edge or error — the dedicated red/green cycle is
+skipped; the module's existing targeted tests still run, and the full-suite gate
+before the pull request and the manager's own verification of red and green are
+unchanged. And the **docs-manager** subtask is skipped when no user-facing
+interface changed and the code is self-evident — documentation exists to help
+developers where the code lacks clarity, or users at an interface. What the
+skips must not reach: the branch still has to pass the full suite at the tip,
+and a cycle that *runs* still gets its own verified red and green.
 
 ## Grounded planning
 
