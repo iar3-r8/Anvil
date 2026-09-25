@@ -768,5 +768,154 @@ class B6ConfirmationGateTests(HarvestCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# B7 — exactly one GitHub issue, in the task template shape
+# --------------------------------------------------------------------------- #
+
+class B7IssueFilingTests(HarvestCommandTestCase):
+    """B7 (plans/harvest-roo-templates.md): after the B6 gate passes, the
+    body instructs exactly ONE issue for the whole harvest (not one per
+    finding), filed via a single ``mcp--github--create_issue`` call with
+    ``owner="iar3-r8"`` and ``repo="anvil"``, whose body follows the
+    Context / Goal / Scope / Definition of Done structure from
+    ``templates/roo_template/commands/write-github-task.md``.
+
+    Edge: the issue body names the concrete destination path of every adopted
+    item — precise paths over directory gestures, per write-github-task.md.
+    Error: on an MCP error, the body returns the error to the user and stops,
+    the same handling as write-github-task.md.
+
+    Assertions are loose phrase predicates — case-insensitive, paired words
+    within one sentence, or boundary-anchored literal tokens — so the green
+    step has latitude in the exact wording, but each predicate is specific
+    enough that a body lacking the filing contract fails.
+
+    Expected red reason: the current body is the B1 frontmatter plus the
+    Inventory, Comparison, Classifying findings and Confirming the shortlist
+    sections (B1-B6) only. Its one-line intro says "file a single GitHub
+    issue for the shortlist", but no sentence binds one issue to the harvest
+    or the findings, the MCP tool name and both argument values appear
+    nowhere, none of the four task-template headings appears ("out of scope"
+    supplies a bare "scope" but nothing else), and neither a
+    destination/precise path statement nor any MCP-error handling appears,
+    so all five tests fail.
+    """
+
+    command_path = COMMAND_PATH
+
+    #: One issue for the WHOLE harvest: "one" or "single" + "issue" in the
+    #: same sentence as "harvest" or "finding(s)". Binding the issue to the
+    #: harvest/findings (not merely to the shortlist, which the B1 intro
+    #: already mentions) is what distinguishes the B7 contract from a
+    #: generic "file an issue" mention. "one issue for the whole harvest"
+    #: and "a single issue covering all confirmed findings" both pass.
+    _ONE_ISSUE_RE = re.compile(
+        r"\b(?:one|single)\s+(?:github\s+)?issue[s]?\b"
+        r"[^.;]*?\b(?:harvest|findings?)\b",
+        re.IGNORECASE,
+    )
+
+    #: Filing tool and arguments as literal values, each boundary-anchored
+    #: like the B3 source tokens: the token must appear as a distinct token,
+    #: not embedded in a longer identifier.
+    _TOKENS = (
+        "mcp--github--create_issue",
+        "iar3-r8",
+        "anvil",
+    )
+
+    #: The four task-template headings, in the write-github-task.md order.
+    _TEMPLATE_HEADINGS = (
+        r"\bcontext\b",
+        r"\bgoal\b",
+        r"\bscope\b",
+        r"\bdefinition\s+of\s+done\b",
+    )
+
+    #: Edge: the issue body names the concrete destination path of every
+    #: adopted item — a precision word near "path(s)". "destination path",
+    #: "concrete destination paths of every adopted item", "specific file
+    #: paths" all pass; a directory gesture without a path-precision
+    #: statement fails.
+    _CONCRETE_PATHS_RE = re.compile(
+        r"\b(?:destination|concrete|precise|specific)\b[^.;]{0,40}?\bpaths?\b",
+        re.IGNORECASE,
+    )
+
+    #: Error: on an MCP error, return it to the user and stop. Two word
+    #: orders pass — "error ... returned to the user ... and stop" and
+    #: "return it/the error to the user ... and stop" — with the
+    #: consequence (stop / halt / wait / do not proceed) in the same
+    #: sentence, mirroring write-github-task.md's "return it to the user
+    #: and wait for instruction".
+    _MCP_ERROR_RE = re.compile(
+        r"\b(?:mcp\s+)?error\w*\b[^.;]*?\b(?:return\w*|report\w*|show\w*)\b"
+        r"[^.;]*?\buser\b[^.;]*?\b(?:stop|halt|wait|do\s+not\s+proceed)\b"
+        r"|\b(?:return\w*|report\w*|show\w*)\b"
+        r"[^.;]*?\b(?:it|the\s+(?:mcp\s+)?error|the\s+failure)\b"
+        r"[^.;]*?\buser\b[^.;]*?\b(?:stop|halt|wait|do\s+not\s+proceed)\b",
+        re.IGNORECASE,
+    )
+
+    def test_body_files_exactly_one_issue_for_the_whole_harvest(self):
+        # B7 output: one issue for the whole harvest, not one per finding —
+        # the one-issue statement must bind the issue to the harvest or the
+        # findings, not merely mention an issue.
+        self.assertRegex(
+            self.body,
+            self._ONE_ISSUE_RE,
+            "body does not state that exactly one issue covers the whole "
+            "harvest (one issue for all confirmed findings, not one per "
+            "finding)",
+        )
+
+    def test_body_names_create_issue_tool_with_owner_and_repo(self):
+        # B7 output: the issue is filed via mcp--github--create_issue with
+        # owner="iar3-r8" and repo="anvil" — the tool name and both argument
+        # values appear as literal tokens.
+        for token in self._TOKENS:
+            self.assertTrue(
+                re.search(r"(?<!\w)" + re.escape(token), self.body) is not None,
+                "body does not name the literal token %r (the filing tool "
+                "mcp--github--create_issue with owner=\"iar3-r8\" and "
+                "repo=\"anvil\")" % token,
+            )
+
+    def test_body_issue_follows_task_template_headings(self):
+        # B7 output: the issue body follows the task template shape from
+        # templates/roo_template/commands/write-github-task.md — the four
+        # headings Context / Goal / Scope / Definition of Done.
+        for heading in self._TEMPLATE_HEADINGS:
+            self.assertRegex(
+                self.body,
+                heading,
+                "body does not name the task-template heading %r (the "
+                "issue body must follow Context / Goal / Scope / Definition "
+                "of Done)" % heading,
+            )
+
+    def test_body_issue_names_concrete_destination_paths(self):
+        # B7 edge: the issue body names the concrete destination path of
+        # every adopted item (templates/roo_template/...), never a
+        # directory gesture.
+        self.assertRegex(
+            self.body,
+            self._CONCRETE_PATHS_RE,
+            "body does not require the issue to name the concrete "
+            "destination path of every adopted item (precise paths over "
+            "directory gestures)",
+        )
+
+    def test_body_mcp_error_returned_to_user_and_stops(self):
+        # B7 error: on an MCP error, return it to the user and stop — the
+        # same handling as write-github-task.md.
+        self.assertRegex(
+            self.body,
+            self._MCP_ERROR_RE,
+            "body does not state that an MCP error is returned to the "
+            "user and the command stops",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
