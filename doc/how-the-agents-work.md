@@ -197,14 +197,16 @@ the reply channel for the whole task**: a question about an issue-sourced task i
 a comment on that issue, not a chat message. The reason is that a decision made
 in chat is invisible to everyone reading the issue.
 
-Six chat commands are installed with the agent modes:
+Five of the chat commands are installed with the agent modes; the sixth,
+`/harvest-roo-templates`, lives only in anvil's own `.roo/commands/` (tracked
+through a `.gitignore` negation) and is never provisioned into a target repo:
 
 * `/write-github-task` — turn a task description into a structured GitHub task issue.
 * `/execute-github-task` — pull a GitHub issue, plan the approach collaboratively, then execute it.
 * `/github-bug-report` — gather reproduction details and publish a structured bug report issue.
 * `/create-pull-request` — open the pull request with a description generated from the branch changes.
 * `/update_roo_rules` — compare the repo's `roo_template` against `.roo/` and add any rules or commands that are missing.
-* `/harvest-roo-templates` — the reverse of `/update_roo_rules`: read another repository's `.roo/` and `.roomodes`, report what `templates/roo_template/` lacks, and — after your confirmation — file a single GitHub issue tracking the shortlist.
+* `/harvest-roo-templates` *(anvil-only)* — the reverse of `/update_roo_rules`: read another repository's `.roo/` and `.roomodes`, report what `templates/roo_template/` lacks, and — after your confirmation — file a single GitHub issue tracking the shortlist.
 
 All four MCP servers (github, git, oxylabs, package-registry) are configured in
 `.roo/mcp.json`; `github` needs a personal access token, and `oxylabs` is written
@@ -260,8 +262,10 @@ qna-tester and 2% for architect.
 ## What lands in your repo
 
 `setup-repo` installs: the agent modes in `.roomodes`, the per-mode rules under
-`.roo/`, the four MCP servers in `.roo/mcp.json`, the chat commands under
-`.roo/commands/`, the devcontainer, and `.gitignore` protection for sensitive
+`.roo/`, the four MCP servers in `.roo/mcp.json`, the five provisioned chat
+commands under `.roo/commands/` — the anvil-only `/harvest-roo-templates` never
+crosses to a target — the devcontainer, and `.gitignore` protection for
+sensitive
 files. Re-running `setup-repo` upgrades a provisioned repo by **merging** rather
 than overwriting; the per-file merge semantics are documented in the
 [VS Code plugin setup guide](2-setting-up-vscode-plugin.md).
