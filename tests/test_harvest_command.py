@@ -23,6 +23,7 @@ never on raw bytes, so the green step has latitude in the prose (precedent:
 top of the file).
 """
 
+import re
 import subprocess
 import sys
 import tempfile
@@ -365,6 +366,78 @@ class B2GitIgnoreNegationTests(unittest.TestCase):
             "%s is no longer ignored: the negation spilled beyond its "
             "single target file"
             % self.SIBLING,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# B3 — the command names what it reads
+# --------------------------------------------------------------------------- #
+
+class B3InventorySourcesTests(HarvestCommandTestCase):
+    """B3 (plans/harvest-roo-templates.md): the command body names all five
+    inventory sources it reads in the other repo.
+
+    One named test per source, so a missing source fails its own test.
+    Assertions are on the presence of each source path as a distinct token —
+    never on the surrounding prose — so the green step has latitude: the
+    sources may appear in a bullet list, a sentence, or a table.
+
+    Expected red reason: the current body is the B1 placeholder (a heading
+    and an empty "## Inventory" section) and names none of the five sources,
+    so every source test fails, and so does the absent-source handling test.
+    """
+
+    command_path = COMMAND_PATH
+
+    def _source_named(self, token):
+        """True iff *token* appears in the body as a distinct token, not
+        embedded in a longer identifier (a non-word character or start of
+        line must precede it)."""
+        return re.search(r"(?<!\w)" + re.escape(token), self.body) is not None
+
+    def test_body_names_roomodes_source(self):
+        self.assertTrue(
+            self._source_named(".roomodes"),
+            "body does not name the .roomodes inventory source",
+        )
+
+    def test_body_names_roo_rules_source(self):
+        self.assertTrue(
+            self._source_named(".roo/rules/"),
+            "body does not name the .roo/rules/ inventory source",
+        )
+
+    def test_body_names_roo_rules_wildcard_source(self):
+        self.assertTrue(
+            self._source_named(".roo/rules-*/"),
+            "body does not name the .roo/rules-*/ inventory source",
+        )
+
+    def test_body_names_roo_commands_source(self):
+        self.assertTrue(
+            self._source_named(".roo/commands/"),
+            "body does not name the .roo/commands/ inventory source",
+        )
+
+    def test_body_names_roo_skills_source(self):
+        # Edge (B3): .roo/skills/ is empty in this repo but exists as a
+        # provisioned subdirectory, so it is in scope and must be listed.
+        self.assertTrue(
+            self._source_named(".roo/skills/"),
+            "body does not name the .roo/skills/ inventory source",
+        )
+
+    def test_body_says_missing_source_is_reported_absent(self):
+        # B3 error handling: a source directory missing in the other repo is
+        # reported as "absent", not treated as a diff finding. The predicate
+        # is deliberately loose — the body only has to state that a missing
+        # source is noted as absent and the harvest continues — so the green
+        # step has latitude in the exact wording.
+        self.assertRegex(
+            self.body,
+            r"\babsent\b",
+            "body does not state that a missing inventory source is "
+            "reported as 'absent' and the harvest continues",
         )
 
 
