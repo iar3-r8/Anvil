@@ -197,13 +197,14 @@ the reply channel for the whole task**: a question about an issue-sourced task i
 a comment on that issue, not a chat message. The reason is that a decision made
 in chat is invisible to everyone reading the issue.
 
-Five chat commands are installed with the agent modes:
+Six chat commands are installed with the agent modes:
 
 * `/write-github-task` — turn a task description into a structured GitHub task issue.
 * `/execute-github-task` — pull a GitHub issue, plan the approach collaboratively, then execute it.
 * `/github-bug-report` — gather reproduction details and publish a structured bug report issue.
 * `/create-pull-request` — open the pull request with a description generated from the branch changes.
 * `/update_roo_rules` — compare the repo's `roo_template` against `.roo/` and add any rules or commands that are missing.
+* `/harvest-roo-templates` — the reverse of `/update_roo_rules`: read another repository's `.roo/` and `.roomodes`, report what `templates/roo_template/` lacks, and — after your confirmation — file a single GitHub issue tracking the shortlist.
 
 All four MCP servers (github, git, oxylabs, package-registry) are configured in
 `.roo/mcp.json`; `github` needs a personal access token, and `oxylabs` is written
