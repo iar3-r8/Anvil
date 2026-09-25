@@ -2,6 +2,11 @@
 *.zip
 *.env
 .roo/*
+# Anvil-only /harvest-roo-templates command: re-include the one file so it is
+# tracked and available on clone, while everything else under .roo/ stays ignored.
+!.roo/commands/
+.roo/commands/*
+!.roo/commands/harvest-roo-templates.md
 zoo-code-settings.json
 plans/*
 
