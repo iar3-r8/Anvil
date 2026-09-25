@@ -32,3 +32,9 @@ Every finding is one of three classes:
 - **Divergent wording** — an existing section whose text differs between the two sides.
 
 Divergent wording is shown to the user for judgement and is never adopted, copied, overwritten or rewritten automatically: our templates carry deliberate local edits (the tdd-manager byte ceiling, the architect's package-registry step) that a silent rewrite would revert.
+
+## Confirming the shortlist
+
+Present the classified findings to the user as a shortlist. The user's explicit confirmation is a blocking gate: the command requires the user to confirm the shortlist before it files anything, and it never files the issue until the user confirms. The command stops at the shortlist and waits for the user's go-ahead rather than proceeding on the way past.
+
+If the shortlist is empty — nothing worth importing — the command ends with a report and no issue is filed.
