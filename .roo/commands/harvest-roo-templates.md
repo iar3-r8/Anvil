@@ -9,4 +9,12 @@ Read the roo configuration of another repository, report what our templates lack
 
 ## Inventory
 
-- (placeholder — the inventory sources are defined in a later step)
+Read the roo configuration of the other repository from these locations:
+
+- `.roomodes` — agent modes
+- `.roo/rules/` — shared always-on rules
+- `.roo/rules-*/` — per-mode rules
+- `.roo/commands/` — chat commands
+- `.roo/skills/` — skills
+
+If a listed source is absent in the other repo, note it as absent and continue — absence of a source is not a finding.
