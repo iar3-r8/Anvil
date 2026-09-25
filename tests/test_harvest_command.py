@@ -441,5 +441,93 @@ class B3InventorySourcesTests(HarvestCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# B4 — the diff is one-way
+# --------------------------------------------------------------------------- #
+
+class B4OneWayDiffTests(HarvestCommandTestCase):
+    """B4 (plans/harvest-roo-templates.md): the body states the comparison is
+    one-way.
+
+    The comparison reports only what the other repository has and
+    ``templates/roo_template/`` lacks, and it explicitly forbids proposing
+    deletions from our templates: anything that exists in the templates but
+    not in the other repo is out of scope. The plan's rationale is that a
+    two-way diff would flag every anvil-specific rule as "missing" from the
+    other repo and drown the signal.
+
+    Assertions are loose phrase predicates — case-insensitive, one sentence
+    wide, never on raw prose — so the green step has latitude in the exact
+    wording, but each predicate is specific enough that a two-way command
+    would fail it.
+
+    Expected red reason: the current body is the B1 frontmatter plus the B3
+    Inventory section only; it never names ``templates/roo_template/``,
+    never restricts the report to one direction, and never mentions deletion
+    or removal at all, so all three tests fail.
+    """
+
+    command_path = COMMAND_PATH
+
+    #: B4 output, part 1: the baseline the comparison is made against.
+    BASELINE = "templates/roo_template/"
+
+    #: "one-way" said explicitly, or the report restricted to one direction:
+    #: "only" + something our templates lack/miss/is absent, in one sentence.
+    #: A two-way body would say "both" or "two-way" and would not restrict
+    #: the report to "only ... lack".
+    ONE_WAY_RE = re.compile(
+        r"one[- ]?way"
+        r"|\bonly\b[^.;]*?\b(?:lack\w*|missing|absent)\b",
+        re.IGNORECASE,
+    )
+
+    #: B4 output, part 2: deletion from our templates is negated — "never
+    #: delete", "do not propose removing", "never suggests deleting". A
+    #: negator (never / do not / don't / not / no) in the same sentence as a
+    #: delete/remove word. A two-way body would name deletions as a valid
+    #: finding and would not negate them.
+    NO_DELETIONS_RE = re.compile(
+        r"\b(?:never|do\s+not|don'?t|not|no)\b"
+        r"[^.;]*?\b(?:delet\w*|remov\w*)\b",
+        re.IGNORECASE,
+    )
+
+    def test_body_names_roo_template_as_baseline(self):
+        # B4 output, part 1: the body names templates/roo_template/ as the
+        # baseline the other repo's contents are compared against.
+        self.assertTrue(
+            re.search(
+                r"(?<!\w)" + re.escape(self.BASELINE), self.body
+            ) is not None,
+            "body does not name %s as the baseline for the comparison"
+            % self.BASELINE,
+        )
+
+    def test_body_states_comparison_is_one_way(self):
+        # B4 output, part 1: the comparison reports only what the other repo
+        # has and our templates lack — not the reverse.
+        self.assertRegex(
+            self.body,
+            self.ONE_WAY_RE,
+            "body does not state that the comparison is one-way (reports "
+            "only what the other repo has and templates/roo_template/ lacks)",
+        )
+
+    def test_body_forbids_deletions_from_our_templates(self):
+        # B4 output, part 2: the body explicitly forbids proposing deletions
+        # from our templates — anything in templates/roo_template/ but not in
+        # the other repo is out of scope. The negation must sit in the same
+        # sentence as the delete/remove word, so "never delete", "do not
+        # propose removing" and "never suggests deleting" all pass.
+        self.assertRegex(
+            self.body,
+            self.NO_DELETIONS_RE,
+            "body does not forbid proposing deletions/removals from our "
+            "templates (anything in templates/roo_template/ but not in the "
+            "other repo must be stated out of scope)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
