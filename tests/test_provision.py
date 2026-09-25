@@ -812,5 +812,64 @@ class ReprovisioningEndToEndTests(ProvisionCase):
         self.assertEqual(settings, baseline_settings)
 
 
+class HarvestCommandExclusionTests(ProvisionCase):
+    """B9: the anvil-local harvest command is not provisioned into targets.
+
+    ``harvest-roo-templates.md`` reads ``templates/roo_template/``, a path a
+    target repository does not have, so shipping it would install a command
+    that cannot work. It lives only in the anvil repo's own
+    ``.roo/commands/`` (re-included through the ``.gitignore`` negation);
+    the provisioner's command source is ``templates/roo_template/``, so the
+    command must never appear in a provisioned tree.
+    """
+
+    def test_harvest_command_is_not_in_the_target_roo_commands(self):
+        self.provision()
+
+        self.assertFalse(
+            (self.target / ".roo" / "commands" / "harvest-roo-templates.md").exists()
+        )
+
+    def test_existing_provisioned_command_still_lands(self):
+        """The exclusion is specific: the command the provisioner does own
+        (``update_roo_rules.md``, the positive case at test_provision.py:266)
+        is still shipped, so a blanket no-commands change would be caught.
+
+        Note: only ``update_roo_rules.md`` is written into ``.roo/commands/``
+        by the provisioner. The other template commands (e.g.
+        ``create-pull-request.md``) travel with the whole
+        ``templates/roo_template/`` tree into the root-level ``roo_template/``
+        copy, not into ``.roo/commands/`` — locked by the sibling test below.
+        """
+        self.provision()
+
+        self.assertTrue(
+            (self.target / ".roo" / "commands" / "update_roo_rules.md").is_file()
+        )
+
+    def test_harvest_command_is_not_in_the_provisioned_template_copy(self):
+        self.provision()
+
+        template_commands = self.target / "roo_template" / "commands"
+
+        self.assertFalse(
+            (template_commands / "harvest-roo-templates.md").exists()
+        )
+        self.assertTrue((template_commands / "write-github-task.md").is_file())
+
+    def test_harvest_command_lives_only_in_the_anvil_local_tree(self):
+        """Guard: the boundary holds at the source side, so an anvil-local
+        command cannot leak into a target through the provisioner's command
+        source (``templates/roo_template/commands/``)."""
+        local = REPO_ROOT / ".roo" / "commands" / "harvest-roo-templates.md"
+        template = (
+            REPO_ROOT / "templates" / "roo_template" / "commands"
+            / "harvest-roo-templates.md"
+        )
+
+        self.assertTrue(local.is_file())
+        self.assertFalse(template.exists())
+
+
 if __name__ == "__main__":
     unittest.main()
