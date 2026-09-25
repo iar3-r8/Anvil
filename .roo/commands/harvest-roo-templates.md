@@ -46,3 +46,14 @@ Once the user confirms the shortlist, file exactly one issue for the whole harve
 The issue body follows the task template from `templates/roo_template/commands/write-github-task.md`, with its four sections in order: `context`, `goal`, `scope`, and `definition of done`. Every `scope` bullet must name the concrete destination path of every adopted item — a specific file path under `templates/roo_template/`, never a directory.
 
 If the MCP call returns an error, return it to the user and stop — do not retry, do not file a partial issue, and do not proceed past the failure.
+
+## Mirror obligation
+
+The four rule XMLs exist in two copies: the tracked, shipped copy under `templates/roo_template/` and the gitignored local copy under `.roo/`:
+
+- `templates/roo_template/rules-tdd-manager/instructions.xml`
+- `templates/roo_template/rules-architect/instructions.xml`
+- `templates/roo_template/rules-qna-tester/instructions.xml`
+- `templates/roo_template/rules-docs-manager/guidelines.xml`
+
+Any adopted change to a rule XML must land in both copies. `tests/test_rules_mirror.py` asserts that the two copies stay byte-identical and goes red on a half-applied change: `.roo/*` is gitignored, so only the template side ever shows in a diff, and the mirror test is the only thing that catches a change applied to one side only.
