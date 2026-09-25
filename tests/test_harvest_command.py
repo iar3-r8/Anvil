@@ -4,13 +4,17 @@ This module is the home for every behaviour of that plan that is verified
 against the command file itself:
 
   * B1 — the command file exists with valid frontmatter (implemented below);
+  * B2 — the file is tracked despite .roo/* being gitignored (implemented
+    below; runs ``git check-ignore``, so it does not need the command file's
+    content);
   * B3-B8 — body-content behaviours; each will land in its own test case class
     pointed at the same file, built on the shared loader below.
 
 The command file under test is ``.roo/commands/harvest-roo-templates.md`` in
-this repository. B1 is currently red: the file does not exist yet, so every
-B1 test fails at load time with the file-not-found assertion — the expected
-kind of failure, not an import or collection error.
+this repository. B1 is green: the file exists and its frontmatter validates.
+B2 is currently red: the .gitignore negation is not present yet, so
+``test_command_file_is_not_ignored`` fails while the two stay-ignored guards
+hold.
 
 Every assertion is on the parsed frontmatter structure and on key phrases,
 never on raw bytes, so the green step has latitude in the prose (precedent:
@@ -19,6 +23,7 @@ never on raw bytes, so the green step has latitude in the prose (precedent:
 top of the file).
 """
 
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -269,6 +274,98 @@ class B1FrontmatterEdgeTests(unittest.TestCase):
         self.assertEqual(frontmatter["description"], "a command")
         self.assertEqual(frontmatter["mode"], "Architect")
         self.assertIn("body line", body)
+
+
+# --------------------------------------------------------------------------- #
+# B2 — the file is tracked despite .roo/* being gitignored
+# --------------------------------------------------------------------------- #
+
+class B2GitIgnoreNegationTests(unittest.TestCase):
+    """B2 (plans/harvest-roo-templates.md): the command file escapes the
+    ``.roo/*`` ignore rule through the three-line negation in ``.gitignore``.
+
+    ``git check-ignore -q`` is run once per path (list argument, never
+    ``shell=True``, ``cwd=REPO_ROOT``): exit 0 means git reports the path as
+    ignored, exit 1 means not ignored.
+
+    ``--no-index`` is load-bearing, not decorative: the target file is
+    tracked (the B1 green commit force-added it), and ``check-ignore`` without
+    ``--no-index`` reports indexed paths as not-ignored regardless of the
+    ignore rules. Without the flag, ``test_command_file_is_not_ignored``
+    would pass with or without the negation and pin nothing. With it, the
+    command evaluates the ignore rules alone — exactly the behaviour this
+    test locks in: the target is not ignored, and nothing else in ``.roo/``
+    is reopened.
+
+    Expected red reason: the negation is not in ``.gitignore`` yet, so the
+    target matches ``.roo/*`` and ``test_command_file_is_not_ignored``
+    fails. The green step adds the three negation lines; nothing else.
+
+    Edge behaviour, per the plan: git missing (``FileNotFoundError``) or the
+    tree not a git work tree (a distinct fatal, exit 128) -> **skip**, not
+    fail — the same skip-not-fail treatment ``tests/test_rules_mirror.py``
+    gives an unprovisioned ``.roo/``.
+    """
+
+    #: The file the negation must re-include — and the only file it may.
+    TARGET = ".roo/commands/harvest-roo-templates.md"
+    #: A non-command ``.roo/`` member: the negation re-includes one file,
+    #: not the directory.
+    MCP_PATH = ".roo/mcp.json"
+    #: A sibling command: the negation must not spill past its one target.
+    #: ``check-ignore`` does not require the path to exist.
+    SIBLING = ".roo/commands/create-pull-request.md"
+
+    def _check_ignored(self, path):
+        """Run ``git check-ignore --no-index -q <path>`` and return ``True``
+        iff git reports *path* as ignored (exit 0).
+
+        Skips the test — never fails it — when git is not installed or the
+        tree is not a git work tree.
+        """
+        try:
+            proc = subprocess.run(
+                ["git", "check-ignore", "--no-index", "-q", path],
+                cwd=REPO_ROOT,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except FileNotFoundError:
+            self.skipTest("git is not installed; cannot run check-ignore")
+        if proc.returncode not in (0, 1):
+            stderr = proc.stderr.decode("utf-8", "replace").strip()
+            self.skipTest(
+                "git check-ignore could not evaluate %s (exit %d): %s"
+                % (path, proc.returncode, stderr or "no stderr")
+            )
+        return proc.returncode == 0
+
+    def test_command_file_is_not_ignored(self):
+        # B2 output: with the negation in place, the target is NOT ignored.
+        self.assertFalse(
+            self._check_ignored(self.TARGET),
+            "%s is ignored: the .gitignore negation is missing or "
+            "ineffective; it must re-include exactly this file"
+            % self.TARGET,
+        )
+
+    def test_mcp_json_stays_ignored(self):
+        # B2 output, second half: the negation must not reopen .roo/.
+        self.assertTrue(
+            self._check_ignored(self.MCP_PATH),
+            "%s is no longer ignored: the negation reopened the whole "
+            ".roo/ directory instead of singling out one file"
+            % self.MCP_PATH,
+        )
+
+    def test_sibling_command_stays_ignored(self):
+        # Guard: the negation must not spill to sibling commands.
+        self.assertTrue(
+            self._check_ignored(self.SIBLING),
+            "%s is no longer ignored: the negation spilled beyond its "
+            "single target file"
+            % self.SIBLING,
+        )
 
 
 if __name__ == "__main__":
