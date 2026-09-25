@@ -22,3 +22,13 @@ If a listed source is absent in the other repo, note it as absent and continue �
 ## Comparison
 
 The comparison is one-way against the baseline `templates/roo_template/`. It reports only what the other repository has and our templates lack. Anything that exists in `templates/roo_template/` but not in the other repository is out of scope, and the command never proposes removing or deleting it. A two-way diff was rejected because it would flag every anvil-specific rule as missing from the other repo and drown the signal.
+
+## Classifying findings
+
+Every finding is one of three classes:
+
+- **New file** — a whole new file present in the other repository but absent from `templates/roo_template/`.
+- **New section** — a new section within a file that exists on both sides.
+- **Divergent wording** — an existing section whose text differs between the two sides.
+
+Divergent wording is shown to the user for judgement and is never adopted, copied, overwritten or rewritten automatically: our templates carry deliberate local edits (the tdd-manager byte ceiling, the architect's package-registry step) that a silent rewrite would revert.
