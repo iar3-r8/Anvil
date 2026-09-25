@@ -649,5 +649,124 @@ class B5FindingClassificationTests(HarvestCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# B6 — user confirmation is a blocking gate
+# --------------------------------------------------------------------------- #
+
+class B6ConfirmationGateTests(HarvestCommandTestCase):
+    """B6 (plans/harvest-roo-templates.md): the body requires the user to
+    confirm the shortlist before anything is filed, marks the gate as
+    blocking, and — when the shortlist is empty — ends the command with a
+    report and no issue filed.
+
+    Assertions are loose phrase predicates — case-insensitive, paired words
+    within one sentence (or a short window for the empty-shortlist edge) —
+    so the green step has latitude in the exact wording, but each predicate
+    is specific enough that a body that files on the way past, or that files
+    despite an empty shortlist, fails.
+
+    Expected red reason: the current body is the B1 frontmatter plus the
+    Inventory, Comparison and Classifying findings sections (B1-B5) only. Its
+    one-line intro mentions "after the user confirms — file a single GitHub
+    issue", but no sentence pairs confirmation with filing in a gated order,
+    the word "blocking" appears nowhere, and neither "empty" nor "nothing"
+    appears at all, so all three tests fail.
+    """
+
+    command_path = COMMAND_PATH
+
+    #: Part 1: the user's go-ahead precedes the filing. Three shapes pass:
+    #: "confirm ... before filing", "must not file until confirmed" (a
+    #: negator between the file word and the confirm word), and "before
+    #: filing, the user confirms". Each alternative binds a confirm-family
+    #: word to a file-family word in one sentence, with filing as the
+    #: consequence of the confirmation rather than its precondition. A body
+    #: that files and then asks, or merely mentions both words, fails.
+    _CONFIRM_BEFORE_FILE_RE = re.compile(
+        r"\b(?:confirm\w*|approv\w*|consent\w*)\b"
+        r"[^.;]*?\b(?:before|until|only\s+after|prior\s+to|once|first)\b"
+        r"[^.;]*?\bfil\w*\b"
+        r"|\b(?:never|do\s+not|don'?t|no|not)\b[^.;]*?\bfil\w*"
+        r"[^.;]*?\b(?:confirm\w*|approv\w*|consent\w*)\b"
+        r"|\b(?:before|until|only\s+after|prior\s+to)\b[^.;]*?\bfil\w*"
+        r"[^.;]*?\b(?:confirm\w*|approv\w*|consent\w*)\b",
+        re.IGNORECASE,
+    )
+
+    #: Part 2: the gate is called blocking — "the gate is blocking",
+    #: "filing is blocked until the user confirms". A block-family word
+    #: ("blocking", "blocked", "block") in the same sentence as a
+    #: confirm-family word or the word "gate".
+    _BLOCKING_GATE_RE = re.compile(
+        r"\bblock\w*\b[^.;]*?\b(?:confirm\w*|approv\w*|consent\w*|gate)\b"
+        r"|\b(?:confirm\w*|approv\w*|consent\w*|gate)\b[^.;]*?\bblock\w*\b",
+        re.IGNORECASE,
+    )
+
+    #: Edge, emptiness trigger: "empty", "nothing", "no shortlist", "no
+    #: findings", "no items" — the plan's own phrase is "nothing worth
+    #: importing".
+    _EMPTY_RE = re.compile(
+        r"\b(?:empty|nothing|no\s+shortlist|no\s+findings?|no\s+items?)\b",
+        re.IGNORECASE,
+    )
+
+    #: Edge, consequence: the issue is not filed — "no issue", "without an
+    #: issue", "without filing", "does/do not file", "not filing/file".
+    _NO_ISSUE_RE = re.compile(
+        r"\bno\s+issue\b"
+        r"|\bwithout\s+(?:an?\s+issue|filing)\b"
+        r"|\b(?:does|do)\s+not\s+file\b"
+        r"|\bnot\s+(?:filing|file)\b",
+        re.IGNORECASE,
+    )
+
+    #: How close the emptiness trigger must sit to the no-issue consequence:
+    #: the plan's edge is one statement, not two distant mentions.
+    _EDGE_WINDOW = 200
+
+    def test_body_requires_user_confirmation_before_filing(self):
+        # B6 output, part 1: the body requires the user to confirm the
+        # shortlist before anything is filed — filing is the consequence of
+        # the confirmation, never the precondition.
+        self.assertRegex(
+            self.body,
+            self._CONFIRM_BEFORE_FILE_RE,
+            "body does not require the user's confirmation before the "
+            "issue is filed (a gated order such as 'confirm before filing' "
+            "or 'do not file until confirmed' is missing)",
+        )
+
+    def test_body_marks_the_confirmation_gate_as_blocking(self):
+        # B6 output, part 2: the gate is marked blocking — the command stops
+        # and waits for the user's go-ahead rather than proceeding.
+        self.assertRegex(
+            self.body,
+            self._BLOCKING_GATE_RE,
+            "body does not mark the confirmation gate as blocking (a "
+            "'blocking'/'blocked' statement tied to the confirmation or the "
+            "gate is missing)",
+        )
+
+    def _empty_shortlist_ends_without_issue(self):
+        """True iff an emptiness trigger is followed, within a short window,
+        by the no-issue consequence — the plan's edge is one statement, not
+        two distant mentions."""
+        for match in self._EMPTY_RE.finditer(self.body):
+            window = self.body[match.end():match.end() + self._EDGE_WINDOW]
+            if self._NO_ISSUE_RE.search(window):
+                return True
+        return False
+
+    def test_body_empty_shortlist_ends_with_no_issue(self):
+        # B6 edge: an empty shortlist — nothing worth importing — ends the
+        # command with a report and NO issue filed.
+        self.assertTrue(
+            self._empty_shortlist_ends_without_issue(),
+            "body does not state that an empty shortlist (nothing worth "
+            "importing) ends the command with no issue filed",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
