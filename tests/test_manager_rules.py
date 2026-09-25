@@ -235,6 +235,53 @@ Criterion 1 carries no recording stem (``record``/``justif`` absent;
 ``ledger`` absent) and the before_shipping item carries ``ledger``
 but no ``skip``. So all three new predicates are red on arrival,
 genuinely — no element carries the skip stem they AND on.
+
+B4 of the same plan is also covered here: the docs skip. Step
+9's ``<description>`` must licence skipping the docs-manager
+subtask when **no user-facing interface changed and the code is
+self-evident** — documentation exists to help developers where
+code lacks clarity, or users at an interface — and the
+``before_shipping`` item "The documentation commit is on the
+branch." must admit a **recorded, justified skip** in place of
+the documentation commit. Step 10's "after the documentation
+commit, never before" must not be left demanding a commit the
+rules now permit to skip: it is reworded in the green step to
+admit the recorded skip (the same contradiction class as B3's).
+The predicates are scoped to step 9's description, the single
+``before_shipping`` item that mentions the documentation commit
+(identified structurally by ``doc``), and step 10's description,
+so they cannot match the earlier ``skip`` occurrences (B1's
+``<practice>``, B2's step 3, B3's step 6 and its two rewordings).
+The survival guard pins that step 9 still pre-supplies the
+docs-manager's scope answer — "document the current branch" —
+alongside the skip clause, never in place of it.
+
+RED expectation for B4 (this commit): the three new-content
+assertions (step 9, the checklist item, step 10) fail on
+assertion for both copies — none of the three target elements
+carries ``skip`` today. The survival guard (step 9's scope
+pre-supply) and the pure predicate unit tests pass now and must
+keep passing after the green step.
+
+Cross-match check for B4 (verified by reading both files on
+2026-09-25; byte-identical at 12,277 bytes): step 9's
+``<description>`` (line 14) carries ``doc`` (docs-manager, docs
+format, document) but no ``skip``, no ``interface``, no ``user``,
+no ``user-facing`` and none of the clarity stems (``clarity``,
+``self-evident``, ``obvious``, ``clear`` all absent). The
+``before_shipping`` documentation item (line 152, "The
+documentation commit is on the branch.") carries ``doc`` but no
+``skip``, no ``record``, no ``justif``; the other two items in
+the category — the red/green item (line 151) and the
+reviewable-size item (line 153) — carry no ``doc`` at all, so
+identifying the item structurally by ``doc`` picks the
+documentation item alone. Step 10's ``<description>`` (line 15)
+carries ``documentation`` ("after the documentation commit,
+never before") but no ``skip`` — the ``skip`` occurrences in the
+file (line 8 step 3, line 11 step 6, line 100 criterion 1,
+line 132 practice, line 151 checklist item) are all outside it.
+So all three new predicates are red on arrival, genuinely — no
+target element carries the skip stem they AND on.
 """
 
 import re
@@ -2939,6 +2986,462 @@ class ManagerCycleSkipTemplateTests(TestCycleSkipTests):
 
 class ManagerCycleSkipLocalTests(TestCycleSkipTests):
     """B3: the anvil repo's OWN tdd-manager rules carry the same skip.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B4 of plans/skip-trivial-steps.md — the docs skip: step 9's description,
+# the before_shipping documentation item, and step 10's rewording
+# --------------------------------------------------------------------------- #
+
+def _says_skip_docs_when_no_user_facing_change_and_self_evident(text):
+    """True when step 9's ``<description>`` text states the B4 docs skip:
+    the docs-manager subtask is skipped when no user-facing interface
+    changed and the code is self-evident — documentation exists to help
+    developers where code lacks clarity, or users at an interface.
+
+    Stems (all on lower-cased, whitespace-collapsed input), two halves in
+    the SAME description text:
+      * the skip licence, all three: ``"skip"`` (skip/skipped/skipping)
+        + ``"doc"`` (doc/docs/documentation) + an interface term
+        (``"interface"`` | ``"user-facing"`` | ``"user"``);
+      * the clarity term, any one of: ``"clarity"``, ``"self-evident"``,
+        ``"obvious"``, ``"clear"``.
+
+    Both halves are required in the same element's text, so the B1 skip
+    practice in ``<best_practices>`` or B2's step 3 skip clause cannot
+    match — the scan is scoped to step 9's ``<description>`` alone.
+
+    Cross-match check (verified by reading both files at red time,
+    2026-09-25, byte-identical at 12,277 bytes): step 9's description
+    (line 14, "Delegate to docs-manager, then commit in the docs format.
+    Pre-supply its scope answer: document the current branch.") carries
+    ``doc`` but NO ``skip``, NO ``interface``, NO ``user`` and none of
+    the clarity stems (``clarity``, ``self-evident``, ``obvious`` and
+    ``clear`` all absent). So the predicate cannot match the current
+    text — the red is genuine, not vacuously green.
+    """
+    licence = (
+        ("skip" in text)
+        and ("doc" in text)
+        and (
+            ("interface" in text)
+            or ("user-facing" in text)
+            or ("user" in text)
+        )
+    )
+    clarity = (
+        ("clarity" in text)
+        or ("self-evident" in text)
+        or ("obvious" in text)
+        or ("clear" in text)
+    )
+    return licence and clarity
+
+
+def _missing_step9_docs_skip_halves(text):
+    """Return the names of the halves of the B4 docs-skip rule absent from
+    *text* — the skip licence or the clarity term.
+
+    Returns an empty list when the text states the full rule (the same
+    two halves ``_says_skip_docs_when_no_user_facing_change_and_self_
+    evident`` requires), so the two helpers can never disagree about
+    whether a description qualifies.
+    """
+    missing = []
+    if not (
+        ("skip" in text)
+        and ("doc" in text)
+        and (
+            ("interface" in text)
+            or ("user-facing" in text)
+            or ("user" in text)
+        )
+    ):
+        missing.append(
+            "the skip licence ('skip' + 'doc' + an interface term "
+            "('interface'/'user-facing'/'user'))"
+        )
+    if not (
+        ("clarity" in text)
+        or ("self-evident" in text)
+        or ("obvious" in text)
+        or ("clear" in text)
+    ):
+        missing.append(
+            "the clarity term ('clarity'/'self-evident'/'obvious'/'clear')"
+        )
+    return missing
+
+
+def _admits_recorded_docs_skip(text):
+    """True when a ``before_shipping`` ``<quality_checklist>`` ``<item>``
+    admits a recorded, justified skip in place of the documentation
+    commit.
+
+    Stems (all on lower-cased, whitespace-collapsed input), ALL in the
+    SAME element: ``"doc"`` + ``"skip"`` + a recording term
+    (``"record"`` | ``"justif"``). The recording term in the same
+    element is what makes the skip admissible — a skip without a
+    recorded reason is not admissible (plan §1: "A skip is never
+    silent"). Deliberately tighter than B3's ``_admits_recorded_skip``
+    (which also accepts ``"ledger"``): the documentation item's own
+    text must carry the recording, not a nearby item's.
+
+    Cross-match check (verified by reading both files at red time,
+    2026-09-25, byte-identical at 12,277 bytes): the documentation
+    item (line 152, "The documentation commit is on the branch.")
+    carries ``doc`` but no ``skip``, no ``record``, no ``justif``. The
+    other two ``before_shipping`` items — the red/green item (line 151)
+    and the reviewable-size item (line 153) — carry no ``doc`` at all,
+    so identifying the item structurally by ``"doc"`` picks the
+    documentation item alone, and it cannot match. The red is genuine.
+    """
+    return (
+        ("doc" in text)
+        and ("skip" in text)
+        and (("record" in text) or ("justif" in text))
+    )
+
+
+def _step10_admits_documentation_commit_or_recorded_skip(text):
+    """True when step 10's ``<description>`` no longer demands a
+    documentation commit the rules now permit to skip: its text carries
+    BOTH ``"documentation"`` and ``"skip"`` in the same element — as in
+    "after the documentation commit or its recorded skip".
+
+    A plain "after the documentation commit, never before" does NOT
+    match: it demands the commit and contradicts step 9's docs skip
+    (the same contradiction class as B3's, plan §6 B4 "Edge — step 10
+    still ships after the docs decision").
+
+    Cross-match check (verified by reading both files at red time,
+    2026-09-25, byte-identical at 12,277 bytes): step 10's description
+    (line 15) carries ``documentation`` ("after the documentation
+    commit, never before") but NO ``skip`` — the file's ``skip``
+    occurrences (line 8 step 3, line 11 step 6, line 100 criterion 1,
+    line 132 practice, line 151 checklist item) are all outside it.
+    The red is genuine.
+    """
+    return ("documentation" in text) and ("skip" in text)
+
+
+class DocsSkipTests(XmlTemplateTestCase):
+    """Shared assertions for B4 (plan §6, B4), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B4 is one behaviour in three locations: step 9's
+    ``<description>`` licences skipping the docs-manager subtask when
+    no user-facing interface changed and the code is self-evident; the
+    ``before_shipping`` documentation item admits a recorded, justified
+    skip in place of the documentation commit; and step 10 — whose
+    "after the documentation commit, never before" would otherwise
+    demand a commit the rules now permit to skip — is reworded in the
+    same cycle to admit the recorded skip. A skip licence beside the
+    unchanged step 10 would be self-contradictory (plan §4, the same
+    class as B3's), so the three edits are one red/green cycle.
+
+    Each location has its own assertion, so a failure names exactly
+    which one is missing — the step 9 licence, the checklist item, or
+    the step 10 rewording. The survival guard pins that step 9 still
+    pre-supplies the docs-manager's scope answer ("document the
+    current branch"): the skip clause is added alongside the
+    pre-supply, never in place of it.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only
+    the two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _step9_description(self):
+        """Step 9's ``<description>`` element, or ``None`` when step 9
+        or its description is missing (that absence is part of the red
+        state and is reported by the caller)."""
+        for step in _all_steps(self.root):
+            if _step_number(step) != "9":
+                continue
+            return step.find("description")
+        return None
+
+    def _step10_description(self):
+        """Step 10's ``<description>`` element, or ``None`` when step 10
+        or its description is missing (reported by the caller)."""
+        for step in _all_steps(self.root):
+            if _step_number(step) != "10":
+                continue
+            return step.find("description")
+        return None
+
+    def _before_shipping_documentation_item(self):
+        """The ``before_shipping`` ``<quality_checklist>`` ``<item>`` —
+        the "the documentation commit is on the branch" item. Identified
+        structurally: the item in the ``before_shipping`` category
+        mentioning the documentation commit (``"doc"``). ``None`` when
+        no item matches (reported by the caller). The other two items
+        in the category (the red/green item, the reviewable-size item)
+        carry no ``doc``, so ``"doc"`` picks the documentation item
+        alone; the scan then runs on that item ALONE, so a match cannot
+        be assembled from stems scattered across two checklist items."""
+        for category in self.root.findall(".//quality_checklist/category"):
+            if (category.get("name") or "") != "before_shipping":
+                continue
+            for item in category.findall("item"):
+                if "doc" in _element_text(item):
+                    return item
+        return None
+
+    def test_step9_licences_docs_skip_for_self_evident_code(self):
+        # RED on this commit: step 9's description carries 'doc' but no
+        # 'skip', no interface term and no clarity term, so the docs
+        # skip is not licensed. B4 of
+        # plans/skip-trivial-steps.md: the docs-manager subtask is
+        # skipped when no user-facing interface changed and the code is
+        # self-evident — documentation exists to help developers where
+        # code lacks clarity, or users at an interface.
+        description = self._step9_description()
+        self.assertIsNotNone(
+            description,
+            "<step number='9'> has no <description> element; the docs "
+            "skip has nowhere to live in the workflow",
+        )
+        text = _element_text(description)
+        self.assertTrue(
+            _says_skip_docs_when_no_user_facing_change_and_self_evident(text),
+            "step 9's <description> does not licence skipping the "
+            "docs-manager subtask when no user-facing interface changed "
+            "and the code is self-evident, with documentation existing "
+            "to help developers where code lacks clarity or users at an "
+            "interface (looked for 'skip'+'doc'+"
+            "('interface'|'user-facing'|'user') + "
+            "('clarity'|'self-evident'|'obvious'|'clear'), all in the "
+            "step 9 description text; the missing half is named below). "
+            "Step 9's full text: %r — missing half(s): %r"
+            % (text, _missing_step9_docs_skip_halves(text)),
+        )
+
+    def test_before_shipping_documentation_item_admits_recorded_skip(self):
+        # RED on this commit: the before_shipping item "The
+        # documentation commit is on the branch." admits no skip at all
+        # — step 9's docs skip beside this unchanged item is
+        # self-contradictory at shipping time (plan §4, the same class
+        # as B3's). The reworded item must admit a RECORDED, justified
+        # skip in place of the documentation commit, with the recording
+        # term in the same element. Scanned on that checklist item
+        # alone, so a match cannot be assembled from stems scattered
+        # across two items.
+        item = self._before_shipping_documentation_item()
+        self.assertIsNotNone(
+            item,
+            "no before_shipping <item> mentions the documentation "
+            "commit; the item B4 must reword is gone (looked for 'doc' "
+            "per item in the before_shipping category — the red/green "
+            "item and the reviewable-size item carry no 'doc')",
+        )
+        text = _element_text(item)
+        self.assertTrue(
+            _admits_recorded_docs_skip(text),
+            "the before_shipping documentation checklist item still "
+            "demands the documentation commit with no admissible "
+            "exception — step 9's docs skip would be "
+            "self-contradictory at shipping time (looked for "
+            "'doc'+'skip'+('record'|'justif') in the item's own text; "
+            "the recording stem must be in the SAME element). A skip "
+            "without a recorded reason is not admissible — this is the "
+            "contradiction fix, not a wording nit. Item text: %r" % text,
+        )
+
+    def test_step10_ships_after_documentation_commit_or_recorded_skip(self):
+        # RED on this commit: step 10's "after the documentation
+        # commit, never before" demands a documentation commit the
+        # rules now permit to skip — the same contradiction class as
+        # B3's, one step further along the pipeline. The green step
+        # rewords step 10 to admit the recorded skip ("after the
+        # documentation commit or its recorded skip"); this assertion
+        # is the confirmation that it did, and it must not be left
+        # contradicting step 9's licence.
+        description = self._step10_description()
+        self.assertIsNotNone(
+            description,
+            "<step number='10'> has no <description> element; the ship "
+            "sequencing has nowhere to live in the workflow",
+        )
+        text = _element_text(description)
+        self.assertTrue(
+            _step10_admits_documentation_commit_or_recorded_skip(text),
+            "step 10 STILL DEMANDS the documentation commit the rules "
+            "now permit to skip — 'after the documentation commit, "
+            "never before' contradicts step 9's docs skip (looked for "
+            "'documentation'+'skip' in step 10's own <description>; the "
+            "green step rewords it to admit 'the documentation commit "
+            "or its recorded skip'). This is the contradiction fix, "
+            "not a wording nit. Step 10's text: %r" % text,
+        )
+
+    def test_step9_still_presupplies_docs_manager_scope_answer(self):
+        # GREEN on arrival; B4 must keep passing it after the green
+        # step. When docs are NOT skipped, step 9 must still pre-supply
+        # the docs-manager's scope answer: losing it re-introduces a
+        # question the manager already answers (plan §6, B4, "Edge —
+        # the scope pre-supply survives"). The skip clause is added
+        # alongside this clause, never in place of it. A plain
+        # substring pins it, matching this module's verbatim-substring
+        # precedent for pre-supplied text.
+        description = self._step9_description()
+        self.assertIsNotNone(
+            description,
+            "<step number='9'> has no <description> element",
+        )
+        self.assertIn(
+            "document the current branch",
+            _element_text(description),
+            "step 9 no longer pre-supplies the docs-manager's scope "
+            "answer ('document the current branch') — the docs skip "
+            "clause must be added ALONGSIDE the scope pre-supply, not "
+            "in place of it. This is not a wording nit: without it, a "
+            "non-skipped docs subtask re-opens a question the manager "
+            "already answers. Step 9's text: %r"
+            % _element_text(description),
+        )
+
+    def test_docs_skip_diagnostic_names_the_missing_half(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the diagnostic so the green step's failure message names the
+        # missing half — the skip licence, or the clarity term —
+        # rather than degrading into a wording nit.
+        licence_without_clarity = (
+            "When no user-facing interface changed, skip the "
+            "docs-manager subtask."
+        )
+        self.assertEqual(
+            _missing_step9_docs_skip_halves(licence_without_clarity),
+            [
+                "the clarity term ('clarity'/'self-evident'/'obvious'/"
+                "'clear')"
+            ],
+            "a skip clause that never says when documentation helps "
+            "must be reported as missing the CLARITY TERM — "
+            "documentation exists to help developers where code lacks "
+            "clarity, or users at an interface",
+        )
+        self.assertFalse(
+            _says_skip_docs_when_no_user_facing_change_and_self_evident(
+                licence_without_clarity
+            ),
+            "the predicate must NOT accept a skip clause without the "
+            "clarity term",
+        )
+        clarity_without_licence = (
+            "Documentation exists to help developers where code lacks "
+            "clarity, or users at an interface."
+        )
+        self.assertEqual(
+            _missing_step9_docs_skip_halves(clarity_without_licence),
+            [
+                "the skip licence ('skip' + 'doc' + an interface term "
+                "('interface'/'user-facing'/'user'))"
+            ],
+            "text that explains the purpose of documentation but never "
+            "licences the skip must be reported as missing the SKIP "
+            "LICENCE",
+        )
+        self.assertFalse(
+            _says_skip_docs_when_no_user_facing_change_and_self_evident(
+                clarity_without_licence
+            ),
+            "the predicate must NOT accept purpose text without the "
+            "skip licence",
+        )
+
+    def test_recorded_docs_skip_predicate_rejects_silent_skip(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the edge — the skip is never silent. The documentation item
+        # admits a skip ONLY with a recording term in the same element;
+        # an unrecorded skip is not admissible, and the rejection must
+        # read as the missing recording, not a wording nit.
+        silent_item = (
+            "The documentation commit is on the branch, unless it is "
+            "skipped."
+        )
+        self.assertIn("skip", silent_item, "test fixture regression")
+        self.assertFalse(
+            _admits_recorded_docs_skip(silent_item),
+            "the predicate must NOT accept a skip WITHOUT a recorded "
+            "reason — a skip without a recorded reason is not "
+            "admissible (plan §1: 'A skip is never silent'); the "
+            "recording term must sit in the same element as the skip",
+        )
+        recorded_item = (
+            "The documentation commit is on the branch, or its "
+            "recorded skip."
+        )
+        self.assertTrue(
+            _admits_recorded_docs_skip(recorded_item),
+            "the predicate must accept a reworded item admitting a "
+            "RECORDED skip with the recording term in the same element",
+        )
+
+    def test_step10_predicate_requires_the_skip_admission(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the step 10 predicate — a plain "after the documentation
+        # commit, never before" demands the commit and must NOT match;
+        # only a rewording that admits the recorded skip does.
+        plain_commit = (
+            "Push and open the pull request after the documentation "
+            "commit, never before."
+        )
+        self.assertIn(
+            "documentation", plain_commit, "test fixture regression"
+        )
+        self.assertNotIn(
+            "skip", plain_commit, "test fixture regression"
+        )
+        self.assertFalse(
+            _step10_admits_documentation_commit_or_recorded_skip(plain_commit),
+            "the predicate must NOT accept a plain 'after the "
+            "documentation commit, never before' — it demands a commit "
+            "the rules now permit to skip",
+        )
+        reworded = (
+            "Push and open the pull request after the documentation "
+            "commit or its recorded skip, never before."
+        )
+        self.assertTrue(
+            _step10_admits_documentation_commit_or_recorded_skip(reworded),
+            "the predicate must accept a reworded step 10 admitting "
+            "'the documentation commit or its recorded skip'",
+        )
+
+
+class ManagerDocsSkipTemplateTests(DocsSkipTests):
+    """B4: the tdd-manager TEMPLATE carries the docs skip and its two
+    contradiction fixes."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerDocsSkipLocalTests(DocsSkipTests):
+    """B4: the anvil repo's OWN tdd-manager rules carry the same skip.
 
     ``.roo`` is gitignored, so the local copy is absent on a fresh clone
     (and on CI). ``setUp`` skips every local test cleanly in that case;
