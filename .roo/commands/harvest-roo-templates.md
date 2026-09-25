@@ -38,3 +38,11 @@ Divergent wording is shown to the user for judgement and is never adopted, copie
 Present the classified findings to the user as a shortlist. The user's explicit confirmation is a blocking gate: the command requires the user to confirm the shortlist before it files anything, and it never files the issue until the user confirms. The command stops at the shortlist and waits for the user's go-ahead rather than proceeding on the way past.
 
 If the shortlist is empty — nothing worth importing — the command ends with a report and no issue is filed.
+
+## Filing the issue
+
+Once the user confirms the shortlist, file exactly one issue for the whole harvest — a single GitHub issue covering all confirmed findings, never one issue per finding. File it with a single `mcp--github--create_issue` call, with owner="iar3-r8" and repo="anvil".
+
+The issue body follows the task template from `templates/roo_template/commands/write-github-task.md`, with its four sections in order: `context`, `goal`, `scope`, and `definition of done`. Every `scope` bullet must name the concrete destination path of every adopted item — a specific file path under `templates/roo_template/`, never a directory.
+
+If the MCP call returns an error, return it to the user and stop — do not retry, do not file a partial issue, and do not proceed past the failure.
