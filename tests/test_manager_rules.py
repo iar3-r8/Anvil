@@ -282,6 +282,60 @@ file (line 8 step 3, line 11 step 6, line 100 criterion 1,
 line 132 practice, line 151 checklist item) are all outside it.
 So all three new predicates are red on arrival, genuinely — no
 target element carries the skip stem they AND on.
+
+B5 of the same plan is also covered here: the architect marks
+which behaviours need no test cycle. One new
+``<to_architect><payload><item>`` tells the architect to mark, in
+the plan, the behaviours with no non-obvious input, output, edge or
+error — the ones whose dedicated test cycle may be skipped — so the
+manager need not re-derive the judgement per behaviour. The
+predicate is scoped to the payload items, so it cannot match the
+``skip`` occurrences B1-B4 added elsewhere in the file (the B1
+practice, steps 3, 6, 9 and 10, the termination criterion, the two
+``before_shipping`` items).
+
+RED expectation for B5 (this commit): the mark-item assertion
+fails for both the template and the local copy — none of the six
+current payload items carries all three halves (the action
+``mark``; an obviousness term ``obvious``/``self-evident``/
+``trivial``/``skip``; a test-cycle term ``test``/``cycle``) in the
+same element. The pure predicate unit test passes now and must
+keep passing after the green step.
+
+Cross-match check for B5 (verified by parsing both files on
+2026-09-25; byte-identical at 12,281 bytes): of the six current
+``<to_architect><payload><item>`` elements — (1) the
+intake-verbatim item, (2) "Output: plans/{task-slug}.md — a
+numbered list of independently testable behaviours.", (3) the
+blocking-validation item, (4) "Split the plan into small,
+reviewable behaviours.", (5) "Mark which behaviours are
+no-production-change boundary pins, so they can be batched.",
+(6) "Sequence the plan so a behaviour that invalidates an existing
+test never precedes the cycle that rewrites it." — item 5 carries
+``mark`` and NOTHING ELSE of the seven stems (no obviousness term,
+no ``test``, no ``cycle``); item 6 carries ``test`` + ``cycle``
+but no ``mark`` and no obviousness term; item 2 carries ``test``
+(inside "testable") and nothing else; items 1, 3 and 4 carry none
+of the seven stems. ``obvious``, ``self-evident`` and ``trivial``
+occur in NO payload item (they sit in the step 3, 6 and 9
+descriptions B2/B3/B4 added — outside ``<payload>``), and
+``skip`` occurs in NO payload item today (its occurrences are the
+B1-B4 additions — step 3, step 6, step 9, step 10, the
+termination criterion, the reviewable-size practice, the two
+``before_shipping`` items — all outside ``<payload>``). So the
+three-halves AND cannot match any current item: the only item
+carrying ``mark`` (item 5) is missing the other two halves, and
+the red is provably genuine, not vacuously green. A predicate
+built around ``skip`` alone would match no payload item here
+either, since the payload carries no ``skip`` today. The existing
+mark-batchable item's survival is pinned by
+``test_architect_payload_tells_architect_to_mark_batchable_
+behaviours`` in this module (not duplicated here), and the four
+verbatim payload markers (``intake source verbatim``, ``answers to
+every question already resolved``, ``plans/{task-slug}.md``,
+``independently testable``) are pinned by
+``test_existing_to_architect_payload_items_still_present`` in
+``tests/test_templates_rules.py`` (also not duplicated here).
 """
 
 import re
@@ -3447,6 +3501,238 @@ class ManagerDocsSkipLocalTests(DocsSkipTests):
     (and on CI). ``setUp`` skips every local test cleanly in that case;
     when the file is provisioned, the full assertion set runs exactly as
     written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B5 of plans/skip-trivial-steps.md — the architect marks which
+# behaviours need no test cycle
+# --------------------------------------------------------------------------- #
+
+def _says_architect_must_mark_behaviours_whose_test_cycle_may_skip(text):
+    """True when a ``<to_architect><payload><item>``'s text tells the
+    architect to mark, in the plan, the behaviours with no
+    non-obvious input, output, edge or error — the ones whose
+    dedicated test cycle may be skipped — so the manager need not
+    re-derive the judgement per behaviour.
+
+    Stems (all on lower-cased, whitespace-collapsed input), three
+    halves in the SAME element text:
+      * the action: ``"mark"`` (covers "marked", "marks");
+      * the obviousness, any one of: ``"obvious"`` (obvious/
+        non-obvious), ``"self-evident"``, ``"trivial"``, ``"skip"``
+        (skip/skipped/skipping — the plan's own shorthand for "the
+        cycle may be skipped");
+      * the thing being judged, any one of: ``"test"``, ``"cycle"``.
+
+    All three halves are AND-ed in one element, so the match cannot
+    be assembled from stems scattered across two payload items.
+    Cross-match check at red time (see module docstring): the only
+    payload item carrying ``mark`` today (the mark-batchable item)
+    carries NEITHER an obviousness term NOR ``test``/``cycle`` —
+    its third half is ``batch`` — so it does not match, and no
+    other item carries ``mark`` at all. The obviousness stems
+    ``obvious``/``self-evident``/``trivial`` and ``skip`` sit only
+    in elements OUTSIDE ``<payload>`` (steps 3, 6, 9, 10, the
+    termination criterion, the B1 practice, the before_shipping
+    items), where this predicate never looks.
+    """
+    mark = ("mark" in text)
+    obviousness = (
+        ("obvious" in text)
+        or ("self-evident" in text)
+        or ("trivial" in text)
+        or ("skip" in text)
+    )
+    test_cycle = ("test" in text) or ("cycle" in text)
+    return mark and obviousness and test_cycle
+
+
+def _missing_cycle_mark_halves(text):
+    """Return the names of the halves of the B5 mark item absent
+    from *text*.
+
+    Returns an empty list when the text states the full item (the
+    same three halves ``_says_architect_must_mark_behaviours_whose_
+    test_cycle_may_skip`` requires), so the two helpers can never
+    disagree about whether an item qualifies.
+    """
+    missing = []
+    if "mark" not in text:
+        missing.append("the action ('mark')")
+    if not (
+        ("obvious" in text)
+        or ("self-evident" in text)
+        or ("trivial" in text)
+        or ("skip" in text)
+    ):
+        missing.append(
+            "an obviousness term ('obvious'/'self-evident'/'trivial'/'skip')"
+        )
+    if not (("test" in text) or ("cycle" in text)):
+        missing.append("a test-cycle term ('test'/'cycle')")
+    return missing
+
+
+class CycleMarkTests(XmlTemplateTestCase):
+    """Shared assertions for B5 (plan §6, B5), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B5 is additive: one new
+    ``<to_architect><payload><item>`` telling the architect to mark,
+    in the plan, the behaviours with no non-obvious input, output,
+    edge or error — the ones whose dedicated test cycle may be
+    skipped — so the manager need not re-derive the judgement per
+    behaviour. It is the same shape as the pre-existing
+    mark-batchable item ("Mark which behaviours are
+    no-production-change boundary pins, so they can be batched."),
+    a second mark for a different judgement; both are required.
+
+    Survival guards (GREEN on arrival, must keep passing; NOT
+    duplicated here — the owners are named in the module
+    docstring): the mark-batchable item, pinned by
+    ``test_architect_payload_tells_architect_to_mark_batchable_
+    behaviours`` in this module; the four verbatim payload markers,
+    pinned by
+    ``test_existing_to_architect_payload_items_still_present`` in
+    ``tests/test_templates_rules.py``.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only
+    the two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def test_architect_payload_tells_architect_to_mark_behaviours_whose_test_cycle_may_skip(self):
+        # RED on this commit: none of the six current payload items
+        # carries the mark, the obviousness term and the test-cycle
+        # term together (see the module docstring's cross-match
+        # check for the per-item stem table). The failure lists
+        # every payload item's text and names which of the three
+        # halves each is missing, so the green step's wording is
+        # diagnosed, not guessed.
+        payload = _architect_payload_items(self.root)
+        self.assertTrue(
+            payload,
+            "<delegation_contract> has no <to_architect><payload><item> elements",
+        )
+        matching = [
+            i
+            for i in payload
+            if _says_architect_must_mark_behaviours_whose_test_cycle_may_skip(
+                _element_text(i)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "no <to_architect><payload><item> tells the architect to mark, "
+            "in the plan, the behaviours with no non-obvious input, output, "
+            "edge or error — the ones whose dedicated test cycle may be "
+            "skipped (looked for 'mark' + ('obvious'|'self-evident'|"
+            "'trivial'|'skip') + ('test'|'cycle'), all in the same item; "
+            "the existing mark-batchable item carries 'mark' but neither "
+            "half, and is not a substitute — it marks a different "
+            "judgement). Every payload item, with its missing half(s): %r"
+            % [
+                {
+                    "text": _element_text(i),
+                    "missing": _missing_cycle_mark_halves(_element_text(i)),
+                }
+                for i in payload
+            ],
+        )
+
+    def test_mark_cycle_skip_predicate_rejects_the_batchable_item(self):
+        # Pure predicate unit test (it needs no parsed document):
+        # pins the cross-match the module docstring records — the
+        # pre-existing mark-batchable item must NOT satisfy the B5
+        # predicate (it carries 'mark' but neither an obviousness
+        # term nor 'test'/'cycle'), while the B3 sequencing item
+        # must not satisfy it either (it carries 'test' + 'cycle'
+        # but no 'mark' and no obviousness term). A green-step
+        # wording that drops the obviousness term and leans on
+        # 'mark' + 'test' would still have to name the skipped
+        # cycle; this fixture pair pins both rejections.
+        # The predicate's input is lower-cased by the caller (as the
+        # real test lower-cases it through ``_element_text``), so the
+        # fixture is normalised the same way before being checked.
+        batchable_item = (
+            "Mark which behaviours are no-production-change boundary "
+            "pins, so they can be batched."
+        ).lower()
+        self.assertIn(
+            "mark", batchable_item, "test fixture regression"
+        )
+        self.assertFalse(
+            _says_architect_must_mark_behaviours_whose_test_cycle_may_skip(
+                batchable_item
+            ),
+            "the predicate must NOT accept the pre-existing mark-"
+            "batchable item — it marks a different judgement (which "
+            "behaviours may be batched), not which behaviours need "
+            "no test cycle",
+        )
+        self.assertEqual(
+            _missing_cycle_mark_halves(batchable_item),
+            [
+                "an obviousness term "
+                "('obvious'/'self-evident'/'trivial'/'skip')",
+                "a test-cycle term ('test'/'cycle')",
+            ],
+            "the mark-batchable item is missing exactly the "
+            "obviousness and test-cycle halves — the failure "
+            "diagnostic must say so, so the green step does not "
+            "mistake it for the new mark",
+        )
+        sequencing_item = (
+            "Sequence the plan so a behaviour that invalidates an "
+            "existing test never precedes the cycle that rewrites it."
+        )
+        self.assertIn(
+            "test", sequencing_item, "test fixture regression"
+        )
+        self.assertIn(
+            "cycle", sequencing_item, "test fixture regression"
+        )
+        self.assertFalse(
+            _says_architect_must_mark_behaviours_whose_test_cycle_may_skip(
+                sequencing_item.lower()
+            ),
+            "the predicate must NOT accept the B3 sequencing item — "
+            "it carries 'test' + 'cycle' but no 'mark' and no "
+            "obviousness term",
+        )
+
+
+class ManagerCycleMarkTemplateTests(CycleMarkTests):
+    """B5: the tdd-manager TEMPLATE carries the architect's cycle
+    mark."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerCycleMarkLocalTests(CycleMarkTests):
+    """B5: the anvil repo's OWN tdd-manager rules carry the same mark.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh
+    clone (and on CI). ``setUp`` skips every local test cleanly in
+    that case; when the file is provisioned, the full assertion set
+    runs exactly as written above in the base class.
     """
 
     template_path = LOCAL_TDD_MANAGER
