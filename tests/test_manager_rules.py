@@ -175,6 +175,23 @@ return 0), and the recording stems that DO occur (``record`` x2,
 ``ledger`` x5, ``justif`` x1) are AND-ed with those absent stems, so the
 predicate cannot match any pre-existing element — the red is genuine,
 not vacuously green.
+
+B2 of ``plans/skip-trivial-steps.md`` is also covered here: the
+planning skip for a single self-evident behaviour. Step 3's
+``<description>`` must licence skipping the FULL plan when the task
+is a single self-evident behaviour, while the numbered behaviour
+list still exists — inline in the ledger for a one-behaviour task.
+The predicate is scoped to step 3's description element, so it
+cannot match B1's skip practice in ``<best_practices>`` (the only
+``skip`` occurrence in either file today).
+
+RED expectation for B2 (this commit): the skip-licence assertion
+fails for both the template and the local copy — step 3's
+description carries ``plan`` and ``behaviour`` but no ``skip`` and
+no smallness term. The ledger-survives guard (``<loop_control>``
+``<ledger>`` still requires the numbered list kept current) and the
+pure predicate unit test pass now and must keep passing after the
+green step.
 """
 
 import re
@@ -2098,6 +2115,277 @@ class ManagerSkipJudgementTemplateTests(SkipJudgementTests):
 
 class ManagerSkipJudgementLocalTests(SkipJudgementTests):
     """B1: the anvil repo's OWN tdd-manager rules carry the same rule.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B2 of plans/skip-trivial-steps.md — the planning skip for a single
+# self-evident behaviour
+# --------------------------------------------------------------------------- #
+
+def _says_skip_full_plan_for_single_self_evident_behaviour(text):
+    """True when step 3's ``<description>`` text states the B2 planning
+    skip: for a single self-evident behaviour the FULL plan is skipped,
+    and the numbered behaviour list still exists — inline in the ledger
+    for a one-behaviour task.
+
+    Stems (all on lower-cased, whitespace-collapsed input), two halves:
+      * the skip licence, all three: ``"skip"`` (skip/skipped/skipping)
+        + ``"plan"`` (plan/planned) + a smallness term
+        (``"single"`` | ``"one behaviour"`` | ``"self-evident"`` |
+        ``"obvious"`` | ``"small"``);
+      * the ledger-survives clause, any one of: ``"ledger"``, ``"list"``,
+        ``"inline"``. The second half stops the rule reading as "no
+        behaviour list at all" — skipping the plan *document* is not
+        skipping the *ledger*.
+
+    Both halves are required in the SAME description text, so a match
+    cannot be assembled from stems scattered across two elements.
+
+    Cross-match check (verified against both files at red time,
+    2026-09-24, with grep scoped to step 3's description — line 8 of
+    both copies, byte-identical at 12,006 bytes): step 3's description
+    carries ``plan`` (x4), ``behaviour`` (x4), ``list`` (x2) and
+    ``ledger`` (x1) but NOT ``skip`` (the only ``skip`` in either file
+    is B1's ``<practice>`` in ``<best_practices>``, line 132 — a
+    different element), and NOT any smallness stem: ``single``,
+    ``obvious``, ``self-evident`` and ``one behaviour`` are all absent,
+    and ``small`` is absent from step 3 (the only ``small`` in the
+    file is the "small, reviewable behaviours" payload item, line 32).
+    So the skip-licence half of the predicate cannot match the current
+    text — the red is genuine, not vacuously green.
+    """
+    skip_licence = (
+        ("skip" in text)
+        and ("plan" in text)
+        and (
+            ("single" in text)
+            or ("one behaviour" in text)
+            or ("self-evident" in text)
+            or ("obvious" in text)
+            or ("small" in text)
+        )
+    )
+    ledger_survives = (
+        ("ledger" in text)
+        or ("list" in text)
+        or ("inline" in text)
+    )
+    return skip_licence and ledger_survives
+
+
+def _missing_step3_skip_halves(text):
+    """Return the names of the halves of the B2 rule absent from
+    *text* — the skip licence or the ledger-survives clause.
+
+    Returns an empty list when the text states the full rule (the same
+    two halves ``_says_skip_full_plan_for_single_self_evident_behaviour``
+    requires), so the two helpers can never disagree about whether a
+    description qualifies.
+    """
+    missing = []
+    if not (
+        ("skip" in text)
+        and ("plan" in text)
+        and (
+            ("single" in text)
+            or ("one behaviour" in text)
+            or ("self-evident" in text)
+            or ("obvious" in text)
+            or ("small" in text)
+        )
+    ):
+        missing.append(
+            "the skip licence ('skip' + 'plan' + a smallness term)"
+        )
+    if not (
+        ("ledger" in text)
+        or ("list" in text)
+        or ("inline" in text)
+    ):
+        missing.append(
+            "the ledger-survives clause ('ledger'/'list'/'inline')"
+        )
+    return missing
+
+
+def _ledger_still_requires_numbered_list_current(text):
+    """True when ``<loop_control><ledger>``'s text is the pre-existing
+    ledger rule that B2 must not delete: the plan's numbered behaviour
+    list is the loop ledger, kept current and surviving a context
+    reset.
+
+    Stems: ``"ledger"`` + ``"numbered"`` + ``"list"`` + ``"current"``.
+    The pre-existing ``<ledger>`` element states exactly this, so the
+    guard is GREEN on arrival and stays green for any honest
+    rewording that keeps the stems.
+    """
+    return (
+        ("ledger" in text)
+        and ("numbered" in text)
+        and ("list" in text)
+        and ("current" in text)
+    )
+
+
+class PlanningSkipTests(XmlTemplateTestCase):
+    """Shared assertions for B2 (plan §6, B2), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B2 adds one sentence to ``<step number="3">``'s
+    ``<description>``: for a single self-evident behaviour the full
+    plan is skipped, and the numbered behaviour list still exists —
+    inline in the ledger for a one-behaviour task. The predicate is
+    scoped to that one element, so it cannot match B1's skip practice
+    in ``<best_practices>``.
+
+    The failure prints step 3's full text and names the missing half
+    — the skip licence, or the ledger-survives clause. A separate
+    survival guard pins ``<loop_control><ledger>`` (the numbered list
+    kept current) — GREEN on arrival, must keep passing after the
+    green step. Step 3's ``<title>`` and its user-validation sentence
+    are pinned by ``tests/test_templates_rules.py`` (lines 822/866)
+    and are NOT duplicated here; the skip clause must be added
+    alongside that sentence, never in place of it.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only
+    the two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _step3_description(self):
+        """Step 3's ``<description>`` element, or ``None`` when step 3
+        or its description is missing (that absence is part of the red
+        state and is reported by the caller)."""
+        for step in _all_steps(self.root):
+            if _step_number(step) != "3":
+                continue
+            return step.find("description")
+        return None
+
+    def test_step3_licences_full_plan_skip_for_single_self_evident_behaviour(self):
+        # RED on this commit: step 3's description carries 'plan' and
+        # 'behaviour' but no 'skip' and no smallness term, so the
+        # planning skip is not licensed. B2 of
+        # plans/skip-trivial-steps.md: for a single self-evident
+        # behaviour the full plan is skipped, and the numbered
+        # behaviour list still exists — inline in the ledger for a
+        # one-behaviour task.
+        description = self._step3_description()
+        self.assertIsNotNone(
+            description,
+            "<step number='3'> has no <description> element; the "
+            "planning skip has nowhere to live in the workflow",
+        )
+        text = _element_text(description)
+        self.assertTrue(
+            _says_skip_full_plan_for_single_self_evident_behaviour(text),
+            "step 3's <description> does not licence skipping the FULL "
+            "plan for a single self-evident behaviour with the numbered "
+            "behaviour list still existing inline in the ledger (looked "
+            "for 'skip'+'plan'+('single'|'one behaviour'|"
+            "'self-evident'|'obvious'|'small') + "
+            "('ledger'|'list'|'inline'), all in the step 3 description "
+            "text; the missing half is named below). Step 3's full "
+            "text: %r — missing half(s): %r"
+            % (text, _missing_step3_skip_halves(text)),
+        )
+
+    def test_step3_skip_clause_reports_which_half_is_missing(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the diagnostic so the green step's failure message names the
+        # missing half — the skip licence, or the ledger-survives
+        # clause — rather than degrading into a wording nit.
+        skip_licence_only = (
+            "For a single self-evident behaviour the full plan is "
+            "skipped; proceed directly to the red step."
+        )
+        self.assertEqual(
+            _missing_step3_skip_halves(skip_licence_only),
+            ["the ledger-survives clause ('ledger'/'list'/'inline')"],
+            "a skip clause that leaves no behaviour-list home must be "
+            "reported as missing the LEDGER-SURVIVES CLAUSE — skipping "
+            "the plan document is not skipping the ledger",
+        )
+        self.assertFalse(
+            _says_skip_full_plan_for_single_self_evident_behaviour(
+                skip_licence_only
+            ),
+            "the predicate must NOT accept a skip clause without the "
+            "ledger-survives clause",
+        )
+        ledger_only = (
+            "The numbered behaviour list is kept inline in the ledger "
+            "for a one-behaviour task."
+        )
+        self.assertEqual(
+            _missing_step3_skip_halves(ledger_only),
+            ["the skip licence ('skip' + 'plan' + a smallness term)"],
+            "text that keeps the list but never licences the skip must "
+            "be reported as missing the SKIP LICENCE",
+        )
+        self.assertFalse(
+            _says_skip_full_plan_for_single_self_evident_behaviour(
+                ledger_only
+            ),
+            "the predicate must NOT accept ledger-survives text without "
+            "the skip licence",
+        )
+
+    def test_ledger_still_requires_numbered_list_kept_current(self):
+        # GREEN on arrival; B2 must keep passing it after the green
+        # step. Skipping the plan *document* is not skipping the
+        # *ledger*: the loop's only durable state must survive a
+        # context reset, so <loop_control><ledger> still requires the
+        # numbered list to be kept current. If this has gone, the
+        # failure says so explicitly — it is not a wording nit.
+        ledger = self.root.find(".//loop_control/ledger")
+        self.assertIsNotNone(
+            ledger,
+            "<loop_control> has no <ledger> element; the loop's only "
+            "durable state has nowhere to live",
+        )
+        self.assertTrue(
+            _ledger_still_requires_numbered_list_current(_element_text(ledger)),
+            "<loop_control><ledger> no longer requires the plan's "
+            "numbered behaviour list to be kept current — B2 skips the "
+            "plan DOCUMENT for a one-behaviour task, never the ledger "
+            "itself (looked for 'ledger'+'numbered'+'list'+'current'). "
+            "This is not a wording nit: without it the skip clause in "
+            "step 3 reads as 'no behaviour list at all'. Ledger text: "
+            "%r" % _element_text(ledger),
+        )
+
+
+class ManagerPlanningSkipTemplateTests(PlanningSkipTests):
+    """B2: the tdd-manager TEMPLATE carries the planning skip."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerPlanningSkipLocalTests(PlanningSkipTests):
+    """B2: the anvil repo's OWN tdd-manager rules carry the same skip.
 
     ``.roo`` is gitignored, so the local copy is absent on a fresh clone
     (and on CI). ``setUp`` skips every local test cleanly in that case;
