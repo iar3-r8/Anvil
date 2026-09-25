@@ -214,11 +214,13 @@ class B1FrontmatterEdgeTests(unittest.TestCase):
 
     def test_missing_file_fails_with_file_not_found(self):
         # A path that does not exist raises FileNotFoundError, not a
-        # frontmatter error: the two failure classes stay distinct. The real
-        # (absent) command path is used, so this is also a live check of the
-        # B1 pre-condition.
+        # frontmatter error: the two failure classes stay distinct. The absent
+        # path is a synthetic temp path, so this holds against the loader's
+        # error contract in both red and green states (the real command file
+        # may or may not exist, and neither matters here).
+        absent_path = Path(self._tmp.name) / "absent.md"
         with self.assertRaises(FileNotFoundError):
-            load_harvest_command(COMMAND_PATH)
+            load_harvest_command(absent_path)
 
     def test_missing_opening_delimiter_fails_with_path_named(self):
         # Edge (B1): a file that does not start with '---' fails.
