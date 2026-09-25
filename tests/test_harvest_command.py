@@ -529,5 +529,125 @@ class B4OneWayDiffTests(HarvestCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# B5 — findings are classified, and wording is never auto-adopted
+# --------------------------------------------------------------------------- #
+
+class B5FindingClassificationTests(HarvestCommandTestCase):
+    """B5 (plans/harvest-roo-templates.md): the body defines three finding
+    classes — a whole new file, a new section within an existing file, and
+    divergent wording of an existing section — and states that divergent
+    wording is reported for judgement, never adopted automatically.
+
+    The plan's rationale: our templates carry deliberate local edits (the
+    tdd-manager byte ceiling, the architect's package-registry step), so
+    auto-adopting another repo's wording would silently revert them.
+
+    Assertions are loose phrase predicates — case-insensitive, tolerant of
+    near-synonyms ("changed wording" for "divergent wording", "added
+    section" for "new section") — but each is specific enough that a body
+    lacking the classification, or one that auto-adopts wording, fails.
+
+    Expected red reason: the current body is the B1 frontmatter plus the
+    Inventory and Comparison sections (B1-B4) only; it names no finding
+    classes and never mentions adopting, copying, overwriting or
+    rewriting, so all four tests fail.
+    """
+
+    command_path = COMMAND_PATH
+
+    #: Class 1: a whole NEW FILE — present in the other repo, absent from
+    #: templates/roo_template/. "new file" also matches inside "whole new
+    #: file", "entirely new file" and "brand-new file" (a hyphen is a word
+    #: boundary), so the green step keeps latitude.
+    NEW_FILE_RE = re.compile(r"\bnew\s+files?\b", re.IGNORECASE)
+
+    #: Class 2: a NEW SECTION within an existing file, plus the near-
+    #: synonyms the green step may pick.
+    NEW_SECTION_RE = re.compile(
+        r"\bnew\s+sections?\b"
+        r"|\badded\s+sections?\b"
+        r"|\badditional\s+sections?\b",
+        re.IGNORECASE,
+    )
+
+    #: Class 3: DIVERGENT WORDING of an existing section — the plan's term
+    #: plus the near-synonyms the green step may pick.
+    DIVERGENT_WORDING_RE = re.compile(
+        r"\b(?:divergen\w*|changed|different|altered|reworded)\s+wording\b",
+        re.IGNORECASE,
+    )
+
+    #: Guard: a negator within one sentence of an adopt-family verb. A body
+    #: that auto-adopts another repo's wording would name adopt/copy/
+    #: overwrite/rewrite without negating it. "cope" is excluded by spelling
+    #: the cop-* forms out.
+    _NEVER_ADOPT_RE = re.compile(
+        r"\b(?:never|do\s+not|don'?t|not|no)\b"
+        r"[^.;]{0,80}?"
+        r"\b(?:adopt\w*|cop(?:y|ies|ied|ying)|overwrit\w*|rewrit\w*)\b",
+        re.IGNORECASE,
+    )
+
+    def test_body_classifies_whole_new_file(self):
+        # B5 output, class 1: the body names a whole new file as a finding
+        # class (present in the other repo, absent from our templates).
+        self.assertRegex(
+            self.body,
+            self.NEW_FILE_RE,
+            "body does not name a whole new file as a finding class "
+            "(a file present in the other repo but absent from "
+            "templates/roo_template/)",
+        )
+
+    def test_body_classifies_new_section_in_existing_file(self):
+        # B5 output, class 2: the body names a new section within an
+        # existing file as a finding class.
+        self.assertRegex(
+            self.body,
+            self.NEW_SECTION_RE,
+            "body does not name a new section within an existing file as "
+            "a finding class",
+        )
+
+    def test_body_classifies_divergent_wording(self):
+        # B5 output, class 3: the body names divergent wording of an
+        # existing section as a finding class.
+        self.assertRegex(
+            self.body,
+            self.DIVERGENT_WORDING_RE,
+            "body does not name divergent wording of an existing section "
+            "as a finding class",
+        )
+
+    def _wording_never_auto_adopted(self):
+        """True iff the body negates the adoption of wording: a negator
+        within one sentence of an adopt-family verb, with the passage
+        around it about wording (``wording`` / ``divergen*``).
+
+        The wording context keeps this from being satisfied by the B4
+        deletion negation ("never proposes removing or deleting"), and the
+        sentence-scoped negator keeps a bare "copy the file verbatim"
+        from satisfying it.
+        """
+        body = self.body
+        for match in self._NEVER_ADOPT_RE.finditer(body):
+            window = body[max(0, match.start() - 120):match.end()]
+            if re.search(r"\b(?:wording|divergen\w*)\b", window, re.IGNORECASE):
+                return True
+        return False
+
+    def test_body_forbids_auto_adopting_divergent_wording(self):
+        # B5 guard: divergent wording is reported for judgement and never
+        # adopted automatically — the user or agent decides, and the
+        # command must not silently rewrite our template wording.
+        self.assertTrue(
+            self._wording_never_auto_adopted(),
+            "body does not state that divergent wording is reported for "
+            "judgement and never adopted/copied/overwritten/rewritten "
+            "automatically",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
