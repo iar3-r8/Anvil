@@ -152,6 +152,190 @@ RED expectation for B11 (this commit): the <to_code> assertion fails on
 assertion - the current item carries no conditionality marker. The
 <to_qna_tester> assertion and the command-evidence guard are GREEN on
 arrival and must keep passing after the green step.
+
+B1 of ``plans/skip-trivial-steps.md`` is also covered here: the skip
+judgement — a pipeline step whose cost exceeds its value may be skipped
+on judgement; when in doubt, the full step is run (the fail-safe); and
+the skip decision and its reason are recorded in the ledger. It is
+additive: one more ``<practice priority="high">`` in
+``<best_practices>``.
+
+RED expectation for B1 (this commit): the skip-judgement practice
+assertion fails on assertion for both the template and the local copy —
+no ``<practice>`` carries the skip licence, the fail-safe and the
+recording together. The qualitative-only guard (the added practice
+carries no numeric threshold, reusing ``_DIGIT_LINE_THRESHOLD``) and the
+pure predicate unit tests pass now and must keep passing after the green
+step.
+
+Cross-match check for B1 (verified against both files on 2026-09-24 with
+grep -ic): ``skip``, ``doubt``, ``unsure``, ``uncertain``, ``judge``,
+``worth``, ``cost`` and ``value`` appear NOWHERE in either file (all
+return 0), and the recording stems that DO occur (``record`` x2,
+``ledger`` x5, ``justif`` x1) are AND-ed with those absent stems, so the
+predicate cannot match any pre-existing element — the red is genuine,
+not vacuously green.
+
+B2 of ``plans/skip-trivial-steps.md`` is also covered here: the
+planning skip for a single self-evident behaviour. Step 3's
+``<description>`` must licence skipping the FULL plan when the task
+is a single self-evident behaviour, while the numbered behaviour
+list still exists — inline in the ledger for a one-behaviour task.
+The predicate is scoped to step 3's description element, so it
+cannot match B1's skip practice in ``<best_practices>`` (the only
+``skip`` occurrence in either file today).
+
+RED expectation for B2 (this commit): the skip-licence assertion
+fails for both the template and the local copy — step 3's
+description carries ``plan`` and ``behaviour`` but no ``skip`` and
+no smallness term. The ledger-survives guard (``<loop_control>``
+``<ledger>`` still requires the numbered list kept current) and the
+pure predicate unit test pass now and must keep passing after the
+green step.
+
+B3 of the same plan is also covered here: the test-cycle skip, with
+its two contradiction fixes — the skip licence in step 6 / step 7,
+``<termination>`` criterion 1 and the ``before_shipping`` red/green
+item each admitting a recorded, justified skip. The three edits are
+one behaviour, not three: a skip licence beside unchanged
+contradictions is self-contradictory (plan §4). The licence
+predicate is scoped to step 6 and step 7 (description and
+verification), so it cannot match B1's skip practice in
+``<best_practices>`` or B2's skip clause in step 3's description —
+the two pre-existing ``skip`` occurrences in either file. The
+targeted-tests-still-run half is tested together with the licence in
+the SAME element: step 7's verification already carries
+``targeted``+``test``+``run`` from the pre-existing targeted-test
+rule (B4 of the earlier plan), so the half is green on arrival in
+isolation and would prove nothing — the licence is what makes the
+red genuine. The two rewording predicates are scanned on each
+element alone, with the recording stem required in the same element
+as ``skip``: a skip without a recorded reason is not admissible, and
+the failure says so explicitly rather than as a wording nit.
+
+RED expectation for B3 (this commit): the three new-content
+assertions (the licence, criterion 1, the checklist item) fail on
+assertion for both copies — none of the five candidate elements
+(step 6 description, step 7 description, step 7 verification,
+criterion 1, the red/green checklist item) carries ``skip`` today.
+The pure predicate unit tests pass now and must keep passing after
+the green step.
+
+Cross-match check for B3 (verified against both files on
+2026-09-25; byte-identical at 12,155 bytes): ``skip`` occurs ONLY
+in B1's ``<practice>`` (line 132) and B2's step 3 ``<description>``
+(line 8) — verified absent from step 6's description (line 11),
+step 7's description (line 12) and its ``<verification>`` (line 12),
+``<termination>`` criterion 1 (line 100) and the
+``before_shipping`` red/green item (line 151). The obviousness
+stems ``obvious``/``self-evident`` occur ONLY in B2's step 3 text;
+``trivial``, ``string`` and ``rename`` occur NOWHERE in either
+file; all five are verified absent from the same five elements.
+Criterion 1 carries no recording stem (``record``/``justif`` absent;
+``ledger`` absent) and the before_shipping item carries ``ledger``
+but no ``skip``. So all three new predicates are red on arrival,
+genuinely — no element carries the skip stem they AND on.
+
+B4 of the same plan is also covered here: the docs skip. Step
+9's ``<description>`` must licence skipping the docs-manager
+subtask when **no user-facing interface changed and the code is
+self-evident** — documentation exists to help developers where
+code lacks clarity, or users at an interface — and the
+``before_shipping`` item "The documentation commit is on the
+branch." must admit a **recorded, justified skip** in place of
+the documentation commit. Step 10's "after the documentation
+commit, never before" must not be left demanding a commit the
+rules now permit to skip: it is reworded in the green step to
+admit the recorded skip (the same contradiction class as B3's).
+The predicates are scoped to step 9's description, the single
+``before_shipping`` item that mentions the documentation commit
+(identified structurally by ``doc``), and step 10's description,
+so they cannot match the earlier ``skip`` occurrences (B1's
+``<practice>``, B2's step 3, B3's step 6 and its two rewordings).
+The survival guard pins that step 9 still pre-supplies the
+docs-manager's scope answer — "document the current branch" —
+alongside the skip clause, never in place of it.
+
+RED expectation for B4 (this commit): the three new-content
+assertions (step 9, the checklist item, step 10) fail on
+assertion for both copies — none of the three target elements
+carries ``skip`` today. The survival guard (step 9's scope
+pre-supply) and the pure predicate unit tests pass now and must
+keep passing after the green step.
+
+Cross-match check for B4 (verified by reading both files on
+2026-09-25; byte-identical at 12,277 bytes): step 9's
+``<description>`` (line 14) carries ``doc`` (docs-manager, docs
+format, document) but no ``skip``, no ``interface``, no ``user``,
+no ``user-facing`` and none of the clarity stems (``clarity``,
+``self-evident``, ``obvious``, ``clear`` all absent). The
+``before_shipping`` documentation item (line 152, "The
+documentation commit is on the branch.") carries ``doc`` but no
+``skip``, no ``record``, no ``justif``; the other two items in
+the category — the red/green item (line 151) and the
+reviewable-size item (line 153) — carry no ``doc`` at all, so
+identifying the item structurally by ``doc`` picks the
+documentation item alone. Step 10's ``<description>`` (line 15)
+carries ``documentation`` ("after the documentation commit,
+never before") but no ``skip`` — the ``skip`` occurrences in the
+file (line 8 step 3, line 11 step 6, line 100 criterion 1,
+line 132 practice, line 151 checklist item) are all outside it.
+So all three new predicates are red on arrival, genuinely — no
+target element carries the skip stem they AND on.
+
+B5 of the same plan is also covered here: the architect marks
+which behaviours need no test cycle. One new
+``<to_architect><payload><item>`` tells the architect to mark, in
+the plan, the behaviours with no non-obvious input, output, edge or
+error — the ones whose dedicated test cycle may be skipped — so the
+manager need not re-derive the judgement per behaviour. The
+predicate is scoped to the payload items, so it cannot match the
+``skip`` occurrences B1-B4 added elsewhere in the file (the B1
+practice, steps 3, 6, 9 and 10, the termination criterion, the two
+``before_shipping`` items).
+
+RED expectation for B5 (this commit): the mark-item assertion
+fails for both the template and the local copy — none of the six
+current payload items carries all three halves (the action
+``mark``; an obviousness term ``obvious``/``self-evident``/
+``trivial``/``skip``; a test-cycle term ``test``/``cycle``) in the
+same element. The pure predicate unit test passes now and must
+keep passing after the green step.
+
+Cross-match check for B5 (verified by parsing both files on
+2026-09-25; byte-identical at 12,281 bytes): of the six current
+``<to_architect><payload><item>`` elements — (1) the
+intake-verbatim item, (2) "Output: plans/{task-slug}.md — a
+numbered list of independently testable behaviours.", (3) the
+blocking-validation item, (4) "Split the plan into small,
+reviewable behaviours.", (5) "Mark which behaviours are
+no-production-change boundary pins, so they can be batched.",
+(6) "Sequence the plan so a behaviour that invalidates an existing
+test never precedes the cycle that rewrites it." — item 5 carries
+``mark`` and NOTHING ELSE of the seven stems (no obviousness term,
+no ``test``, no ``cycle``); item 6 carries ``test`` + ``cycle``
+but no ``mark`` and no obviousness term; item 2 carries ``test``
+(inside "testable") and nothing else; items 1, 3 and 4 carry none
+of the seven stems. ``obvious``, ``self-evident`` and ``trivial``
+occur in NO payload item (they sit in the step 3, 6 and 9
+descriptions B2/B3/B4 added — outside ``<payload>``), and
+``skip`` occurs in NO payload item today (its occurrences are the
+B1-B4 additions — step 3, step 6, step 9, step 10, the
+termination criterion, the reviewable-size practice, the two
+``before_shipping`` items — all outside ``<payload>``). So the
+three-halves AND cannot match any current item: the only item
+carrying ``mark`` (item 5) is missing the other two halves, and
+the red is provably genuine, not vacuously green. A predicate
+built around ``skip`` alone would match no payload item here
+either, since the payload carries no ``skip`` today. The existing
+mark-batchable item's survival is pinned by
+``test_architect_payload_tells_architect_to_mark_batchable_
+behaviours`` in this module (not duplicated here), and the four
+verbatim payload markers (``intake source verbatim``, ``answers to
+every question already resolved``, ``plans/{task-slug}.md``,
+``independently testable``) are pinned by
+``test_existing_to_architect_payload_items_still_present`` in
+``tests/test_templates_rules.py`` (also not duplicated here).
 """
 
 import re
@@ -1820,6 +2004,1735 @@ class ManagerCoderReportLocalTests(CoderReportFullSuiteTests):
     (and on CI). ``setUp`` skips every local test cleanly in that case; when
     the file is provisioned, the full assertion set runs exactly as written
     above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B1 of plans/skip-trivial-steps.md — the skip judgement, its fail-safe
+# and its audit trail
+# --------------------------------------------------------------------------- #
+
+def _says_skip_judgement_with_failsafe_and_recording(text):
+    """True when a ``<practice>``'s text states the B1 skip licence in full:
+    a pipeline step whose cost exceeds its value may be skipped on
+    judgement; when in doubt, the full step is run; and the skip decision
+    and its reason are recorded in the ledger.
+
+    Stems (all on lower-cased, whitespace-collapsed input), four halves:
+      * the licence: ``"skip"`` (skip/skipped/skipping);
+      * the judgement, any one of: ``"judge"`` (judge/judgement/judgment),
+        ``"worth"`` (worth), ``"value"`` (value/values), ``"cost"``
+        (cost/costs);
+      * the fail-safe, any one of: ``"doubt"`` (doubt/doubtful),
+        ``"unsure"`` (unsure), ``"uncertain"`` (uncertain);
+      * the audit trail, any one of: ``"record"`` (record/recorded/
+        records), ``"ledger"`` (ledger), ``"justif"`` (justify/justified/
+        justification).
+
+    All four halves are required in the SAME text, so a practice that
+    merely mentions "skip" (or merely records something, or merely
+    hedges) does not match — the match cannot be assembled from stems
+    scattered across two practices.
+
+    Cross-match check (verified against both files at red time, 2026-09-24):
+    none of ``"skip"``, ``"doubt"``, ``"unsure"``, ``"uncertain"``,
+    ``"judge"``, ``"worth"``, ``"cost"`` or ``"value"`` occurs anywhere in
+    either file (grep -ic returns 0 for each), and the recording stems
+    that do occur (``record``, ``ledger``, ``justif``) are AND-ed with the
+    absent halves, so no pre-existing element can match — the red is
+    genuine, not vacuously green.
+    """
+    licence = ("skip" in text)
+    judgement = (
+        ("judge" in text)
+        or ("worth" in text)
+        or ("value" in text)
+        or ("cost" in text)
+    )
+    failsafe = (
+        ("doubt" in text)
+        or ("unsure" in text)
+        or ("uncertain" in text)
+    )
+    recording = (
+        ("record" in text)
+        or ("ledger" in text)
+        or ("justif" in text)
+    )
+    return licence and judgement and failsafe and recording
+
+
+def _missing_skip_judgement_halves(text):
+    """Return the names of the halves of the B1 rule absent from *text*.
+
+    Returns an empty list when the text states the full rule (the same
+    four halves ``_says_skip_judgement_with_failsafe_and_recording``
+    requires), so the two helpers can never disagree about whether a
+    practice qualifies.
+    """
+    missing = []
+    if "skip" not in text:
+        missing.append("the skip licence ('skip')")
+    if not (
+        ("judge" in text)
+        or ("worth" in text)
+        or ("value" in text)
+        or ("cost" in text)
+    ):
+        missing.append("a judgement term ('judge'/'worth'/'value'/'cost')")
+    if not (
+        ("doubt" in text)
+        or ("unsure" in text)
+        or ("uncertain" in text)
+    ):
+        missing.append(
+            "the fail-safe clause ('doubt'/'unsure'/'uncertain')"
+        )
+    if not (
+        ("record" in text)
+        or ("ledger" in text)
+        or ("justif" in text)
+    ):
+        missing.append(
+            "a recording term ('record'/'ledger'/'justif')"
+        )
+    return missing
+
+
+class SkipJudgementTests(XmlTemplateTestCase):
+    """Shared assertions for B1 (plan §6, B1), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B1 is additive: one more ``<practice priority="high">`` in
+    ``<best_practices>`` stating that a pipeline step whose cost
+    exceeds its value may be skipped on judgement; when in doubt, the
+    full step is run; and the skip decision and its reason are recorded
+    in the ledger. All three statements must live in the same practice
+    text, so the match cannot be assembled from stems scattered across
+    two practices.
+
+    The failure diagnostic lists every existing practice's text and
+    names which of the four halves (skip licence / judgement / fail-safe
+    / recording) each one is missing, and the licence-without-fail-safe
+    case is called out explicitly — it is the missing fail-safe, not a
+    wording nit.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only the
+    two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _added_practices(self):
+        """The ``<best_practices>`` practices that state the B1 skip
+        licence in full (all four halves in the same text)."""
+        practices = self.root.findall(".//best_practices/practice")
+        return [
+            p
+            for p in practices
+            if _says_skip_judgement_with_failsafe_and_recording(
+                _element_text(p)
+            )
+        ]
+
+    def test_best_practices_has_high_priority_skip_judgement_practice(self):
+        # RED on this commit: no <practice priority="high"> states the
+        # skip licence, its fail-safe and its audit trail together.
+        # B1 of plans/skip-trivial-steps.md: a pipeline step whose cost
+        # exceeds its value may be skipped on judgement; when in doubt,
+        # the full step is run; the skip decision and its reason are
+        # recorded in the ledger.
+        practices = self.root.findall(".//best_practices/practice")
+        self.assertTrue(practices, "<best_practices> has no <practice> elements")
+        matching = [
+            p
+            for p in practices
+            if p.get("priority") == "high"
+            and _says_skip_judgement_with_failsafe_and_recording(
+                _element_text(p)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "no <practice priority='high'> in <best_practices> states the "
+            "skip judgement in full: a pipeline step whose cost exceeds "
+            "its value may be skipped on judgement (looked for 'skip' + "
+            "('judge'|'worth'|'value'|'cost') + ('doubt'|'unsure'|"
+            "'uncertain') + ('record'|'ledger'|'justif'), all in the same "
+            "text). A practice merely mentioning 'skip' does not count. "
+            "Every existing practice, with its missing half(s): %r"
+            % [
+                {
+                    "text": _element_text(p),
+                    "priority": p.get("priority"),
+                    "missing": _missing_skip_judgement_halves(
+                        _element_text(p)
+                    ),
+                }
+                for p in practices
+            ],
+        )
+
+    def test_skip_licence_always_carries_the_failsafe(self):
+        # RED on this commit together with the practice above: no
+        # practice carries the skip licence, so none can be missing the
+        # fail-safe. The guard that matters on arrival is the
+        # inverse — a practice stating the licence WITHOUT the
+        # "when in doubt, the full step is run" clause must fail, and
+        # the failure must name it as the missing fail-safe, not a
+        # wording nit: a skip licence without its fail-safe is worse
+        # than no rule at all (plan §4: B1 is first for this reason).
+        #
+        # This assertion is a pure predicate unit test (it needs no
+        # parsed document); it pins the diagnostic so the green step's
+        # failure message cannot degrade into a wording nit.
+        licence_without_failsafe = (
+            "A pipeline step whose cost exceeds its value may be skipped "
+            "on judgement, and the skip decision is recorded in the ledger."
+        )
+        self.assertTrue(
+            "skip" in licence_without_failsafe,
+            "test fixture regression: the fixture no longer carries the "
+            "skip licence",
+        )
+        self.assertEqual(
+            _missing_skip_judgement_halves(licence_without_failsafe),
+            ["the fail-safe clause ('doubt'/'unsure'/'uncertain')"],
+            "a practice stating the skip licence WITHOUT the 'when in "
+            "doubt' clause must be reported as missing the FAIL-SAFE — "
+            "that is the whole point of B1, not a wording nit",
+        )
+        self.assertFalse(
+            _says_skip_judgement_with_failsafe_and_recording(
+                licence_without_failsafe
+            ),
+            "the predicate must NOT accept the skip licence without its "
+            "fail-safe clause",
+        )
+
+    def test_added_texts_carry_no_numeric_threshold(self):
+        # QUALITATIVE-ONLY GUARD (plan §6, B1, "Edge — qualitative
+        # only"): the user's decision is judgement with examples, never
+        # a number. The guard scans ONLY the element this plan adds —
+        # the skip-judgement practice identified by the same phrase
+        # predicate the new-content test uses — reusing
+        # ``_DIGIT_LINE_THRESHOLD`` (the behaviour-3 precedent), so no
+        # pre-existing element is in scope and nothing is excluded by
+        # accident. Passes now (no added element exists yet, so the
+        # scan set is empty) and must keep passing after the green
+        # step.
+        offenders = [
+            _element_text(p)
+            for p in self._added_practices()
+            if _DIGIT_LINE_THRESHOLD.search(_element_text(p))
+        ]
+        self.assertFalse(
+            offenders,
+            "the newly added skip-judgement practice states a numeric "
+            "threshold; B1 must stay qualitative — judgement with "
+            "examples, never a number (plans/skip-trivial-steps.md §1, "
+            "precedent plans/kiss-agent-rules.md). Offending text: %r"
+            % offenders,
+        )
+
+
+class ManagerSkipJudgementTemplateTests(SkipJudgementTests):
+    """B1: the tdd-manager TEMPLATE carries the skip judgement."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerSkipJudgementLocalTests(SkipJudgementTests):
+    """B1: the anvil repo's OWN tdd-manager rules carry the same rule.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B2 of plans/skip-trivial-steps.md — the planning skip for a single
+# self-evident behaviour
+# --------------------------------------------------------------------------- #
+
+def _says_skip_full_plan_for_single_self_evident_behaviour(text):
+    """True when step 3's ``<description>`` text states the B2 planning
+    skip: for a single self-evident behaviour the FULL plan is skipped,
+    and the numbered behaviour list still exists — inline in the ledger
+    for a one-behaviour task.
+
+    Stems (all on lower-cased, whitespace-collapsed input), two halves:
+      * the skip licence, all three: ``"skip"`` (skip/skipped/skipping)
+        + ``"plan"`` (plan/planned) + a smallness term
+        (``"single"`` | ``"one behaviour"`` | ``"self-evident"`` |
+        ``"obvious"`` | ``"small"``);
+      * the ledger-survives clause, any one of: ``"ledger"``, ``"list"``,
+        ``"inline"``. The second half stops the rule reading as "no
+        behaviour list at all" — skipping the plan *document* is not
+        skipping the *ledger*.
+
+    Both halves are required in the SAME description text, so a match
+    cannot be assembled from stems scattered across two elements.
+
+    Cross-match check (verified against both files at red time,
+    2026-09-24, with grep scoped to step 3's description — line 8 of
+    both copies, byte-identical at 12,006 bytes): step 3's description
+    carries ``plan`` (x4), ``behaviour`` (x4), ``list`` (x2) and
+    ``ledger`` (x1) but NOT ``skip`` (the only ``skip`` in either file
+    is B1's ``<practice>`` in ``<best_practices>``, line 132 — a
+    different element), and NOT any smallness stem: ``single``,
+    ``obvious``, ``self-evident`` and ``one behaviour`` are all absent,
+    and ``small`` is absent from step 3 (the only ``small`` in the
+    file is the "small, reviewable behaviours" payload item, line 32).
+    So the skip-licence half of the predicate cannot match the current
+    text — the red is genuine, not vacuously green.
+    """
+    skip_licence = (
+        ("skip" in text)
+        and ("plan" in text)
+        and (
+            ("single" in text)
+            or ("one behaviour" in text)
+            or ("self-evident" in text)
+            or ("obvious" in text)
+            or ("small" in text)
+        )
+    )
+    ledger_survives = (
+        ("ledger" in text)
+        or ("list" in text)
+        or ("inline" in text)
+    )
+    return skip_licence and ledger_survives
+
+
+def _missing_step3_skip_halves(text):
+    """Return the names of the halves of the B2 rule absent from
+    *text* — the skip licence or the ledger-survives clause.
+
+    Returns an empty list when the text states the full rule (the same
+    two halves ``_says_skip_full_plan_for_single_self_evident_behaviour``
+    requires), so the two helpers can never disagree about whether a
+    description qualifies.
+    """
+    missing = []
+    if not (
+        ("skip" in text)
+        and ("plan" in text)
+        and (
+            ("single" in text)
+            or ("one behaviour" in text)
+            or ("self-evident" in text)
+            or ("obvious" in text)
+            or ("small" in text)
+        )
+    ):
+        missing.append(
+            "the skip licence ('skip' + 'plan' + a smallness term)"
+        )
+    if not (
+        ("ledger" in text)
+        or ("list" in text)
+        or ("inline" in text)
+    ):
+        missing.append(
+            "the ledger-survives clause ('ledger'/'list'/'inline')"
+        )
+    return missing
+
+
+def _ledger_still_requires_numbered_list_current(text):
+    """True when ``<loop_control><ledger>``'s text is the pre-existing
+    ledger rule that B2 must not delete: the plan's numbered behaviour
+    list is the loop ledger, kept current and surviving a context
+    reset.
+
+    Stems: ``"ledger"`` + ``"numbered"`` + ``"list"`` + ``"current"``.
+    The pre-existing ``<ledger>`` element states exactly this, so the
+    guard is GREEN on arrival and stays green for any honest
+    rewording that keeps the stems.
+    """
+    return (
+        ("ledger" in text)
+        and ("numbered" in text)
+        and ("list" in text)
+        and ("current" in text)
+    )
+
+
+class PlanningSkipTests(XmlTemplateTestCase):
+    """Shared assertions for B2 (plan §6, B2), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B2 adds one sentence to ``<step number="3">``'s
+    ``<description>``: for a single self-evident behaviour the full
+    plan is skipped, and the numbered behaviour list still exists —
+    inline in the ledger for a one-behaviour task. The predicate is
+    scoped to that one element, so it cannot match B1's skip practice
+    in ``<best_practices>``.
+
+    The failure prints step 3's full text and names the missing half
+    — the skip licence, or the ledger-survives clause. A separate
+    survival guard pins ``<loop_control><ledger>`` (the numbered list
+    kept current) — GREEN on arrival, must keep passing after the
+    green step. Step 3's ``<title>`` and its user-validation sentence
+    are pinned by ``tests/test_templates_rules.py`` (lines 822/866)
+    and are NOT duplicated here; the skip clause must be added
+    alongside that sentence, never in place of it.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only
+    the two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _step3_description(self):
+        """Step 3's ``<description>`` element, or ``None`` when step 3
+        or its description is missing (that absence is part of the red
+        state and is reported by the caller)."""
+        for step in _all_steps(self.root):
+            if _step_number(step) != "3":
+                continue
+            return step.find("description")
+        return None
+
+    def test_step3_licences_full_plan_skip_for_single_self_evident_behaviour(self):
+        # RED on this commit: step 3's description carries 'plan' and
+        # 'behaviour' but no 'skip' and no smallness term, so the
+        # planning skip is not licensed. B2 of
+        # plans/skip-trivial-steps.md: for a single self-evident
+        # behaviour the full plan is skipped, and the numbered
+        # behaviour list still exists — inline in the ledger for a
+        # one-behaviour task.
+        description = self._step3_description()
+        self.assertIsNotNone(
+            description,
+            "<step number='3'> has no <description> element; the "
+            "planning skip has nowhere to live in the workflow",
+        )
+        text = _element_text(description)
+        self.assertTrue(
+            _says_skip_full_plan_for_single_self_evident_behaviour(text),
+            "step 3's <description> does not licence skipping the FULL "
+            "plan for a single self-evident behaviour with the numbered "
+            "behaviour list still existing inline in the ledger (looked "
+            "for 'skip'+'plan'+('single'|'one behaviour'|"
+            "'self-evident'|'obvious'|'small') + "
+            "('ledger'|'list'|'inline'), all in the step 3 description "
+            "text; the missing half is named below). Step 3's full "
+            "text: %r — missing half(s): %r"
+            % (text, _missing_step3_skip_halves(text)),
+        )
+
+    def test_step3_skip_clause_reports_which_half_is_missing(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the diagnostic so the green step's failure message names the
+        # missing half — the skip licence, or the ledger-survives
+        # clause — rather than degrading into a wording nit.
+        skip_licence_only = (
+            "For a single self-evident behaviour the full plan is "
+            "skipped; proceed directly to the red step."
+        )
+        self.assertEqual(
+            _missing_step3_skip_halves(skip_licence_only),
+            ["the ledger-survives clause ('ledger'/'list'/'inline')"],
+            "a skip clause that leaves no behaviour-list home must be "
+            "reported as missing the LEDGER-SURVIVES CLAUSE — skipping "
+            "the plan document is not skipping the ledger",
+        )
+        self.assertFalse(
+            _says_skip_full_plan_for_single_self_evident_behaviour(
+                skip_licence_only
+            ),
+            "the predicate must NOT accept a skip clause without the "
+            "ledger-survives clause",
+        )
+        ledger_only = (
+            "The numbered behaviour list is kept inline in the ledger "
+            "for a one-behaviour task."
+        )
+        self.assertEqual(
+            _missing_step3_skip_halves(ledger_only),
+            ["the skip licence ('skip' + 'plan' + a smallness term)"],
+            "text that keeps the list but never licences the skip must "
+            "be reported as missing the SKIP LICENCE",
+        )
+        self.assertFalse(
+            _says_skip_full_plan_for_single_self_evident_behaviour(
+                ledger_only
+            ),
+            "the predicate must NOT accept ledger-survives text without "
+            "the skip licence",
+        )
+
+    def test_ledger_still_requires_numbered_list_kept_current(self):
+        # GREEN on arrival; B2 must keep passing it after the green
+        # step. Skipping the plan *document* is not skipping the
+        # *ledger*: the loop's only durable state must survive a
+        # context reset, so <loop_control><ledger> still requires the
+        # numbered list to be kept current. If this has gone, the
+        # failure says so explicitly — it is not a wording nit.
+        ledger = self.root.find(".//loop_control/ledger")
+        self.assertIsNotNone(
+            ledger,
+            "<loop_control> has no <ledger> element; the loop's only "
+            "durable state has nowhere to live",
+        )
+        self.assertTrue(
+            _ledger_still_requires_numbered_list_current(_element_text(ledger)),
+            "<loop_control><ledger> no longer requires the plan's "
+            "numbered behaviour list to be kept current — B2 skips the "
+            "plan DOCUMENT for a one-behaviour task, never the ledger "
+            "itself (looked for 'ledger'+'numbered'+'list'+'current'). "
+            "This is not a wording nit: without it the skip clause in "
+            "step 3 reads as 'no behaviour list at all'. Ledger text: "
+            "%r" % _element_text(ledger),
+        )
+
+
+class ManagerPlanningSkipTemplateTests(PlanningSkipTests):
+    """B2: the tdd-manager TEMPLATE carries the planning skip."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerPlanningSkipLocalTests(PlanningSkipTests):
+    """B2: the anvil repo's OWN tdd-manager rules carry the same skip.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B3 of plans/skip-trivial-steps.md — the test-cycle skip, with its two
+# contradiction fixes (termination criterion 1, the before_shipping item)
+# --------------------------------------------------------------------------- #
+
+def _says_test_cycle_skip_licence(text):
+    """True when step 6's or step 7's ``<description>`` or
+    ``<verification>`` text states the B3 test-cycle skip: the dedicated
+    red/green cycle may be skipped for a behaviour with no non-obvious
+    input, output, edge or error.
+
+    Stems (all on lower-cased, whitespace-collapsed input), two halves in
+    the SAME text:
+      * the licence: ``"skip"`` (skip/skipped/skipping) + a cycle term
+        (``"cycle"`` | ``"red"`` | ``"test"``);
+      * the obviousness qualification, any one of: ``"obvious"``,
+        ``"self-evident"``, ``"trivial"``, ``"string"`` (a string change),
+        ``"rename"`` (a rename).
+
+    Both halves are required in the same element's text, so a practice
+    that merely mentions "skip" (B1) or a step that merely skips the plan
+    (B2) does not match — and because the scan is scoped to step 6 / step
+    7, it cannot match either of the two pre-existing ``skip``
+    occurrences in the file.
+
+    Cross-match check (verified against both files at red time,
+    2026-09-25, byte-identical at 12,155 bytes): none of step 6's
+    ``<description>`` (line 11), step 7's ``<description>`` (line 12) or
+    its ``<verification>`` (line 12) carries ``skip`` — the only ``skip``
+    occurrences are B1's ``<practice>`` (line 132) and B2's step 3
+    ``<description>`` (line 8), both out of scope. Step 6's description
+    carries ``behaviour``, ``test``, ``red`` and ``commit`` but no
+    ``skip`` and no obviousness stem (``obvious``/``self-evident``/
+    ``trivial``/``string``/``rename`` all absent); step 7's description
+    carries ``test``/``tests``/``green`` and its verification carries
+    ``test``/``red``/``green``/``targeted`` — again no ``skip`` and no
+    obviousness stem (``self-evident`` occurs only in step 3). So the
+    licence half cannot match any candidate element — the red is
+    genuine, not vacuously green.
+    """
+    licence = ("skip" in text) and (
+        ("cycle" in text) or ("red" in text) or ("test" in text)
+    )
+    obviousness = (
+        ("obvious" in text)
+        or ("self-evident" in text)
+        or ("trivial" in text)
+        or ("string" in text)
+        or ("rename" in text)
+    )
+    return licence and obviousness
+
+
+def _says_existing_targeted_tests_still_run(text):
+    """True when a text states the B3 targeted-tests-still-run clause:
+    the existing targeted tests for the touched module still run even
+    when the behaviour's dedicated cycle is skipped.
+
+    Stems (all on lower-cased, whitespace-collapsed input):
+      * the scope: ``"existing"`` | ``"targeted"`` (targeted is the
+        stem of the pre-existing B4 rule — reusing it keeps the two
+        rules consistent);
+      * the object: ``"test"`` (test/tests);
+      * the action: ``"still"`` | ``"run"``.
+
+    All three are required. NOTE for the green step: step 7's
+    ``<verification>`` already carries ``targeted``+``test``+``run``
+    from the pre-existing targeted-test rule, so this predicate is
+    GREEN on arrival in isolation — the test
+    ``test_cycle_skip_licence_element_keeps_targeted_tests_running``
+    therefore requires it TOGETHER with the licence in the same
+    element, and the red is carried by the licence half.
+    """
+    return (
+        (("existing" in text) or ("targeted" in text))
+        and ("test" in text)
+        and (("still" in text) or ("run" in text))
+    )
+
+
+def _admits_recorded_skip(text):
+    """True when a ``<termination>`` ``<criterion>`` or a
+    ``before_shipping`` ``<quality_checklist>`` ``<item>`` admits a
+    recorded, justified skip in place of the red/green pair.
+
+    Stems (all on lower-cased, whitespace-collapsed input), BOTH in the
+    SAME element: ``"skip"`` + a recording term (``"record"`` |
+    ``"justif"`` | ``"ledger"``). The recording term in the same element
+    is what makes the skip auditable — a skip without a recorded reason
+    is not admissible (plan §1: "A skip is never silent"), so the
+    recording stem is a requirement of the element, not a bonus.
+
+    Cross-match check (verified against both files at red time,
+    2026-09-25, byte-identical at 12,155 bytes): criterion 1 (line 100)
+    carries ``numbered``, ``behaviour``, ``red``, ``green``, ``commit``,
+    ``branch`` — no ``skip``, and no recording stem (``record``,
+    ``justif`` and ``ledger`` all absent). The ``before_shipping``
+    red/green item (line 151) carries ``ledger`` but no ``skip``. So
+    neither element can match — the red is genuine. Criterion 2 (line
+    101, the branch-tip criterion) is deliberately NOT a candidate: it
+    must not be touched by B3, and it carries no ``skip`` today.
+    """
+    return (
+        ("skip" in text)
+        and (("record" in text) or ("justif" in text) or ("ledger" in text))
+    )
+
+
+def _missing_cycle_skip_halves(text):
+    """Return the names of the halves of the B3 licence+targeted-clause
+    rule absent from *text* — the skip licence, the targeted-tests-
+    still-run clause, or both.
+
+    Returns an empty list when the text states both halves (the same
+    halves ``_says_test_cycle_skip_licence`` and
+    ``_says_existing_targeted_tests_still_run`` require), so the two
+    helpers can never disagree about whether an element qualifies.
+    """
+    missing = []
+    if not (
+        ("skip" in text)
+        and (("cycle" in text) or ("red" in text) or ("test" in text))
+        and (
+            ("obvious" in text)
+            or ("self-evident" in text)
+            or ("trivial" in text)
+            or ("string" in text)
+            or ("rename" in text)
+        )
+    ):
+        missing.append(
+            "the skip licence ('skip' + ('cycle'|'red'|'test') + an "
+            "obviousness term)"
+        )
+    if not (
+        (("existing" in text) or ("targeted" in text))
+        and ("test" in text)
+        and (("still" in text) or ("run" in text))
+    ):
+        missing.append(
+            "the targeted-tests-still-run clause ('existing'/'targeted' "
+            "+ 'test' + ('still'|'run'))"
+        )
+    return missing
+
+
+class TestCycleSkipTests(XmlTemplateTestCase):
+    """Shared assertions for B3 (plan §6, B3), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B3 is one behaviour in three locations: step 6 / step 7 licence the
+    test-cycle skip (with the targeted tests for the touched module
+    still running), and the two "every behaviour has a red and a green
+    commit" statements — ``<termination>`` criterion 1 and the
+    ``before_shipping`` checklist item — each admit a recorded,
+    justified skip in place of the pair. A skip licence beside the
+    unchanged contradictions would be self-contradictory, so the three
+    edits are one red/green cycle (plan §4).
+
+    Each location has its own assertion, so a failure names exactly
+    which one is missing — the licence, the termination criterion, or
+    the checklist item. The survival guards — the full-suite-before-PR
+    gate (``test_full_suite_gate_stated_before_shipping``), the
+    branch-tip criterion (``test_branch_tip_still_gated_before_shipping``)
+    and the "verify red and green yourself" practice
+    (``test_manager_still_verifies_suite_itself_and_red_is_real_failure``)
+    — already have their own tests in this module and are NOT
+    duplicated here; a skipped cycle has no red to verify, a cycle
+    that runs still does.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only the
+    two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _cycle_skip_licence_candidates(self):
+        """(label, element) pairs for the elements that may carry the B3
+        test-cycle skip licence: step 6's ``<description>``, step 7's
+        ``<description>`` and step 7's ``<verification>``, each labelled
+        with its location for the failure diagnostic. A step missing the
+        element does not get one fabricated — its absence is reported by
+        the caller. The scan is scoped to step 6 / step 7, so the two
+        pre-existing ``skip`` occurrences (B1's ``<practice>`, B2's step
+        3 ``<description>``) are out of scope and cannot match."""
+        candidates = []
+        for step in _all_steps(self.root):
+            number = _step_number(step)
+            if number not in ("6", "7"):
+                continue
+            description = step.find("description")
+            if description is not None:
+                candidates.append(
+                    ("step %s/description" % number, description)
+                )
+            verification = step.find("verification")
+            if verification is not None:
+                candidates.append(
+                    ("step %s/verification" % number, verification)
+                )
+        return candidates
+
+    def _termination_criterion_1(self):
+        """``<termination>`` criterion 1 — the "every numbered behaviour
+        has a red and a green commit" criterion. Identified
+        structurally: the ``<criterion>`` under ``<termination>`` whose
+        text mentions every numbered behaviour with a red and a green
+        commit. ``None`` when no criterion matches (that absence is
+        part of the red state and is reported by the caller).
+
+        Criterion 2 (the branch-tip criterion) is deliberately excluded:
+        it must not be touched by B3, so it is never a candidate here —
+        and the scan cannot assemble a match from stems scattered
+        across two criteria.
+        """
+        termination = self.root.find(".//loop_control/termination")
+        if termination is None:
+            return None
+        for criterion in termination.findall("criterion"):
+            text = _element_text(criterion)
+            if (
+                ("numbered" in text)
+                and ("behaviour" in text)
+                and ("red" in text)
+                and ("green" in text)
+            ):
+                return criterion
+        return None
+
+    def _before_shipping_red_green_item(self):
+        """The ``before_shipping`` ``<quality_checklist>`` ``<item>`` —
+        the "every ledger behaviour has a red commit and a green commit"
+        item. Identified structurally: the item in the
+        ``before_shipping`` category carrying ``ledger`` (or
+        ``numbered``) + ``red`` + ``green`` + ``commit``. ``None`` when
+        no item matches (reported by the caller). Scanned on that item
+        ALONE, so a match cannot be assembled from stems scattered
+        across two checklist items."""
+        for category in self.root.findall(".//quality_checklist/category"):
+            if (category.get("name") or "") != "before_shipping":
+                continue
+            for item in category.findall("item"):
+                text = _element_text(item)
+                if (
+                    (("ledger" in text) or ("numbered" in text))
+                    and ("red" in text)
+                    and ("green" in text)
+                    and ("commit" in text)
+                ):
+                    return item
+        return None
+
+    def test_cycle_skip_licence_present_in_step_six_or_seven(self):
+        # RED on this commit: no element of step 6 / step 7 licences
+        # skipping the dedicated red/green cycle for an obvious
+        # behaviour. B3 of plans/skip-trivial-steps.md: the cycle may be
+        # skipped for a behaviour with no non-obvious input, output,
+        # edge or error — the user's examples, a string change, a
+        # rename. The licence may live in step 6's description, step 7's
+        # description or step 7's verification; accept any one of the
+        # three, so the green step has latitude in the spot.
+        candidates = self._cycle_skip_licence_candidates()
+        self.assertTrue(
+            candidates,
+            "neither <step number='6'> nor <step number='7'> has a "
+            "<description> or <verification> element; the test-cycle "
+            "skip licence has nowhere to live in the workflow",
+        )
+        matching = [
+            (where, element)
+            for where, element in candidates
+            if _says_test_cycle_skip_licence(_element_text(element))
+        ]
+        self.assertTrue(
+            matching,
+            "no <description> or <verification> in <step number='6'> or "
+            "<step number='7'> licences skipping the dedicated red/green "
+            "cycle for a behaviour with no non-obvious input, output, "
+            "edge or error (looked for 'skip' + ('cycle'|'red'|'test') + "
+            "('obvious'|'self-evident'|'trivial'|'string'|'rename'), all "
+            "in the same element; the scan is scoped to step 6 / step 7, "
+            "so B1's skip practice and B2's step 3 skip clause cannot "
+            "match). This is the missing LICENCE — the contradiction "
+            "fixes below are pointless without it. Every candidate's "
+            "text: %r"
+            % [
+                (where, _element_text(element))
+                for where, element in candidates
+            ],
+        )
+
+    def test_cycle_skip_licence_element_keeps_targeted_tests_running(self):
+        # RED on this commit, for the right reason: the element that
+        # carries the licence must ALSO state that the existing targeted
+        # tests for the touched module still run. Step 7's verification
+        # already carries 'targeted'+'test'+'run' from the pre-existing
+        # targeted-test rule, so the targeted-tests-still-run half alone
+        # is green on arrival and proves nothing — it is the licence
+        # half that is missing, and the test requires BOTH in the same
+        # element so the green step cannot satisfy this assertion by
+        # pointing at the pre-existing rule.
+        candidates = self._cycle_skip_licence_candidates()
+        self.assertTrue(
+            candidates,
+            "neither <step number='6'> nor <step number='7'> has a "
+            "<description> or <verification> element; the test-cycle "
+            "skip licence has nowhere to live in the workflow",
+        )
+        matching = [
+            (where, element)
+            for where, element in candidates
+            if _says_test_cycle_skip_licence(_element_text(element))
+            and _says_existing_targeted_tests_still_run(_element_text(element))
+        ]
+        self.assertTrue(
+            matching,
+            "no element of step 6 / step 7 both licences the test-cycle "
+            "skip AND states that the existing targeted tests for the "
+            "touched module still run (looked for 'skip' + "
+            "('cycle'|'red'|'test') + an obviousness term, together with "
+            "('existing'|'targeted') + 'test' + ('still'|'run), all in "
+            "the same element; the missing half is named per candidate "
+            "below). Skipping the dedicated cycle must not mean skipping "
+            "the tests for the module. Every candidate's text, with its "
+            "missing half(s): %r"
+            % [
+                (
+                    where,
+                    _element_text(element),
+                    _missing_cycle_skip_halves(_element_text(element)),
+                )
+                for where, element in candidates
+            ],
+        )
+
+    def test_termination_criterion_1_admits_recorded_skip(self):
+        # RED on this commit: <termination> criterion 1 ("Every numbered
+        # behaviour has a red and a green commit on the branch.") admits
+        # no skip at all — a licence in step 6 / step 7 beside this
+        # unchanged criterion is self-contradictory (plan §4: B3 carries
+        # its contradiction fix in the same cycle). The reworded
+        # criterion must admit a RECORDED, justified skip in place of
+        # the red/green pair, with the recording term in the same
+        # element. Scanned on criterion 1 alone; criterion 2 (the
+        # branch-tip criterion) is not a candidate and must not be
+        # touched.
+        criterion = self._termination_criterion_1()
+        self.assertIsNotNone(
+            criterion,
+            "no <termination> criterion mentions every numbered "
+            "behaviour with a red and a green commit; the criterion B3 "
+            "must reword is gone (looked for 'numbered' + 'behaviour' + "
+            "'red' + 'green' per <criterion>)",
+        )
+        text = _element_text(criterion)
+        self.assertTrue(
+            _admits_recorded_skip(text),
+            "<termination> criterion 1 still demands a red and a green "
+            "commit for every numbered behaviour with no admissible "
+            "exception — the test-cycle skip in step 6 / step 7 would be "
+            "self-contradictory (looked for 'skip' + "
+            "('record'|'justif'|'ledger') in the criterion's own text; "
+            "the recording stem must be in the SAME element). A skip "
+            "without a recorded reason is not admissible — this is the "
+            "contradiction fix, not a wording nit. Criterion text: %r"
+            % text,
+        )
+
+    def test_before_shipping_red_green_item_admits_recorded_skip(self):
+        # RED on this commit: the before_shipping item "Every ledger
+        # behaviour has a red commit and a green commit." admits no skip
+        # at all — the same contradiction, one location over. The
+        # reworded item must admit a RECORDED, justified skip in place
+        # of the red/green pair, with the recording term in the same
+        # element. Scanned on that checklist item alone, so a match
+        # cannot be assembled from stems scattered across two items.
+        item = self._before_shipping_red_green_item()
+        self.assertIsNotNone(
+            item,
+            "no before_shipping <item> mentions ledger/numbered "
+            "behaviours with a red commit and a green commit; the item "
+            "B3 must reword is gone (looked for 'ledger'/'numbered' + "
+            "'red' + 'green' + 'commit' per item in the before_shipping "
+            "category)",
+        )
+        text = _element_text(item)
+        self.assertTrue(
+            _admits_recorded_skip(text),
+            "the before_shipping red/green checklist item still demands "
+            "a red commit and a green commit for every ledger behaviour "
+            "with no admissible exception — the test-cycle skip in step "
+            "6 / step 7 would be self-contradictory at shipping time "
+            "(looked for 'skip' + ('record'|'justif'|'ledger') in the "
+            "item's own text; the recording stem must be in the SAME "
+            "element). A skip without a recorded reason is not "
+            "admissible — this is the contradiction fix, not a wording "
+            "nit. Item text: %r" % text,
+        )
+
+    def test_cycle_skip_diagnostic_names_the_missing_half(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the diagnostic so the green step's failure message names the
+        # missing half — the skip licence, the targeted-tests-still-run
+        # clause, or both — rather than degrading into a wording nit.
+        licence_without_targeted_clause = (
+            "A behaviour with no non-obvious input, output, edge or "
+            "error — a string change, a rename — may skip the dedicated "
+            "red/green test cycle."
+        )
+        self.assertEqual(
+            _missing_cycle_skip_halves(licence_without_targeted_clause),
+            [
+                "the targeted-tests-still-run clause ('existing'/"
+                "'targeted' + 'test' + ('still'|'run'))"
+            ],
+            "a skip licence that never says the existing targeted tests "
+            "still run must be reported as missing the TARGETED-TESTS-"
+            "STILL-RUN CLAUSE — skipping the dedicated cycle is not "
+            "skipping the tests for the module",
+        )
+        self.assertFalse(
+            _says_test_cycle_skip_licence(licence_without_targeted_clause)
+            and _says_existing_targeted_tests_still_run(
+                licence_without_targeted_clause
+            ),
+            "the combined check must NOT accept a skip licence without "
+            "the targeted-tests-still-run clause",
+        )
+        targeted_clause_without_licence = (
+            "The existing targeted tests for the touched module are "
+            "still run on every step."
+        )
+        self.assertEqual(
+            _missing_cycle_skip_halves(targeted_clause_without_licence),
+            [
+                "the skip licence ('skip' + ('cycle'|'red'|'test') + an "
+                "obviousness term)"
+            ],
+            "text that keeps the targeted tests running but never "
+            "licences the skip must be reported as missing the SKIP "
+            "LICENCE",
+        )
+        self.assertFalse(
+            _says_test_cycle_skip_licence(targeted_clause_without_licence),
+            "the licence predicate must NOT accept text that carries the "
+            "targeted-tests-still-run clause but no skip licence",
+        )
+
+    def test_recorded_skip_predicate_rejects_silent_skip(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the edge — the skip is never silent. Criterion 1 and the
+        # before_shipping item admit a skip ONLY with a recording term
+        # in the same element; an unrecorded skip is not admissible, and
+        # the rejection must read as the missing recording, not a
+        # wording nit.
+        silent_criterion = (
+            "Every numbered behaviour has a red and a green commit on "
+            "the branch, unless its cycle is skipped."
+        )
+        self.assertIn("skip", silent_criterion, "test fixture regression")
+        self.assertFalse(
+            _admits_recorded_skip(silent_criterion),
+            "the predicate must NOT accept a skip WITHOUT a recorded "
+            "reason — a skip without a recorded reason is not "
+            "admissible (plan §1: 'A skip is never silent'); the "
+            "recording term must sit in the same element as the skip",
+        )
+        recorded_criterion = (
+            "Every numbered behaviour has a red and a green commit on "
+            "the branch, or a recorded, justified skip in the ledger."
+        )
+        self.assertTrue(
+            _admits_recorded_skip(recorded_criterion),
+            "the predicate must accept a reworded criterion admitting a "
+            "RECORDED skip with the recording term in the same element",
+        )
+
+
+class ManagerCycleSkipTemplateTests(TestCycleSkipTests):
+    """B3: the tdd-manager TEMPLATE carries the test-cycle skip and its
+    two contradiction fixes."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerCycleSkipLocalTests(TestCycleSkipTests):
+    """B3: the anvil repo's OWN tdd-manager rules carry the same skip.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B4 of plans/skip-trivial-steps.md — the docs skip: step 9's description,
+# the before_shipping documentation item, and step 10's rewording
+# --------------------------------------------------------------------------- #
+
+def _says_skip_docs_when_no_user_facing_change_and_self_evident(text):
+    """True when step 9's ``<description>`` text states the B4 docs skip:
+    the docs-manager subtask is skipped when no user-facing interface
+    changed and the code is self-evident — documentation exists to help
+    developers where code lacks clarity, or users at an interface.
+
+    Stems (all on lower-cased, whitespace-collapsed input), two halves in
+    the SAME description text:
+      * the skip licence, all three: ``"skip"`` (skip/skipped/skipping)
+        + ``"doc"`` (doc/docs/documentation) + an interface term
+        (``"interface"`` | ``"user-facing"`` | ``"user"``);
+      * the clarity term, any one of: ``"clarity"``, ``"self-evident"``,
+        ``"obvious"``, ``"clear"``.
+
+    Both halves are required in the same element's text, so the B1 skip
+    practice in ``<best_practices>`` or B2's step 3 skip clause cannot
+    match — the scan is scoped to step 9's ``<description>`` alone.
+
+    Cross-match check (verified by reading both files at red time,
+    2026-09-25, byte-identical at 12,277 bytes): step 9's description
+    (line 14, "Delegate to docs-manager, then commit in the docs format.
+    Pre-supply its scope answer: document the current branch.") carries
+    ``doc`` but NO ``skip``, NO ``interface``, NO ``user`` and none of
+    the clarity stems (``clarity``, ``self-evident``, ``obvious`` and
+    ``clear`` all absent). So the predicate cannot match the current
+    text — the red is genuine, not vacuously green.
+    """
+    licence = (
+        ("skip" in text)
+        and ("doc" in text)
+        and (
+            ("interface" in text)
+            or ("user-facing" in text)
+            or ("user" in text)
+        )
+    )
+    clarity = (
+        ("clarity" in text)
+        or ("self-evident" in text)
+        or ("obvious" in text)
+        or ("clear" in text)
+    )
+    return licence and clarity
+
+
+def _missing_step9_docs_skip_halves(text):
+    """Return the names of the halves of the B4 docs-skip rule absent from
+    *text* — the skip licence or the clarity term.
+
+    Returns an empty list when the text states the full rule (the same
+    two halves ``_says_skip_docs_when_no_user_facing_change_and_self_
+    evident`` requires), so the two helpers can never disagree about
+    whether a description qualifies.
+    """
+    missing = []
+    if not (
+        ("skip" in text)
+        and ("doc" in text)
+        and (
+            ("interface" in text)
+            or ("user-facing" in text)
+            or ("user" in text)
+        )
+    ):
+        missing.append(
+            "the skip licence ('skip' + 'doc' + an interface term "
+            "('interface'/'user-facing'/'user'))"
+        )
+    if not (
+        ("clarity" in text)
+        or ("self-evident" in text)
+        or ("obvious" in text)
+        or ("clear" in text)
+    ):
+        missing.append(
+            "the clarity term ('clarity'/'self-evident'/'obvious'/'clear')"
+        )
+    return missing
+
+
+def _admits_recorded_docs_skip(text):
+    """True when a ``before_shipping`` ``<quality_checklist>`` ``<item>``
+    admits a recorded, justified skip in place of the documentation
+    commit.
+
+    Stems (all on lower-cased, whitespace-collapsed input), ALL in the
+    SAME element: ``"doc"`` + ``"skip"`` + a recording term
+    (``"record"`` | ``"justif"``). The recording term in the same
+    element is what makes the skip admissible — a skip without a
+    recorded reason is not admissible (plan §1: "A skip is never
+    silent"). Deliberately tighter than B3's ``_admits_recorded_skip``
+    (which also accepts ``"ledger"``): the documentation item's own
+    text must carry the recording, not a nearby item's.
+
+    Cross-match check (verified by reading both files at red time,
+    2026-09-25, byte-identical at 12,277 bytes): the documentation
+    item (line 152, "The documentation commit is on the branch.")
+    carries ``doc`` but no ``skip``, no ``record``, no ``justif``. The
+    other two ``before_shipping`` items — the red/green item (line 151)
+    and the reviewable-size item (line 153) — carry no ``doc`` at all,
+    so identifying the item structurally by ``"doc"`` picks the
+    documentation item alone, and it cannot match. The red is genuine.
+    """
+    return (
+        ("doc" in text)
+        and ("skip" in text)
+        and (("record" in text) or ("justif" in text))
+    )
+
+
+def _step10_admits_documentation_commit_or_recorded_skip(text):
+    """True when step 10's ``<description>`` no longer demands a
+    documentation commit the rules now permit to skip: its text carries
+    BOTH ``"documentation"`` and ``"skip"`` in the same element — as in
+    "after the documentation commit or its recorded skip".
+
+    A plain "after the documentation commit, never before" does NOT
+    match: it demands the commit and contradicts step 9's docs skip
+    (the same contradiction class as B3's, plan §6 B4 "Edge — step 10
+    still ships after the docs decision").
+
+    Cross-match check (verified by reading both files at red time,
+    2026-09-25, byte-identical at 12,277 bytes): step 10's description
+    (line 15) carries ``documentation`` ("after the documentation
+    commit, never before") but NO ``skip`` — the file's ``skip``
+    occurrences (line 8 step 3, line 11 step 6, line 100 criterion 1,
+    line 132 practice, line 151 checklist item) are all outside it.
+    The red is genuine.
+    """
+    return ("documentation" in text) and ("skip" in text)
+
+
+class DocsSkipTests(XmlTemplateTestCase):
+    """Shared assertions for B4 (plan §6, B4), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B4 is one behaviour in three locations: step 9's
+    ``<description>`` licences skipping the docs-manager subtask when
+    no user-facing interface changed and the code is self-evident; the
+    ``before_shipping`` documentation item admits a recorded, justified
+    skip in place of the documentation commit; and step 10 — whose
+    "after the documentation commit, never before" would otherwise
+    demand a commit the rules now permit to skip — is reworded in the
+    same cycle to admit the recorded skip. A skip licence beside the
+    unchanged step 10 would be self-contradictory (plan §4, the same
+    class as B3's), so the three edits are one red/green cycle.
+
+    Each location has its own assertion, so a failure names exactly
+    which one is missing — the step 9 licence, the checklist item, or
+    the step 10 rewording. The survival guard pins that step 9 still
+    pre-supplies the docs-manager's scope answer ("document the
+    current branch"): the skip clause is added alongside the
+    pre-supply, never in place of it.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only
+    the two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def _step9_description(self):
+        """Step 9's ``<description>`` element, or ``None`` when step 9
+        or its description is missing (that absence is part of the red
+        state and is reported by the caller)."""
+        for step in _all_steps(self.root):
+            if _step_number(step) != "9":
+                continue
+            return step.find("description")
+        return None
+
+    def _step10_description(self):
+        """Step 10's ``<description>`` element, or ``None`` when step 10
+        or its description is missing (reported by the caller)."""
+        for step in _all_steps(self.root):
+            if _step_number(step) != "10":
+                continue
+            return step.find("description")
+        return None
+
+    def _before_shipping_documentation_item(self):
+        """The ``before_shipping`` ``<quality_checklist>`` ``<item>`` —
+        the "the documentation commit is on the branch" item. Identified
+        structurally: the item in the ``before_shipping`` category
+        mentioning the documentation commit (``"doc"``). ``None`` when
+        no item matches (reported by the caller). The other two items
+        in the category (the red/green item, the reviewable-size item)
+        carry no ``doc``, so ``"doc"`` picks the documentation item
+        alone; the scan then runs on that item ALONE, so a match cannot
+        be assembled from stems scattered across two checklist items."""
+        for category in self.root.findall(".//quality_checklist/category"):
+            if (category.get("name") or "") != "before_shipping":
+                continue
+            for item in category.findall("item"):
+                if "doc" in _element_text(item):
+                    return item
+        return None
+
+    def test_step9_licences_docs_skip_for_self_evident_code(self):
+        # RED on this commit: step 9's description carries 'doc' but no
+        # 'skip', no interface term and no clarity term, so the docs
+        # skip is not licensed. B4 of
+        # plans/skip-trivial-steps.md: the docs-manager subtask is
+        # skipped when no user-facing interface changed and the code is
+        # self-evident — documentation exists to help developers where
+        # code lacks clarity, or users at an interface.
+        description = self._step9_description()
+        self.assertIsNotNone(
+            description,
+            "<step number='9'> has no <description> element; the docs "
+            "skip has nowhere to live in the workflow",
+        )
+        text = _element_text(description)
+        self.assertTrue(
+            _says_skip_docs_when_no_user_facing_change_and_self_evident(text),
+            "step 9's <description> does not licence skipping the "
+            "docs-manager subtask when no user-facing interface changed "
+            "and the code is self-evident, with documentation existing "
+            "to help developers where code lacks clarity or users at an "
+            "interface (looked for 'skip'+'doc'+"
+            "('interface'|'user-facing'|'user') + "
+            "('clarity'|'self-evident'|'obvious'|'clear'), all in the "
+            "step 9 description text; the missing half is named below). "
+            "Step 9's full text: %r — missing half(s): %r"
+            % (text, _missing_step9_docs_skip_halves(text)),
+        )
+
+    def test_before_shipping_documentation_item_admits_recorded_skip(self):
+        # RED on this commit: the before_shipping item "The
+        # documentation commit is on the branch." admits no skip at all
+        # — step 9's docs skip beside this unchanged item is
+        # self-contradictory at shipping time (plan §4, the same class
+        # as B3's). The reworded item must admit a RECORDED, justified
+        # skip in place of the documentation commit, with the recording
+        # term in the same element. Scanned on that checklist item
+        # alone, so a match cannot be assembled from stems scattered
+        # across two items.
+        item = self._before_shipping_documentation_item()
+        self.assertIsNotNone(
+            item,
+            "no before_shipping <item> mentions the documentation "
+            "commit; the item B4 must reword is gone (looked for 'doc' "
+            "per item in the before_shipping category — the red/green "
+            "item and the reviewable-size item carry no 'doc')",
+        )
+        text = _element_text(item)
+        self.assertTrue(
+            _admits_recorded_docs_skip(text),
+            "the before_shipping documentation checklist item still "
+            "demands the documentation commit with no admissible "
+            "exception — step 9's docs skip would be "
+            "self-contradictory at shipping time (looked for "
+            "'doc'+'skip'+('record'|'justif') in the item's own text; "
+            "the recording stem must be in the SAME element). A skip "
+            "without a recorded reason is not admissible — this is the "
+            "contradiction fix, not a wording nit. Item text: %r" % text,
+        )
+
+    def test_step10_ships_after_documentation_commit_or_recorded_skip(self):
+        # RED on this commit: step 10's "after the documentation
+        # commit, never before" demands a documentation commit the
+        # rules now permit to skip — the same contradiction class as
+        # B3's, one step further along the pipeline. The green step
+        # rewords step 10 to admit the recorded skip ("after the
+        # documentation commit or its recorded skip"); this assertion
+        # is the confirmation that it did, and it must not be left
+        # contradicting step 9's licence.
+        description = self._step10_description()
+        self.assertIsNotNone(
+            description,
+            "<step number='10'> has no <description> element; the ship "
+            "sequencing has nowhere to live in the workflow",
+        )
+        text = _element_text(description)
+        self.assertTrue(
+            _step10_admits_documentation_commit_or_recorded_skip(text),
+            "step 10 STILL DEMANDS the documentation commit the rules "
+            "now permit to skip — 'after the documentation commit, "
+            "never before' contradicts step 9's docs skip (looked for "
+            "'documentation'+'skip' in step 10's own <description>; the "
+            "green step rewords it to admit 'the documentation commit "
+            "or its recorded skip'). This is the contradiction fix, "
+            "not a wording nit. Step 10's text: %r" % text,
+        )
+
+    def test_step9_still_presupplies_docs_manager_scope_answer(self):
+        # GREEN on arrival; B4 must keep passing it after the green
+        # step. When docs are NOT skipped, step 9 must still pre-supply
+        # the docs-manager's scope answer: losing it re-introduces a
+        # question the manager already answers (plan §6, B4, "Edge —
+        # the scope pre-supply survives"). The skip clause is added
+        # alongside this clause, never in place of it. A plain
+        # substring pins it, matching this module's verbatim-substring
+        # precedent for pre-supplied text.
+        description = self._step9_description()
+        self.assertIsNotNone(
+            description,
+            "<step number='9'> has no <description> element",
+        )
+        self.assertIn(
+            "document the current branch",
+            _element_text(description),
+            "step 9 no longer pre-supplies the docs-manager's scope "
+            "answer ('document the current branch') — the docs skip "
+            "clause must be added ALONGSIDE the scope pre-supply, not "
+            "in place of it. This is not a wording nit: without it, a "
+            "non-skipped docs subtask re-opens a question the manager "
+            "already answers. Step 9's text: %r"
+            % _element_text(description),
+        )
+
+    def test_docs_skip_diagnostic_names_the_missing_half(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the diagnostic so the green step's failure message names the
+        # missing half — the skip licence, or the clarity term —
+        # rather than degrading into a wording nit.
+        licence_without_clarity = (
+            "When no user-facing interface changed, skip the "
+            "docs-manager subtask."
+        )
+        self.assertEqual(
+            _missing_step9_docs_skip_halves(licence_without_clarity),
+            [
+                "the clarity term ('clarity'/'self-evident'/'obvious'/"
+                "'clear')"
+            ],
+            "a skip clause that never says when documentation helps "
+            "must be reported as missing the CLARITY TERM — "
+            "documentation exists to help developers where code lacks "
+            "clarity, or users at an interface",
+        )
+        self.assertFalse(
+            _says_skip_docs_when_no_user_facing_change_and_self_evident(
+                licence_without_clarity
+            ),
+            "the predicate must NOT accept a skip clause without the "
+            "clarity term",
+        )
+        clarity_without_licence = (
+            "Documentation exists to help developers where code lacks "
+            "clarity, or users at an interface."
+        )
+        self.assertEqual(
+            _missing_step9_docs_skip_halves(clarity_without_licence),
+            [
+                "the skip licence ('skip' + 'doc' + an interface term "
+                "('interface'/'user-facing'/'user'))"
+            ],
+            "text that explains the purpose of documentation but never "
+            "licences the skip must be reported as missing the SKIP "
+            "LICENCE",
+        )
+        self.assertFalse(
+            _says_skip_docs_when_no_user_facing_change_and_self_evident(
+                clarity_without_licence
+            ),
+            "the predicate must NOT accept purpose text without the "
+            "skip licence",
+        )
+
+    def test_recorded_docs_skip_predicate_rejects_silent_skip(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the edge — the skip is never silent. The documentation item
+        # admits a skip ONLY with a recording term in the same element;
+        # an unrecorded skip is not admissible, and the rejection must
+        # read as the missing recording, not a wording nit.
+        silent_item = (
+            "The documentation commit is on the branch, unless it is "
+            "skipped."
+        )
+        self.assertIn("skip", silent_item, "test fixture regression")
+        self.assertFalse(
+            _admits_recorded_docs_skip(silent_item),
+            "the predicate must NOT accept a skip WITHOUT a recorded "
+            "reason — a skip without a recorded reason is not "
+            "admissible (plan §1: 'A skip is never silent'); the "
+            "recording term must sit in the same element as the skip",
+        )
+        recorded_item = (
+            "The documentation commit is on the branch, or its "
+            "recorded skip."
+        )
+        self.assertTrue(
+            _admits_recorded_docs_skip(recorded_item),
+            "the predicate must accept a reworded item admitting a "
+            "RECORDED skip with the recording term in the same element",
+        )
+
+    def test_step10_predicate_requires_the_skip_admission(self):
+        # Pure predicate unit test (it needs no parsed document): pins
+        # the step 10 predicate — a plain "after the documentation
+        # commit, never before" demands the commit and must NOT match;
+        # only a rewording that admits the recorded skip does.
+        plain_commit = (
+            "Push and open the pull request after the documentation "
+            "commit, never before."
+        )
+        self.assertIn(
+            "documentation", plain_commit, "test fixture regression"
+        )
+        self.assertNotIn(
+            "skip", plain_commit, "test fixture regression"
+        )
+        self.assertFalse(
+            _step10_admits_documentation_commit_or_recorded_skip(plain_commit),
+            "the predicate must NOT accept a plain 'after the "
+            "documentation commit, never before' — it demands a commit "
+            "the rules now permit to skip",
+        )
+        reworded = (
+            "Push and open the pull request after the documentation "
+            "commit or its recorded skip, never before."
+        )
+        self.assertTrue(
+            _step10_admits_documentation_commit_or_recorded_skip(reworded),
+            "the predicate must accept a reworded step 10 admitting "
+            "'the documentation commit or its recorded skip'",
+        )
+
+
+class ManagerDocsSkipTemplateTests(DocsSkipTests):
+    """B4: the tdd-manager TEMPLATE carries the docs skip and its two
+    contradiction fixes."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerDocsSkipLocalTests(DocsSkipTests):
+    """B4: the anvil repo's OWN tdd-manager rules carry the same skip.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh clone
+    (and on CI). ``setUp`` skips every local test cleanly in that case;
+    when the file is provisioned, the full assertion set runs exactly as
+    written above in the base class.
+    """
+
+    template_path = LOCAL_TDD_MANAGER
+
+    def setUp(self):
+        if not self.template_path.exists():
+            self.skipTest(
+                "anvil repo local .roo copy not provisioned; nothing to check"
+            )
+        super().setUp()
+
+
+# --------------------------------------------------------------------------- #
+# B5 of plans/skip-trivial-steps.md — the architect marks which
+# behaviours need no test cycle
+# --------------------------------------------------------------------------- #
+
+def _says_architect_must_mark_behaviours_whose_test_cycle_may_skip(text):
+    """True when a ``<to_architect><payload><item>``'s text tells the
+    architect to mark, in the plan, the behaviours with no
+    non-obvious input, output, edge or error — the ones whose
+    dedicated test cycle may be skipped — so the manager need not
+    re-derive the judgement per behaviour.
+
+    Stems (all on lower-cased, whitespace-collapsed input), three
+    halves in the SAME element text:
+      * the action: ``"mark"`` (covers "marked", "marks");
+      * the obviousness, any one of: ``"obvious"`` (obvious/
+        non-obvious), ``"self-evident"``, ``"trivial"``, ``"skip"``
+        (skip/skipped/skipping — the plan's own shorthand for "the
+        cycle may be skipped");
+      * the thing being judged, any one of: ``"test"``, ``"cycle"``.
+
+    All three halves are AND-ed in one element, so the match cannot
+    be assembled from stems scattered across two payload items.
+    Cross-match check at red time (see module docstring): the only
+    payload item carrying ``mark`` today (the mark-batchable item)
+    carries NEITHER an obviousness term NOR ``test``/``cycle`` —
+    its third half is ``batch`` — so it does not match, and no
+    other item carries ``mark`` at all. The obviousness stems
+    ``obvious``/``self-evident``/``trivial`` and ``skip`` sit only
+    in elements OUTSIDE ``<payload>`` (steps 3, 6, 9, 10, the
+    termination criterion, the B1 practice, the before_shipping
+    items), where this predicate never looks.
+    """
+    mark = ("mark" in text)
+    obviousness = (
+        ("obvious" in text)
+        or ("self-evident" in text)
+        or ("trivial" in text)
+        or ("skip" in text)
+    )
+    test_cycle = ("test" in text) or ("cycle" in text)
+    return mark and obviousness and test_cycle
+
+
+def _missing_cycle_mark_halves(text):
+    """Return the names of the halves of the B5 mark item absent
+    from *text*.
+
+    Returns an empty list when the text states the full item (the
+    same three halves ``_says_architect_must_mark_behaviours_whose_
+    test_cycle_may_skip`` requires), so the two helpers can never
+    disagree about whether an item qualifies.
+    """
+    missing = []
+    if "mark" not in text:
+        missing.append("the action ('mark')")
+    if not (
+        ("obvious" in text)
+        or ("self-evident" in text)
+        or ("trivial" in text)
+        or ("skip" in text)
+    ):
+        missing.append(
+            "an obviousness term ('obvious'/'self-evident'/'trivial'/'skip')"
+        )
+    if not (("test" in text) or ("cycle" in text)):
+        missing.append("a test-cycle term ('test'/'cycle')")
+    return missing
+
+
+class CycleMarkTests(XmlTemplateTestCase):
+    """Shared assertions for B5 (plan §6, B5), pointed at either the
+    tdd-manager template or the anvil repo's local copy.
+
+    B5 is additive: one new
+    ``<to_architect><payload><item>`` telling the architect to mark,
+    in the plan, the behaviours with no non-obvious input, output,
+    edge or error — the ones whose dedicated test cycle may be
+    skipped — so the manager need not re-derive the judgement per
+    behaviour. It is the same shape as the pre-existing
+    mark-batchable item ("Mark which behaviours are
+    no-production-change boundary pins, so they can be batched."),
+    a second mark for a different judgement; both are required.
+
+    Survival guards (GREEN on arrival, must keep passing; NOT
+    duplicated here — the owners are named in the module
+    docstring): the mark-batchable item, pinned by
+    ``test_architect_payload_tells_architect_to_mark_batchable_
+    behaviours`` in this module; the four verbatim payload markers,
+    pinned by
+    ``test_existing_to_architect_payload_items_still_present`` in
+    ``tests/test_templates_rules.py``.
+
+    The class itself is collected by ``unittest`` because its name
+    matches the default ``Test`` suffix; ``setUp`` skips it, so only
+    the two concrete subclasses run the assertions.
+    """
+
+    template_path = None
+
+    def setUp(self):
+        if self.template_path is None:
+            self.skipTest("abstract base class; run a concrete subclass")
+        super().setUp()
+
+    def test_architect_payload_tells_architect_to_mark_behaviours_whose_test_cycle_may_skip(self):
+        # RED on this commit: none of the six current payload items
+        # carries the mark, the obviousness term and the test-cycle
+        # term together (see the module docstring's cross-match
+        # check for the per-item stem table). The failure lists
+        # every payload item's text and names which of the three
+        # halves each is missing, so the green step's wording is
+        # diagnosed, not guessed.
+        payload = _architect_payload_items(self.root)
+        self.assertTrue(
+            payload,
+            "<delegation_contract> has no <to_architect><payload><item> elements",
+        )
+        matching = [
+            i
+            for i in payload
+            if _says_architect_must_mark_behaviours_whose_test_cycle_may_skip(
+                _element_text(i)
+            )
+        ]
+        self.assertTrue(
+            matching,
+            "no <to_architect><payload><item> tells the architect to mark, "
+            "in the plan, the behaviours with no non-obvious input, output, "
+            "edge or error — the ones whose dedicated test cycle may be "
+            "skipped (looked for 'mark' + ('obvious'|'self-evident'|"
+            "'trivial'|'skip') + ('test'|'cycle'), all in the same item; "
+            "the existing mark-batchable item carries 'mark' but neither "
+            "half, and is not a substitute — it marks a different "
+            "judgement). Every payload item, with its missing half(s): %r"
+            % [
+                {
+                    "text": _element_text(i),
+                    "missing": _missing_cycle_mark_halves(_element_text(i)),
+                }
+                for i in payload
+            ],
+        )
+
+    def test_mark_cycle_skip_predicate_rejects_the_batchable_item(self):
+        # Pure predicate unit test (it needs no parsed document):
+        # pins the cross-match the module docstring records — the
+        # pre-existing mark-batchable item must NOT satisfy the B5
+        # predicate (it carries 'mark' but neither an obviousness
+        # term nor 'test'/'cycle'), while the B3 sequencing item
+        # must not satisfy it either (it carries 'test' + 'cycle'
+        # but no 'mark' and no obviousness term). A green-step
+        # wording that drops the obviousness term and leans on
+        # 'mark' + 'test' would still have to name the skipped
+        # cycle; this fixture pair pins both rejections.
+        # The predicate's input is lower-cased by the caller (as the
+        # real test lower-cases it through ``_element_text``), so the
+        # fixture is normalised the same way before being checked.
+        batchable_item = (
+            "Mark which behaviours are no-production-change boundary "
+            "pins, so they can be batched."
+        ).lower()
+        self.assertIn(
+            "mark", batchable_item, "test fixture regression"
+        )
+        self.assertFalse(
+            _says_architect_must_mark_behaviours_whose_test_cycle_may_skip(
+                batchable_item
+            ),
+            "the predicate must NOT accept the pre-existing mark-"
+            "batchable item — it marks a different judgement (which "
+            "behaviours may be batched), not which behaviours need "
+            "no test cycle",
+        )
+        self.assertEqual(
+            _missing_cycle_mark_halves(batchable_item),
+            [
+                "an obviousness term "
+                "('obvious'/'self-evident'/'trivial'/'skip')",
+                "a test-cycle term ('test'/'cycle')",
+            ],
+            "the mark-batchable item is missing exactly the "
+            "obviousness and test-cycle halves — the failure "
+            "diagnostic must say so, so the green step does not "
+            "mistake it for the new mark",
+        )
+        sequencing_item = (
+            "Sequence the plan so a behaviour that invalidates an "
+            "existing test never precedes the cycle that rewrites it."
+        )
+        self.assertIn(
+            "test", sequencing_item, "test fixture regression"
+        )
+        self.assertIn(
+            "cycle", sequencing_item, "test fixture regression"
+        )
+        self.assertFalse(
+            _says_architect_must_mark_behaviours_whose_test_cycle_may_skip(
+                sequencing_item.lower()
+            ),
+            "the predicate must NOT accept the B3 sequencing item — "
+            "it carries 'test' + 'cycle' but no 'mark' and no "
+            "obviousness term",
+        )
+
+
+class ManagerCycleMarkTemplateTests(CycleMarkTests):
+    """B5: the tdd-manager TEMPLATE carries the architect's cycle
+    mark."""
+
+    template_path = TDD_MANAGER_TEMPLATE
+
+
+class ManagerCycleMarkLocalTests(CycleMarkTests):
+    """B5: the anvil repo's OWN tdd-manager rules carry the same mark.
+
+    ``.roo`` is gitignored, so the local copy is absent on a fresh
+    clone (and on CI). ``setUp`` skips every local test cleanly in
+    that case; when the file is provisioned, the full assertion set
+    runs exactly as written above in the base class.
     """
 
     template_path = LOCAL_TDD_MANAGER

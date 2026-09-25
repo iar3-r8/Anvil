@@ -27,7 +27,7 @@ Anvil does two things: it runs local model inference behind the [llama-swap](htt
 
 ## The pipeline
 
-Anvil takes one task from intake to pull request: `intake (issue or description) → architect plans → red → green → docs → pull request`. Each stage is one mode:
+Anvil takes one task from intake to pull request: `intake (issue or description) → architect plans → red → green → docs → pull request`. A stage whose cost exceeds its value may be skipped on judgement, with the decision and its reason recorded in the ledger. Each stage is one mode:
 
 | Mode | Owns |
 | --- | --- |
