@@ -46,6 +46,52 @@ EXECUTE_GITHUB_TASK_PATH = COMMANDS_DIR / "execute-github-task.md"
 #: the stale ``/github-task-writing``.
 WRITE_GITHUB_TASK_PATH = COMMANDS_DIR / "write-github-task.md"
 
+#: B5 target (plan §Behaviors 5): the bug-report template whose fenced
+#: block gains Environment placeholder fields, an Impact section and a
+#: Definition of Done checklist.
+GITHUB_BUG_REPORT_PATH = COMMANDS_DIR / "github-bug-report.md"
+
+#: B5: the four placeholder field labels that must appear as bold bullets
+#: under ``### Environment`` (plan §Behaviors 5; each is the line prefix
+#: ``- **<Label>**``).
+B5_ENVIRONMENT_FIELD_LABELS = (
+    "Component",
+    "Python Version",
+    "OS",
+    "Related Dependencies",
+)
+
+#: B5: the four Definition of Done checklist items, in order — each is a
+#: ``- [ ]`` checkbox line that must *start* with the phrase (key-phrase
+#: convention: assert the phrase and its ``- [ ]`` shape, never raw bytes).
+B5_DEFINITION_OF_DONE_ITEMS = (
+    "Root cause identified and documented",
+    "Fix implemented and passing all tests",
+    "Regression tests added",
+    "Related documentation updated",
+)
+
+#: B5 guard: a concrete Python version number (e.g. ``3.10``, ``3.10.4``,
+#: ``3.8.1``). Placeholder spellings such as ``3.x`` carry no digits after
+#: the dot and do not match — that is the point: the value is a template,
+#: not a shipped answer.
+B5_CONCRETE_PYTHON_VERSION_RE = re.compile(r"\b3\.\d")
+
+#: B5 guard: a concrete OS name anywhere in the Environment section.
+B5_CONCRETE_OS_RE = re.compile(r"\b(linux|macos|windows)\b", re.IGNORECASE)
+
+#: B5 guard: concrete package names that must not arrive as shipped values
+#: in the four Environment bullets. The source's example values are hints
+#: for the filler, not values to ship (plan §Scope: "every field added is
+#: a placeholder").
+B5_CONCRETE_PACKAGE_BLACKLIST = (
+    "requests",
+    "flask",
+    "django",
+    "numpy",
+    "pandas",
+)
+
 #: The tree B2 scans: every file under it, read as text, no skips
 #: (plan §Behaviors 2). The tree is small and is markdown/XML only.
 ROO_TEMPLATE_DIR = REPO_ROOT / "templates" / "roo_template"
@@ -587,4 +633,359 @@ class B3B4CommandNameTests(unittest.TestCase):
             self.write_body,
             "body of %s still contains the stale command name"
             " 'github-task-writing'" % WRITE_GITHUB_TASK_PATH,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# B5 — github-bug-report.md: Environment fields, Impact, Definition of Done
+# --------------------------------------------------------------------------- #
+
+class B5BugReportSectionsTests(TemplateCommandTestCase):
+    """B5 (plans/adopt-harvest-findings.md): the bug-report template's
+    fenced block carries Environment placeholder fields, an Impact section
+    and a Definition of Done checklist.
+
+    Today the file's ``### Environment`` holds only the "only include if
+    relevant" note (lines 42–43) with no field labels, and
+    ``### Potential Hypotheses`` (lines 63–74) is the last template section
+    — no Impact, no Definition of Done. Expected red reason: the
+    missing-section / missing-bullet assertions fail; the file itself
+    exists and loads, so this is NOT a file-not-found failure.
+
+    The green step copies the source's sections verbatim from
+    ``iar3-r8/Healthcare-Systems-R8@main`` ``.roo/commands/``
+    ``github-bug-report.md`` with all values as placeholders. Key-phrase
+    convention as in B1–B4: assert phrases and character offsets, never
+    raw bytes, so the green step keeps prose latitude.
+
+    Fence note: the fenced template block opens at ```` ```markdown ```` and
+    its *closing* fence is the last standalone ```` ``` ```` line before the
+    section heading — the block deliberately contains inner code spans (a
+    python block, file-path quotes) that are part of the template's own
+    text, and the body carries later fences in the Guidelines prose.
+    """
+
+    command_path = GITHUB_BUG_REPORT_PATH
+
+    # -- helpers ------------------------------------------------------------ #
+
+    def _section_span(self, heading):
+        """Return ``(start, end)`` — the character offsets in ``self.body``
+        of the section whose heading line is exactly ``heading``.
+
+        ``start`` is the start of the heading line; ``end`` is the start of
+        the next ``### `` heading line, or ``len(self.body)`` if this is the
+        last section. Raises ``AssertionError`` when the heading is absent,
+        so a missing section names itself in the failure.
+        """
+        marker = heading + "\n"
+        start = self.body.find(marker)
+        self.assertNotEqual(
+            start,
+            -1,
+            "B5: section '%s' not found in the body of %s"
+            % (heading, self.command_path),
+        )
+        rest = self.body[start + len(marker):]
+        nxt = rest.find("\n### ")
+        end = start + len(marker) + nxt if nxt != -1 else len(self.body)
+        return start, end
+
+    def _fence_span(self, heading):
+        """Return ``(start, end)`` — the character offsets in
+        ``self.body`` of the fenced template block (from the line after the
+        ```` ```markdown ```` fence to the standalone ```` ``` ```` line that
+        closes it), verified against the section whose heading line is
+        ``heading``.
+
+        The closing fence is the last standalone-fence line *before* the
+        heading — later fences in the body belong to the Guidelines prose.
+        Raises ``AssertionError`` when the heading is absent or the heading
+        sits after the closing fence (section outside the block).
+        """
+        open_idx = self.body.find("```markdown\n")
+        self.assertNotEqual(
+            open_idx,
+            -1,
+            "B5: opening '```markdown' fence not found in %s"
+            % self.command_path,
+        )
+        block_start = open_idx + len("```markdown\n")
+        marker = heading + "\n"
+        heading_idx = self.body.find(marker)
+        self.assertNotEqual(
+            heading_idx,
+            -1,
+            "B5: section '%s' not found in the body of %s"
+            % (heading, self.command_path),
+        )
+        close_idx = self.body.rfind("\n```", 0, heading_idx)
+        self.assertNotEqual(
+            close_idx,
+            -1,
+            "B5: no closing '```' fence before '%s' in %s"
+            % (heading, self.command_path),
+        )
+        fence_end = close_idx + len("\n```")
+        self.assertLess(
+            heading_idx,
+            fence_end,
+            "B5: section '%s' sits after the closing fence (outside the "
+            "fenced template block) in %s"
+            % (heading, self.command_path),
+        )
+        return block_start, fence_end
+
+    def _environment_section(self):
+        """Return the text of the ``### Environment`` section (up to the
+        next ``### `` heading)."""
+        start, end = self._section_span("### Environment")
+        return self.body[start:end]
+
+    def _environment_bullet_lines(self):
+        """Return a ``{label: line}`` mapping of the bullet lines of the
+        ``### Environment`` section. Each of the four field labels must own
+        a line starting ``- **<Label>**:** — missing labels fail naming
+        the label and the section text."""
+        env_text = self._environment_section()
+        lines = {}
+        for label in B5_ENVIRONMENT_FIELD_LABELS:
+            prefix = "- **%s**:" % label
+            line = next(
+                (
+                    stripped
+                    for stripped in env_text.splitlines()
+                    if stripped.startswith(prefix)
+                ),
+                None,
+            )
+            self.assertIsNotNone(
+                line,
+                "B5: '### Environment' of %s has no bullet line starting "
+                "with '%s'; section text:\n%s"
+                % (self.command_path, prefix, env_text),
+            )
+            lines[label] = line
+        return lines
+
+    # -- B5 output: the four Environment field labels ----------------------- #
+
+    def test_environment_names_component_field(self):
+        self._environment_bullet_lines()["Component"]
+
+    def test_environment_names_python_version_field(self):
+        self._environment_bullet_lines()["Python Version"]
+
+    def test_environment_names_os_field(self):
+        self._environment_bullet_lines()["OS"]
+
+    def test_environment_names_related_dependencies_field(self):
+        self._environment_bullet_lines()["Related Dependencies"]
+
+    # -- B5 output: the Impact section -------------------------------------- #
+
+    def test_impact_section_has_severity_bullet(self):
+        # The severity bullet must offer the Critical/High/Medium/Low
+        # placeholder menu.
+        start, end = self._section_span("### Impact")
+        impact = self.body[start:end]
+        line = next(
+            (
+                stripped
+                for stripped in impact.splitlines()
+                if stripped.startswith("- <Severity:")
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            line,
+            "B5: '### Impact' of %s has no bullet line starting with "
+            "'- <Severity:'; section text:\n%s" % (self.command_path, impact),
+        )
+        self.assertIn("Critical/High/Medium/Low", line)
+
+    def test_impact_section_has_affected_users_bullet(self):
+        start, end = self._section_span("### Impact")
+        impact = self.body[start:end]
+        line = next(
+            (
+                stripped
+                for stripped in impact.splitlines()
+                if stripped.startswith("- <Affected users")
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            line,
+            "B5: '### Impact' of %s has no bullet line starting with "
+            "'- <Affected users...'; section text:\n%s"
+            % (self.command_path, impact),
+        )
+
+    def test_impact_section_has_workaround_bullet(self):
+        # The workaround bullet must offer the Yes/No placeholder menu.
+        start, end = self._section_span("### Impact")
+        impact = self.body[start:end]
+        line = next(
+            (
+                stripped
+                for stripped in impact.splitlines()
+                if stripped.startswith("- <Workaround available:")
+            ),
+            None,
+        )
+        self.assertIsNotNone(
+            line,
+            "B5: '### Impact' of %s has no bullet line starting with "
+            "'- <Workaround available:'; section text:\n%s"
+            % (self.command_path, impact),
+        )
+        self.assertIn("Yes/No", line)
+
+    # -- B5 output: the Definition of Done checklist ------------------------ #
+
+    def test_definition_of_done_has_root_cause_checkbox(self):
+        start, end = self._section_span("### Definition of Done")
+        dod = self.body[start:end]
+        self.assertIn(
+            "- [ ] %s" % B5_DEFINITION_OF_DONE_ITEMS[0],
+            dod,
+            "B5: '### Definition of Done' of %s is missing the root-cause "
+            "checkbox; section text:\n%s" % (self.command_path, dod),
+        )
+
+    def test_definition_of_done_has_fix_checkbox(self):
+        start, end = self._section_span("### Definition of Done")
+        dod = self.body[start:end]
+        self.assertIn(
+            "- [ ] %s" % B5_DEFINITION_OF_DONE_ITEMS[1],
+            dod,
+            "B5: '### Definition of Done' of %s is missing the fix "
+            "checkbox; section text:\n%s" % (self.command_path, dod),
+        )
+
+    def test_definition_of_done_has_regression_checkbox(self):
+        start, end = self._section_span("### Definition of Done")
+        dod = self.body[start:end]
+        self.assertIn(
+            "- [ ] %s" % B5_DEFINITION_OF_DONE_ITEMS[2],
+            dod,
+            "B5: '### Definition of Done' of %s is missing the regression "
+            "tests checkbox; section text:\n%s" % (self.command_path, dod),
+        )
+
+    def test_definition_of_done_has_docs_checkbox(self):
+        start, end = self._section_span("### Definition of Done")
+        dod = self.body[start:end]
+        self.assertIn(
+            "- [ ] %s" % B5_DEFINITION_OF_DONE_ITEMS[3],
+            dod,
+            "B5: '### Definition of Done' of %s is missing the "
+            "documentation checkbox; section text:\n%s"
+            % (self.command_path, dod),
+        )
+
+    # -- B5 output: section positions --------------------------------------- #
+
+    def test_impact_section_sits_after_potential_hypotheses(self):
+        # Both sections must exist; the new section follows the existing
+        # last template section by character offset.
+        hypo_start, _ = self._section_span("### Potential Hypotheses")
+        impact_start, _ = self._section_span("### Impact")
+        self.assertGreater(
+            impact_start,
+            hypo_start,
+            "B5: '### Impact' must sit after '### Potential Hypotheses' "
+            "by character offset in %s" % self.command_path,
+        )
+
+    def test_definition_of_done_sits_after_potential_hypotheses(self):
+        hypo_start, _ = self._section_span("### Potential Hypotheses")
+        dod_start, _ = self._section_span("### Definition of Done")
+        self.assertGreater(
+            dod_start,
+            hypo_start,
+            "B5: '### Definition of Done' must sit after "
+            "'### Potential Hypotheses' by character offset in %s"
+            % self.command_path,
+        )
+
+    def test_impact_section_sits_inside_fenced_block(self):
+        self._fence_span("### Impact")
+
+    def test_definition_of_done_sits_inside_fenced_block(self):
+        self._fence_span("### Definition of Done")
+
+    # -- B5 error guards: every added value is a placeholder ---------------- #
+
+    def test_environment_bullets_carry_no_concrete_python_version(self):
+        # The Python Version bullet must read as a placeholder (it carries
+        # a '<' or '{' marker), and no concrete version number like
+        # '3.10' may appear in the Environment section.
+        env_text = self._environment_section()
+        line = self._environment_bullet_lines()["Python Version"]
+        self.assertTrue(
+            "<" in line or "{" in line,
+            "B5: the Python Version bullet in %s carries no placeholder "
+            "marker ('<...' or '{...}'): %r" % (self.command_path, line),
+        )
+        self.assertIsNone(
+            B5_CONCRETE_PYTHON_VERSION_RE.search(env_text),
+            "B5: '### Environment' of %s contains a concrete Python "
+            "version number — a placeholder was expected; section text:\n%s"
+            % (self.command_path, env_text),
+        )
+
+    def test_environment_section_names_no_concrete_os(self):
+        env_text = self._environment_section()
+        self.assertIsNone(
+            B5_CONCRETE_OS_RE.search(env_text),
+            "B5: '### Environment' of %s names a concrete OS — a "
+            "placeholder was expected; section text:\n%s"
+            % (self.command_path, env_text),
+        )
+
+    def test_environment_bullets_name_no_concrete_package(self):
+        # The source's example values are hints for the filler, not values
+        # to ship (plan §Scope: "every field added is a placeholder").
+        env_text = self._environment_section()
+        self._environment_bullet_lines()  # the four bullets must exist
+        offenders = [
+            name
+            for name in B5_CONCRETE_PACKAGE_BLACKLIST
+            if re.search(r"\b%s\b" % name, env_text, re.IGNORECASE)
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            "B5: '### Environment' of %s names concrete package(s) %s — "
+            "placeholders were expected; section text:\n%s"
+            % (self.command_path, offenders, env_text),
+        )
+
+    # -- B5 preservation: existing content survives untouched --------------- #
+
+    def test_environment_relevance_note_survives(self):
+        # The existing "only include this section if environment details
+        # are relevant" note (lines 42–43 today) must stay.
+        self.assertIn(
+            "Only include this section if environment details are relevant",
+            self._environment_section(),
+            "B5: the Environment relevance note was lost from %s"
+            % self.command_path,
+        )
+
+    def test_guidelines_list_survives(self):
+        # The existing '## Guidelines' list must survive the additions.
+        self.assertIn(
+            "## Guidelines",
+            self.body,
+            "B5: the '## Guidelines' list was lost from %s"
+            % self.command_path,
+        )
+        self.assertIn(
+            "Never invent facts",
+            self.body,
+            "B5: the Guidelines list content was lost from %s"
+            % self.command_path,
         )
