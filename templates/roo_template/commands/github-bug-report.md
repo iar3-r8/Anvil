@@ -41,6 +41,10 @@ Creates a comprehensive GitHub bug report with structured sections for clear com
 
 ### Environment
 <Only include this section if environment details are relevant to the bug (e.g., environment-specific issues, compatibility problems, Docker/OS-specific behavior). Omit entirely if the bug is not environment-dependent.>
+- **Component**: <affected module/service>
+- **Python Version**: <e.g. version - only if known/relevant>
+- **OS**: <e.g. OS or container - only if known/relevant>
+- **Related Dependencies**: <key packages/versions if relevant>
 
 ### Reproduction Steps
 <Numbered list of steps to reproduce the bug>
@@ -72,6 +76,17 @@ Creates a comprehensive GitHub bug report with structured sections for clear com
 - **Where to look**: `specific/file/path.py:line_number`
 - **Why**: <reasoning based on evidence>
 - **How to fix**: <suggested approach>
+
+### Impact
+- <Severity: Critical/High/Medium/Low>
+- <Affected users/components>
+- <Workaround available: Yes/No>
+
+### Definition of Done
+- [ ] Root cause identified and documented
+- [ ] Fix implemented and passing all tests
+- [ ] Regression tests added
+- [ ] Related documentation updated
 
 ```
 
