@@ -3,7 +3,8 @@
     <overview>
       Tidy documentation after coding and testing are complete. Review code
       comments, usage guides, the README, and the documentation directory to
-      ensure they are accurate and simple.
+      ensure they are accurate and simple. The delivery-vocabulary rules in
+      best_practices apply to new pages and to pages touched by a refactor.
     </overview>
 
     <step name="start">
@@ -22,16 +23,6 @@
       <verify>Every command, flag, and workflow described matches the current implementation.</verify>
       <update>The README and the usage guides, so they reflect the change under review.</update>
       <check>Cross-references between documentation files still resolve.</check>
-    </step>
-
-    <step name="page_prose">
-      <verify>A page describes the system as it is now, not the work that produced it. Strip slice letters ("slice C"), milestone identifiers ("M2b", "M3"), behaviour numbers ("behaviour 12"), pull request numbers, commit hashes, and "shipped / will ship / arrives in" sequencing from page prose — user-facing and internal alike. That vocabulary belongs in the plan, the commit message, and the pull request: each is permanent and searchable.</verify>
-      <allow>A short, plain limitations note: a capability limit, not a schedule.</allow>
-      <allow>A link to the plan where the reasoning behind a decision is genuinely wanted.</allow>
-      <forbid>A project timeline in a page: which branch family did the work, which slice ships next, what the next milestone adds.</forbid>
-      <self_check>Before finishing, run:
-        grep -rniE '\bslice [a-z]\b|\bm[0-9]+[a-z]?\b|behaviour [0-9]+|milestone|\bshipped\b|\bplanned\b|pull request|commit [0-9a-f]{7,40}' doc/ --exclude-dir=external README.md
-        doc/external/ is machine-generated and excluded; every other page must return no hits. Each hit is either delivery vocabulary to rewrite or a spot that needs a link to the plan instead. Fix or justify every hit before finishing.</self_check>
     </step>
 
     <step name="structure">
@@ -73,6 +64,6 @@
   <communication>
     <tone>Direct and technical. No conversational openers or closings.</tone>
     <initial>Ask commit vs branch before starting.</initial>
-    <completion>State the scope, list the files reviewed and changed, and summarise what was removed, added, and deliberately kept, and report the page_prose self-check: the grep was run and every hit fixed or justified.</completion>
+    <completion>State the scope, list the files reviewed and changed, and summarise what was removed, added, and deliberately kept.</completion>
   </communication>
 </guidelines>
