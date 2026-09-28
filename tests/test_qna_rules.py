@@ -181,18 +181,22 @@ def _names_over_testing_trivial_code(text):
 # out)
 # --------------------------------------------------------------------------- #
 
-def _says_docstring_states_pin_and_why_it_could_fail(text):
-    """True when a rule requires the test's docstring to state what the test
-    pins and why it could fail, in one to three lines.
+def _says_test_name_is_the_documentation(text):
+    """True when a rule says the test's NAME is the documentation, with a
+    docstring added only where it is absolutely needed or the code is very
+    complicated (R1 of plans/adopt-tool-swap-harvest-findings.md).
 
-    No pre-existing rule mentions a docstring, so "docstring" alone already
-    scopes the predicate; the other terms lock the content.
+    No pre-existing rule carries "document" together with a "name" /
+    documentation condition, so the pair scopes the predicate; the
+    "absolutely needed" / "complicated" condition is what the reworded rule
+    must add and the old rule text ("A docstring states what the test
+    pins...") satisfies neither.
     """
-    has_docstring = "docstring" in text
-    says_pin = "pin" in text
-    says_why_could_fail = "fail" in text
-    line_budget = ("line" in text) and ("three" in text)
-    return has_docstring and says_pin and says_why_could_fail and line_budget
+    name_carries_docs = ("name" in text) and ("document" in text)
+    docstring_condition = (
+        ("absolutely needed" in text) or ("complicated" in text)
+    )
+    return name_carries_docs and docstring_condition
 
 
 def _bans_process_vocabulary_in_test_facing_strings(text):
@@ -457,18 +461,16 @@ class QnaTestingDisciplineBase(XmlTemplateTestCase):
     # -- behaviour 1 of plans/adopt-tool-swap-harvest-findings.md: the three
     #    new <rule> elements in <best_practices> -- #
 
-    def test_new_rule_says_docstring_states_pin_and_why_it_could_fail(self):
-        # The test's docstring states what the test pins and why it could
-        # fail, one to three lines.
-        matching = self._rules_matching(
-            _says_docstring_states_pin_and_why_it_could_fail
-        )
+    def test_new_rule_says_test_name_is_the_documentation(self):
+        # The test's NAME carries the documentation; a docstring is added
+        # only where it is absolutely needed or the code is very complicated.
+        matching = self._rules_matching(_says_test_name_is_the_documentation)
         self.assertTrue(
             matching,
-            "no <rule> in <best_practices> says the docstring must state "
-            "what the test pins and why it could fail, one to three lines "
-            "(looked for 'docstring' + 'pin' + 'fail' + 'line'/'three'). "
-            "Rule texts: %r"
+            "no <rule> in <best_practices> says the test name is the "
+            "documentation and a docstring only where absolutely needed or "
+            "the code is very complicated (looked for 'name' + 'document' "
+            "+ 'absolutely needed'/'complicated'). Rule texts: %r"
             % self._rule_texts(),
         )
 
