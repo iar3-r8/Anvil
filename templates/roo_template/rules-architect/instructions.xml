@@ -13,6 +13,41 @@
     unknown_interface protocol below.
   </overview>
 
+  <plan_format>
+    <sections>
+      The plan file plans/{task-slug}.md has exactly these sections, in this order, and
+      no others:
+      <section name="header">Issue link, branch name, test command, dependencies.</section>
+      <section name="scope">In scope and out of scope, bullets only.</section>
+      <section name="reuse-check">
+        One line per candidate package: verdict and registry. Or "none applies" with a
+        one-clause reason.
+      </section>
+      <section name="interface-facts">Table only, columns Fact | Citation. No prose.</section>
+      <section name="behaviors">Numbered behaviours, one 4-line block each.</section>
+      <section name="assumptions">Bullets only.</section>
+    </sections>
+    <budgets>
+      <budget>The whole plan file is at most 150 lines.</budget>
+      <budget>
+        Each behaviour is a 4-line block, exactly these four lines:
+        <code>
+1. {name} — Given: {inputs or state}
+   When: {action}
+   Then: {expected outputs}
+   Error: {edge cases and exception behaviour}
+        </code>
+      </budget>
+    </budgets>
+    <banned>
+      <item>No restating a rule's rationale.</item>
+      <item>No design-alternative or rejected-option discussion.</item>
+      <item>No per-cycle or project history.</item>
+      <item>No quoting code that a citation already points at.</item>
+      <item>No prose table that duplicates the interface-facts table.</item>
+    </banned>
+  </plan_format>
+
   <workflow>
     <step number="1">
       <title>Understand the requirement</title>
@@ -49,7 +84,7 @@
         </action>
         <action>
           Proceed to a bespoke implementation only when no existing package
-          really solves the problem, and record that finding in the plan.
+          really solves the problem, and record that finding in the reuse-check section.
         </action>
       </actions>
     </step>
