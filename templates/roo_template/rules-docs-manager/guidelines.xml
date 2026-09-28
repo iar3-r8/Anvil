@@ -52,9 +52,8 @@
     <rule>Keep README.md and doc/ accurate, clear and simple to understand; detailed guides live in doc/.</rule>
     <rule>Record architectural decisions and their rationale in plans/, so a later reader does not re-litigate a settled question.</rule>
     <rule>A page describes the system as it is now, not the work that produced it. Slice letters, milestone identifiers, behaviour numbers, pull request numbers, commit hashes, and "shipped / planned" sequencing are delivery vocabulary.</rule>
-    <rule>A capability limit is useful; a schedule is not. "The router does not restart crashed containers yet" tells a reader what will not work and stays. "This is slice C of M2b, and slice D adds the manager" is a delivery schedule and is cut; the reader who wants the plan gets a link to it. One limits a reader's expectations, the other narrates your delivery.</rule>
+    <rule>A capability limit is useful; a schedule is not. "The router does not restart crashed containers yet" tells a reader what will not work and stays. "This is slice C of M2b, and slice D adds the manager" is a delivery schedule and is cut. One limits a reader's expectations, the other narrates your delivery.</rule>
     <rule>Internal design pages may be technical — seams, protocols, and developer audiences are fine — but the delivery-vocabulary ban applies to them equally.</rule>
-    <rule>Link to the plan, do not duplicate it. Where the reasoning behind a decision is genuinely wanted, a link to the plan section is the page's obligation; restating the reasoning in the page is how the narrative creeps back in.</rule>
   </best_practices>
 
   <documentation_finalisation>
