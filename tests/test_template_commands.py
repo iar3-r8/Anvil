@@ -22,6 +22,7 @@ prose. The frontmatter shape follows ``.roo/commands/create-pull-request.md``
 (a ``---``-delimited YAML block at the top of the file).
 """
 
+import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -36,6 +37,30 @@ COMMANDS_DIR = REPO_ROOT / "templates" / "roo_template" / "commands"
 #: B1 target (plan §Behaviors 1): added verbatim from the source repo's
 #: ``.roo/commands/pull-request-builder.md``.
 PULL_REQUEST_BUILDER_PATH = COMMANDS_DIR / "pull-request-builder.md"
+
+#: The tree B2 scans: every file under it, read as text, no skips
+#: (plan §Behaviors 2). The tree is small and is markdown/XML only.
+ROO_TEMPLATE_DIR = REPO_ROOT / "templates" / "roo_template"
+
+#: B2: a ``.roo/commands/<name>`` reference, anchored at the path
+#: boundary. ``<name>`` is a command filename (e.g.
+#: ``pull-request-builder.md``), so the match ends at end-of-line,
+#: whitespace, or a closing quote/backtick/paren — whatever terminates
+#: the path in markdown or XML prose (the references in the tree sit in
+#: prose lines and in backtick-quoted spans, e.g.
+#: ``templates/roo_template/commands/create-pull-request.md:49``).
+COMMAND_REF_RE = re.compile(
+    r"\.roo/commands/([A-Za-z0-9._-]+?)(?=$|[\s)\]\"'`])"
+)
+
+#: B2 allowlist: referenced command names that live outside
+#: ``templates/roo_template/commands/`` by design. ``update_roo_rules.md``
+#: ships from ``templates/update_roo_rules.md`` (one level up) and is
+#: placed into a *target's* ``.roo/commands/`` by provisioning — see
+#: ``tests/test_provision.py`` ``test_installs_the_roo_rules_command``.
+#: A second entry would mean a referenced command is not shipped, which
+#: is the defect this test exists to catch (plan §Assumptions).
+B2_ALLOWLISTED_COMMANDS = frozenset({"update_roo_rules.md"})
 
 
 class TemplateCommandFrontmatterError(Exception):
@@ -358,3 +383,71 @@ class B1LoaderEdgeTests(unittest.TestCase):
         frontmatter, body = load_template_command(path)
         self.assertEqual(frontmatter["description"], "a command")
         self.assertIn("body line", body)
+
+
+# --------------------------------------------------------------------------- #
+# B2 — no dead .roo/commands/ reference in the roo template tree
+# --------------------------------------------------------------------------- #
+
+class B2DeadReferenceTests(unittest.TestCase):
+    """B2 (plans/adopt-harvest-findings.md): no dead ``.roo/commands/``
+    reference in the roo template tree.
+
+    Boundary pin of B1's effect, with no production change of its own:
+    ``templates/roo_template/commands/create-pull-request.md:49`` points
+    at ``pull-request-builder.md``, which B1 shipped. The test is green
+    from inception on this branch and turns red the moment someone
+    references a command the template does not ship.
+
+    Scan: every file under ``templates/roo_template/``, read as text,
+    recursively, skipping nothing — the tree is small and is markdown
+    and XML only, so no binary hazard. Each ``.roo/commands/<name>``
+    occurrence is extracted with ``COMMAND_REF_RE`` (path up to
+    end-of-line, whitespace, or a quote/paren boundary). Every
+    referenced ``<name>`` must exist in
+    ``templates/roo_template/commands/``, except the allowlisted
+    ``update_roo_rules.md``.
+    """
+
+    def test_template_tree_scanned(self):
+        # Guard: the scan actually has a tree to walk — a missing or
+        # empty tree would vacuously pass the reference check.
+        files = sorted(
+            p for p in ROO_TEMPLATE_DIR.rglob("*") if p.is_file()
+        )
+        self.assertTrue(
+            files,
+            "template tree %s holds no files; the B2 scan is vacuous"
+            % ROO_TEMPLATE_DIR,
+        )
+
+    def test_every_command_reference_resolves(self):
+        # B2 output: every ``.roo/commands/<name>`` reference in the
+        # template tree resolves to a file in
+        # ``templates/roo_template/commands/``, or is allowlisted.
+        dangling = []
+        for path in sorted(ROO_TEMPLATE_DIR.rglob("*")):
+            if not path.is_file():
+                continue
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for lineno, line in enumerate(lines, start=1):
+                for match in COMMAND_REF_RE.finditer(line):
+                    name = match.group(1)
+                    if name in B2_ALLOWLISTED_COMMANDS:
+                        continue
+                    if not (COMMANDS_DIR / name).is_file():
+                        dangling.append(
+                            "%s:%d -> .roo/commands/%s"
+                            % (
+                                path.relative_to(REPO_ROOT),
+                                lineno,
+                                name,
+                            )
+                        )
+        self.assertEqual(
+            dangling,
+            [],
+            "dangling .roo/commands/ reference(s) in the template tree"
+            " (target missing from templates/roo_template/commands/ and"
+            " not allowlisted): %s" % "; ".join(dangling),
+        )
