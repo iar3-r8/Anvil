@@ -38,6 +38,14 @@ COMMANDS_DIR = REPO_ROOT / "templates" / "roo_template" / "commands"
 #: ``.roo/commands/pull-request-builder.md``.
 PULL_REQUEST_BUILDER_PATH = COMMANDS_DIR / "pull-request-builder.md"
 
+#: B3 target (plan §Behaviors 3): the command file whose body still names
+#: the stale ``/github-task-executor`` and "GitHub CLI".
+EXECUTE_GITHUB_TASK_PATH = COMMANDS_DIR / "execute-github-task.md"
+
+#: B4 target (plan §Behaviors 4): the command file whose body still names
+#: the stale ``/github-task-writing``.
+WRITE_GITHUB_TASK_PATH = COMMANDS_DIR / "write-github-task.md"
+
 #: The tree B2 scans: every file under it, read as text, no skips
 #: (plan §Behaviors 2). The tree is small and is markdown/XML only.
 ROO_TEMPLATE_DIR = REPO_ROOT / "templates" / "roo_template"
@@ -450,4 +458,133 @@ class B2DeadReferenceTests(unittest.TestCase):
             "dangling .roo/commands/ reference(s) in the template tree"
             " (target missing from templates/roo_template/commands/ and"
             " not allowlisted): %s" % "; ".join(dangling),
+        )
+
+
+# --------------------------------------------------------------------------- #
+# B3 — execute-github-task.md names itself and the GitHub MCP server
+# B4 — write-github-task.md names itself
+# --------------------------------------------------------------------------- #
+
+class B3B4CommandNameTests(unittest.TestCase):
+    """B3 + B4 (plans/adopt-harvest-findings.md): the two template command
+    files still name the *old* commands from the source repo.
+
+    B3: ``execute-github-task.md`` — the body names ``/execute-github-task``
+    (not the stale ``/github-task-executor``), names "GitHub MCP server"
+    (not bare "GitHub CLI"), and carries no ``pytest`` wording: the source
+    repo's test runner is that repo's toolchain and must not arrive by
+    accident (plan §Scope, out of scope).
+
+    B4: ``write-github-task.md`` — the body names ``/write-github-task``
+    (not the stale ``/github-task-writing``).
+
+    Both files exist, so the red reason is the assertion mismatch (wrong
+    name present / expected name absent), not a missing file. B3 and B4
+    land in the same green commit per the plan (§Behaviors 4: "Fold it
+    into B3's red/green cycle"), which is why they share one class.
+    Key-phrase convention as in B1/B2: assert phrases, never raw bytes.
+    """
+
+    def setUp(self):
+        # Both targets must exist for this cycle: the red reason is the
+        # assertion mismatch, not FileNotFoundError (plan requirement).
+        for path in (EXECUTE_GITHUB_TASK_PATH, WRITE_GITHUB_TASK_PATH):
+            self.assertTrue(
+                path.is_file(),
+                "template command file does not exist or is not a regular file: %s"
+                % path,
+            )
+        self.execute_frontmatter, self.execute_body = load_template_command(
+            EXECUTE_GITHUB_TASK_PATH
+        )
+        self.write_frontmatter, self.write_body = load_template_command(
+            WRITE_GITHUB_TASK_PATH
+        )
+
+    # -- B3 output: the body names the new command ------------------------ #
+
+    def test_execute_body_names_execute_github_task(self):
+        # B3 output (plan §Behaviors 3): the body names
+        # '/execute-github-task'.
+        self.assertIn(
+            "/execute-github-task",
+            self.execute_body,
+            "body of %s does not name '/execute-github-task'"
+            % EXECUTE_GITHUB_TASK_PATH,
+        )
+
+    def test_execute_body_has_no_stale_github_task_executor(self):
+        # B3 output (plan §Behaviors 3): neither old name may survive —
+        # the stale '/github-task-executor' is gone (lines 8 and 13
+        # today).
+        self.assertNotIn(
+            "github-task-executor",
+            self.execute_body,
+            "body of %s still contains the stale command name"
+            " 'github-task-executor'" % EXECUTE_GITHUB_TASK_PATH,
+        )
+
+    # -- B3 output: GitHub MCP server, not bare GitHub CLI ----------------- #
+
+    def test_execute_body_names_github_mcp_server(self):
+        # B3 output (plan §Behaviors 3): the body names "GitHub MCP
+        # server" (line 17 today says "using GitHub CLI").
+        self.assertIn(
+            "GitHub MCP server",
+            self.execute_body,
+            "body of %s does not name 'GitHub MCP server'"
+            % EXECUTE_GITHUB_TASK_PATH,
+        )
+
+    def test_execute_body_has_no_bare_github_cli(self):
+        # B3 output (plan §Behaviors 3): no bare "GitHub CLI" left — the
+        # assertion is the two-word token, so other GitHub phrasing the
+        # file legitimately carries (e.g. "GitHub issue", "github mcp")
+        # stays legal.
+        self.assertNotIn(
+            "GitHub CLI",
+            self.execute_body,
+            "body of %s still contains bare 'GitHub CLI'"
+            % EXECUTE_GITHUB_TASK_PATH,
+        )
+
+    # -- B3 error guard: the source's pytest wording is not adopted ------- #
+
+    def test_execute_body_does_not_name_pytest(self):
+        # Error (B3, plan §Scope): the source's pytest wording is NOT
+        # adopted — no assertion requires a runner name, and this guard
+        # asserts the body does not name 'pytest', so that repo's
+        # toolchain cannot arrive by accident. The current body names
+        # pytest in the Task Execution Guidelines, so this guard fails
+        # today too; it turns green the moment that line is reworded
+        # without a runner name.
+        self.assertNotIn(
+            "pytest",
+            self.execute_body,
+            "body of %s names 'pytest' — the source repo's toolchain"
+            " must not be adopted" % EXECUTE_GITHUB_TASK_PATH,
+        )
+
+    # -- B4 output: the body names the new command ------------------------ #
+
+    def test_write_body_names_write_github_task(self):
+        # B4 output (plan §Behaviors 4): the body names
+        # '/write-github-task' (line 11 today says
+        # '/github-task-writing <description>').
+        self.assertIn(
+            "/write-github-task",
+            self.write_body,
+            "body of %s does not name '/write-github-task'"
+            % WRITE_GITHUB_TASK_PATH,
+        )
+
+    def test_write_body_has_no_stale_github_task_writing(self):
+        # B4 output (plan §Behaviors 4): the stale '/github-task-writing'
+        # name is gone.
+        self.assertNotIn(
+            "github-task-writing",
+            self.write_body,
+            "body of %s still contains the stale command name"
+            " 'github-task-writing'" % WRITE_GITHUB_TASK_PATH,
         )
