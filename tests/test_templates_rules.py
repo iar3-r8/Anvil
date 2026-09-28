@@ -948,5 +948,253 @@ class B20LocalTddManagerTests(TddManagerRequirementBase):
         super().setUp()
 
 
+# --------------------------------------------------------------------------- #
+# Behaviour B6 (plans/adopt-harvest-findings.md): the architect rules gain a
+# <plan_format> section, in both copies
+# --------------------------------------------------------------------------- #
+#
+# The green step adds <plan_format> as a direct child of <instructions>,
+# between <overview> and <workflow>, in the template AND the .roo/ copy (the
+# mirror guard in tests/test_rules_mirror.py keeps the two byte-identical),
+# and rewords step 2's last action from "record that finding in the plan" to
+# "record that finding in the reuse-check section". The edit is additive and
+# non-renumbering: every structure guard in ArchitectTemplateTestCase (well-
+# formed XML rooted at <instructions>, contiguous 1..N step numbers, the six
+# ORIGINAL_STEP_TITLES still present) re-runs on this subclass and must keep
+# passing. All assertions are on the parsed structure and key phrases, never
+# on raw bytes, so the green step keeps prose latitude.
+
+# The six section names <plan_format> must declare, in order.
+B6_EXPECTED_SECTION_NAMES = [
+    "header",
+    "scope",
+    "reuse-check",
+    "interface-facts",
+    "behaviors",
+    "assumptions",
+]
+
+# The eight step titles present in the architect template before B6: the six
+# ORIGINAL_STEP_TITLES plus the B16/B17 steps that have since landed. All
+# eight must survive the B6 edit.
+B6_CURRENT_STEP_TITLES = ORIGINAL_STEP_TITLES + [
+    "Search for an existing solution",
+    "Validate with the user",
+]
+
+
+def _step_by_number(root, number):
+    """Return the workflow step whose ``number`` attribute equals *number*,
+    or ``None``."""
+    wanted = str(number)
+    for step in _all_steps(root):
+        if step.get("number") == wanted:
+            return step
+    return None
+
+
+def _section_name(section):
+    """Return a <section>'s declared name: its ``name`` attribute when
+    present, otherwise the first word of its text."""
+    name = (section.get("name") or "").strip().lower()
+    if name:
+        return name
+    text = _element_text(section)
+    return text.split(" ", 1)[0] if text else ""
+
+
+class B6ArchitectPlanFormatTests(ArchitectTemplateTestCase):
+    """Behaviour B6: the architect template gains the <plan_format> section.
+
+    Subclassing ``ArchitectTemplateTestCase`` re-runs its structure guards
+    (well-formed XML with root ``instructions``, contiguous 1..N step
+    numbering, the original step titles still present) and its behaviour-16
+    assertions, so the green-step edit is verified against the edges shared
+    with behaviour 16.
+    """
+
+    def _plan_format_or_fail(self):
+        """Return the single <plan_format> direct child of <instructions>,
+        failing with a diagnostic when there is not exactly one."""
+        plan_formats = self.root.findall("plan_format")
+        self.assertEqual(
+            len(plan_formats),
+            1,
+            "expected exactly one <plan_format> direct child of <instructions>; "
+            "found %d. Root children: %r"
+            % (len(plan_formats), [child.tag for child in self.root]),
+        )
+        return plan_formats[0]
+
+    # -- presence and position -- #
+
+    def test_plan_format_is_the_single_direct_child_of_instructions(self):
+        # Exactly one <plan_format> exists in the document, and it is a direct
+        # child of <instructions>.
+        self._plan_format_or_fail()
+        self.assertEqual(
+            len(self.root.findall(".//plan_format")),
+            1,
+            "a <plan_format> element exists somewhere other than as a direct "
+            "child of <instructions>",
+        )
+
+    def test_plan_format_is_positioned_between_overview_and_workflow(self):
+        # The child order of <instructions> starts overview, plan_format,
+        # workflow — the new section slots in between, not after.
+        child_tags = [child.tag for child in self.root]
+        self.assertEqual(
+            child_tags[:3],
+            ["overview", "plan_format", "workflow"],
+            "<instructions> children must start overview, plan_format, "
+            "workflow; got: %r" % child_tags,
+        )
+
+    # -- the declared plan format -- #
+
+    def test_plan_format_declares_the_six_section_names_in_order(self):
+        # The <section> names appear in exactly the plan's order: header,
+        # scope, reuse-check, interface-facts, behaviors, assumptions.
+        plan_format = self._plan_format_or_fail()
+        names = [
+            _section_name(section)
+            for section in plan_format.findall(".//section")
+        ]
+        self.assertEqual(
+            names,
+            list(B6_EXPECTED_SECTION_NAMES),
+            "the <section> names in <plan_format> are %r; expected exactly %r "
+            "in order" % (names, list(B6_EXPECTED_SECTION_NAMES)),
+        )
+
+    def test_plan_format_carries_the_150_line_budget_and_4_line_behaviour_block(self):
+        # The budget text states the 150-line file budget and the 4-line
+        # Given/When/Then/Error behaviour block.
+        plan_format = self._plan_format_or_fail()
+        text = _element_text(plan_format)
+        self.assertIn(
+            "150",
+            text,
+            "<plan_format> does not state the 150-line file budget. Text: %r"
+            % text,
+        )
+        self.assertIn(
+            "line",
+            text,
+            "<plan_format> does not state a line budget. Text: %r" % text,
+        )
+        for marker in ("given", "when", "then", "error"):
+            self.assertIn(
+                marker,
+                text,
+                "<plan_format> does not name the %s line of the 4-line "
+                "Given/When/Then/Error behaviour block. Text: %r"
+                % (marker.capitalize(), text),
+            )
+
+    def test_plan_format_carries_a_banned_list_with_five_items(self):
+        # A <banned> list with exactly five <item> children.
+        plan_format = self._plan_format_or_fail()
+        banned = plan_format.find("banned")
+        if banned is None:
+            candidates = plan_format.findall(".//banned")
+            banned = candidates[0] if candidates else None
+        self.assertIsNotNone(
+            banned,
+            "<plan_format> has no <banned> element. plan_format children: %r"
+            % [child.tag for child in plan_format],
+        )
+        items = banned.findall("item")
+        self.assertEqual(
+            len(items),
+            5,
+            "<banned> carries %d <item> children; expected exactly 5" % len(items),
+        )
+
+    # -- the one-line consistency touch: step 2 names the reuse-check section -- #
+
+    def test_step_two_last_action_names_the_reuse_check_section(self):
+        # Step 2's last <action> records the bespoke-implementation finding in
+        # the reuse-check section, not merely "in the plan".
+        step = _step_by_number(self.root, "2")
+        self.assertIsNotNone(step, "workflow has no step with number='2'")
+        actions = step.findall("actions/action")
+        self.assertTrue(actions, "step 2 has no <actions>/<action> elements")
+        last = _element_text(actions[-1])
+        self.assertIn(
+            "reuse-check section",
+            last,
+            "step 2's last action does not name the reuse-check section "
+            "(expected it to record the finding there, not merely 'in the "
+            "plan'). Action text: %r" % last,
+        )
+
+    # -- preservation: the edit is additive and non-renumbering -- #
+
+    def test_all_eight_pre_existing_step_titles_survive(self):
+        # Every step title present before B6 survives: the six
+        # ORIGINAL_STEP_TITLES plus the B16/B17 steps.
+        titles = [_step_title(step) for step in _all_steps(self.root)]
+        for title in B6_CURRENT_STEP_TITLES:
+            self.assertIn(
+                title,
+                titles,
+                "step title %r is missing after B6; titles: %r" % (title, titles),
+            )
+
+    def test_overview_text_is_unchanged(self):
+        # The <overview> keeps its distinctive existing phrasing.
+        overview = self.root.find("overview")
+        self.assertIsNotNone(overview, "<overview> is missing")
+        text = _element_text(overview)
+        for phrase in (
+            "turn requirements into plans",
+            "that is the defect these rules prevent",
+        ):
+            self.assertIn(
+                phrase,
+                text,
+                "an existing <overview> phrase is missing or was altered "
+                "(expected %r). Overview text: %r" % (phrase, text),
+            )
+
+    def test_step_two_description_is_unchanged(self):
+        # Step 2's <description> survives apart from the single action reword
+        # (asserted separately and scoped to the <action>).
+        step = _step_by_number(self.root, "2")
+        self.assertIsNotNone(step, "workflow has no step with number='2'")
+        description = step.find("description")
+        self.assertIsNotNone(description, "step 2 has no <description>")
+        text = _element_text(description)
+        for phrase in (
+            "check whether the behaviour is already solved",
+            "package-registry mcp server",
+        ):
+            self.assertIn(
+                phrase,
+                text,
+                "an existing step-2 description phrase is missing or was "
+                "altered (expected %r). Description text: %r" % (phrase, text),
+            )
+
+    def test_step_three_description_is_unchanged(self):
+        # Step 3's <description> is untouched by B6.
+        step = _step_by_number(self.root, "3")
+        self.assertIsNotNone(step, "workflow has no step with number='3'")
+        description = step.find("description")
+        self.assertIsNotNone(description, "step 3 has no <description>")
+        text = _element_text(description)
+        for phrase in (
+            "not plausible, known",
+            "recalling a library's shape from training is not knowing it",
+        ):
+            self.assertIn(
+                phrase,
+                text,
+                "an existing step-3 description phrase is missing or was "
+                "altered (expected %r). Description text: %r" % (phrase, text),
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

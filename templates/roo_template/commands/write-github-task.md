@@ -8,7 +8,7 @@ Writes GitHub tasks using a standardized template that can be directly pasted in
 ## Workflow Steps
 
 ### 1. Gather Task Information
-- Accept task description from user using: `/github-task-writing <description>`
+- Accept task description from user using: `/write-github-task <description>`
 - **Ask at least 1 clarifying question** from the Key Questions section to ensure task specificity
 - Do not proceed with ambiguous tasks - scope must be clear and actionable
 

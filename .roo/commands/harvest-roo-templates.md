@@ -33,6 +33,18 @@ Every finding is one of three classes:
 
 Divergent wording is shown to the user for judgement and is never adopted, copied, overwritten or rewritten automatically: our templates carry deliberate local edits (the tdd-manager byte ceiling, the architect's package-registry step) that a silent rewrite would revert.
 
+## Worth-import filter
+
+The source repository is one instance doing things differently, not a better one: a finding is a candidate, not an endorsement.
+
+A finding is shortlist-eligible only with a stated concrete gain — either a defect in what we already ship, or an improvement at a user-facing interface.
+
+Where the choice is between fixes of equal value, the tie-break is minimal change; where the gain is thin, the item is excluded.
+
+Repo-specific content — toolchain paths, hooks, test runners, repo and user names — and concrete answers to our deliberate placeholder stubs never enter by default.
+
+An excluded item stays in the report with a one-line reason, so the user can override the exclusion.
+
 ## Confirming the shortlist
 
 Present the classified findings to the user as a shortlist. The user's explicit confirmation is a blocking gate: the command requires the user to confirm the shortlist before it files anything, and it never files the issue until the user confirms. The command stops at the shortlist and waits for the user's go-ahead rather than proceeding on the way past.

@@ -5,16 +5,16 @@ description: Pull and execute GitHub tasks with collaborative planning
 Pulls a specific task from GitHub, collaboratively plans the approach, then executes it step by step.
 
 **Usage:**
-- Provide the GitHub issue number after the command: `/github-task-executor <issue-number>`
+- Provide the GitHub issue number after the command: `/execute-github-task <issue-number>`
 - The workflow will fetch the issue, plan the approach together, then execute it
 
 **Example:**
 ```
-/github-task-executor 123
+/execute-github-task 123
 ```
 
 **Behavior:**
-- Fetches the specified GitHub issue using GitHub CLI
+- Fetches the specified GitHub issue using the GitHub MCP server
 - Parses the task structure (Context, Goal, Scope, Definition of Done)
 - **Collaboratively plans the implementation approach with user input**
 - Creates a todo list based on the agreed approach and Definition of Done
@@ -68,7 +68,7 @@ Pulls a specific task from GitHub, collaboratively plans the approach, then exec
 - Test changes when possible
 - Add regression tests for bug fixes
 - Update documentation when relevant
-- **Ensure all tests pass with pytest before completing any task**
+- **Ensure the project's test suite passes before completing any task**
 
 **Error Handling:**
 - If issue doesn't exist, provide clear error message
