@@ -659,10 +659,11 @@ class B5BugReportSectionsTests(TemplateCommandTestCase):
     raw bytes, so the green step keeps prose latitude.
 
     Fence note: the fenced template block opens at ```` ```markdown ```` and
-    its *closing* fence is the last standalone ```` ``` ```` line before the
-    section heading — the block deliberately contains inner code spans (a
-    python block, file-path quotes) that are part of the template's own
-    text, and the body carries later fences in the Guidelines prose.
+    its *closing* fence is the last standalone ```` ``` ```` line between the
+    opening fence and the ``## Guidelines`` heading — the block deliberately
+    contains inner code spans (a python block, file-path quotes) that are
+    part of the template's own text, and the body carries later fences in
+    the Guidelines prose; neither may be mistaken for the closing fence.
     """
 
     command_path = GITHUB_BUG_REPORT_PATH
@@ -698,10 +699,16 @@ class B5BugReportSectionsTests(TemplateCommandTestCase):
         closes it), verified against the section whose heading line is
         ``heading``.
 
-        The closing fence is the last standalone-fence line *before* the
-        heading — later fences in the body belong to the Guidelines prose.
-        Raises ``AssertionError`` when the heading is absent or the heading
-        sits after the closing fence (section outside the block).
+        The closing fence is the last *standalone* fence line — a line that
+        is exactly three backticks — between the opening fence and the
+        ``## Guidelines`` heading. Anchoring on that heading rather than on
+        the section heading matters because the block deliberately contains
+        inner code spans (a ```` ```python ```` block, the ```` ``` ````
+        span around ``<file:path:line>``) and the body carries later fences
+        in the Guidelines prose; neither may be mistaken for the closing
+        fence. Raises ``AssertionError`` when the heading is absent, when
+        the template block has no standalone closing fence before
+        ``## Guidelines``, or when the heading sits outside the block.
         """
         open_idx = self.body.find("```markdown\n")
         self.assertNotEqual(
@@ -711,6 +718,13 @@ class B5BugReportSectionsTests(TemplateCommandTestCase):
             % self.command_path,
         )
         block_start = open_idx + len("```markdown\n")
+        guidelines_idx = self.body.find("## Guidelines")
+        self.assertNotEqual(
+            guidelines_idx,
+            -1,
+            "B5: '## Guidelines' heading not found in %s — the closing "
+            "fence is anchored to it" % self.command_path,
+        )
         marker = heading + "\n"
         heading_idx = self.body.find(marker)
         self.assertNotEqual(
@@ -719,14 +733,31 @@ class B5BugReportSectionsTests(TemplateCommandTestCase):
             "B5: section '%s' not found in the body of %s"
             % (heading, self.command_path),
         )
-        close_idx = self.body.rfind("\n```", 0, heading_idx)
+        close_idx = self.body.rfind("\n```", block_start, guidelines_idx)
+        while close_idx != -1:
+            # A standalone fence line is exactly three backticks: the line
+            # must end right after them. This rejects the '```python'
+            # opening fence (next char 'p') and any longer fence, while the
+            # inner standalone fences lose to the true closing fence, which
+            # is the LAST one before '## Guidelines'.
+            next_char = self.body[close_idx + 4 : close_idx + 5]
+            if next_char in ("", "\n"):
+                break
+            close_idx = self.body.rfind("\n```", block_start, close_idx)
         self.assertNotEqual(
             close_idx,
             -1,
-            "B5: no closing '```' fence before '%s' in %s"
-            % (heading, self.command_path),
+            "B5: no standalone closing '```' fence between the opening "
+            "fence and '## Guidelines' in %s" % self.command_path,
         )
         fence_end = close_idx + len("\n```")
+        self.assertGreaterEqual(
+            heading_idx,
+            block_start,
+            "B5: section '%s' sits before the opening fence (outside the "
+            "fenced template block) in %s"
+            % (heading, self.command_path),
+        )
         self.assertLess(
             heading_idx,
             fence_end,
