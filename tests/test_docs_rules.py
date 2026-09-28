@@ -1,7 +1,8 @@
 """Tests for behaviour 2 of ``plans/adopt-tool-swap-harvest-findings.md`` —
-the docs-manager ``page_prose`` workflow step, its four accompanying
-``<best_practices>`` rules, and the ``<communication><completion>``
-self-check clause.
+the docs-manager ``page_prose`` workflow step, its three accompanying
+``<best_practices>`` rules (the link-to-the-plan rule is gone: the plan is
+not part of the documentation, so no rule may tell the writer to link to
+it), and the ``<communication><completion>`` self-check clause.
 
 The two files under test are data:
 
@@ -16,7 +17,7 @@ Each file holds root ``<guidelines>``: a ``<workflow>`` of four
 ``<documentation_finalisation>`` block of 2 ``<rule>`` elements, a
 ``<constraints>`` block and a ``<communication>`` block. Behaviour 2
 inserts one ``<step name="page_prose">`` between ``usage_docs`` and
-``structure``, appends four rules, and extends ``<completion>``.
+``structure``, appends three rules, and extends ``<completion>``.
 
 This module follows the conventions of ``tests/test_qna_rules.py``: every
 assertion is on the parsed XML structure plus key phrases, never on raw
@@ -209,7 +210,12 @@ def _rule_bans_delivery_vocabulary(text):
 
 def _rule_capability_limit_useful_schedule_not(text):
     """True when a rule says a capability limit is useful but a schedule
-    is not."""
+    is not — and the rule does NOT carry both "link" and "plan".
+
+    The trailing "the reader who wants the plan gets a link to it" clause
+    is the same link-to-the-plan advice the standalone rule carried, so the
+    predicate now requires its absence alongside the positive requirement.
+    """
     capability = ("capability limit" in text) or ("capability-limit" in text)
     schedule = "schedule" in text
     negates = (
@@ -218,7 +224,8 @@ def _rule_capability_limit_useful_schedule_not(text):
         or ("no" in text)
         or ("useful" in text and "not useful" in text)
     )
-    return capability and schedule and negates
+    no_plan_link = not ("link" in text and "plan" in text)
+    return capability and schedule and negates and no_plan_link
 
 
 def _rule_internal_design_pages_banned_equally(text):
@@ -235,14 +242,6 @@ def _rule_internal_design_pages_banned_equally(text):
         or ("just as" in text)
     )
     return internal and technical and ban_applies
-
-
-def _rule_link_to_plan_do_not_duplicate(text):
-    """True when a rule says to link to the plan rather than duplicate it."""
-    link = ("link" in text) or ("reference" in text)
-    names_plan = "plan" in text
-    no_duplicate = "duplicate" in text
-    return link and names_plan and no_duplicate
 
 
 def _rule_says_readme_doc_accurate_clear_and_simple(text):
@@ -495,7 +494,7 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
             % [_element_text(f) for f in forbids],
         )
 
-    # -- behaviour 2: the four new <rule> elements in <best_practices> -- #
+    # -- behaviour 2: the three new <rule> elements in <best_practices> -- #
 
     def _best_practice_rules(self):
         return self.root.findall("best_practices/rule")
@@ -506,14 +505,14 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
     def _rule_texts(self):
         return [_element_text(r) for r in self._best_practice_rules()]
 
-    def test_best_practices_grows_from_nine_to_exactly_thirteen_rules(self):
-        # Exactly four new rules are appended: 9 originals + 4 new = 13.
+    def test_best_practices_grows_from_nine_to_exactly_twelve_rules(self):
+        # R3 removed the link-to-the-plan rule: 9 originals + 3 new = 12.
         rules = self._best_practice_rules()
         self.assertEqual(
             len(rules),
-            13,
-            "expected <best_practices> to hold exactly 13 <rule> elements "
-            "(9 original + 4 new), found %d. Rule texts: %r"
+            12,
+            "expected <best_practices> to hold exactly 12 <rule> elements "
+            "(9 original + 3 new), found %d. Rule texts: %r"
             % (len(rules), self._rule_texts()),
         )
 
@@ -534,15 +533,19 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
         )
 
     def test_new_rule_says_capability_limit_useful_schedule_not(self):
-        # (b) A capability limit is useful; a schedule is not.
+        # (b) A capability limit is useful; a schedule is not — and R3
+        # struck the trailing "the reader who wants the plan gets a link
+        # to it" clause, so the rule must not carry both "link" and "plan".
         matching = self._rules_matching(
             _rule_capability_limit_useful_schedule_not
         )
         self.assertTrue(
             matching,
             "no <rule> in <best_practices> says a capability limit is "
-            "useful but a schedule is not (looked for 'capability "
-            "limit'/'capability-limit' + 'schedule' + a negation). Rule "
+            "useful but a schedule is not, without pointing the reader at "
+            "a link to the plan (looked for 'capability "
+            "limit'/'capability-limit' + 'schedule' + a negation, and "
+            "rejected any rule carrying both 'link' and 'plan'). Rule "
             "texts: %r" % self._rule_texts(),
         )
 
@@ -560,15 +563,20 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
             "applies'/'just as'). Rule texts: %r" % self._rule_texts(),
         )
 
-    def test_new_rule_says_link_to_plan_do_not_duplicate(self):
-        # (d) Link to the plan, do not duplicate it.
-        matching = self._rules_matching(_rule_link_to_plan_do_not_duplicate)
-        self.assertTrue(
-            matching,
-            "no <rule> in <best_practices> says to link to the plan rather "
-            "than duplicate it (looked for 'link'/'reference' + 'plan' + "
-            "'duplicate'). Rule texts: %r" % self._rule_texts(),
-        )
+    def test_no_rule_tells_the_writer_to_link_to_the_plan(self):
+        # R3 negative guard: no <rule> may carry both "link" and "plan".
+        # The plan is not part of the documentation, so no rule may tell
+        # the writer to link to it — the guard also reaches the
+        # capability-limit rule's trailing "…gets a link to it" clause.
+        # "plans/" and "planned" match "plan" as substrings but carry no
+        # "link", so those rules are unaffected.
+        for rule in self._best_practice_rules():
+            text = _element_text(rule)
+            self.assertFalse(
+                ("link" in text) and ("plan" in text),
+                "a <rule> tells the writer to link to the plan, which is "
+                "not part of the documentation: %r" % text,
+            )
 
     def test_no_rule_names_the_source_configuration_guide_model_page(self):
         # Negative guard: the source's docs/configuration-guide.md
