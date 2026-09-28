@@ -243,6 +243,23 @@ def _rule_link_to_plan_do_not_duplicate(text):
     return link and names_plan and no_duplicate
 
 
+def _rule_says_readme_doc_accurate_clear_and_simple(text):
+    """True when a rule names README.md and doc/ and demands they stay
+    accurate AND clear AND simple to understand.
+
+    R5 of the review round: the ORIGINAL rule 8 ("Keep README.md and
+    doc/ accurate; detailed guides live in doc/.") pins only the accuracy
+    half. The reworded rule must keep "accurate" (so a reword that drops
+    it fails here and in ``test_original_best_practice_rules_survive``)
+    and add "clear" and "simple to understand".
+    """
+    names_targets = "readme.md and doc/" in text
+    accurate = "accurate" in text
+    clear = "clear" in text
+    simple = "simple" in text
+    return names_targets and accurate and clear and simple
+
+
 def _completion_reports_page_prose_self_check(text):
     """True when the ``<completion>`` text reports the page_prose
     self-check: it names ``page_prose``, says the grep was run, and that
@@ -319,6 +336,25 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
                 "an original <rule> is missing or was altered (expected "
                 "marker %r). Rule texts: %r" % (marker, all_text),
             )
+
+    def test_original_rule_8_says_readme_doc_accurate_clear_and_simple(self):
+        # R5: rule 8 keeps its accuracy requirement (still pinned by the
+        # "readme.md and doc/" marker in
+        # test_original_best_practice_rules_survive) and gains the
+        # reviewer's "clear and simple to understand" demand. The
+        # predicate fails on the current accuracy-only rule text; a
+        # reword that drops "accurate" also fails, so the original
+        # requirement stays pinned through the reword.
+        matching = self._rules_matching(
+            _rule_says_readme_doc_accurate_clear_and_simple
+        )
+        self.assertTrue(
+            matching,
+            "no <rule> in <best_practices> says README.md and doc/ must "
+            "stay accurate AND clear AND simple to understand (looked "
+            "for 'readme.md and doc/' + 'accurate' + 'clear' + "
+            "'simple'). Rule texts: %r" % self._rule_texts(),
+        )
 
     def test_documentation_finalisation_block_survives(self):
         # The <documentation_finalisation> block the source lacks survives,
