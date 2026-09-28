@@ -24,6 +24,16 @@
       <check>Cross-references between documentation files still resolve.</check>
     </step>
 
+    <step name="page_prose">
+      <verify>A page describes the system as it is now, not the work that produced it. Strip slice letters ("slice C"), milestone identifiers ("M2b", "M3"), behaviour numbers ("behaviour 12"), pull request numbers, commit hashes, and "shipped / will ship / arrives in" sequencing from page prose — user-facing and internal alike. That vocabulary belongs in the plan, the commit message, and the pull request: each is permanent and searchable.</verify>
+      <allow>A short, plain limitations note: a capability limit, not a schedule.</allow>
+      <allow>A link to the plan where the reasoning behind a decision is genuinely wanted.</allow>
+      <forbid>A project timeline in a page: which branch family did the work, which slice ships next, what the next milestone adds.</forbid>
+      <self_check>Before finishing, run:
+        grep -rniE '\bslice [a-z]\b|\bm[0-9]+[a-z]?\b|behaviour [0-9]+|milestone|\bshipped\b|\bplanned\b|pull request|commit [0-9a-f]{7,40}' doc/ --exclude-dir=external README.md
+        doc/external/ is machine-generated and excluded; every other page must return no hits. Each hit is either delivery vocabulary to rewrite or a spot that needs a link to the plan instead. Fix or justify every hit before finishing.</self_check>
+    </step>
+
     <step name="structure">
       <audit>Orphaned or redundant documentation files.</audit>
       <confirm>File naming follows this repository's convention.</confirm>
@@ -41,6 +51,10 @@
     <rule>Comment the surprising, not the obvious. A comment earns its place by explaining a non-obvious constraint (a GNU-only flag, a library's EOF behaviour, an ordering requirement). Do not narrate the code.</rule>
     <rule>Keep README.md and doc/ accurate; detailed guides live in doc/.</rule>
     <rule>Record architectural decisions and their rationale in plans/, so a later reader does not re-litigate a settled question.</rule>
+    <rule>A page describes the system as it is now, not the work that produced it. Slice letters, milestone identifiers, behaviour numbers, pull request numbers, commit hashes, and "shipped / planned" sequencing are delivery vocabulary: they belong in the plan, the commit message, and the pull request, each of which is permanent and searchable.</rule>
+    <rule>A capability limit is useful; a schedule is not. "The router does not restart crashed containers yet" tells a reader what will not work and stays. "This is slice C of M2b, and slice D adds the manager" is a delivery schedule and is cut; the reader who wants the plan gets a link to it. One limits a reader's expectations, the other narrates your delivery.</rule>
+    <rule>Internal design pages may be technical — seams, protocols, and developer audiences are fine — but the delivery-vocabulary ban applies to them equally.</rule>
+    <rule>Link to the plan, do not duplicate it. Where the reasoning behind a decision is genuinely wanted, a link to the plan section is the page's obligation; restating the reasoning in the page is how the narrative creeps back in.</rule>
   </best_practices>
 
   <documentation_finalisation>
@@ -60,6 +74,6 @@
   <communication>
     <tone>Direct and technical. No conversational openers or closings.</tone>
     <initial>Ask commit vs branch before starting.</initial>
-    <completion>State the scope, list the files reviewed and changed, and summarise what was removed, added, and deliberately kept.</completion>
+    <completion>State the scope, list the files reviewed and changed, and summarise what was removed, added, and deliberately kept, and report the page_prose self-check: the grep was run and every hit fixed or justified.</completion>
   </communication>
 </guidelines>
