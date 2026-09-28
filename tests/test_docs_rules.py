@@ -1,8 +1,6 @@
-"""Tests for behaviour 2 of ``plans/adopt-tool-swap-harvest-findings.md`` —
-the docs-manager ``page_prose`` workflow step, its three accompanying
-``<best_practices>`` rules (the link-to-the-plan rule is gone: the plan is
-not part of the documentation, so no rule may tell the writer to link to
-it), and the ``<communication><completion>`` self-check clause.
+"""Tests for the docs-manager guidelines (behaviour 2 of
+``plans/adopt-tool-swap-harvest-findings.md`` plus review round 1, R3 and
+R4).
 
 The two files under test are data:
 
@@ -13,11 +11,16 @@ The two files under test are data:
 
 Each file holds root ``<guidelines>``: a ``<workflow>`` of four
 ``name``-keyed steps (``start``, ``code_comments``, ``usage_docs``,
-``structure``), a ``<best_practices>`` block of 9 ``<rule>`` elements, a
-``<documentation_finalisation>`` block of 2 ``<rule>`` elements, a
-``<constraints>`` block and a ``<communication>`` block. Behaviour 2
-inserts one ``<step name="page_prose">`` between ``usage_docs`` and
-``structure``, appends three rules, and extends ``<completion>``.
+``structure``), a ``<best_practices>`` block of 12 ``<rule>`` elements
+(9 original + 3 new; the link-to-the-plan rule is gone: the plan is not
+part of the documentation, so no rule may tell the writer to link to
+it), a ``<documentation_finalisation>`` block of 2 ``<rule>`` elements,
+a ``<constraints>`` block and a ``<communication>`` block. R4 withdrew
+the ``page_prose`` step as too specific: the workflow keeps its four
+original steps, no step is named ``page_prose``, and the
+``<workflow><overview>`` scopes the delivery-vocabulary rules to the
+situations in which they apply — new pages and pages touched by a
+refactor.
 
 This module follows the conventions of ``tests/test_qna_rules.py``: every
 assertion is on the parsed XML structure plus key phrases, never on raw
@@ -30,11 +33,6 @@ the docs-manager steps are ``name``-keyed, so :func:`_step_by_name`
 here is the right shape. Whole-file equality between the template and
 the local copy is deliberately NOT asserted (``tests/test_rules_mirror.py``
 guards byte-identity separately).
-
-The new ``<self_check>`` must run ``grep -rniE`` over ``doc/`` excluding
-``doc/external/`` plus ``README.md`` — the source's bare ``docs/`` target
-and its ``docs/configuration.md`` skip are NOT adopted, so a verbatim copy
-of the source text fails this module.
 """
 
 import re
@@ -119,73 +117,18 @@ ORIGINAL_STEP_NAMES = ("start", "code_comments", "usage_docs", "structure")
 # Phrase predicates for the new content (lower-cased text in, bool out)
 # --------------------------------------------------------------------------- #
 
-def _verify_strips_delivery_vocabulary(text):
-    """True when a ``<verify>`` says a page must strip delivery vocabulary:
-    slice letters, milestone identifiers, behaviour numbers, pull request
-    numbers, commit hashes and shipped/will-ship (shipped/planned)
-    sequencing."""
-    vocabulary = (
-        "slice" in text
-        and "milestone" in text
-        and "behaviour" in text
-        and ("pull request" in text or " pr " in text)
-        and "commit" in text
-        and ("shipped" in text or "will-ship" in text or "planned" in text)
-    )
-    says_as_it_is_now = "as it is now" in text
-    return vocabulary and says_as_it_is_now
+def _overview_scopes_rules_to_new_pages_and_refactors(text):
+    """True when the ``<workflow><overview>`` scopes the
+    delivery-vocabulary rules to the situations in which they apply: the
+    text mentions new pages and a refactor.
 
-
-def _verify_says_vocabulary_belongs_in_plan_commit_pr(text):
-    """True when a ``<verify>`` says the vocabulary belongs in the plan,
-    commit message and pull request."""
-    names_plan = "plan" in text
-    names_commit_message = (
-        "commit message" in text
-        or ("commit" in text and "message" in text)
-    )
-    names_pr = ("pull request" in text) or ("pull requests" in text)
-    return names_plan and names_commit_message and names_pr
-
-
-def _self_check_is_scoped_grep_invocation(text):
-    """True when a ``<self_check>`` carries a ``grep -rniE`` invocation
-    whose targets include ``doc/`` and ``README.md`` and which EXCLUDES
-    ``doc/external/`` — and does not name the source's ``configuration.md``
-    example.
-
-    The source's self-check greps ``docs/ README.md`` and skips
-    ``docs/configuration.md``; a verbatim copy of the source text fails
-    this predicate on three counts: it names bare ``docs/`` instead of
-    ``doc/``, it carries no ``doc/external`` exclusion, and it names
-    ``configuration.md``.
+    R4 withdrew the ``page_prose`` step as too specific; the scoping
+    clause lives in the overview rather than a step or a rule, so the
+    ``<best_practices>`` count R3 pins stays 12.
     """
-    has_grep = "grep -rnie" in text
-    targets_doc_dir = "doc/" in text
-    targets_readme = "readme.md" in text
-    excludes_external = "doc/external" in text
-    rejects_source_target = "docs/" not in text
-    rejects_source_example = "configuration.md" not in text
-    return (
-        has_grep
-        and targets_doc_dir
-        and targets_readme
-        and excludes_external
-        and rejects_source_target
-        and rejects_source_example
-    )
-
-
-def _allow_mentions_capability_limit_or_schedule(text):
-    """True when an ``<allow>`` is a plain capability-limit note."""
-    capability = ("capability limit" in text) or ("capability-limit" in text)
-    schedule = "schedule" in text
-    return capability or schedule
-
-
-def _forbid_mentions_timeline_or_milestone(text):
-    """True when a ``<forbid>`` bans a project timeline."""
-    return ("timeline" in text) or ("milestone" in text)
+    mentions_new = "new" in text
+    mentions_refactor = "refactor" in text
+    return mentions_new and mentions_refactor
 
 
 def _rule_bans_delivery_vocabulary(text):
@@ -261,17 +204,6 @@ def _rule_says_readme_doc_accurate_clear_and_simple(text):
     return names_targets and accurate and clear and simple
 
 
-def _completion_reports_page_prose_self_check(text):
-    """True when the ``<completion>`` text reports the page_prose
-    self-check: it names ``page_prose``, says the grep was run, and that
-    every hit was fixed or justified."""
-    names_step = "page_prose" in text
-    ran_grep = "grep" in text
-    says_fixed_or_justified = "fixed" in text and "justified" in text
-    says_every_hit = ("every hit" in text) or ("all hits" in text)
-    return names_step and ran_grep and says_fixed_or_justified and says_every_hit
-
-
 # --------------------------------------------------------------------------- #
 # Shared assertions, pointed at either the template or the local copy
 # --------------------------------------------------------------------------- #
@@ -318,6 +250,31 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
                 step,
                 "original workflow step %r is missing from <workflow>" % name,
             )
+
+    def test_no_page_prose_step(self):
+        # R4: the page_prose step was withdrawn as too specific, so no
+        # step by that name exists; the four original steps above are
+        # the whole workflow.
+        self.assertIsNone(
+            _step_by_name(self.root, "page_prose"),
+            "a step named 'page_prose' exists in <workflow>, but it was "
+            "withdrawn; steps present: %r"
+            % [s.get("name") for s in self.root.findall(".//workflow/step")],
+        )
+
+    def test_workflow_overview_scopes_rules_to_new_pages_and_refactors(self):
+        # R4: with the step gone, the <workflow><overview> scopes the
+        # delivery-vocabulary rules to the situations in which they
+        # apply — new pages and pages touched by a refactor.
+        overview = self.root.find("workflow/overview")
+        self.assertIsNotNone(overview, "<workflow> has no <overview>")
+        text = _element_text(overview)
+        self.assertTrue(
+            _overview_scopes_rules_to_new_pages_and_refactors(text),
+            "<workflow><overview> does not scope the delivery-vocabulary "
+            "rules to new pages and pages touched by a refactor (looked "
+            "for 'new' + 'refactor'). Overview text: %r" % text,
+        )
 
     def test_original_best_practice_rules_survive(self):
         # Additive behaviour: all 9 original <rule> elements survive, each
@@ -387,111 +344,6 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
         )
         self.assertIsNotNone(
             self.root.find("communication"), "<communication> block is missing"
-        )
-
-    # -- behaviour 2: the new <step name="page_prose"> -- #
-
-    def _page_prose_step(self):
-        step = _step_by_name(self.root, "page_prose")
-        self.assertIsNotNone(
-            step,
-            "no <step name=\"page_prose\"> in <workflow>; steps present: %r"
-            % [s.get("name") for s in self.root.findall(".//workflow/step")],
-        )
-        return step
-
-    def test_page_prose_step_exists_between_usage_docs_and_structure(self):
-        # The new step exists and sits between usage_docs and structure in
-        # document order.
-        step = self._page_prose_step()
-        usage_docs = _step_by_name(self.root, "usage_docs")
-        structure = _step_by_name(self.root, "structure")
-        self.assertIsNotNone(usage_docs, "usage_docs step is missing")
-        self.assertIsNotNone(structure, "structure step is missing")
-        positions = {
-            id(s): i
-            for i, s in enumerate(self.root.findall(".//workflow/step"))
-        }
-        self.assertLess(
-            positions[id(usage_docs)],
-            positions[id(step)],
-            "page_prose must come after usage_docs in document order",
-        )
-        self.assertLess(
-            positions[id(step)],
-            positions[id(structure)],
-            "page_prose must come before structure in document order",
-        )
-
-    def test_page_prose_verify_strips_delivery_vocabulary(self):
-        # The step's <verify> strips delivery vocabulary from page prose:
-        # slice letters, milestone identifiers, behaviour numbers, pull
-        # request numbers, commit hashes and shipped/will-ship sequencing.
-        step = self._page_prose_step()
-        verify = step.find("verify")
-        self.assertIsNotNone(verify, "page_prose step has no <verify>")
-        text = _element_text(verify)
-        self.assertTrue(
-            _verify_strips_delivery_vocabulary(text),
-            "<verify> does not strip delivery vocabulary (looked for "
-            "'slice' + 'milestone' + 'behaviour' + 'pull request' + "
-            "'commit' + 'shipped'/'planned' + 'as it is now'). Verify text: "
-            "%r" % text,
-        )
-
-    def test_page_prose_verify_says_vocabulary_belongs_in_plan_commit_pr(self):
-        # The <verify> says the vocabulary belongs in the plan, commit
-        # message and pull request.
-        step = self._page_prose_step()
-        verify = step.find("verify")
-        self.assertIsNotNone(verify, "page_prose step has no <verify>")
-        text = _element_text(verify)
-        self.assertTrue(
-            _verify_says_vocabulary_belongs_in_plan_commit_pr(text),
-            "<verify> does not say the vocabulary belongs in the plan, "
-            "commit message and pull request (looked for 'plan' + "
-            "'commit message' + 'pull request'). Verify text: %r" % text,
-        )
-
-    def test_page_prose_self_check_is_scoped_grep_invocation(self):
-        # The step's <self_check> carries a grep -rniE invocation whose
-        # targets include doc/ and README.md and which EXCLUDES
-        # doc/external/; the source's bare "docs/" target and its
-        # configuration.md example are not adopted.
-        step = self._page_prose_step()
-        self_check = step.find("self_check")
-        self.assertIsNotNone(
-            self_check, "page_prose step has no <self_check>"
-        )
-        text = _element_text(self_check)
-        self.assertTrue(
-            _self_check_is_scoped_grep_invocation(text),
-            "<self_check> is not a grep -rniE over doc/ excluding "
-            "doc/external/ plus README.md (looked for 'grep -rnie' + "
-            "'doc/' + 'readme.md' + 'doc/external'; rejected bare 'docs/' "
-            "and 'configuration.md'). Self-check text: %r" % text,
-        )
-
-    def test_page_prose_allows_capability_limit_forbids_timeline(self):
-        # The step carries an <allow> for a plain capability-limit note
-        # and a <forbid> for a project timeline.
-        step = self._page_prose_step()
-        allows = step.findall("allow")
-        matching_allow = [a for a in allows if _allow_mentions_capability_limit_or_schedule(_element_text(a))]
-        self.assertTrue(
-            matching_allow,
-            "no <allow> on page_prose is a plain capability-limit / "
-            "schedule note (looked for 'capability limit'/'capability-"
-            "limit' or 'schedule'). Allow texts: %r"
-            % [_element_text(a) for a in allows],
-        )
-        forbids = step.findall("forbid")
-        matching_forbid = [f for f in forbids if _forbid_mentions_timeline_or_milestone(_element_text(f))]
-        self.assertTrue(
-            matching_forbid,
-            "no <forbid> on page_prose bans a project timeline (looked for "
-            "'timeline' or 'milestone'). Forbid texts: %r"
-            % [_element_text(f) for f in forbids],
         )
 
     # -- behaviour 2: the three new <rule> elements in <best_practices> -- #
@@ -591,37 +443,17 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
                 "adopted: %r" % text,
             )
 
-    # -- behaviour 2: the <communication><completion> self-check clause -- #
-
-    def test_completion_reports_the_page_prose_self_check(self):
-        # The <completion> text reports the self-check: it names
-        # page_prose and that the grep was run and every hit fixed or
-        # justified.
-        communication = self.root.find("communication")
-        self.assertIsNotNone(communication, "<communication> block is missing")
-        completion = communication.find("completion")
-        self.assertIsNotNone(
-            completion, "<communication> has no <completion>"
-        )
-        text = _element_text(completion)
-        self.assertTrue(
-            _completion_reports_page_prose_self_check(text),
-            "<completion> does not report the page_prose self-check "
-            "(looked for 'page_prose' + 'grep' + 'fixed' + 'justified' + "
-            "'every hit'). Completion text: %r" % text,
-        )
-
 
 class DocsTemplateTests(DocsManagerPageProseBase):
-    """Behaviour 2: the docs-manager TEMPLATE guidelines carry the
-    page_prose step."""
+    """The docs-manager TEMPLATE guidelines: four original steps, no
+    page_prose step, rules scoped in the overview."""
 
     template_path = DOCS_TEMPLATE
 
 
 class DocsLocalTests(DocsManagerPageProseBase):
-    """Behaviour 2: the anvil repo's OWN docs-manager guidelines carry the
-    same page_prose step.
+    """The anvil repo's OWN docs-manager guidelines carry the same
+    four-step workflow and overview scoping.
 
     The same assertions run against the local copy, so it cannot drift from
     the template on this point. Only the new content is locked, never
