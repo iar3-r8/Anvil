@@ -83,9 +83,12 @@ def _load_qna_instructions(path):
     return ET.fromstring(escaped)
 
 
-# Marker phrases, one per pre-existing <rule>, proving all 9 survive the
-# additive change (checked case-insensitively against the combined text of
-# every <rule>, so a single altered element that drops its marker fails).
+# Marker phrases, one per each of the 9 original <rule> elements plus the
+# three added by behaviour 1 of ``plans/adopt-tool-swap-harvest-findings.md``
+# (docstring, process vocabulary, third-party citation), proving all 12
+# survive any further additive change (checked case-insensitively against
+# the combined text of every <rule>, so a single altered element that drops
+# its marker fails).
 ORIGINAL_RULE_MARKERS = (
     "strict tdd",
     "never weaken a test",
@@ -96,6 +99,9 @@ ORIGINAL_RULE_MARKERS = (
     "arrange, act, assert",
     "tempfile.temporarydirectory",
     "standalone_mode",
+    "docstring",
+    "fail text",
+    "doc/external/",
 )
 
 # Marker phrases, one per pre-existing <pitfall>, proving all 3 survive.
@@ -167,6 +173,70 @@ def _names_over_testing_trivial_code(text):
         or ("wrapper" in text)
     )
     return over and trivial
+
+
+# --------------------------------------------------------------------------- #
+# Phrase predicates for the new content of behaviour 1 of
+# ``plans/adopt-tool-swap-harvest-findings.md`` (lower-cased text in, bool
+# out)
+# --------------------------------------------------------------------------- #
+
+def _says_test_name_is_the_documentation(text):
+    """True when a rule says the test's NAME is the documentation, with a
+    docstring added only where it is absolutely needed or the code is very
+    complicated (R1 of plans/adopt-tool-swap-harvest-findings.md).
+
+    No pre-existing rule carries "document" together with a "name" /
+    documentation condition, so the pair scopes the predicate; the
+    "absolutely needed" / "complicated" condition is what the reworded rule
+    must add and the old rule text ("A docstring states what the test
+    pins...") satisfies neither.
+    """
+    name_carries_docs = ("name" in text) and ("document" in text)
+    docstring_condition = (
+        ("absolutely needed" in text) or ("complicated" in text)
+    )
+    return name_carries_docs and docstring_condition
+
+
+def _bans_process_vocabulary_in_test_facing_strings(text):
+    """True when a rule bans workflow-phase vocabulary from test-facing
+    strings — naming assertion messages, fail text and skip reasons — and
+    names "RED step"/"GREEN step" (and behaviour numbers) as what to avoid.
+
+    The adapted rule says "fail text", NOT "pytest.fail": this repo is
+    unittest, so the predicate deliberately does not require "pytest".
+    """
+    names_test_facing = ("assertion message" in text) and ("skip reason" in text)
+    has_fail_text = "fail text" in text
+    names_red_green = ("red step" in text) and ("green step" in text)
+    names_behaviour_numbers = ("behaviour" in text) and ("number" in text)
+    return (
+        names_test_facing
+        and has_fail_text
+        and names_red_green
+        and names_behaviour_numbers
+    )
+
+
+def _requires_third_party_fact_citation(text):
+    """True when a rule requires a test asserting a third-party fact (SDK
+    kwarg, exception class, filter shape, default) to cite the saved
+    documentation under ``doc/external/`` — never memory — with a one-line
+    citation.
+
+    The predicate REQUIRES ``doc/external/`` in addition to "third-party":
+    "third-party" already appears in the existing skip-trivial-code rule
+    ("Skip getters and setters, third-party code ..."), so a predicate on
+    that phrase alone would be satisfied today and the red would be green.
+    The adapted citation target is ``doc/external/``, not the source's
+    ``plan/third-party-docs/``.
+    """
+    about_third_party = "third-party" in text
+    cites_saved_docs = "doc/external/" in text
+    never_memory = "memory" in text
+    one_line = ("one line" in text) or ("one-line" in text)
+    return about_third_party and cites_saved_docs and never_memory and one_line
 
 
 # --------------------------------------------------------------------------- #
@@ -246,13 +316,15 @@ class QnaTestingDisciplineBase(XmlTemplateTestCase):
         )
 
     def test_preexisting_rules_survive(self):
-        # Behaviour 2 is additive: all 9 pre-existing <rule> elements
-        # survive, each recognised by its marker phrase.
+        # Additive behaviour: all 12 pre-existing <rule> elements (the 9
+        # originals plus the three from behaviour 1 of
+        # ``plans/adopt-tool-swap-harvest-findings.md``) survive, each
+        # recognised by its marker phrase.
         rules = self.root.findall("best_practices/rule")
         self.assertGreaterEqual(
             len(rules),
-            9,
-            "expected the 9 pre-existing <rule> elements to survive; found %d"
+            12,
+            "expected the 12 pre-existing <rule> elements to survive; found %d"
             % len(rules),
         )
         all_text = " ".join(_element_text(r) for r in rules)
@@ -383,6 +455,55 @@ class QnaTestingDisciplineBase(XmlTemplateTestCase):
             "no <rule> in <best_practices> says tests are isolated, "
             "repeatable and self-checking (looked for 'isolated' + "
             "'repeatable' + 'self-checking'). Rule texts: %r"
+            % self._rule_texts(),
+        )
+
+    # -- behaviour 1 of plans/adopt-tool-swap-harvest-findings.md: the three
+    #    new <rule> elements in <best_practices> -- #
+
+    def test_new_rule_says_test_name_is_the_documentation(self):
+        # The test's NAME carries the documentation; a docstring is added
+        # only where it is absolutely needed or the code is very complicated.
+        matching = self._rules_matching(_says_test_name_is_the_documentation)
+        self.assertTrue(
+            matching,
+            "no <rule> in <best_practices> says the test name is the "
+            "documentation and a docstring only where absolutely needed or "
+            "the code is very complicated (looked for 'name' + 'document' "
+            "+ 'absolutely needed'/'complicated'). Rule texts: %r"
+            % self._rule_texts(),
+        )
+
+    def test_new_rule_bans_process_vocabulary_in_test_facing_strings(self):
+        # Workflow-phase vocabulary never in test-facing strings — assertion
+        # messages, fail text (not pytest.fail — this repo is unittest) and
+        # skip reasons — naming "RED step"/"GREEN step" and behaviour
+        # numbers as what to avoid.
+        matching = self._rules_matching(
+            _bans_process_vocabulary_in_test_facing_strings
+        )
+        self.assertTrue(
+            matching,
+            "no <rule> in <best_practices> bans workflow-phase vocabulary "
+            "from test-facing strings (looked for 'assertion message' + "
+            "'skip reason' + 'fail text' + 'red step'/'green step' + "
+            "'behaviour'/'number'). Rule texts: %r"
+            % self._rule_texts(),
+        )
+
+    def test_new_rule_requires_third_party_fact_citation(self):
+        # A test asserting a third-party fact cites the saved documentation
+        # under doc/external/ — never memory — the citation one line. The
+        # predicate additionally requires "doc/external/" because
+        # "third-party" alone already appears in the existing
+        # skip-trivial-code rule.
+        matching = self._rules_matching(_requires_third_party_fact_citation)
+        self.assertTrue(
+            matching,
+            "no <rule> in <best_practices> requires a test asserting a "
+            "third-party fact to cite the saved documentation under "
+            "doc/external/ (looked for 'third-party' + 'doc/external/' + "
+            "'memory' + 'one line'). Rule texts: %r"
             % self._rule_texts(),
         )
 
