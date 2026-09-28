@@ -7,8 +7,8 @@ against the command file itself:
   * B2 — the file is tracked despite .roo/* being gitignored (implemented
     below; runs ``git check-ignore``, so it does not need the command file's
     content);
-  * B3-B8 — body-content behaviours; each will land in its own test case class
-    pointed at the same file, built on the shared loader below.
+  * B3-B9 — body-content behaviours; each lands in its own test case
+    class pointed at the same file, built on the shared loader below.
 
 The command file under test is ``.roo/commands/harvest-roo-templates.md`` in
 this repository. B1 is green: the file exists and its frontmatter validates.
@@ -1046,6 +1046,329 @@ class B8MirrorObligationTests(HarvestCommandTestCase):
             "rules-qna-tester/instructions.xml, "
             "rules-docs-manager/guidelines.xml) nor refer to 'the rule "
             "XMLs' collectively",
+        )
+
+
+# --------------------------------------------------------------------------- #
+# B9 — the worth-import filter (plans/adopt-harvest-findings.md, B7)
+# --------------------------------------------------------------------------- #
+
+class B9WorthImportFilterTests(HarvestCommandTestCase):
+    """B9 (plans/adopt-harvest-findings.md, behaviour B7): the body carries a
+    "Worth-import filter" section between "## Classifying findings" and
+    "## Confirming the shortlist" that states, as separately assertable
+    claims:
+
+      1. the source repo is one instance doing things differently, not a
+         better one;
+      2. a finding is shortlist-eligible only with a stated concrete gain —
+         either a defect in what we already ship, or an improvement at a
+         user-facing interface;
+      3. the tie-break is minimal change, so a thin gain means exclusion;
+      4. repo-specific content (toolchain paths, hooks, test runners, repo
+         and user names) and concrete answers to our deliberate placeholder
+         stubs never enter by default;
+      5. an excluded item stays in the report with a one-line reason so the
+         user can override.
+
+    The claim assertions are scoped to the section's text (from the
+    "## Worth-import filter" heading up to the "## Confirming the
+    shortlist" heading, by character offset) and are on key phrases, never
+    raw bytes, so the green step has latitude in the prose — the B1-B8
+    convention.
+
+    Negator risk (plan's B7 Error line): B4's ``NO_DELETIONS_RE`` and B5's
+    ``_NEVER_ADOPT_RE`` are sentence-scoped, whole-body regexes that today
+    match the ORIGINAL sentences in "## Comparison" and "## Classifying
+    findings". The new section's prose adds negators near delete/adopt-
+    adjacent verbs (a claim-5 rendering such as "not deleted from the
+    report", or a claim-4 rendering with "never"), which could create a
+    false match that lets the original sentences be deleted while B4/B5
+    stay green. Per the plan, the originals are therefore pinned here with
+    explicit presence assertions rather than trusted to the regex:
+    ``test_original_comparison_sentence_survives`` and
+    ``test_original_wording_sentence_survives`` (both green from the start
+    — the sentences exist today).
+
+    Expected red reason: the "## Worth-import filter" section does not
+    exist yet, so the position test fails on the missing heading and every
+    claim test fails in ``_filter_section`` with "section not found". The
+    file itself loads fine (B1-B8 pass today and must keep passing).
+    """
+
+    command_path = COMMAND_PATH
+
+    #: The three section headings, anchored to the start of a line so an
+    #: inline mention of the phrase never counts as the heading.
+    _CLASSIFYING_HEADING_RE = re.compile(r"(?m)^##\s+Classifying findings\b")
+    _FILTER_HEADING_RE = re.compile(r"(?m)^##\s+Worth-import filter\b")
+    _CONFIRMING_HEADING_RE = re.compile(r"(?m)^##\s+Confirming the shortlist\b")
+
+    # -- Claim 1 ------------------------------------------------------------- #
+
+    #: The source repo is one instance doing things differently, not a
+    #: better one.
+    _INSTANCE_NOT_BETTER_RE = re.compile(r"not\s+a\s+better\s+one", re.IGNORECASE)
+
+    # -- Claim 2 ------------------------------------------------------------- #
+
+    #: A stated concrete gain is the bar for shortlist eligibility.
+    _CONCRETE_GAIN_RE = re.compile(r"concrete\s+gain", re.IGNORECASE)
+    #: Alternative 1: a defect in what we already ship.
+    _DEFECT_WE_SHIP_RE = re.compile(
+        r"defect\s+in\s+what\s+we\s+already\s+ship", re.IGNORECASE
+    )
+    #: Alternative 2: an improvement at a user-facing interface.
+    _USER_FACING_INTERFACE_RE = re.compile(
+        r"user[\s-]facing\s+interface", re.IGNORECASE
+    )
+
+    # -- Claim 3 ------------------------------------------------------------- #
+
+    #: The tie-break is minimal change.
+    _MINIMAL_CHANGE_RE = re.compile(r"minimal\s+change", re.IGNORECASE)
+    #: A thin gain means exclusion.
+    _EXCLUSION_RE = re.compile(r"\bexclu(ded|sion|ding)\b", re.IGNORECASE)
+
+    # -- Claim 4 ------------------------------------------------------------- #
+
+    #: The repo-specific content the plan names in its parenthetical.
+    _REPO_SPECIFIC_TOKENS = (
+        (re.compile(r"repo[\s-]specific", re.IGNORECASE), "repo-specific content"),
+        (re.compile(r"toolchain", re.IGNORECASE), "toolchain paths"),
+        (re.compile(r"\bhooks?\b", re.IGNORECASE), "hooks"),
+        (re.compile(r"test\s+runners?", re.IGNORECASE), "test runners"),
+        (re.compile(r"\buser\s+names?\b", re.IGNORECASE), "user names"),
+        (re.compile(r"placeholder", re.IGNORECASE), "placeholder stubs"),
+    )
+    #: "never enter by default" — a negator bound to "by default" within
+    #: one sentence.
+    _NEVER_BY_DEFAULT_RE = re.compile(
+        r"\bnever\b[^.;]{0,60}?\bby\s+default\b", re.IGNORECASE
+    )
+
+    # -- Claim 5 ------------------------------------------------------------- #
+
+    #: An excluded item stays in the report with a one-line reason.
+    _ONE_LINE_REASON_RE = re.compile(r"one[\s-]line\s+reason", re.IGNORECASE)
+    #: ... so the user can override.
+    _OVERRIDE_RE = re.compile(r"\boverride\b", re.IGNORECASE)
+
+    # -- Negator-risk pins (plan's B7 Error line) ---------------------------- #
+
+    #: The original "## Comparison" sentence B4's NO_DELETIONS_RE matches
+    #: today: "the command never proposes removing or deleting it."
+    _COMPARISON_SENTENCE_RE = re.compile(
+        r"never\s+proposes\s+removing\s+or\s+deleting", re.IGNORECASE
+    )
+    #: The original "## Classifying findings" sentence B5's _NEVER_ADOPT_RE
+    #: matches today: "...is never adopted, copied, overwritten or
+    #: rewritten automatically."
+    _WORDING_SENTENCE_RE = re.compile(
+        r"never\s+adopted,\s*copied,\s*overwritten\s+or\s+rewritten",
+        re.IGNORECASE,
+    )
+
+    def _filter_section(self):
+        """Return the "Worth-import filter" section's text: from the
+        "## Worth-import filter" heading up to (not including) the
+        "## Confirming the shortlist" heading, by character offset.
+
+        Fails the test with a "section not found" message when the heading
+        is absent — the expected red failure while the section does not
+        exist yet.
+        """
+        filter_match = self._FILTER_HEADING_RE.search(self.body)
+        confirm_match = self._CONFIRMING_HEADING_RE.search(self.body)
+        if filter_match is None:
+            self.fail(
+                "'Worth-import filter' section not found: no "
+                "'## Worth-import filter' heading between '## Classifying "
+                "findings' and '## Confirming the shortlist'"
+            )
+        if confirm_match is None:
+            self.fail(
+                "'Worth-import filter' section not found: the "
+                "'## Confirming the shortlist' heading that bounds it is "
+                "missing"
+            )
+        if confirm_match.start() <= filter_match.start():
+            self.fail(
+                "'Worth-import filter' section not found: "
+                "'## Worth-import filter' does not sit before '## "
+                "Confirming the shortlist' by character offset"
+            )
+        return self.body[filter_match.start():confirm_match.start()]
+
+    # -- Position ------------------------------------------------------------ #
+
+    def test_filter_heading_sits_between_classifying_and_confirming(self):
+        # B7 (plan) output: the "## Worth-import filter" heading sits
+        # between "## Classifying findings" and "## Confirming the
+        # shortlist" by character offset.
+        classify = self._CLASSIFYING_HEADING_RE.search(self.body)
+        filter_match = self._FILTER_HEADING_RE.search(self.body)
+        confirm = self._CONFIRMING_HEADING_RE.search(self.body)
+        self.assertIsNotNone(
+            classify,
+            "body is missing the '## Classifying findings' heading that "
+            "the filter section must sit after",
+        )
+        self.assertIsNotNone(
+            confirm,
+            "body is missing the '## Confirming the shortlist' heading "
+            "that the filter section must sit before",
+        )
+        self.assertIsNotNone(
+            filter_match,
+            "body has no '## Worth-import filter' heading between '## "
+            "Classifying findings' and '## Confirming the shortlist'",
+        )
+        self.assertLess(
+            classify.start(),
+            filter_match.start(),
+            "'## Worth-import filter' must come after '## Classifying "
+            "findings' by character offset",
+        )
+        self.assertLess(
+            filter_match.start(),
+            confirm.start(),
+            "'## Worth-import filter' must come before '## Confirming the "
+            "shortlist' by character offset",
+        )
+
+    # -- Claims -------------------------------------------------------------- #
+
+    def test_source_repo_is_an_instance_not_a_better_one(self):
+        # Claim 1: the source repo is one instance doing things
+        # differently, not a better one.
+        section = self._filter_section()
+        self.assertRegex(
+            section,
+            self._INSTANCE_NOT_BETTER_RE,
+            "'Worth-import filter' does not state that the source repo is "
+            "one instance doing things differently, not a better one",
+        )
+
+    def test_shortlist_requires_a_stated_concrete_gain(self):
+        # Claim 2: a finding is shortlist-eligible only with a stated
+        # concrete gain — either a defect in what we already ship, or an
+        # improvement at a user-facing interface.
+        section = self._filter_section()
+        self.assertRegex(
+            section,
+            self._CONCRETE_GAIN_RE,
+            "'Worth-import filter' does not make a stated concrete gain "
+            "the bar for shortlist eligibility",
+        )
+        self.assertRegex(
+            section,
+            self._DEFECT_WE_SHIP_RE,
+            "'Worth-import filter' does not name a defect in what we "
+            "already ship as one of the concrete gains",
+        )
+        self.assertRegex(
+            section,
+            self._USER_FACING_INTERFACE_RE,
+            "'Worth-import filter' does not name an improvement at a "
+            "user-facing interface as one of the concrete gains",
+        )
+
+    def test_tie_break_is_minimal_change_and_thin_gain_is_excluded(self):
+        # Claim 3: the tie-break is minimal change, so a thin gain means
+        # exclusion.
+        section = self._filter_section()
+        self.assertRegex(
+            section,
+            self._MINIMAL_CHANGE_RE,
+            "'Worth-import filter' does not name minimal change as the "
+            "tie-break",
+        )
+        self.assertRegex(
+            section,
+            self._EXCLUSION_RE,
+            "'Worth-import filter' does not state that a thin gain means "
+            "exclusion",
+        )
+
+    def test_repo_specific_content_never_enters_by_default(self):
+        # Claim 4: repo-specific content (toolchain paths, hooks, test
+        # runners, repo and user names) and concrete answers to our
+        # deliberate placeholder stubs never enter by default.
+        section = self._filter_section()
+        for pattern, label in self._REPO_SPECIFIC_TOKENS:
+            self.assertRegex(
+                section,
+                pattern,
+                "'Worth-import filter' does not name %s as repo-specific "
+                "content that never enters by default" % label,
+            )
+        self.assertRegex(
+            section,
+            self._NEVER_BY_DEFAULT_RE,
+            "'Worth-import filter' does not state that repo-specific "
+            "content and concrete answers to placeholder stubs never "
+            "enter by default",
+        )
+
+    def test_excluded_items_stay_in_report_with_one_line_reason(self):
+        # Claim 5: an excluded item stays in the report with a one-line
+        # reason so the user can override.
+        section = self._filter_section()
+        self.assertRegex(
+            section,
+            self._ONE_LINE_REASON_RE,
+            "'Worth-import filter' does not state that an excluded item "
+            "stays in the report with a one-line reason",
+        )
+        self.assertRegex(
+            section,
+            self._OVERRIDE_RE,
+            "'Worth-import filter' does not state that the user can "
+            "override an exclusion",
+        )
+
+    # -- Negator-risk pins --------------------------------------------------- #
+
+    def test_original_comparison_sentence_survives(self):
+        # Negator-risk pin (plan's B7 Error line): B4's NO_DELETIONS_RE is
+        # a sentence-scoped, whole-body regex — a negator (never / do not /
+        # don't / not / no) plus a delete/remove word in one sentence.
+        # Today it matches the original "## Comparison" sentence; the new
+        # filter section adds negators near delete-adjacent verbs (a
+        # claim-5 rendering such as "not deleted from the report" would
+        # match it), so a false match could let the original sentence be
+        # deleted while B4 stays green. The original is pinned here
+        # instead of trusted to the regex.
+        self.assertRegex(
+            self.body,
+            self._COMPARISON_SENTENCE_RE,
+            "the original '## Comparison' sentence ('the command never "
+            "proposes removing or deleting it') is missing — it must "
+            "survive: B4's NO_DELETIONS_RE could otherwise be satisfied "
+            "by the new Worth-import filter section alone",
+        )
+
+    def test_original_wording_sentence_survives(self):
+        # Negator-risk pin (plan's B7 Error line): B5's _NEVER_ADOPT_RE is
+        # a sentence-scoped, whole-body regex — a negator within one
+        # sentence of an adopt-family verb (adopt/copy/overwrite/rewrite)
+        # — and its test additionally requires "wording"/"divergen*" in
+        # the 120 characters before the match. Today it matches the
+        # original "## Classifying findings" sentence; the filter section
+        # sits directly after that section's "Divergent wording" bullet,
+        # so a claim rendered with a negator near an adopt verb ("...not
+        # adopted") could satisfy both parts and let the original be
+        # deleted. The original is pinned here instead of trusted to the
+        # regex.
+        self.assertRegex(
+            self.body,
+            self._WORDING_SENTENCE_RE,
+            "the original '## Classifying findings' sentence ('...never "
+            "adopted, copied, overwritten or rewritten automatically') is "
+            "missing — it must survive: B5's _NEVER_ADOPT_RE could "
+            "otherwise be satisfied by the new Worth-import filter "
+            "section alone",
         )
 
 
