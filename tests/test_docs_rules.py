@@ -189,8 +189,12 @@ def _forbid_mentions_timeline_or_milestone(text):
 
 def _rule_bans_delivery_vocabulary(text):
     """True when a rule is the delivery-vocabulary ban: the page describes
-    the system as it is now, and slice/milestone/behaviour/PR/commit
-    vocabulary belongs in the plan, commit message or pull request."""
+    the system as it is now, and the delivery vocabulary is named (slice,
+    milestone, behaviour, pull request, commit) — but the rule must NOT
+    carry the duplicated homes clause, pinned by the absence of
+    "permanent and searchable". The rule still contains the words
+    "plan", "commit" and "pull request" as vocabulary items, so the
+    negative targets the clause, not the words."""
     vocabulary = (
         "slice" in text
         and "milestone" in text
@@ -199,10 +203,8 @@ def _rule_bans_delivery_vocabulary(text):
         and "commit" in text
     )
     says_now = "as it is now" in text
-    names_homes = (
-        "plan" in text and ("commit" in text) and ("pull request" in text)
-    )
-    return vocabulary and says_now and names_homes
+    no_duplicated_homes_clause = "permanent and searchable" not in text
+    return vocabulary and says_now and no_duplicated_homes_clause
 
 
 def _rule_capability_limit_useful_schedule_not(text):
@@ -516,16 +518,19 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
         )
 
     def test_new_rule_bans_delivery_vocabulary_on_pages(self):
-        # (a) The page describes the system as it is now; slice/milestone/
-        # behaviour/PR/commit vocabulary belongs in the plan, commit
-        # message or pull request.
+        # (a) R2: the page describes the system as it is now and the
+        # delivery vocabulary is named (slice, milestone, behaviour, pull
+        # request, commit), but the duplicated "belongs in the plan, the
+        # commit message, and the pull request, each of which is permanent
+        # and searchable" tail clause is dropped — the rule stays short.
         matching = self._rules_matching(_rule_bans_delivery_vocabulary)
         self.assertTrue(
             matching,
             "no <rule> in <best_practices> is the delivery-vocabulary ban "
             "(looked for 'slice' + 'milestone' + 'behaviour' + 'pull "
-            "request' + 'commit' + 'as it is now' + 'plan'). Rule texts: "
-            "%r" % self._rule_texts(),
+            "request' + 'commit' + 'as it is now', and rejected the "
+            "duplicated homes clause 'permanent and searchable'). Rule "
+            "texts: %r" % self._rule_texts(),
         )
 
     def test_new_rule_says_capability_limit_useful_schedule_not(self):
