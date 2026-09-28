@@ -53,6 +53,9 @@
     <rule>For bugfixes, write a test first, so the fix is proven and the regression stays caught.</rule>
     <rule>Skip getters and setters, third-party code and trivial wrappers that only call another method — test behavior, not appearance or UI styling.</rule>
     <rule>Keep tests small, fast, isolated from each other, repeatable and self-checking.</rule>
+    <rule>A docstring states what the test pins and why it could fail — one to three lines, module docstring included. How the decision was reached belongs in the plan and the commit message, not the docstring; a docstring approaching the length of the test body is narrating the decision.</rule>
+    <rule>Process vocabulary never appears in test-facing strings. Assertion messages, fail text, and skip reasons are read by developers debugging a failure: state what is missing and where, never the workflow phase that will add it ("RED step", "GREEN step") or behaviour numbers used as markers.</rule>
+    <rule>A test asserting a third-party fact — an SDK kwarg, exception class, filter shape or default — cites the saved page under doc/external/; never assert one from memory. The citation is one line: the file path, optionally its section — not a paragraph of reasoning about it.</rule>
   </best_practices>
 
   <common_pitfalls>
