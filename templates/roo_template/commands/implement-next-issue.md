@@ -49,3 +49,7 @@ When the context matches no open issue, say so in the rationale and fall back to
 **Confirmation:**
 
 Before any work starts, present the top candidate to the user with its number, title and a one-line rationale, then ask exactly one confirmation question. Ask no further question unless the issue itself is genuinely ambiguous.
+
+**Handoff:**
+
+On confirmation, hand the selected issue verbatim to the tdd-manager pipeline — no re-summarising or paraphrasing of the issue's title, body or rationale. If the confirmation is declined, present the next-ranked candidate from the ranked list instead; do not start anything, and do not re-ask about the same issue.
