@@ -1670,3 +1670,176 @@ class B5ImplementNextIssuePrExclusionTests(TemplateCommandTestCase):
             "against proceeding on the unfiltered issue list"
             % (self.command_path, " / ".join(B5_PROHIBITION_PHRASES)),
         )
+
+
+# --------------------------------------------------------------------------- #
+# B6 — implement-next-issue.md body: the free-form context override
+# --------------------------------------------------------------------------- #
+
+#: B6 (plans/implement-next-issue.md §Behaviors 6): the override-statement
+#: tokens — the body must say the supplied context overrides the ranking
+#: chain outright. 'outrank*' is deliberately NOT an option here: the
+#: committed B4 ranking prose already says each earlier criterion
+#: 'outranks' the later ones, so accepting it would make this test green
+#: on the ranking section while the override is still missing. The green
+#: step picks among 'override*' / 'precedence' / 'takes priority'.
+B6_OVERRIDE_PHRASES = ("override", "precedence", "takes priority")
+
+#: B6 error arm: the no-match trigger tokens — 'no match' or the
+#: 'matches no' spelling; either suffices. Neither spelling appears in
+#: the committed B1-B5 prose ('no open blockers' is the closest and does
+#: not match).
+B6_NO_MATCH_PHRASES = ("no match", "matches no")
+
+#: B6 error arm: the say-so tokens — the body instructs telling the user
+#: that the context matched nothing. 'say*' covers say/saying/says; the
+#: other spellings keep prose latitude.
+B6_SAY_SO_PHRASES = ("say", "state so", "state that")
+
+#: B6 error arm: the fallback tokens — 'fallback' / 'fall back' /
+#: 'falling back'; either spelling suffices. Note 'fallback' already
+#: appears once in the committed B5 prose ('a silent fallback would
+#: re-select work'); the test's red failure therefore comes from the
+#: say-so half, which is genuinely absent.
+B6_FALLBACK_PHRASES = ("fallback", "fall back", "falling back")
+
+
+class B6ImplementNextIssueContextOverrideTests(TemplateCommandTestCase):
+    """B6 (plans/implement-next-issue.md): the body states that supplied
+    context OVERRIDES the ranking chain outright.
+
+    Two arms:
+
+      * output — the argument-handling prose states that an issue matching
+        the supplied context wins the selection outright, overriding the
+        five-criterion ranking chain, and that the one-line rationale
+        names the match;
+      * error arm — when the context matches no open issue, the body
+        instructs saying so and falling back to the unbiased ranking
+        rather than selecting nothing.
+
+    Expected red reason: the body currently carries the usage,
+    prerequisites, ranking and pull-request-exclusion sections only — no
+    argument-handling section — so every present-phrase assertion fails
+    on a missing phrase, not on a file-not-found. The file exists and
+    loads (behaviours 1-5 are green), so this cycle is pure prose.
+
+    Phrases are asserted on the whole lower-cased body. Each pinned
+    phrase is verified absent from the committed B1-B5 prose, with three
+    deliberate exceptions that are satisfied there by other behaviour's
+    own words and therefore cannot be the red reason: 'context' (the
+    B2 usage line), 'win' (the B4 final tiebreaker) and 'fallback' (the
+    B5 error sentence). Every test's red failure comes from a phrase
+    that is genuinely B6's: 'override*'/'precedence'/'takes priority',
+    'match', 'rationale', 'no match', 'say*', 'unbiased'.
+
+    'outrank*' is deliberately not accepted for the override: the B4
+    ranking prose already carries it, so accepting it would make the
+    override test green on the ranking section while the override is
+    still missing.
+
+    Scope: behaviour 6 only. The confirmation question (B7), the
+    tdd-manager handoff (B8) and the empty-queue stop (B9) prose are
+    separate later cycles and are not pinned here.
+
+    Key-phrase convention as in B2-B5: phrases are asserted on the
+    parsed body (lower-cased), never raw bytes — concepts and keywords
+    (override, match, rationale, fallback, no match, unbiased) are
+    pinned, not exact sentences, so the green step keeps prose latitude.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    def _lowered(self):
+        """The parsed body, lower-cased for key-phrase matching."""
+        return self.body.lower()
+
+    # -- B6 output: supplied context overrides the ranking chain ------------ #
+
+    def test_body_states_context_overrides_the_ranking(self):
+        # B6 output (plan §Behaviors 6): the supplied context OVERRIDES
+        # the ranking chain outright — one of the override-statement
+        # tokens is named. See B6_OVERRIDE_PHRASES for why 'outrank*'
+        # is not an option (it is the B4 section's own word).
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B6_OVERRIDE_PHRASES),
+            "body of %s does not state that supplied context overrides "
+            "the ranking chain (missing %r)"
+            % (self.command_path, " / ".join(B6_OVERRIDE_PHRASES)),
+        )
+
+    def test_body_states_matching_issue_wins(self):
+        # B6 output (plan §Behaviors 6): an issue matching the supplied
+        # context wins the selection outright — 'match' is the word the
+        # committed B1-B5 prose does not carry; 'context' and 'win' are
+        # pinned alongside it so the win is the override's, not the
+        # ranking section's tiebreaker win.
+        lowered = self._lowered()
+        for phrase in ("context", "match", "win"):
+            self.assertIn(
+                phrase,
+                lowered,
+                "body of %s does not state that an issue matching the "
+                "supplied context wins (missing %r)" % (self.command_path, phrase),
+            )
+
+    def test_body_states_the_rationale_names_the_match(self):
+        # B6 output (plan §Behaviors 6): the one-line rationale names
+        # the match — 'rationale' is absent from the committed B1-B5
+        # prose, so its presence is B6's own signal.
+        lowered = self._lowered()
+        for phrase in ("rationale", "match"):
+            self.assertIn(
+                phrase,
+                lowered,
+                "body of %s does not state that the rationale names the "
+                "match (missing %r)" % (self.command_path, phrase),
+            )
+
+    # -- B6 error arm: the context matches no open issue --------------------- #
+
+    def test_body_error_arm_names_the_no_match_trigger(self):
+        # B6 error (plan §Behaviors 6): the error arm is triggered when
+        # the context matches NO open issue — 'no match' or the
+        # 'matches no' spelling; either suffices. Neither spelling
+        # appears in the committed B1-B5 prose.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B6_NO_MATCH_PHRASES),
+            "body of %s does not name the no-match trigger (missing %r)"
+            % (self.command_path, " / ".join(B6_NO_MATCH_PHRASES)),
+        )
+
+    def test_body_error_arm_instructs_saying_so_and_falling_back(self):
+        # B6 error (plan §Behaviors 6): on a no-match the body instructs
+        # SAYING so and FALLING BACK. 'say*' is the red reason — it is
+        # absent from the committed B1-B5 prose; the fallback half is
+        # already satisfied there by the B5 error sentence ('a silent
+        # fallback'), so it stays as a pin for the green step rather
+        # than as the red trigger.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B6_SAY_SO_PHRASES),
+            "body of %s does not instruct saying so on a no-match "
+            "(missing %r)" % (self.command_path, " / ".join(B6_SAY_SO_PHRASES)),
+        )
+        self.assertTrue(
+            any(phrase in lowered for phrase in B6_FALLBACK_PHRASES),
+            "body of %s does not instruct falling back on a no-match "
+            "(missing %r)" % (self.command_path, " / ".join(B6_FALLBACK_PHRASES)),
+        )
+
+    def test_body_error_arm_falls_back_to_the_unbiased_ranking(self):
+        # B6 error (plan §Behaviors 6): the fallback target is the
+        # UNBIASED RANKING rather than selecting nothing — 'unbiased'
+        # is the word that names the target and is absent from the
+        # committed B1-B5 prose. ('ranking' alone is the B4 section's
+        # own word, so pinning it adds no signal.)
+        lowered = self._lowered()
+        self.assertIn(
+            "unbiased",
+            lowered,
+            "body of %s does not name the 'unbiased' fallback target"
+            % self.command_path,
+        )
