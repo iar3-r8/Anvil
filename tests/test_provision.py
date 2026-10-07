@@ -902,5 +902,48 @@ class BrainstormCommandDeliveryTests(ProvisionCase):
         self.assertEqual(copied, source)
 
 
+class ImplementNextIssueCommandDeliveryTests(ProvisionCase):
+    """Behaviour 10 (plans/implement-next-issue.md): provisioning delivers the
+    implement-next-issue command into the provisioned target, byte-identical
+    to the template.
+
+    Boundary pin: ``_copy_roo_template()`` already copies the whole
+    roo_template/ tree, so this test passes the moment the template file
+    exists. It stays green while the copy is a whole-tree copy and turns
+    red if the copy is narrowed (e.g. commands/ excluded) or the bytes
+    drift from the template.
+
+    Expected red reason: the template file does not exist yet, so the
+    target side is missing. The source-side read is a ``read_bytes`` of a
+    missing path, so the red failure is a FileNotFoundError naming the
+    template source — the intended failure mode, fixed by the green step
+    creating the file.
+    """
+
+    def test_provisioned_target_contains_the_implement_next_issue_command_file(self):
+        self.provision()
+
+        copied = (
+            self.target / "roo_template" / "commands"
+            / "implement-next-issue.md"
+        )
+
+        self.assertTrue(copied.is_file(), "missing {}".format(copied))
+
+    def test_implement_next_issue_command_is_byte_identical_to_the_template(self):
+        self.provision()
+
+        source = (
+            REPO_ROOT / "templates" / "roo_template" / "commands"
+            / "implement-next-issue.md"
+        ).read_bytes()
+        copied = (
+            self.target / "roo_template" / "commands"
+            / "implement-next-issue.md"
+        ).read_bytes()
+
+        self.assertEqual(copied, source)
+
+
 if __name__ == "__main__":
     unittest.main()

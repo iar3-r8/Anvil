@@ -51,6 +51,11 @@ WRITE_GITHUB_TASK_PATH = COMMANDS_DIR / "write-github-task.md"
 #: Definition of Done checklist.
 GITHUB_BUG_REPORT_PATH = COMMANDS_DIR / "github-bug-report.md"
 
+#: B1 target (plans/implement-next-issue.md §Behaviors 1): the new command
+#: file that ships in the template with frontmatter exactly
+#: {description, mode} and mode 'tdd-manager'.
+IMPLEMENT_NEXT_ISSUE_PATH = COMMANDS_DIR / "implement-next-issue.md"
+
 #: B5: the four placeholder field labels that must appear as bold bullets
 #: under ``### Environment`` (plan §Behaviors 5; each is the line prefix
 #: ``- **<Label>**``).
@@ -1019,4 +1024,108 @@ class B5BugReportSectionsTests(TemplateCommandTestCase):
             self.body,
             "B5: the Guidelines list content was lost from %s"
             % self.command_path,
+        )
+
+
+# --------------------------------------------------------------------------- #
+# B1 — implement-next-issue.md ships in the template, with valid frontmatter
+# --------------------------------------------------------------------------- #
+
+class B1ImplementNextIssueTests(TemplateCommandTestCase):
+    """B1 (plans/implement-next-issue.md): ``implement-next-issue.md`` ships
+    in the template with valid frontmatter.
+
+    Expected red reason: the file does not exist yet, so every test fails in
+    ``setUp`` with the file-not-found assertion (``load_template_command``
+    would raise ``FileNotFoundError`` on a missing path). That is the
+    intended failure mode — the green step creates the file with
+    frontmatter keys exactly ``{description, mode}`` and
+    ``mode: tdd-manager`` (plan §Behaviors 1), nothing else.
+
+    Body phrases are deliberately not pinned here: behaviours 2–9 of the
+    plan are separate red/green cycles with their own key-phrase tests.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    # -- B1 output: the file ships ---------------------------------------- #
+
+    def test_file_is_a_regular_file(self):
+        # B1 output: the path is a file, not a directory or a missing
+        # path. setUp already asserted this; the explicit test keeps the
+        # requirement named in the suite.
+        self.assertTrue(
+            self.command_path.is_file(),
+            "template command file does not exist or is not a regular file: %s"
+            % self.command_path,
+        )
+
+    # -- B1 output: valid frontmatter ------------------------------------- #
+
+    def test_frontmatter_is_bounded_by_both_delimiters(self):
+        # B1 error: the frontmatter is delimited by '---' on the first
+        # line and a closing '---'; an unclosed block would raise
+        # TemplateCommandFrontmatterError at load time, naming the path.
+        lines = self.command_path.read_text(encoding="utf-8").splitlines()
+        self.assertTrue(lines, "template command file is empty")
+        self.assertEqual(
+            lines[0].strip(),
+            "---",
+            "first line of %s is not the opening '---' delimiter"
+            % self.command_path,
+        )
+        self.assertTrue(
+            any(line.strip() == "---" for line in lines[1:]),
+            "no closing '---' delimiter after line 1 in %s" % self.command_path,
+        )
+
+    def test_frontmatter_is_a_mapping(self):
+        # B1 output: the '---'-delimited frontmatter parses to a mapping.
+        self.assertIsInstance(
+            self.frontmatter,
+            dict,
+            "frontmatter of %s did not parse to a mapping" % self.command_path,
+        )
+
+    def test_frontmatter_has_non_empty_description(self):
+        # B1 output: a non-empty 'description' key.
+        self.assertIn(
+            "description",
+            self.frontmatter,
+            "frontmatter of %s has no 'description' key; keys: %r"
+            % (self.command_path, sorted(self.frontmatter)),
+        )
+        description = self.frontmatter["description"]
+        self.assertIsInstance(description, str, "'description' is not a string")
+        self.assertTrue(
+            description.strip(),
+            "'description' in %s is empty" % self.command_path,
+        )
+
+    def test_frontmatter_key_set_is_description_and_mode(self):
+        # B1 output (plan §Behaviors 1): the key set is exactly
+        # {description, mode}. A stray key from a later cycle would fail
+        # here.
+        self.assertEqual(
+            set(self.frontmatter),
+            {"description", "mode"},
+            "frontmatter of %s must have exactly the keys "
+            "{'description', 'mode'}; got: %r"
+            % (self.command_path, sorted(self.frontmatter)),
+        )
+
+    def test_frontmatter_mode_is_tdd_manager(self):
+        # B1 output (plan §Behaviors 1): mode is 'tdd-manager' — the mode
+        # slug the handoff targets (templates/roo_template/.roomodes).
+        self.assertIn(
+            "mode",
+            self.frontmatter,
+            "frontmatter of %s has no 'mode' key; keys: %r"
+            % (self.command_path, sorted(self.frontmatter)),
+        )
+        self.assertEqual(
+            self.frontmatter["mode"],
+            "tdd-manager",
+            "mode in %s is %r; expected 'tdd-manager'"
+            % (self.command_path, self.frontmatter["mode"]),
         )
