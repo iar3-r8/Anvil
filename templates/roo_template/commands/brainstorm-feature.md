@@ -7,6 +7,10 @@ Brainstorm a feature architecturally, in plain language, before any code is writ
 
 The session has three phases: gather context and pressure-test the requirements, write the spec report, then sign off and raise fractioned GitHub issues. This command starts with Phase 1.
 
+**Plain language, always**
+
+Write everything this session produces — the specifications, the behaviours, the final report — in clear, simple, plain language that a non-specialist reader can follow. Avoid jargon; if a technical term is unavoidable, define it in one line the first time it appears. This rule stands for the whole session and outranks any habit of reaching for specialist shorthand.
+
 **Phase 1 — Context, then the grill**
 
 1. **Gather first, ask second.**
