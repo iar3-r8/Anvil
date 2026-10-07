@@ -1215,3 +1215,77 @@ class B2ImplementNextIssueUsageTests(TemplateCommandTestCase):
             "shape — that is /execute-github-task's contract"
             % self.command_path,
         )
+
+
+# --------------------------------------------------------------------------- #
+# B3 — implement-next-issue.md body: the GitHub MCP prerequisite
+# --------------------------------------------------------------------------- #
+
+class B3ImplementNextIssuePrerequisiteTests(TemplateCommandTestCase):
+    """B3 (plans/implement-next-issue.md): the body names the GitHub MCP
+    server as a prerequisite and names ``.roo/rules/AGENTS.md`` as the
+    source of the GitHub owner and repository name.
+
+    The repo's intake/execution path is the MCP server, never a CLI, so the
+    body must not name "GitHub CLI" — the sibling
+    ``execute-github-task.md`` guard (``B3B4CommandNameTests``,
+    ``tests/test_template_commands.py:581-601``) holds the same shape.
+
+    Expected red reason: the current body is the usage section plus the
+    stub intro — no prerequisites or repository-resolution prose — so the
+    two present-phrase assertions fail on the missing phrases, not on a
+    file-not-found. The file exists and loads (behaviours 1–2 are green).
+
+    Scope: behaviour 3 only. The ranking chain (B4), the PR exclusion
+    (B5), the context override (B6), the confirmation (B7), the handoff
+    (B8) and the empty-queue (B9) prose are separate later cycles.
+
+    Key-phrase convention as in B2–B5: assert phrases on the parsed body,
+    never raw bytes, so the green step keeps prose latitude.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    # -- B3 output: the GitHub MCP server is a named prerequisite ---------- #
+
+    def test_body_names_github_mcp_server(self):
+        # B3 output (plan §Behaviors 3): the body names "GitHub MCP
+        # server" as a prerequisite — the same phrase the sibling
+        # execute-github-task.md guard pins (tests/test_template_commands.py:581-589).
+        self.assertIn(
+            "GitHub MCP server",
+            self.body,
+            "body of %s does not name 'GitHub MCP server' as a "
+            "prerequisite" % self.command_path,
+        )
+
+    # -- B3 output: AGENTS.md is the named source of owner and repo -------- #
+
+    def test_body_names_agents_md_as_repository_source(self):
+        # B3 output (plan §Behaviors 3): the body names
+        # '.roo/rules/AGENTS.md' as the source of the GitHub owner and
+        # repository name (templates/roo_template/rules/AGENTS.md:23-24
+        # is that source in the shipped template).
+        self.assertIn(
+            ".roo/rules/AGENTS.md",
+            self.body,
+            "body of %s does not name '.roo/rules/AGENTS.md' as the "
+            "source of the GitHub owner and repository"
+            % self.command_path,
+        )
+
+    # -- B3 error guard: the intake path is the MCP server, never a CLI ---- #
+
+    def test_body_has_no_bare_github_cli(self):
+        # Error (B3, plan §Behaviors 3): no "GitHub CLI" — the repo's
+        # intake path is the MCP server. The assertion is the two-word
+        # token, so other GitHub phrasing the body legitimately carries
+        # (e.g. "GitHub issue", "github mcp") stays legal. Guard shape
+        # mirrors tests/test_template_commands.py:591-601. Green by
+        # design at red time: the stub names no CLI, and the guard must
+        # stay green once the prerequisites land.
+        self.assertNotIn(
+            "GitHub CLI",
+            self.body,
+            "body of %s still contains bare 'GitHub CLI'" % self.command_path,
+        )
