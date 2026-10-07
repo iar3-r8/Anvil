@@ -380,5 +380,162 @@ class B4Phase2ReportTests(BrainstormCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# Behaviour 5 — Phase 3: sign-off, then fractioned issues, then stop
+# --------------------------------------------------------------------------- #
+
+
+class B5Phase3SignoffIssuesTests(BrainstormCommandTestCase):
+    """Behaviour 5 (plans/brainstorm-feature-command.md): Phase 3 of the
+    brainstorming session — ask for the user's absolute sign-off on the
+    finished specification, then create the fractioned GitHub issues
+    itself (one per independently implementable piece of work, in the
+    write-github-task format, via the github MCP server), and stop:
+    execution is a separate command later.
+
+    Expected red reason: the body of
+    ``templates/roo_template/commands/brainstorm-feature.md`` carries the
+    intro, the plain-language rule, Phase 1 and Phase 2, but no Phase 3
+    section, so the positive phrase assertions below fail. The two guard
+    tests (``assertNotRegex``) are expected to PASS on arrival — the body
+    contains neither a ``switch_mode`` instruction nor an
+    implementation-start instruction; they pin the deliberately dropped
+    behaviours and turn red the moment someone re-adds them.
+    """
+
+    def test_body_requires_sign_off_before_creating_the_issues(self):
+        # B5 assertion 1: the user's absolute sign-off on the finished
+        # specification/report is required before anything is created —
+        # a sign-off phrase tied to the approval verb in one sentence,
+        # and to issue creation through an ordering word (before / until
+        # / only after / only once), in either word order.
+        self.assertRegex(
+            self.body,
+            r"(?i)sign[- ]?off[^.\n]{0,150}(approv\w*|accept\w*|confirm\w*|agrees?)\b"
+            r"|(approv\w*|accept\w*|confirm\w*|agrees?)\b[^.\n]{0,150}sign[- ]?off",
+            "body of %s does not tie sign-off to the user's approval of "
+            "the specification" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)sign[- ]?off[^.\n]{0,150}(before|until|only (after|once))[^.\n]{0,100}(creat\w*|rais\w*|publish\w*|filed)"
+            r"|(before|until)[^.\n]{0,100}(creat\w*|rais\w*|publish\w*|filed)[^.\n]{0,100}sign[- ]?off",
+            "body of %s does not require sign-off before the issues are "
+            "created" % self.command_path,
+        )
+
+    def test_body_directs_fractioning_the_report_into_separate_issues(self):
+        # B5 assertion 2: after sign-off the report is fractioned —
+        # split / broken down into issues, one per piece of work, each
+        # independently implementable. The verb must be tied to the
+        # split INTO issues, or to "one issue per" granularity: a bare
+        # "fractioned" in a preview sentence (the intro line) is not
+        # the Phase 3 direction, so it must not satisfy this test.
+        self.assertRegex(
+            self.body,
+            r"(?i)one issue (?:per|for each)"
+            r"|(?:split|break|fraction\w*)(?:ing|d|s)?[^.\n]{0,60}into[^.\n]{0,40}(?:github )?issues?",
+            "body of %s does not direct splitting or fractioning the "
+            "report into issues (a fraction/split/break verb into "
+            "issues, or 'one issue per' granularity)" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)(multiple|several|separate|individual) (?:github )?issues?"
+            r"|one issue (?:per|for each)[^.\n]{0,60}(?:piece|part|task|step|work)",
+            "body of %s does not direct multiple or separate issues, "
+            "one per piece of work" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)independently implement\w*",
+            "body of %s does not state that each issue is independently "
+            "implementable" % self.command_path,
+        )
+
+    def test_body_names_the_write_github_task_issue_format(self):
+        # B5 assertion 3: the issues use the write-github-task format —
+        # the sibling command's name (with or without a leading slash),
+        # or its identifying sections (Context / Goal / Scope /
+        # Definition of Done) named in order.
+        self.assertRegex(
+            self.body,
+            r"(?i)/?write-github-task"
+            r"|context[^.\n]{0,100}goal[^.\n]{0,100}scope[^.\n]{0,200}definition of done",
+            "body of %s does not name the write-github-task issue format "
+            "(the command name, or its Context / Goal / Scope / Definition "
+            "of Done sections)" % self.command_path,
+        )
+
+    def test_body_names_the_github_mcp_server_as_publishing_mechanism(self):
+        # B5 assertion 4: the issues are published through the github MCP
+        # server, named as the mechanism.
+        self.assertRegex(
+            self.body,
+            r"(?i)github[^.\n]{0,15}mcp|mcp[^.\n]{0,15}(?:server|tool)",
+            "body of %s does not name the github MCP server as the "
+            "publishing mechanism" % self.command_path,
+        )
+
+    def test_body_stops_after_creating_the_issues(self):
+        # B5 assertion 5: the command STOPS after creating the issues —
+        # execution is a separate command later, not part of this
+        # session.
+        self.assertRegex(
+            self.body,
+            r"(?i)stops? (?:there|here|after (?:the )?(?:issues?|creation))"
+            r"|stops?[^.\n]{0,120}(?:separate|later|another)[^.\n]{0,40}(?:command|step)"
+            r"|(?:separate|later|another)[^.\n]{0,40}(?:command|step)[^.\n]{0,120}stops?",
+            "body of %s does not say the command stops after creating "
+            "the issues" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)separate (?:command|step|invocation)|execute-github-task|tdd-manager",
+            "body of %s does not name execution as a separate, later "
+            "command (e.g. execute-github-task or the tdd-manager)"
+            % self.command_path,
+        )
+
+    def test_guard_body_does_not_direct_switch_mode_to_code(self):
+        # Guard A (plan item 5, Error line): the body must NOT tell the
+        # user to switch_mode to a Code/Developer profile to implement —
+        # the source protocol's switch_mode step was deliberately
+        # dropped. Expected to PASS on arrival; turns red the moment a
+        # switch_mode-to-Code instruction reappears.
+        self.assertNotRegex(
+            self.body,
+            r"(?i)switch_mode[^.\n]{0,200}(?:\bcode\b|developer)"
+            r"|(?:\bcode\b|developer)[^.\n]{0,200}switch_mode",
+            "body of %s must not direct a switch_mode to a Code/Developer "
+            "profile for implementation" % self.command_path,
+        )
+
+    def test_guard_body_does_not_start_implementation_in_phase_3(self):
+        # Guard B (plan item 5, Error line): Phase 3 must not create a
+        # branch, write implementation code, or start implementing. The
+        # body already carries the standing no-code rule ("Never write
+        # implementation code ... during the session"), so these
+        # negative assertions target an implementation START — a branch
+        # verb, or a start verb tied to implementing — and must not
+        # false-positive on that prohibition. Expected to PASS on
+        # arrival; turns red the moment Phase 3 re-adds implementation
+        # work.
+        self.assertNotRegex(
+            self.body,
+            r"(?i)(?:creat\w*|mak\w*|open|cut|start\w*|check[- ]?out)[^.\n]{0,40}\bbranch\b"
+            r"|\bbranch\b[^.\n]{0,40}(?:creat\w*|mak\w*|check[- ]?out)",
+            "body of %s must not direct creating a branch in Phase 3"
+            % self.command_path,
+        )
+        self.assertNotRegex(
+            self.body,
+            r"(?i)\b(?:start\w*|begi[n]+s?|proceed[s]? to|proceed[s]? with|move on to)[^.\n]{0,40}"
+            r"(?:implement\w*|develop\w*|coding|writing (?:the )?code)",
+            "body of %s must not direct starting implementation in Phase 3"
+            % self.command_path,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
