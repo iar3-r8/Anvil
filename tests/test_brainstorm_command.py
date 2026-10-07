@@ -223,5 +223,67 @@ class B2Phase1Tests(BrainstormCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# Behaviour 3 — the standing plain-language rule
+# --------------------------------------------------------------------------- #
+
+
+class B3PlainLanguageTests(BrainstormCommandTestCase):
+    """Behaviour 3 (plans/brainstorm-feature-command.md): the standing
+    plain-language rule — the specifications and behaviours this command
+    produces are written in clear, simple, plain language that a
+    non-specialist reader can follow.
+
+    Expected red reason: the body of
+    ``templates/roo_template/commands/brainstorm-feature.md`` mentions
+    "plain language" only incidentally (the intro line and the
+    one-question rule); it states no standing rule tying plain language
+    to the spec's content and naming a non-specialist audience, so the
+    three phrase assertions below fail. The file exists and parses
+    (behaviours 1-2 are green), so this is assertion-level red, not a
+    load failure.
+    """
+
+    def test_body_states_plain_language_requirement_for_the_spec(self):
+        # B3 assertion 1: the plain-language requirement is named
+        # explicitly — "plain language" or "simple language" in the same
+        # sentence as the spec/behaviours it governs, i.e. tied to how
+        # the deliverable is written or presented, not an incidental
+        # phrase about the session's chat style.
+        self.assertRegex(
+            self.body,
+            r"(?i)\b(specifications?|behaviou?rs?|spec)\b[^.\n]{0,100}(plain|simple) language"
+            r"|(plain|simple) language[^.\n]{0,100}\b(specifications?|behaviou?rs?|spec)\b",
+            "body of %s does not state a plain-language requirement tied "
+            "to how the spec or behaviours are written" % self.command_path,
+        )
+
+    def test_body_names_a_non_specialist_reader_as_the_audience(self):
+        # B3 assertion 2: the audience of the plain-language rule is named
+        # explicitly — a non-specialist reader, or an equivalent no-jargon
+        # phrasing that makes the reader, not just the writer, visible.
+        self.assertRegex(
+            self.body,
+            r"(?i)non[- ]specialist|non[- ]expert|without jargon|avoid[s]? (the )?jargon",
+            "body of %s does not name a non-specialist reader (or an "
+            "equivalent no-jargon audience) for the plain-language rule"
+            % self.command_path,
+        )
+
+    def test_plain_language_rule_covers_specifications_and_behaviours(self):
+        # B3 assertion 3: the rule's scope is the spec's content —
+        # "specifications" and/or "behaviours", the deliverable's own
+        # words, are the things that must be written plainly (not only
+        # the chat replies), in either word order within one sentence.
+        self.assertRegex(
+            self.body,
+            r"(?i)\b(specifications?|behaviou?rs?)\b[^.\n]{0,120}(plain|simple|simply)"
+            r"|(plain|simple|simply)[^.\n]{0,120}\b(specifications?|behaviou?rs?)\b",
+            "body of %s does not make specifications and behaviours the "
+            "content that must be written in plain language"
+            % self.command_path,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
