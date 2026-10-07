@@ -871,5 +871,36 @@ class HarvestCommandExclusionTests(ProvisionCase):
         self.assertFalse(template.exists())
 
 
+class BrainstormCommandDeliveryTests(ProvisionCase):
+    """Behaviour 6: provisioning delivers the brainstorm-feature command into
+    the provisioned target, byte-identical to the template.
+
+    Boundary pin: ``_copy_roo_template()`` already copies the whole
+    roo_template/ tree, so this test passes on arrival. It stays green while
+    the copy is a whole-tree copy and turns red if the copy is narrowed
+    (e.g. commands/ excluded) or the bytes drift from the template.
+    """
+
+    def test_provisioned_target_contains_the_brainstorm_command_file(self):
+        self.provision()
+
+        copied = self.target / "roo_template" / "commands" / "brainstorm-feature.md"
+
+        self.assertTrue(copied.is_file(), "missing {}".format(copied))
+
+    def test_brainstorm_command_is_byte_identical_to_the_template(self):
+        self.provision()
+
+        source = (
+            REPO_ROOT / "templates" / "roo_template" / "commands"
+            / "brainstorm-feature.md"
+        ).read_bytes()
+        copied = (
+            self.target / "roo_template" / "commands" / "brainstorm-feature.md"
+        ).read_bytes()
+
+        self.assertEqual(copied, source)
+
+
 if __name__ == "__main__":
     unittest.main()
