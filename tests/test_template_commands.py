@@ -1843,3 +1843,210 @@ class B6ImplementNextIssueContextOverrideTests(TemplateCommandTestCase):
             "body of %s does not name the 'unbiased' fallback target"
             % self.command_path,
         )
+
+
+# --------------------------------------------------------------------------- #
+# B7 — implement-next-issue.md body: the single confirmation question
+# --------------------------------------------------------------------------- #
+
+#: B7 (plans/implement-next-issue.md §Behaviors 7): the presentation
+#: tokens — the body must instruct PRESENTING the top candidate to the
+#: user before asking. None of these appears in the committed B1-B6
+#: prose, so any one of them is a genuine B7 signal. The green step
+#: picks the wording.
+B7_PRESENTATION_PHRASES = ("present", "show", "display")
+
+#: B7: the exactly-one tokens — the confirmation must be EXACTLY ONE
+#: question. 'only one' is accepted as a spelling variant; neither
+#: phrase appears in the committed B1-B6 prose.
+B7_SINGLE_QUESTION_PHRASES = ("exactly one", "only one")
+
+#: B7 error arm: the no-further-question tokens — the body must say no
+#: FURTHER question is asked unless the issue is genuinely ambiguous.
+#: None of these appears in the committed B1-B6 prose.
+B7_NO_FURTHER_PHRASES = ("no further", "no other", "no additional")
+
+
+class B7ImplementNextIssueConfirmationTests(TemplateCommandTestCase):
+    """B7 (plans/implement-next-issue.md): the body states the single
+    confirmation question.
+
+    Three instruction arms plus a cross-file guard:
+
+      * presentation — the body instructs presenting the top candidate
+        WITH its number, title and a one-line rationale;
+      * single question — the body instructs asking EXACTLY ONE
+        confirmation question before any work starts;
+      * error arm — the body instructs asking NO FURTHER question
+        unless the issue itself is genuinely ambiguous;
+      * guard — the body must not carry execute-github-task's
+        "at least 2-3 clarifying questions" instruction
+        (templates/roo_template/commands/execute-github-task.md:59);
+        that multi-question mandate belongs to the sibling command
+        only. Guard shape mirrors the sibling B3 cross-file negative
+        assertions (tests/test_template_commands.py:635-645).
+
+    Expected red reason: the body currently ends at the argument-
+    handling section — no confirmation section — so every present-
+    phrase assertion fails on a missing phrase, not on a file-not-
+    find. The file exists and loads (behaviours 1-6 are green), so
+    this cycle is pure prose.
+
+    Phrases are asserted on the whole lower-cased body. The red
+    failures come from phrases genuinely absent from the committed
+    B1-B6 prose: the presentation verb, 'top candidate', 'number',
+    'exactly one'/'only one', 'question', 'no further'/'no other'/
+    'no additional', 'unless' and 'ambiguous'. A few pins ('title',
+    'one-line', 'rationale', 'confirm', 'before', 'work') are already
+    satisfied by other behaviours' own words and stay as pins for
+    the green step rather than red triggers.
+
+    Scope: behaviour 7 only. The tdd-manager handoff (B8) and the
+    empty-queue stop (B9) prose are separate later cycles and are
+    not pinned here.
+
+    Key-phrase convention as in B2-B6: phrases are asserted on the
+    parsed body (lower-cased), never raw bytes — concepts and
+    keywords (present, top candidate, number, one question, confirm,
+    rationale, no further, unless, ambiguous) are pinned, not exact
+    sentences, so the green step keeps prose latitude.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    def _lowered(self):
+        """The parsed body, lower-cased for key-phrase matching."""
+        return self.body.lower()
+
+    # -- B7 output: the top candidate is presented -------------------------- #
+
+    def test_body_instructs_presenting_the_top_candidate(self):
+        # B7 output (plan §Behaviors 7): the body instructs PRESENTING
+        # the top candidate — a presentation verb plus 'top candidate';
+        # neither appears in the committed B1-B6 prose.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B7_PRESENTATION_PHRASES),
+            "body of %s does not instruct presenting the top candidate "
+            "(missing %r)"
+            % (self.command_path, " / ".join(B7_PRESENTATION_PHRASES)),
+        )
+        self.assertIn(
+            "top candidate",
+            lowered,
+            "body of %s does not name the 'top candidate'"
+            % self.command_path,
+        )
+
+    def test_body_states_the_candidate_is_shown_with_number_title_rationale(self):
+        # B7 output (plan §Behaviors 7): the presentation carries the
+        # candidate's NUMBER, TITLE and a one-line RATIONALE. 'number'
+        # is the red trigger (absent from the committed B1-B6 prose);
+        # 'title', 'one-line' and 'rationale' are already carried by
+        # the B5/B6 prose and stay as pins for the green step.
+        lowered = self._lowered()
+        for phrase in ("number", "title", "rationale"):
+            self.assertIn(
+                phrase,
+                lowered,
+                "body of %s does not state that the top candidate is "
+                "shown with its %r" % (self.command_path, phrase),
+            )
+        self.assertTrue(
+            any(phrase in lowered for phrase in ("one-line", "one line")),
+            "body of %s does not state that the rationale is "
+            "one-line" % self.command_path,
+        )
+
+    # -- B7 output: exactly one confirmation question ----------------------- #
+
+    def test_body_instructs_exactly_one_confirmation_question(self):
+        # B7 output (plan §Behaviors 7): the body instructs asking
+        # EXACTLY ONE confirmation question. Both 'exactly one'/'only
+        # one' and 'question' are absent from the committed B1-B6
+        # prose; 'confirm' is already carried by the intro line and
+        # stays as a pin.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B7_SINGLE_QUESTION_PHRASES),
+            "body of %s does not instruct asking EXACTLY ONE "
+            "confirmation question (missing %r)"
+            % (self.command_path, " / ".join(B7_SINGLE_QUESTION_PHRASES)),
+        )
+        self.assertIn(
+            "question",
+            lowered,
+            "body of %s does not name the confirmation 'question'"
+            % self.command_path,
+        )
+        self.assertIn(
+            "confirm",
+            lowered,
+            "body of %s does not name 'confirm*' in the confirmation "
+            "instruction" % self.command_path,
+        )
+
+    def test_body_states_the_question_comes_before_any_work(self):
+        # B7 output (plan §Behaviors 7): the confirmation question is
+        # asked BEFORE ANY WORK STARTS. 'before' and 'work' are
+        # already carried by the B5 prose ('before ranking', 'work
+        # that is already being implemented') and stay as pins; the
+        # question-side phrases are pinned by the previous test.
+        lowered = self._lowered()
+        for phrase in ("before", "work"):
+            self.assertIn(
+                phrase,
+                lowered,
+                "body of %s does not state that the confirmation "
+                "question comes %r work starts" % (self.command_path, phrase),
+            )
+
+    # -- B7 error arm: no further question unless the issue is ambiguous ---- #
+
+    def test_body_error_arm_instructs_no_further_question(self):
+        # B7 error (plan §Behaviors 7): the body instructs asking NO
+        # FURTHER question. 'no further'/'no other'/'no additional'
+        # are all absent from the committed B1-B6 prose.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B7_NO_FURTHER_PHRASES),
+            "body of %s does not instruct asking no further question "
+            "(missing %r)"
+            % (self.command_path, " / ".join(B7_NO_FURTHER_PHRASES)),
+        )
+
+    def test_body_error_arm_names_the_genuinely_ambiguous_exception(self):
+        # B7 error (plan §Behaviors 7): the exception to the
+        # no-further-question rule is that the ISSUE ITSELF is
+        # GENUINELY AMBIGUOUS — 'unless' and 'ambiguous' are both
+        # absent from the committed B1-B6 prose.
+        lowered = self._lowered()
+        for phrase in ("unless", "ambiguous"):
+            self.assertIn(
+                phrase,
+                lowered,
+                "body of %s does not name the %r exception for the "
+                "no-further-question rule" % (self.command_path, phrase),
+            )
+
+    # -- B7 guard: the sibling's multi-question mandate is not adopted ------ #
+
+    def test_body_has_no_multi_question_clarifying_mandate(self):
+        # Guard (B7, plan §Behaviors 7): the body must NOT carry
+        # execute-github-task's "at least 2-3 clarifying questions"
+        # instruction (templates/roo_template/commands/execute-github-
+        # task.md:59) — that multi-question mandate belongs to the
+        # sibling command only. Guard shape mirrors the sibling B3
+        # cross-file negative assertions
+        # (tests/test_template_commands.py:635-645). Green by design
+        # at red time: the confirmation section does not exist yet,
+        # and the guard must stay green once the single-question
+        # prose lands.
+        for token in ("clarifying", "2-3"):
+            self.assertNotIn(
+                token,
+                self._lowered(),
+                "body of %s carries the multi-question mandate token "
+                "%r — that belongs to /execute-github-task only"
+                % (self.command_path, token),
+            )
