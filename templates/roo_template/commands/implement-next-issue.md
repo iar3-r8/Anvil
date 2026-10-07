@@ -16,3 +16,7 @@ Finds the most logical next open GitHub issue, confirms it with the user, and ha
 /implement-next-issue
 /implement-next-issue the API auth flow
 ```
+
+**Prerequisites:**
+- The GitHub MCP server must be available — all GitHub calls in this workflow go through it.
+- The GitHub owner and repository name come from `.roo/rules/AGENTS.md`.
