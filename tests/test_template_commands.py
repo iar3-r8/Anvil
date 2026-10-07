@@ -118,6 +118,33 @@ B4_RANKING_CRITERIA_IN_ORDER = (
 #: may pick either spelling; one occurrence of either suffices.
 B4_ORDERING_PHRASES = ("outranks", "before")
 
+#: B5 (plans/implement-next-issue.md §Behaviors 5): the key phrases that
+#: pin the "list open pull requests" instruction — the body may name the
+#: ``list_pull_requests`` function or the plain-English "open pull
+#: request" phrase; either spelling suffices, so the green step keeps
+#: prose latitude.
+B5_PR_LISTING_PHRASES = ("list_pull_requests", "open pull request")
+
+#: B5: the three closer keywords — ``Fixes``, ``Closes`` and
+#: ``Resolves`` — each of which may reference an issue from an open
+#: PR's title or body. All three are pinned (asserted lower-cased).
+B5_CLOSER_KEYWORDS = ("fixes", "closes", "resolves")
+
+#: B5: the issue-number reference shape — a ``#`` followed by the
+#: reference (``#N``, ``#123``). The plan gives the shape
+#: ``Resolves #N``; pinning the ``#`` shape at key-phrase level keeps
+#: the green step latitude in how the placeholder is spelled.
+B5_HASH_REF_RE = re.compile(r"#\s*\w")
+
+#: B5: the exclusion verbs — the instruction to drop the referenced
+#: issues may read "exclude*" or "filter*"; either suffices.
+B5_EXCLUSION_PHRASES = ("exclu", "filter")
+
+#: B5 error arm: the explicit-prohibition tokens — the error arm must
+#: state "never proceed on the unfiltered issue list" with one of
+#: these; the green step picks the wording.
+B5_PROHIBITION_PHRASES = ("never", "do not", "must not")
+
 #: B2: a ``.roo/commands/<name>`` reference, anchored at the path
 #: boundary. ``<name>`` is a command filename (e.g.
 #: ``pull-request-builder.md``), so the match ends at end-of-line,
@@ -1476,3 +1503,170 @@ class B4ImplementNextIssueRankingTests(TemplateCommandTestCase):
                 "body of %s states %r — a single-criterion ranking "
                 "leaves ties unresolved" % (self.command_path, sole_rule_phrase),
             )
+
+
+# --------------------------------------------------------------------------- #
+# B5 — implement-next-issue.md body: the pull-request exclusion
+# --------------------------------------------------------------------------- #
+
+class B5ImplementNextIssuePrExclusionTests(TemplateCommandTestCase):
+    """B5 (plans/implement-next-issue.md): the body states the
+    pull-request exclusion.
+
+    The exclusion has three instruction arms plus an error arm:
+
+      * listing — the body instructs listing open pull requests, naming
+        ``list_pull_requests`` or "open pull requests";
+      * closer exclusion — the body instructs excluding any issue
+        referenced by a ``Fixes``/``Closes``/``Resolves #N`` closer in an
+        open PR's title or body;
+      * defensive skip — the body instructs skipping any returned issue
+        entry that is itself a pull request (GitHub's issues endpoint
+        may return PRs as entries, plan §Assumptions);
+      * error arm — when the PR listing fails or returns an error, the
+        body instructs REPORTING the failure and STOPPING, never
+        proceeding on the unfiltered issue list.
+
+    Expected red reason: the body currently carries the usage,
+    prerequisites and ranking sections only — no exclusion section — so
+    every present-phrase assertion fails on a missing phrase, not on a
+    file-not-found. The file exists and loads (behaviours 1-4 are
+    green), so this cycle is pure prose.
+
+    Scope: behaviour 5 only. Context override (B6), confirmation (B7),
+    handoff (B8) and empty-queue (B9) prose are separate later cycles.
+
+    Key-phrase convention as in B2-B4: phrases are asserted on the
+    parsed body (lower-cased), never raw bytes, so the green step keeps
+    prose latitude — concepts and keywords are pinned, not exact
+    sentences.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    def _lowered(self):
+        """The parsed body, lower-cased for key-phrase matching."""
+        return self.body.lower()
+
+    # -- B5 output: listing the open pull requests -------------------------- #
+
+    def test_body_instructs_listing_open_pull_requests(self):
+        # B5 output (plan §Behaviors 5): the body instructs listing open
+        # pull requests — naming the 'list_pull_requests' function or
+        # the plain-English "open pull request" phrase (either
+        # suffices).
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B5_PR_LISTING_PHRASES),
+            "body of %s does not instruct listing open pull requests "
+            "(missing both %r)"
+            % (self.command_path, " / ".join(B5_PR_LISTING_PHRASES)),
+        )
+
+    # -- B5 output: the closer-keyword exclusion ---------------------------- #
+
+    def test_body_pins_all_three_closer_keywords(self):
+        # B5 output (plan §Behaviors 5): all three closer keywords —
+        # Fixes / Closes / Resolves — are named, so an issue referenced
+        # by any of them in an open PR is excluded.
+        lowered = self._lowered()
+        for keyword in B5_CLOSER_KEYWORDS:
+            self.assertIn(
+                keyword,
+                lowered,
+                "body of %s does not name the closer keyword %r"
+                % (self.command_path, keyword),
+            )
+
+    def test_body_pins_hash_issue_reference_shape(self):
+        # B5 output (plan §Behaviors 5): the '#N' issue-reference shape
+        # is pinned at key-phrase level — a '#' followed by the
+        # reference, e.g. 'Resolves #N'.
+        self.assertIsNotNone(
+            B5_HASH_REF_RE.search(self._lowered()),
+            "body of %s carries no '#' issue-reference shape (e.g. "
+            "'Resolves #N')" % self.command_path,
+        )
+
+    def test_body_states_closers_checked_in_pr_title_and_body(self):
+        # B5 output (plan §Behaviors 5): the closer is looked for in an
+        # open PR's title or body — both words are named.
+        lowered = self._lowered()
+        for word in ("title", "body"):
+            self.assertIn(
+                word,
+                lowered,
+                "body of %s does not state that the closer is checked in "
+                "the open PR's %r" % (self.command_path, word),
+            )
+
+    def test_body_states_excluding_the_referenced_issues(self):
+        # B5 output (plan §Behaviors 5): the issues referenced by an
+        # open PR's closer are excluded from the candidates — an
+        # exclusion verb ('exclude*' or 'filter*') is named.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B5_EXCLUSION_PHRASES),
+            "body of %s does not instruct EXCLUDING the issues "
+            "referenced by an open PR's closer (missing %r)"
+            % (self.command_path, " / ".join(B5_EXCLUSION_PHRASES)),
+        )
+
+    # -- B5 output: the defensive skip of PR entries ------------------------ #
+
+    def test_body_instructs_skipping_issue_entries_that_are_pull_requests(self):
+        # B5 output (plan §Behaviors 5 + §Assumptions): GitHub's issues
+        # endpoint may return pull requests as issue entries, so the
+        # body instructs SKIPPING any returned entry that is itself a
+        # pull request.
+        lowered = self._lowered()
+        self.assertIn(
+            "skip",
+            lowered,
+            "body of %s does not instruct skipping entries"
+            % self.command_path,
+        )
+        self.assertIn(
+            "pull request",
+            lowered,
+            "body of %s does not name 'pull request' in the skip "
+            "instruction" % self.command_path,
+        )
+
+    # -- B5 error arm: report and stop on a failed PR listing --------------- #
+
+    def test_body_error_arm_names_listing_failure_trigger(self):
+        # B5 error (plan §Behaviors 5): the error arm is triggered when
+        # the PR listing fails or returns an error.
+        self.assertIn(
+            "fail",
+            self._lowered(),
+            "body of %s does not name the listing-failure trigger "
+            "('fail*')" % self.command_path,
+        )
+
+    def test_body_error_arm_instructs_report_and_stop(self):
+        # B5 error (plan §Behaviors 5): on the failure the body
+        # instructs REPORTING it and STOPPING — a silent fallback would
+        # re-select work already in flight.
+        lowered = self._lowered()
+        for phrase in ("report", "stop"):
+            self.assertIn(
+                phrase,
+                lowered,
+                "body of %s does not instruct %r on a failed PR listing"
+                % (self.command_path, phrase),
+            )
+
+    def test_body_error_arm_carries_explicit_prohibition(self):
+        # B5 error (plan §Behaviors 5): the body states the prohibition
+        # — never proceed on the unfiltered issue list. One of the
+        # explicit-prohibition tokens suffices; the green step picks
+        # the wording.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B5_PROHIBITION_PHRASES),
+            "body of %s carries no explicit prohibition (one of %r) "
+            "against proceeding on the unfiltered issue list"
+            % (self.command_path, " / ".join(B5_PROHIBITION_PHRASES)),
+        )
