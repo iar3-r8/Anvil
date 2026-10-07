@@ -101,6 +101,23 @@ B5_CONCRETE_PACKAGE_BLACKLIST = (
 #: (plan §Behaviors 2). The tree is small and is markdown/XML only.
 ROO_TEMPLATE_DIR = REPO_ROOT / "templates" / "roo_template"
 
+#: B4 (plans/implement-next-issue.md §Behaviors 4): the five ranking
+#: criteria in their required order. Each phrase is a key phrase the green
+#: step can satisfy with prose latitude; asserting the sequence (position
+#: i < position i+1) pins the ordering without pinning exact wording.
+B4_RANKING_CRITERIA_IN_ORDER = (
+    "bug over feature",
+    "priority label",
+    "milestone",
+    "blocked",
+    "oldest created_at",
+)
+
+#: B4: the explicit ordering word — an "outranks"/"before" style
+#: statement that each earlier criterion outranks the later ones. The body
+#: may pick either spelling; one occurrence of either suffices.
+B4_ORDERING_PHRASES = ("outranks", "before")
+
 #: B2: a ``.roo/commands/<name>`` reference, anchored at the path
 #: boundary. ``<name>`` is a command filename (e.g.
 #: ``pull-request-builder.md``), so the match ends at end-of-line,
@@ -1289,3 +1306,173 @@ class B3ImplementNextIssuePrerequisiteTests(TemplateCommandTestCase):
             self.body,
             "body of %s still contains bare 'GitHub CLI'" % self.command_path,
         )
+
+
+# --------------------------------------------------------------------------- #
+# B4 — implement-next-issue.md body: the ranking order
+# --------------------------------------------------------------------------- #
+
+class B4ImplementNextIssueRankingTests(TemplateCommandTestCase):
+    """B4 (plans/implement-next-issue.md): the body states the five
+    ranking criteria in order, each earlier criterion stated to outrank
+    the later ones, with oldest ``created_at`` as the final tiebreaker.
+
+    The criteria, in required order:
+
+      1. bug over feature (issue type / bug label outranks feature)
+      2. explicit priority label (degrades to the next tiebreaker when
+         the label is absent — the repo has no ``priority:*`` labels
+         today, so the criterion is written to degrade, not to fail)
+      3. milestone presence
+      4. not blocked (``issue_dependencies_summary.blocked_by == 0``)
+      5. oldest ``created_at`` as the FINAL tiebreaker
+
+    Expected red reason: the body currently carries the usage and
+    prerequisites sections only — no ranking section — so every
+    present-phrase assertion fails on a missing phrase, not on a
+    file-not-found. The file exists and loads (behaviours 1–3 are green),
+    so this cycle is pure prose.
+
+    Scope: behaviour 4 only. PR exclusion (B5), context override (B6),
+    confirmation (B7), handoff (B8) and empty-queue (B9) prose are
+    separate later cycles.
+
+    Key-phrase convention as in B2–B3: phrases are asserted on the
+    parsed body (lower-cased so the green step has prose latitude),
+    never raw bytes. The ordering is pinned by the *positions* of the
+    five criterion phrases plus an explicit "outranks"/"before" style
+    ordering word — not by exact sentence wording.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    # -- B4 output: the five criteria are named, in order ------------------ #
+
+    def _criterion_positions(self):
+        """Return the (lower-cased body, {criterion: first index}) pair.
+
+        A criterion the body does not name maps to ``None`` (``str.find``
+        returns -1, which would otherwise pass an ``assertIsNotNone``
+        presence check); the tests turn ``None`` into a diagnostic
+        assertion.
+        """
+        lowered = self.body.lower()
+        positions = {}
+        for criterion in B4_RANKING_CRITERIA_IN_ORDER:
+            index = lowered.find(criterion)
+            positions[criterion] = None if index == -1 else index
+        return lowered, positions
+
+    def test_body_names_all_five_ranking_criteria(self):
+        # B4 output (plan §Behaviors 4): every one of the five criteria
+        # is named in the body.
+        _, positions = self._criterion_positions()
+        for criterion in B4_RANKING_CRITERIA_IN_ORDER:
+            self.assertIsNotNone(
+                positions[criterion],
+                "body of %s does not name the ranking criterion "
+                "%r" % (self.command_path, criterion),
+            )
+
+    def test_criteria_appear_in_required_order(self):
+        # B4 output (plan §Behaviors 4): the five criteria are stated in
+        # order — bug over feature, priority label, milestone, not
+        # blocked, oldest created_at — pinned by the first occurrence of
+        # each phrase appearing before the first occurrence of the next.
+        _, positions = self._criterion_positions()
+        for earlier, later in zip(B4_RANKING_CRITERIA_IN_ORDER,
+                                  B4_RANKING_CRITERIA_IN_ORDER[1:]):
+            self.assertIsNotNone(
+                positions[earlier],
+                "body of %s does not name the ranking criterion %r, so "
+                "its position before %r cannot hold"
+                % (self.command_path, earlier, later),
+            )
+            self.assertIsNotNone(
+                positions[later],
+                "body of %s does not name the ranking criterion %r, so "
+                "the position after %r cannot hold"
+                % (self.command_path, later, earlier),
+            )
+            self.assertLess(
+                positions[earlier],
+                positions[later],
+                "body of %s names %r at position %d and %r at "
+                "position %d — the criteria must be stated in order: %s"
+                % (self.command_path,
+                   earlier, positions[earlier],
+                   later, positions[later],
+                   " then ".join(B4_RANKING_CRITERIA_IN_ORDER)),
+            )
+
+    def test_body_states_earlier_criteria_outrank_later_ones(self):
+        # B4 output (plan §Behaviors 4): each earlier criterion is
+        # stated to outrank the later ones — an explicit "outranks" /
+        # "before" style ordering statement, at least one occurrence.
+        lowered, _ = self._criterion_positions()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B4_ORDERING_PHRASES),
+            "body of %s carries no explicit %r ordering statement "
+            "saying an earlier criterion outranks the later ones"
+            % (self.command_path, " / ".join(B4_ORDERING_PHRASES)),
+        )
+
+    def test_oldest_created_at_is_the_final_tiebreaker(self):
+        # B4 output (plan §Behaviors 4): criterion 5 is named and is the
+        # FINAL tiebreaker — it is named, appears last among the five
+        # criteria, and the body states it resolves ties ("tiebreaker").
+        lowered, positions = self._criterion_positions()
+        self.assertIsNotNone(
+            positions["oldest created_at"],
+            "body of %s does not name 'oldest created_at'"
+            % self.command_path,
+        )
+        self.assertTrue(
+            "tiebreaker" in lowered,
+            "body of %s does not state 'created_at'/'oldest' as the "
+            "final tiebreaker (missing 'tiebreaker')" % self.command_path,
+        )
+        named_positions = [pos for pos in positions.values() if pos is not None]
+        self.assertTrue(
+            named_positions,
+            "body of %s names no ranking criteria at all" % self.command_path,
+        )
+        self.assertEqual(
+            positions["oldest created_at"],
+            max(named_positions),
+            "body of %s names 'oldest created_at' but it is not the "
+            "final criterion among the five" % self.command_path,
+        )
+
+    def test_priority_label_criterion_degrades_when_absent(self):
+        # B4 output (plan §Assumptions): the repo has no ``priority:*``
+        # labels today, so the criterion is written to DEGRADE to the
+        # next tiebreaker when the label is absent — it must stay
+        # correct on a repo that never adopts the convention.
+        # Key-phrase level: one of the degrade/absent-wording tokens
+        # suffices, so the green step keeps prose latitude.
+        lowered, _ = self._criterion_positions()
+        self.assertTrue(
+            any(token in lowered
+                for token in ("degrade", "absent", "missing")),
+            "body of %s does not state that the 'priority label' "
+            "criterion degrades to the next tiebreaker when the label "
+            "is absent" % self.command_path,
+        )
+
+    # -- B4 error guard: no single-criterion ranking ------------------------ #
+
+    def test_no_single_criterion_stated_as_the_sole_rule(self):
+        # Error (B4, plan §Behaviors 4): no criterion may be stated as
+        # the sole rule — a single-criterion ranking leaves ties
+        # unresolved and makes the top candidate non-deterministic.
+        # Green by design at red time: the stub names no criteria at
+        # all, and the guard must stay green once the five-criterion
+        # chain lands.
+        for sole_rule_phrase in ("sole rule", "only rule", "the only criterion"):
+            self.assertNotIn(
+                sole_rule_phrase,
+                self.body.lower(),
+                "body of %s states %r — a single-criterion ranking "
+                "leaves ties unresolved" % (self.command_path, sole_rule_phrase),
+            )
