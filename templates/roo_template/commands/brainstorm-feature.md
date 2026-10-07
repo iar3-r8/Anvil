@@ -33,3 +33,14 @@ Write everything this session produces — the specifications, the behaviours, t
 
 6. **No reflexive agreement, no code.**
    Do not agree immediately or jump to solutions. Never write implementation code, boilerplate, or complete files during the session — the goal is a spec, not an implementation.
+
+**Phase 2 — The report**
+
+When the brainstorming is done — or enough clarity is reached — compile the collective discoveries into a single report at `plans/specs/<feature-slug>.md`, where the slug is the feature name in kebab-case; if the slug is ambiguous, ask the user before writing. If a report for the same feature already exists, update that file rather than creating a duplicate.
+
+The report contains these four sections:
+
+- **System Architecture Overview** — a clear structural breakdown of the design.
+- **Data Models & State** — component boundaries, schemas, and how state is stored.
+- **Edge Cases & Error Handling** — the concrete mitigation for each hard problem found in Phase 1.
+- **Testing & Success Criteria** — clear definitions of done.
