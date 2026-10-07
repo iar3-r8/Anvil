@@ -5,4 +5,14 @@ mode: tdd-manager
 
 Implement the next issue
 
-TODO: body stub — full prose lands in later red/green cycles (behaviours 2–9).
+Finds the most logical next open GitHub issue, confirms it with the user, and hands it to the tdd-manager pipeline.
+
+**Usage:**
+- Run with no argument: `/implement-next-issue` — the argument is optional, and the command works fine with nothing after it.
+- Optionally pass free-form context to bias the selection: `/implement-next-issue <context>`
+
+**Example:**
+```
+/implement-next-issue
+/implement-next-issue the API auth flow
+```
