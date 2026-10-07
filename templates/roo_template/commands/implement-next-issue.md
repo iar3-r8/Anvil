@@ -30,3 +30,12 @@ When more than one open issue is a candidate, rank them by the five criteria bel
 3. **Milestone** — an issue with a milestone outranks one without.
 4. **Not blocked** — an issue with no open blockers (`issue_dependencies_summary.blocked_by == 0`) outranks a blocked one.
 5. **Oldest created_at** — when every earlier criterion ties, the oldest `created_at` wins; this is the final tiebreaker.
+
+**Pull request exclusion:**
+
+GitHub's issues endpoint may return pull requests as entries, and an issue already claimed by an open pull request is not a free candidate. Before ranking, run the exclusion in two arms:
+
+1. **Skip PR entries** — skip any returned issue entry that is itself a pull request; it is not a candidate issue at all.
+2. **Exclude closer-referenced issues** — list the open pull requests via `list_pull_requests`, and exclude any issue referenced by a `Fixes #N`, `Closes #N` or `Resolves #N` closer in an open pull request's title or body; that issue is already in flight.
+
+If the pull request listing fails, report the failure and stop — never proceed on the unfiltered issue list, since a silent fallback would re-select work that is already being implemented.
