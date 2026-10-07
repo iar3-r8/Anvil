@@ -2050,3 +2050,141 @@ class B7ImplementNextIssueConfirmationTests(TemplateCommandTestCase):
                 "%r — that belongs to /execute-github-task only"
                 % (self.command_path, token),
             )
+
+
+# --------------------------------------------------------------------------- #
+# B8 — implement-next-issue.md body: the verbatim tdd-manager handoff
+# --------------------------------------------------------------------------- #
+
+#: B8 error arm (plans/implement-next-issue.md §Behaviors 8): the
+#: DECLINED-confirmation trigger. The body may spell it "declined"
+#: (adjective) or "declines" (verb); either suffices. Neither spelling
+#: appears in the committed B1-B7 prose.
+B8_DECLINED_PHRASES = ("declined", "declines")
+
+#: B8 error arm: the NEXT-RANKED candidate the body must present on a
+#: decline — "next-ranked" in either spelling, or the plain "next
+#: candidate". None of these phrases appears in the committed B1-B7
+#: prose (its one "next" is "next open GitHub issue", a different
+#: meaning, not a ranking position).
+B8_NEXT_CANDIDATE_PHRASES = (
+    "next-ranked",
+    "next ranked",
+    "next candidate",
+)
+
+
+class B8ImplementNextIssueHandoffTests(TemplateCommandTestCase):
+    """B8 (plans/implement-next-issue.md): the body states the verbatim
+    tdd-manager handoff.
+
+    Two instruction arms:
+
+      * output — the post-confirmation section instructs handing the
+        SELECTED ISSUE VERBATIM to the TDD-MANAGER PIPELINE; the mode
+        slug ``tdd-manager`` must be named, not paraphrased;
+      * error arm — on a DECLINED confirmation the body instructs
+        PRESENTING THE NEXT-RANKED CANDIDATE rather than starting
+        anything or re-asking about the same issue.
+
+    Expected red reason: the body currently ends at the confirmation
+    section — there is no post-confirmation handoff prose — so the
+    tests fail on the missing phrases "verbatim", "declined"/
+    "declines" and the next-candidate phrases, not on a file-not-find.
+    The file exists and loads (behaviours 1-7 are green), so this
+    cycle is pure prose. A few pins ("tdd-manager", "pipeline", "hand")
+    are already carried by the intro line ("...confirms it with the
+    user, and hands it to the tdd-manager pipeline.") and stay as pins
+    for the green step rather than as red triggers.
+
+    Scope: behaviour 8 only. The empty-queue stop (B9) prose is a
+    separate later cycle and is not pinned here.
+
+    Key-phrase convention as in B2-B7: phrases are asserted on the
+    parsed body (lower-cased), never raw bytes — concepts and keywords
+    (verbatim, tdd-manager, pipeline, hand, declined, next candidate)
+    are pinned, not exact sentences, so the green step keeps prose
+    latitude.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    def _lowered(self):
+        """The parsed body, lower-cased for key-phrase matching."""
+        return self.body.lower()
+
+    # -- B8 output: the selected issue is handed over verbatim ------------- #
+
+    def test_body_instructs_the_verbatim_handoff(self):
+        # B8 output (plan §Behaviors 8): the handoff of the selected
+        # issue is VERBATIM — 'verbatim' is the red trigger; it is
+        # absent from the committed B1-B7 prose. 'hand' is already
+        # carried by the intro line and stays as a pin.
+        lowered = self._lowered()
+        self.assertIn(
+            "verbatim",
+            lowered,
+            "body of %s does not instruct handing the selected issue "
+            "verbatim" % self.command_path,
+        )
+        self.assertIn(
+            "hand",
+            lowered,
+            "body of %s does not use a 'hand*' verb for the handoff"
+            % self.command_path,
+        )
+
+    def test_body_names_the_tdd_manager_mode_slug(self):
+        # B8 output (plan §Behaviors 8): the handoff names the mode
+        # slug 'tdd-manager' — paraphrasing the mode would leave the
+        # dispatch target ambiguous. Already carried by the intro
+        # line; this pin keeps it in the green-step prose.
+        self.assertIn(
+            "tdd-manager",
+            self._lowered(),
+            "body of %s does not name the 'tdd-manager' mode slug"
+            % self.command_path,
+        )
+
+    def test_body_names_the_tdd_manager_pipeline(self):
+        # B8 output (plan §Behaviors 8): the handoff target is the
+        # tdd-manager PIPELINE, not a one-shot prompt. Already carried
+        # by the intro line; this pin keeps it in the green-step prose.
+        self.assertIn(
+            "pipeline",
+            self._lowered(),
+            "body of %s does not name the 'pipeline' handoff target"
+            % self.command_path,
+        )
+
+    # -- B8 error arm: the declined confirmation --------------------------- #
+
+    def test_body_error_arm_names_the_declined_confirmation(self):
+        # B8 error (plan §Behaviors 8): the error arm is triggered by
+        # a DECLINED confirmation — 'declined'/'declines' is the red
+        # trigger; neither spelling appears in the committed B1-B7
+        # prose (the confirmation section only asks the question, it
+        # never names a decline).
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B8_DECLINED_PHRASES),
+            "body of %s does not name the declined-confirmation "
+            "trigger (missing %r)"
+            % (self.command_path, " / ".join(B8_DECLINED_PHRASES)),
+        )
+
+    def test_body_error_arm_instructs_presenting_the_next_ranked_candidate(self):
+        # B8 error (plan §Behaviors 8): on a decline the body
+        # instructs presenting the NEXT-RANKED CANDIDATE — a new
+        # selection, not a re-ask about the same issue. The
+        # next-candidate phrases are the red trigger; 'candidate'
+        # alone is already carried by the B7 prose ("top candidate"),
+        # so the position-qualifying phrase is what pins the
+        # behaviour.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B8_NEXT_CANDIDATE_PHRASES),
+            "body of %s does not instruct presenting the next-ranked "
+            "candidate on a decline (missing %r)"
+            % (self.command_path, " / ".join(B8_NEXT_CANDIDATE_PHRASES)),
+        )
