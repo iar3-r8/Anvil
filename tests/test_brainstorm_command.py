@@ -101,5 +101,127 @@ class B1FrontmatterTests(BrainstormCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# Behaviour 2 — Phase 1: context then the grill
+# --------------------------------------------------------------------------- #
+
+
+class B2Phase1Tests(BrainstormCommandTestCase):
+    """Behaviour 2 (plans/brainstorm-feature-command.md): Phase 1 of the
+    brainstorming session — gather context and requirements on launch, then
+    grill with exactly one question at a time.
+
+    Expected red reason: the body of
+    ``templates/roo_template/commands/brainstorm-feature.md`` is a
+    one-line placeholder, so the phrase assertions below fail. The file
+    exists and parses (behaviour 1 is green), so this is assertion-level
+    red, not a load failure.
+    """
+
+    def test_body_directs_context_gathering_before_the_grill(self):
+        # B2 assertion 1: gather early context and requirements on launch,
+        # THEN dig into them — two-step order, context gathering is not
+        # optional and precedes the grill.
+        self.assertRegex(
+            self.body,
+            r"(?i)gather[^.\n]*context",
+            "body of %s does not direct gathering early context and "
+            "requirements on launch" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)then (dig|drill)",
+            "body of %s does not direct digging into the gathered context "
+            "and requirements after the gathering step"
+            % self.command_path,
+        )
+
+    def test_body_forbids_batched_questions(self):
+        # B2 assertion 2: exactly ONE question at a time; a rule forbidding
+        # multiple or batched questions in one message.
+        self.assertRegex(
+            self.body,
+            r"(?i)exactly one (question|at a time)|one question at a time",
+            "body of %s does not state exactly one question at a time"
+            % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)(never|don'?t|do not)[^.\n]*(batch|multiple|several)",
+            "body of %s does not forbid multiple or batched questions in "
+            "one message" % self.command_path,
+        )
+
+    def test_body_requires_short_replies_and_waiting_for_the_answer(self):
+        # B2 assertion 3: reply briefly and stop, waiting for the user's
+        # answer before the next question.
+        self.assertRegex(
+            self.body,
+            r"(?i)(short|brief) (repl(y|ies)|response|responses|answer|answers)",
+            "body of %s does not require short responses" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)wait[^.\n]*answer",
+            "body of %s does not require waiting for the user's answer "
+            "before the next question" % self.command_path,
+        )
+
+    def test_body_requires_at_least_3_4_iterations(self):
+        # B2 assertion 4: at least 3-4 iterations before moving on.
+        self.assertRegex(
+            self.body,
+            r"(?i)(3|three)(\s*[-–]\s*4|\s+to\s+4)(\s+(iterations|rounds|passes))?",
+            "body of %s does not require at least 3-4 iterations"
+            % self.command_path,
+        )
+
+    def test_body_names_all_four_grill_focus_areas(self):
+        # B2 assertion 5: the grill's focus areas, all four named — hidden
+        # edge cases, single points of failure, scale boundaries /
+        # performance trade-offs, data life-cycles (and mutation safety).
+        self.assertRegex(
+            self.body,
+            r"(?i)edge case",
+            "body of %s does not name hidden edge cases as a grill focus"
+            % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)single point of failure",
+            "body of %s does not name single points of failure as a grill "
+            "focus" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)scale (boundar|limit)|performance",
+            "body of %s does not name scale boundaries or performance "
+            "trade-offs as a grill focus" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)data (life-?cycle|life cycle|lifecycles?|lifecycle)|mutation",
+            "body of %s does not name data life-cycles (and mutation "
+            "safety) as a grill focus" % self.command_path,
+        )
+
+    def test_body_forbids_implementation_code_during_the_session(self):
+        # B2 assertion 6: no implementation code during the session — an
+        # explicit prohibition on writing implementation code, boilerplate
+        # or complete files while brainstorming.
+        self.assertRegex(
+            self.body,
+            r"(?i)(never|do not|no) [^.\n]*implementation code",
+            "body of %s does not explicitly forbid writing "
+            "implementation code during the session" % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)boilerplate",
+            "body of %s does not forbid boilerplate during the session"
+            % self.command_path,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
