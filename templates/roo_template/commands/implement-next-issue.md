@@ -39,3 +39,9 @@ GitHub's issues endpoint may return pull requests as entries, and an issue alrea
 2. **Exclude closer-referenced issues** — list the open pull requests via `list_pull_requests`, and exclude any issue referenced by a `Fixes #N`, `Closes #N` or `Resolves #N` closer in an open pull request's title or body; that issue is already in flight.
 
 If the pull request listing fails, report the failure and stop — never proceed on the unfiltered issue list, since a silent fallback would re-select work that is already being implemented.
+
+**Argument handling:**
+
+When free-form context is supplied after the command, it overrides the five-criterion ranking chain outright: an open issue matching the supplied context wins the selection, even if another issue would have ranked higher under the chain. In that case the one-line rationale names the match — e.g. "issue #42 matches the supplied context 'API auth flow'".
+
+When the context matches no open issue, say so in the rationale and fall back to the unbiased ranking rather than selecting nothing.
