@@ -1129,3 +1129,89 @@ class B1ImplementNextIssueTests(TemplateCommandTestCase):
             "mode in %s is %r; expected 'tdd-manager'"
             % (self.command_path, self.frontmatter["mode"]),
         )
+
+
+# --------------------------------------------------------------------------- #
+# B2 — implement-next-issue.md body: usage names the command and its argument
+# --------------------------------------------------------------------------- #
+
+class B2ImplementNextIssueUsageTests(TemplateCommandTestCase):
+    """B2 (plans/implement-next-issue.md): the usage section names
+    ``/implement-next-issue`` and documents the optional free-form argument.
+
+    Expected red reason: the body is still the stub ("Implement the next
+    issue" plus a TODO line), so the usage heading and both usage phrases
+    are absent — the failures are missing-phrase assertions, not a
+    file-not-found. The file exists and loads (behaviour 1 is green), so
+    this cycle is pure prose.
+
+    Scope: behaviour 2 only. Ranking order, PR exclusion, the
+    confirmation question, the tdd-manager handoff and the empty-queue
+    prose are behaviours 3–9, each with its own later cycle.
+
+    Key-phrase convention as in B3–B5: assert phrases on the parsed body,
+    never raw bytes, so the green step keeps prose latitude.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    # -- B2 output: the usage section is present ---------------------------- #
+
+    def test_body_has_usage_section(self):
+        # B2 output: a usage section exists — the sibling command files
+        # (execute-github-task.md) carry a 'Usage' heading, and the usage
+        # form must sit under one here too.
+        self.assertIn(
+            "Usage",
+            self.body,
+            "body of %s does not carry a 'Usage' section" % self.command_path,
+        )
+
+    # -- B2 output: the usage names the command and its argument ------------ #
+
+    def test_body_names_implement_next_issue(self):
+        # B2 output (plan §Behaviors 2): the usage names
+        # '/implement-next-issue'.
+        self.assertIn(
+            "/implement-next-issue",
+            self.body,
+            "usage of %s does not name '/implement-next-issue'"
+            % self.command_path,
+        )
+
+    def test_body_documents_optional_context_argument_shape(self):
+        # B2 output (plan §Behaviors 2): the free-form argument is
+        # documented in the '/implement-next-issue <context>' shape.
+        self.assertIn(
+            "/implement-next-issue <context>",
+            self.body,
+            "usage of %s does not document the argument in the "
+            "'/implement-next-issue <context>' shape" % self.command_path,
+        )
+
+    def test_body_states_the_argument_is_optional(self):
+        # B2 output (plan §Behaviors 2): the argument is shown as
+        # optional — the command also works with no argument.
+        self.assertIn(
+            "optional",
+            self.body.lower(),
+            "usage of %s does not state the argument is optional (the "
+            "command must also work with no argument)" % self.command_path,
+        )
+
+    # -- B2 error guard: no required issue-number argument ------------------ #
+
+    def test_body_has_no_required_issue_number_argument(self):
+        # Error (B2, plan §Behaviors 2): a required argument such as an
+        # issue number is /execute-github-task's contract
+        # (templates/roo_template/commands/execute-github-task.md:8);
+        # adopting its usage form here would make the argument mandatory.
+        # Green by design at red time: the stub carries no usage at all,
+        # and the guard must stay green once the usage lands.
+        self.assertNotIn(
+            "/implement-next-issue <issue-number>",
+            self.body,
+            "usage of %s carries the required '<issue-number>' argument "
+            "shape — that is /execute-github-task's contract"
+            % self.command_path,
+        )
