@@ -45,3 +45,7 @@ If the pull request listing fails, report the failure and stop — never proceed
 When free-form context is supplied after the command, it overrides the five-criterion ranking chain outright: an open issue matching the supplied context wins the selection, even if another issue would have ranked higher under the chain. In that case the one-line rationale names the match — e.g. "issue #42 matches the supplied context 'API auth flow'".
 
 When the context matches no open issue, say so in the rationale and fall back to the unbiased ranking rather than selecting nothing.
+
+**Confirmation:**
+
+Before any work starts, present the top candidate to the user with its number, title and a one-line rationale, then ask exactly one confirmation question. Ask no further question unless the issue itself is genuinely ambiguous.
