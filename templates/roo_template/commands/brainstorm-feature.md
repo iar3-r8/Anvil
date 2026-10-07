@@ -44,3 +44,17 @@ The report contains these four sections:
 - **Data Models & State** — component boundaries, schemas, and how state is stored.
 - **Edge Cases & Error Handling** — the concrete mitigation for each hard problem found in Phase 1.
 - **Testing & Success Criteria** — clear definitions of done.
+
+**Phase 3 — Sign-off, then issues**
+
+1. **Present the report and ask for sign-off.**
+   Present the finished report and ask for the user's absolute sign-off on it. Do not create anything until the user has given that sign-off — the report must be approved before any issue is created, raised, or published.
+
+2. **Fraction the report into separate GitHub issues.**
+   Once sign-off is given, break the report into separate GitHub issues — one issue per independently implementable piece of work.
+
+3. **Follow the `/write-github-task` format.**
+   Each issue follows the `/write-github-task` format: Context / Goal / Scope / Definition of Done. The repository name comes from `.roo/rules/AGENTS.md`, and the issues are published through the github MCP server.
+
+4. **Then stop.**
+   Once the issues are created, the session stops there. Execution is a separate, later command — hand the issues to the `execute-github-task` command or the tdd-manager pipeline. Do not implement anything in this session.
