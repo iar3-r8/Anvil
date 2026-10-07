@@ -285,5 +285,100 @@ class B3PlainLanguageTests(BrainstormCommandTestCase):
         )
 
 
+# --------------------------------------------------------------------------- #
+# Behaviour 4 — Phase 2: the report
+# --------------------------------------------------------------------------- #
+
+
+class B4Phase2ReportTests(BrainstormCommandTestCase):
+    """Behaviour 4 (plans/brainstorm-feature-command.md): Phase 2 of the
+    brainstorming session — compile the collective discoveries into a
+    report at ``plans/specs/<feature-slug>.md``, updating that file when
+    it already exists, with all four named sections: System Architecture
+    Overview, Data Models & State, Edge Cases & Error Handling, Testing
+    & Success Criteria.
+
+    Expected red reason: the body of
+    ``templates/roo_template/commands/brainstorm-feature.md`` carries the
+    Phase 1 protocol and the plain-language rule but no Phase 2 report
+    section, so the phrase assertions below fail. The file exists and
+    parses (behaviours 1-3 are green), so this is assertion-level red,
+    not a load failure.
+    """
+
+    def test_body_names_the_report_path(self):
+        # B4 assertion 1: the report lands under ``plans/specs/`` as a
+        # ``<feature-slug>.md`` file — the directory is named, and the
+        # slug placeholder appears in angle brackets or braces (not a
+        # bare root ``spec.md``).
+        self.assertRegex(
+            self.body,
+            r"(?i)plans/specs/",
+            "body of %s does not name the report directory 'plans/specs/'"
+            % self.command_path,
+        )
+        self.assertRegex(
+            self.body,
+            r"(?i)[<{]feature-slug[>}]\.md",
+            "body of %s does not name the report file shape "
+            "'<feature-slug>.md' (slug placeholder in angle brackets or "
+            "braces, with the .md extension)"
+            % self.command_path,
+        )
+
+    def test_body_directs_updating_the_report_when_it_already_exists(self):
+        # B4 assertion 2: the report file is updated/reused when it
+        # already exists — the update rule, not a create-only rule. One
+        # sentence must carry both an update verb and the already-present
+        # file, in either order.
+        self.assertRegex(
+            self.body,
+            r"(?i)(updat|revis|append|reus)[^.\n]{0,120}(already (exist|present)|existing)"
+            r"|(already (exist|present)|existing)[^.\n]{0,120}(updat|revis|append|reus)",
+            "body of %s does not state that the report file is updated "
+            "or reused when it already exists (not only created new)"
+            % self.command_path,
+        )
+
+    def test_body_names_the_system_architecture_overview_section(self):
+        # B4 assertion 3: the first report section is named.
+        self.assertRegex(
+            self.body,
+            r"(?i)system architecture overview",
+            "body of %s does not name the 'System Architecture Overview' "
+            "report section" % self.command_path,
+        )
+
+    def test_body_names_the_data_models_section(self):
+        # B4 assertion 4: the second report section is named; accept the
+        # '&' or 'and' spelling.
+        self.assertRegex(
+            self.body,
+            r"(?i)data model(s)? (&|and) state",
+            "body of %s does not name the 'Data Models & State' report "
+            "section ('&' or 'and')" % self.command_path,
+        )
+
+    def test_body_names_the_edge_cases_section(self):
+        # B4 assertion 5: the third report section is named; accept the
+        # '&' or 'and' spelling.
+        self.assertRegex(
+            self.body,
+            r"(?i)edge case(s)? (&|and) error handling",
+            "body of %s does not name the 'Edge Cases & Error Handling' "
+            "report section ('&' or 'and')" % self.command_path,
+        )
+
+    def test_body_names_the_testing_and_success_criteria_section(self):
+        # B4 assertion 6: the fourth report section is named; accept the
+        # '&' or 'and' spelling.
+        self.assertRegex(
+            self.body,
+            r"(?i)testing (&|and) success criteria",
+            "body of %s does not name the 'Testing & Success Criteria' "
+            "report section ('&' or 'and')" % self.command_path,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
