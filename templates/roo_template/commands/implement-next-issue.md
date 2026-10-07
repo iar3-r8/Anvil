@@ -53,3 +53,7 @@ Before any work starts, present the top candidate to the user with its number, t
 **Handoff:**
 
 On confirmation, hand the selected issue verbatim to the tdd-manager pipeline — no re-summarising or paraphrasing of the issue's title, body or rationale. If the confirmation is declined, present the next-ranked candidate from the ranked list instead; do not start anything, and do not re-ask about the same issue.
+
+**Empty queue:**
+
+When no open issue survives the exclusions, report the empty queue: how many issues were examined and why each was excluded — skipped as a pull request entry, or already claimed by an open pull request's closer. Then stop. Ask no confirmation question in that case, and start no pipeline.
