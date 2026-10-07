@@ -197,14 +197,16 @@ the reply channel for the whole task**: a question about an issue-sourced task i
 a comment on that issue, not a chat message. The reason is that a decision made
 in chat is invisible to everyone reading the issue.
 
-Five of the chat commands are installed with the agent modes; the sixth,
+Seven of the chat commands are installed with the agent modes; the eighth,
 `/harvest-roo-templates`, lives only in anvil's own `.roo/commands/` (tracked
 through a `.gitignore` negation) and is never provisioned into a target repo:
 
+* `/brainstorm-feature` — run a structured brainstorming session in Architect mode: gather context, then pressure-test the requirements one question at a time, and write the spec to `plans/specs/<feature-slug>.md`. After your absolute sign-off it raises fractioned GitHub issues (one per independently implementable piece, in the `/write-github-task` format) and stops — execution is handed to `/execute-github-task` or the tdd-manager pipeline.
 * `/write-github-task` — turn a task description into a structured GitHub task issue.
 * `/execute-github-task` — pull a GitHub issue, plan the approach collaboratively, then execute it.
 * `/github-bug-report` — gather reproduction details and publish a structured bug report issue.
 * `/create-pull-request` — open the pull request with a description generated from the branch changes.
+* `/pull-request-builder` — build the pull request description in the project's communication standard; the format `/create-pull-request` generates from.
 * `/update_roo_rules` — compare the repo's `roo_template` against `.roo/` and add any rules or commands that are missing.
 * `/harvest-roo-templates` *(anvil-only)* — the reverse of `/update_roo_rules`: read another repository's `.roo/` and `.roomodes`, report what `templates/roo_template/` lacks, and — after your confirmation — file a single GitHub issue tracking the shortlist.
 
@@ -262,7 +264,7 @@ qna-tester and 2% for architect.
 ## What lands in your repo
 
 `setup-repo` installs: the agent modes in `.roomodes`, the per-mode rules under
-`.roo/`, the four MCP servers in `.roo/mcp.json`, the five provisioned chat
+`.roo/`, the four MCP servers in `.roo/mcp.json`, the seven provisioned chat
 commands under `.roo/commands/` — the anvil-only `/harvest-roo-templates` never
 crosses to a target — the devcontainer, and `.gitignore` protection for
 sensitive
