@@ -2188,3 +2188,193 @@ class B8ImplementNextIssueHandoffTests(TemplateCommandTestCase):
             "candidate on a decline (missing %r)"
             % (self.command_path, " / ".join(B8_NEXT_CANDIDATE_PHRASES)),
         )
+
+
+# --------------------------------------------------------------------------- #
+# B9 — implement-next-issue.md body: the empty-queue stop
+# --------------------------------------------------------------------------- #
+
+#: B9 (plans/implement-next-issue.md §Behaviors 9): the examination-count
+#: tokens — the body must name how many issues were examined before
+#: concluding the queue is empty. 'examined' is the natural word;
+#: 'count' and 'how many' keep prose latitude. None of these appears in
+#: the committed B1-B8 prose.
+B9_EXAMINED_PHRASES = ("examined", "count", "how many")
+
+#: B9: the excluded-side tokens — the report covers the excluded issues.
+#: 'excluded' is absent from the committed B1-B8 prose; 'exclusion' is
+#: already carried by the B5 prose ('run the exclusion in two arms'), so
+#: that spelling is a pin for the green step rather than a red trigger.
+B9_EXCLUDED_PHRASES = ("excluded", "exclusion")
+
+#: B9: the why-side tokens — the report names WHY each issue was
+#: excluded. Neither spelling appears in the committed B1-B8 prose
+#: ('rationale' is the closest and does not match), so both are red
+#: triggers.
+B9_REASON_PHRASES = ("reason", "why")
+
+#: B9 error arm: the no-question tokens — the body must state that NO
+#: confirmation question is asked when the queue is empty. 'confirm' and
+#: 'question' are already carried by the B7 prose, so the NEGATION form
+#: is what pins this behaviour; all three spellings are absent from the
+#: committed B1-B8 prose ('no further question' is B7's own phrasing for
+#: a different arm and does not match).
+B9_NO_QUESTION_PHRASES = (
+    "no question",
+    "no confirmation question",
+    "without asking",
+)
+
+#: B9 error arm: the start-nothing tokens — the body must state that NO
+#: pipeline is started in that case (stop; start nothing). 'not start'
+#: is already carried by the B8 prose ('do not start anything'), so the
+#: token set is a pin for the green step rather than a red trigger.
+B9_NO_START_PHRASES = (
+    "start nothing",
+    "nothing is started",
+    "not start",
+    "no pipeline",
+)
+
+
+class B9ImplementNextIssueEmptyQueueTests(TemplateCommandTestCase):
+    """B9 (plans/implement-next-issue.md): the body states the
+    empty-queue stop.
+
+    Two arms:
+
+      * output — when NO open issue survives the exclusions, the body
+        instructs the command to REPORT THE EMPTY QUEUE, naming how many
+        issues were examined and why each was excluded, and to STOP;
+      * error arm — in that case the body must state that NO
+        confirmation question is asked and NO pipeline is started
+        (stop; start nothing).
+
+    Expected red reason: the body currently ends at the handoff section
+    — there is no empty-queue prose — so the tests fail on the missing
+    phrases "empty", "queue", the examination-count phrases, the
+    why-excluded phrases and the no-question phrases, not on a
+    file-not-find. The file exists and loads (behaviours 1-8 are
+    green), so this cycle is pure prose. A few pins ("stop", "confirm",
+    "question", "pipeline", "not start") are already carried by the
+    B5/B7/B8 prose and stay as pins for the green step rather than as
+    red triggers.
+
+    Scope: behaviour 9 only — the final behaviour of the plan; nothing
+    beyond it is pinned here.
+
+    Key-phrase convention as in B2-B8: phrases are asserted on the
+    parsed body (lower-cased), never raw bytes — concepts and keywords
+    (empty, queue, examined, reason, no question, stop) are pinned, not
+    exact sentences, so the green step keeps prose latitude.
+    """
+
+    command_path = IMPLEMENT_NEXT_ISSUE_PATH
+
+    def _lowered(self):
+        """The parsed body, lower-cased for key-phrase matching."""
+        return self.body.lower()
+
+    # -- B9 output: the empty queue is reported ------------------------------ #
+
+    def test_body_reports_the_empty_queue(self):
+        # B9 output (plan §Behaviors 9): the command reports the EMPTY
+        # QUEUE — 'empty' and 'queue' are both absent from the committed
+        # B1-B8 prose; either missing one is a red trigger.
+        lowered = self._lowered()
+        for phrase in ("empty", "queue"):
+            self.assertIn(
+                phrase,
+                lowered,
+                "body of %s does not report the %r queue"
+                % (self.command_path, phrase),
+            )
+
+    def test_body_names_how_many_issues_were_examined(self):
+        # B9 output (plan §Behaviors 9): the report names HOW MANY
+        # issues were examined before the queue was found empty — one of
+        # the examination-count tokens suffices; all are absent from the
+        # committed B1-B8 prose.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B9_EXAMINED_PHRASES),
+            "body of %s does not name how many issues were examined "
+            "(missing %r)"
+            % (self.command_path, " / ".join(B9_EXAMINED_PHRASES)),
+        )
+
+    def test_body_names_why_each_issue_was_excluded(self):
+        # B9 output (plan §Behaviors 9): the report names WHY each
+        # issue was excluded. The why-side ('reason'/'why') is the red
+        # trigger — it is absent from the committed B1-B8 prose; the
+        # excluded-side ('excluded'/'exclusion') is already satisfied by
+        # the B5 prose and stays as a pin.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B9_EXCLUDED_PHRASES),
+            "body of %s does not cover the excluded issues "
+            "(missing %r)"
+            % (self.command_path, " / ".join(B9_EXCLUDED_PHRASES)),
+        )
+        self.assertTrue(
+            any(phrase in lowered for phrase in B9_REASON_PHRASES),
+            "body of %s does not name why each issue was excluded "
+            "(missing %r)"
+            % (self.command_path, " / ".join(B9_REASON_PHRASES)),
+        )
+
+    def test_body_instructs_stopping(self):
+        # B9 output (plan §Behaviors 9): the command STOPS on the empty
+        # queue. 'stop' is already carried by the B5 prose ('report the
+        # failure and stop') and stays as a pin for the green step
+        # rather than a red trigger.
+        self.assertIn(
+            "stop",
+            self._lowered(),
+            "body of %s does not instruct stopping on the empty queue"
+            % self.command_path,
+        )
+
+    # -- B9 error arm: stop; start nothing ----------------------------------- #
+
+    def test_body_error_arm_states_no_confirmation_question_is_asked(self):
+        # B9 error (plan §Behaviors 9): on the empty queue NO
+        # confirmation question is asked — the negation form is the red
+        # trigger (all three spellings are absent from the committed
+        # B1-B8 prose); 'confirm' and 'question' are already carried by
+        # the B7 prose and stay as pins.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B9_NO_QUESTION_PHRASES),
+            "body of %s does not state that no confirmation question "
+            "is asked on the empty queue (missing %r)"
+            % (self.command_path, " / ".join(B9_NO_QUESTION_PHRASES)),
+        )
+        for phrase in ("confirm", "question"):
+            self.assertIn(
+                phrase,
+                lowered,
+                "body of %s does not name %r in the no-question "
+                "instruction" % (self.command_path, phrase),
+            )
+
+    def test_body_error_arm_states_no_pipeline_is_started(self):
+        # B9 error (plan §Behaviors 9): on the empty queue NO pipeline
+        # is started — stop; start nothing. 'not start' is already
+        # carried by the B8 prose ('do not start anything') and
+        # 'pipeline' by the intro and handoff lines, so this test pins
+        # the concept for the green step rather than acting as a red
+        # trigger.
+        lowered = self._lowered()
+        self.assertTrue(
+            any(phrase in lowered for phrase in B9_NO_START_PHRASES),
+            "body of %s does not state that no pipeline is started on "
+            "the empty queue (missing %r)"
+            % (self.command_path, " / ".join(B9_NO_START_PHRASES)),
+        )
+        self.assertIn(
+            "pipeline",
+            lowered,
+            "body of %s does not name the 'pipeline' in the "
+            "start-nothing instruction" % self.command_path,
+        )
