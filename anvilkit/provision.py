@@ -287,6 +287,22 @@ def _merge_gitignore(existing_text: str, template_text: str) -> Optional[str]:
     return body
 
 
+def _preserve_stored_credential_values(incoming: dict, stored: dict) -> dict:
+    """Merge a rendered credential mapping (``env`` or ``headers``) against the stored one.
+
+    The A2 rule: an empty incoming value never blanks a non-empty stored
+    one, while any non-empty incoming value always wins. The incoming
+    mapping is the base, so keys absent from the stored one simply stay
+    as rendered.
+    """
+    merged = dict(incoming)
+    for key, incoming_value in incoming.items():
+        stored_value = stored.get(key)
+        if incoming_value == "" and stored_value not in ("", None):
+            merged[key] = stored_value
+    return merged
+
+
 def _merge_mcp_servers(existing_text: str, rendered_text: str, source: str = ".roo/mcp.json") -> str:
     """Merge the freshly rendered ``.roo/mcp.json`` with the one on disk.
 
@@ -399,15 +415,20 @@ def _merge_mcp_servers(existing_text: str, rendered_text: str, source: str = ".r
         # Anvil-owned: refreshed wholesale, with the A2 exception for
         # stored credentials that would be blanked.
         merged_entry = dict(rendered_entry)
+        # A2 applies to both credential carriers: env keys (local servers)
+        # and headers (streamable-http servers).
         incoming_env = rendered_entry.get("env")
         stored_env = existing_entry.get("env")
         if isinstance(incoming_env, dict) and isinstance(stored_env, dict):
-            merged_env = dict(incoming_env)
-            for key, incoming_value in incoming_env.items():
-                stored_value = stored_env.get(key)
-                if incoming_value == "" and stored_value not in ("", None):
-                    merged_env[key] = stored_value
-            merged_entry["env"] = merged_env
+            merged_entry["env"] = _preserve_stored_credential_values(
+                incoming_env, stored_env
+            )
+        incoming_headers = rendered_entry.get("headers")
+        stored_headers = existing_entry.get("headers")
+        if isinstance(incoming_headers, dict) and isinstance(stored_headers, dict):
+            merged_entry["headers"] = _preserve_stored_credential_values(
+                incoming_headers, stored_headers
+            )
         merged_servers[name] = merged_entry
 
     for name, rendered_entry in rendered_servers.items():

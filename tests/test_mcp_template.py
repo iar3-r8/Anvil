@@ -49,18 +49,21 @@ EXPECTED_GITHUB = {
 
 EXPECTED_GIT = {
     "command": "uvx",
-    "args": ["--with", "mcp<1.10", "mcp-server-git", "--repository", "${workspaceFolder}"],
+    "args": ["mcp-server-git", "--repository", "${workspaceFolder}"],
     "disabled": False,
     "alwaysAllow": [],
 }
 
+# The hosted streamable-HTTP shape, per plans/oxylabs-hosted-mcp.md: no
+# "command", "args" or "env" key; the credentials travel as request headers.
+# The raw ${...} placeholders are what render.mcp_settings substitutes.
 EXPECTED_OXYLABS = {
-    "command": "uvx",
-    "args": ["oxylabs-mcp"],
+    "type": "streamable-http",
+    "url": "https://mcp.oxylabs.io/mcp",
     "disabled": False,
-    "env": {
-        "OXYLABS_USERNAME": "${OXYLABS_USERNAME}",
-        "OXYLABS_PASSWORD": "${OXYLABS_PASSWORD}",
+    "headers": {
+        "X-Oxylabs-Username": "${OXYLABS_USERNAME}",
+        "X-Oxylabs-Password": "${OXYLABS_PASSWORD}",
     },
 }
 

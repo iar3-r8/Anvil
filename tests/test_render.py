@@ -326,39 +326,38 @@ class TestMcpGoldenParity(unittest.TestCase):
 
         self.assertNotIn("${", payload)
 
-    def test_git_server_constrains_the_mcp_sdk(self):
-        """Regression: an unpinned SDK broke the git server on any fresh machine.
+    def test_git_server_args_carry_no_sdk_pin(self):
+        """Regression: the --with mcp<1.10 pin must be gone.
 
-        'uvx mcp-server-git' resolves the mcp SDK afresh, and a newer SDK moved
-        the attribute the server calls, so it died at startup with
-        "AttributeError: 'Server' object has no attribute 'list_tools'". A warm
-        uv cache hid this locally; a container exposed it. The constraint must
-        travel in the generated config, not in anyone's cache.
+        Current mcp-server-git releases require mcp>=2.3,<3
+        (https://pypi.org/project/mcp-server-git/), so the mcp<1.10 pin is
+        unsatisfiable and uvx could never resolve it. The git entry must
+        launch the package bare: uvx mcp-server-git --repository <workspace>.
         """
-        args = json.loads(
+        entry = json.loads(
             render.mcp_settings(workspace_folder="/some/repo", github_token="")
-        )["mcpServers"]["git"]["args"]
+        )["mcpServers"]["git"]
 
-        self.assertIn("--with", args)
-        self.assertEqual("mcp<1.10", args[args.index("--with") + 1])
-
-    def test_git_sdk_constraint_precedes_the_package_name(self):
-        """uvx applies --with only before the package it is running."""
-        args = json.loads(
-            render.mcp_settings(workspace_folder="/some/repo", github_token="")
-        )["mcpServers"]["git"]["args"]
-
-        self.assertLess(args.index("--with"), args.index("mcp-server-git"))
+        self.assertEqual(entry["command"], "uvx")
+        self.assertEqual(entry["args"], ["mcp-server-git", "--repository", "/some/repo"])
+        self.assertNotIn("--with", entry["args"])
+        self.assertFalse(
+            any(arg.startswith("mcp<") for arg in entry["args"]),
+            "no SDK pin of the form mcp<... may appear in the git args",
+        )
 
 
 class TestMcpOxylabs(unittest.TestCase):
-    """Tests for Behavior 1: render.mcp_settings emits an oxylabs server block."""
+    """Tests for plans/oxylabs-hosted-mcp.md behaviour 1 (render-oxylabs-hosted)
+    and the stable half of behaviour 2: both-empty credentials render a
+    disabled hosted entry with both header keys present as empty strings."""
 
-    def test_oxylabs_server_env_substituted_when_credentials_supplied(self):
-        """1a. Non-empty oxylabs_username and oxylabs_password appear in the rendered JSON.
+    def test_oxylabs_hosted_shape_when_credentials_supplied(self):
+        """Non-empty credentials produce the hosted streamable-HTTP entry.
 
-        The oxylabs server must carry OXYLABS_USERNAME and OXYLABS_PASSWORD
-        env keys set to the exact credential values passed in.
+        The entry must carry type "streamable-http", the hosted url, both
+        headers set to the exact credential values, disabled false, and no
+        command/args/env key.
         """
         rendered = json.loads(
             render.mcp_settings(
@@ -369,17 +368,62 @@ class TestMcpOxylabs(unittest.TestCase):
             )
         )
 
-        self.assertIn("oxylabs", rendered["mcpServers"])
-        env = rendered["mcpServers"]["oxylabs"]["env"]
-        self.assertEqual(env["OXYLABS_USERNAME"], "test_user")
-        self.assertEqual(env["OXYLABS_PASSWORD"], "test_pass")
+        entry = rendered["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertEqual(
+            entry.get("type"),
+            "streamable-http",
+            "oxylabs entry must be a streamable-http server",
+        )
+        self.assertEqual(
+            entry.get("url"),
+            "https://mcp.oxylabs.io/mcp",
+            "oxylabs entry must point at the hosted endpoint",
+        )
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(headers.get("X-Oxylabs-Username"), "test_user")
+        self.assertEqual(headers.get("X-Oxylabs-Password"), "test_pass")
+        self.assertFalse(
+            entry.get("disabled", False),
+            "a complete credential pair must not disable the server",
+        )
+        for key in ("command", "args", "env"):
+            self.assertNotIn(
+                key,
+                entry,
+                "a hosted entry carries no '{}' key".format(key),
+            )
+
+    def test_oxylabs_header_credentials_with_quote_backslash_and_newline_stay_intact(self):
+        """Error edge: a hostile credential survives json.dumps by construction.
+
+        A quote, backslash and newline in a credential must parse back to the
+        exact same value, which only holds if the output is built with
+        json.dumps rather than string substitution.
+        """
+        nasty_password = 'pass"with\\backslash\nand-newline'
+
+        payload = render.mcp_settings(
+            workspace_folder="/some/repo",
+            github_token="ghp_test",
+            oxylabs_username="user",
+            oxylabs_password=nasty_password,
+        )
+
+        entry = json.loads(payload)["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(
+            headers.get("X-Oxylabs-Password"),
+            nasty_password,
+            "a credential with a quote, backslash and newline must parse back intact",
+        )
 
     def test_oxylabs_disabled_when_credentials_empty(self):
-        """1b. Empty credentials yield disabled: true with empty or absent env.
-
-        When both oxylabs_username and oxylabs_password are empty strings,
-        the rendered server must not crash and must be marked disabled.
-        """
+        """Both-empty credentials yield disabled: true with both header keys
+        present as empty strings, so no ${...} token survives into the output."""
         rendered = json.loads(
             render.mcp_settings(
                 workspace_folder="/some/repo",
@@ -389,8 +433,89 @@ class TestMcpOxylabs(unittest.TestCase):
             )
         )
 
-        self.assertIn("oxylabs", rendered["mcpServers"])
-        self.assertTrue(rendered["mcpServers"]["oxylabs"].get("disabled", False))
+        entry = rendered["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertTrue(entry.get("disabled", False))
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(
+            headers.get("X-Oxylabs-Username"),
+            "",
+            "both-empty credentials must leave the username header present but empty",
+        )
+        self.assertEqual(
+            headers.get("X-Oxylabs-Password"),
+            "",
+            "both-empty credentials must leave the password header present but empty",
+        )
+
+    def test_oxylabs_disabled_when_username_empty_and_password_set(self):
+        """Stricter rule (plans/oxylabs-hosted-mcp.md behaviour 2, Error clause):
+        a partial pair can never authenticate, so an empty username with a set
+        password must render disabled: true. The header values still substitute
+        exactly; only disabled is the new assertion."""
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/some/repo",
+                github_token="ghp_test",
+                oxylabs_username="",
+                oxylabs_password="test_pass",
+            )
+        )
+
+        entry = rendered["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertTrue(
+            entry.get("disabled", False),
+            "an empty username with a set password is a partial pair and "
+            "must render the server disabled",
+        )
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(
+            headers.get("X-Oxylabs-Username"),
+            "",
+            "the empty username header must still substitute as an empty string",
+        )
+        self.assertEqual(
+            headers.get("X-Oxylabs-Password"),
+            "test_pass",
+            "the set password header must substitute to its exact value",
+        )
+
+    def test_oxylabs_disabled_when_password_empty_and_username_set(self):
+        """Stricter rule (plans/oxylabs-hosted-mcp.md behaviour 2, Error clause):
+        the inverse partial pair — a set username with an empty password —
+        must also render disabled: true, with both header values substituting
+        exactly."""
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/some/repo",
+                github_token="ghp_test",
+                oxylabs_username="test_user",
+                oxylabs_password="",
+            )
+        )
+
+        entry = rendered["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertTrue(
+            entry.get("disabled", False),
+            "a set username with an empty password is a partial pair and "
+            "must render the server disabled",
+        )
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(
+            headers.get("X-Oxylabs-Username"),
+            "test_user",
+            "the set username header must substitute to its exact value",
+        )
+        self.assertEqual(
+            headers.get("X-Oxylabs-Password"),
+            "",
+            "the empty password header must still substitute as an empty string",
+        )
 
     def test_backward_compat_two_positional_args(self):
         """2. Calling mcp_settings with only workspace_folder and github_token (positional) still works.
