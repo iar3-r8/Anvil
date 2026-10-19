@@ -689,6 +689,31 @@ class TestMcpSettingsContainerTarget(unittest.TestCase):
             ["mcp-server-git", "--repository", "/workspaces/anvil"],
         )
 
+    def test_root_workspace_folder_raises_render_error_naming_the_value(self):
+        # "/" has no basename, so "/workspaces/" + name would be a dangling
+        # repository path that fails at MCP launch with a far less obvious
+        # error; refuse it up front, naming the offending value.
+        with self.assertRaises(render.RenderError) as ctx:
+            render.mcp_settings(
+                workspace_folder="/",
+                github_token="",
+                container_target=True,
+            )
+
+        self.assertIn("/", str(ctx.exception))
+
+    def test_empty_workspace_folder_raises_render_error_naming_the_value(self):
+        # The empty string has no basename either; the message must say which
+        # argument was unusable, since the value itself has nothing to quote.
+        with self.assertRaises(render.RenderError) as ctx:
+            render.mcp_settings(
+                workspace_folder="",
+                github_token="",
+                container_target=True,
+            )
+
+        self.assertIn("workspace_folder", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
