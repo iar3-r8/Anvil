@@ -120,7 +120,14 @@ def mcp_settings(
     servers["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] = github_token
 
     if container_target:
-        repository = "/workspaces/{}".format(Path(workspace_folder).name)
+        basename = Path(workspace_folder).name
+        if not basename:
+            raise RenderError(
+                'workspace_folder {!r} has no basename for the container-target git path'.format(
+                    workspace_folder
+                )
+            )
+        repository = "/workspaces/{}".format(basename)
     else:
         repository = workspace_folder
 
