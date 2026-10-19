@@ -160,12 +160,15 @@ The container reaches the host through `host.docker.internal`
 compose network, so the LLM is reached via the host's published ports.
 
 **Provisioning for the container:** `setup-repo` renders Zoo Code URLs with the
-host's perspective by default (`http://localhost:<LLM_PORT>/v1`). When the repo
-will be worked on inside a dev container, pass `--container` so the rendered
-`zoo-code-settings.json` points at the host instead:
+host's perspective by default (`http://localhost:<LLM_PORT>/v1`) and the git
+`--repository` argument with the resolved host path. When the repo will be
+worked on inside a dev container, pass `--container` so both point at the
+container's perspective instead:
 
 - `openAiBaseUrl` / embedder base URL: `http://host.docker.internal:<LLM_PORT>/v1`
 - `codebaseIndexQdrantUrl`: `http://host.docker.internal:6333`
+- git `--repository`: `/workspaces/<target basename>`, the devcontainer
+  `workspaceMount` target
 
 ```bash
 ./anvil setup-repo <target-repo> --container --yes
@@ -173,9 +176,9 @@ will be worked on inside a dev container, pass `--container` so the rendered
 
 The flag is explicit — `setup-repo` never guesses — because one repository
 cannot serve both a host editor and a container editor with the same settings
-file, and `zoo-code-settings.json` is rewritten wholesale on every run. If you
-switch between the two environments, re-run `setup-repo` with (or without)
-`--container` to flip the URLs.
+files, and both rendered files are refreshed on every run. If you switch
+between the two environments, re-run `setup-repo` with (or without)
+`--container` to flip the URLs and the git path.
 
 The gateway stack must be running (`./anvil up`) before the container's LLM
 calls can resolve, since they go out through the host's published ports. The
