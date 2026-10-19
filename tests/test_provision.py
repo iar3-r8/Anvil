@@ -663,33 +663,42 @@ class OxylabsPlanTests(ProvisionCase):
         self.assertEqual(repo_plan.oxylabs_password, "")
 
     def test_write_mcp_settings_passes_oxylabs_credentials(self):
-        """2b: _write_mcp_settings passes oxylabs_username and oxylabs_password from repo_plan."""
+        """2b: _write_mcp_settings passes oxylabs_username and oxylabs_password
+        through to the hosted headers in .roo/mcp.json."""
         self.provision(repo_plan=plan(oxylabs_username="test_user", oxylabs_password="test_pass"))
 
         config = self.read_json(".roo/mcp.json")
 
+        entry = config["mcpServers"].get("oxylabs")
+        headers = entry.get("headers") if isinstance(entry, dict) else None
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
         self.assertEqual(
-            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            headers.get("X-Oxylabs-Username"),
             "test_user",
         )
         self.assertEqual(
-            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            headers.get("X-Oxylabs-Password"),
             "test_pass",
         )
 
     def test_empty_oxylabs_credentials_yield_disabled_server(self):
-        """2c: empty oxylabs credentials yield disabled server in .roo/mcp.json."""
+        """2c: empty oxylabs credentials yield a disabled hosted server in
+        .roo/mcp.json with both header keys present as empty strings."""
         self.provision(repo_plan=plan(oxylabs_username="", oxylabs_password=""))
 
         config = self.read_json(".roo/mcp.json")
 
-        self.assertEqual(config["mcpServers"]["oxylabs"]["disabled"], True)
+        entry = config["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertEqual(entry.get("disabled"), True)
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
         self.assertEqual(
-            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            headers.get("X-Oxylabs-Username"),
             "",
         )
         self.assertEqual(
-            config["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            headers.get("X-Oxylabs-Password"),
             "",
         )
 
@@ -739,12 +748,14 @@ class ReprovisioningEndToEndTests(ProvisionCase):
 
         # Read back mcp.json after first provisioning
         config_first = self.read_json(".roo/mcp.json")
+        headers_first = config_first["mcpServers"].get("oxylabs", {}).get("headers")
+        self.assertIsInstance(headers_first, dict, "oxylabs entry must carry headers")
         self.assertEqual(
-            config_first["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            headers_first.get("X-Oxylabs-Username"),
             "test_user",
         )
         self.assertEqual(
-            config_first["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            headers_first.get("X-Oxylabs-Password"),
             "test_pass",
         )
 
@@ -762,12 +773,14 @@ class ReprovisioningEndToEndTests(ProvisionCase):
 
         # Read back mcp.json after second provisioning
         config_second = self.read_json(".roo/mcp.json")
+        headers_second = config_second["mcpServers"].get("oxylabs", {}).get("headers")
+        self.assertIsInstance(headers_second, dict, "oxylabs entry must carry headers")
         self.assertEqual(
-            config_second["mcpServers"]["oxylabs"]["env"]["OXYLABS_USERNAME"],
+            headers_second.get("X-Oxylabs-Username"),
             "test_user",
         )
         self.assertEqual(
-            config_second["mcpServers"]["oxylabs"]["env"]["OXYLABS_PASSWORD"],
+            headers_second.get("X-Oxylabs-Password"),
             "test_pass",
         )
         # mcp.json is valid JSON (read_json already parses it, so if we got here it's valid)

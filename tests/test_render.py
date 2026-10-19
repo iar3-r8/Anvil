@@ -352,13 +352,16 @@ class TestMcpGoldenParity(unittest.TestCase):
 
 
 class TestMcpOxylabs(unittest.TestCase):
-    """Tests for Behavior 1: render.mcp_settings emits an oxylabs server block."""
+    """Tests for plans/oxylabs-hosted-mcp.md behaviour 1 (render-oxylabs-hosted)
+    and the stable half of behaviour 2: both-empty credentials render a
+    disabled hosted entry with both header keys present as empty strings."""
 
-    def test_oxylabs_server_env_substituted_when_credentials_supplied(self):
-        """1a. Non-empty oxylabs_username and oxylabs_password appear in the rendered JSON.
+    def test_oxylabs_hosted_shape_when_credentials_supplied(self):
+        """Non-empty credentials produce the hosted streamable-HTTP entry.
 
-        The oxylabs server must carry OXYLABS_USERNAME and OXYLABS_PASSWORD
-        env keys set to the exact credential values passed in.
+        The entry must carry type "streamable-http", the hosted url, both
+        headers set to the exact credential values, disabled false, and no
+        command/args/env key.
         """
         rendered = json.loads(
             render.mcp_settings(
@@ -369,17 +372,62 @@ class TestMcpOxylabs(unittest.TestCase):
             )
         )
 
-        self.assertIn("oxylabs", rendered["mcpServers"])
-        env = rendered["mcpServers"]["oxylabs"]["env"]
-        self.assertEqual(env["OXYLABS_USERNAME"], "test_user")
-        self.assertEqual(env["OXYLABS_PASSWORD"], "test_pass")
+        entry = rendered["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertEqual(
+            entry.get("type"),
+            "streamable-http",
+            "oxylabs entry must be a streamable-http server",
+        )
+        self.assertEqual(
+            entry.get("url"),
+            "https://mcp.oxylabs.io/mcp",
+            "oxylabs entry must point at the hosted endpoint",
+        )
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(headers.get("X-Oxylabs-Username"), "test_user")
+        self.assertEqual(headers.get("X-Oxylabs-Password"), "test_pass")
+        self.assertFalse(
+            entry.get("disabled", False),
+            "a complete credential pair must not disable the server",
+        )
+        for key in ("command", "args", "env"):
+            self.assertNotIn(
+                key,
+                entry,
+                "a hosted entry carries no '{}' key".format(key),
+            )
+
+    def test_oxylabs_header_credentials_with_quote_backslash_and_newline_stay_intact(self):
+        """Error edge: a hostile credential survives json.dumps by construction.
+
+        A quote, backslash and newline in a credential must parse back to the
+        exact same value, which only holds if the output is built with
+        json.dumps rather than string substitution.
+        """
+        nasty_password = 'pass"with\\backslash\nand-newline'
+
+        payload = render.mcp_settings(
+            workspace_folder="/some/repo",
+            github_token="ghp_test",
+            oxylabs_username="user",
+            oxylabs_password=nasty_password,
+        )
+
+        entry = json.loads(payload)["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(
+            headers.get("X-Oxylabs-Password"),
+            nasty_password,
+            "a credential with a quote, backslash and newline must parse back intact",
+        )
 
     def test_oxylabs_disabled_when_credentials_empty(self):
-        """1b. Empty credentials yield disabled: true with empty or absent env.
-
-        When both oxylabs_username and oxylabs_password are empty strings,
-        the rendered server must not crash and must be marked disabled.
-        """
+        """Both-empty credentials yield disabled: true with both header keys
+        present as empty strings, so no ${...} token survives into the output."""
         rendered = json.loads(
             render.mcp_settings(
                 workspace_folder="/some/repo",
@@ -389,8 +437,21 @@ class TestMcpOxylabs(unittest.TestCase):
             )
         )
 
-        self.assertIn("oxylabs", rendered["mcpServers"])
-        self.assertTrue(rendered["mcpServers"]["oxylabs"].get("disabled", False))
+        entry = rendered["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertTrue(entry.get("disabled", False))
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(
+            headers.get("X-Oxylabs-Username"),
+            "",
+            "both-empty credentials must leave the username header present but empty",
+        )
+        self.assertEqual(
+            headers.get("X-Oxylabs-Password"),
+            "",
+            "both-empty credentials must leave the password header present but empty",
+        )
 
     def test_backward_compat_two_positional_args(self):
         """2. Calling mcp_settings with only workspace_folder and github_token (positional) still works.
