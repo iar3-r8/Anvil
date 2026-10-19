@@ -4506,3 +4506,49 @@ class TestNoGithubRunNeverBlanksStoredRepoToken(CliCase):
                 "GITHUB_PERSONAL_ACCESS_TOKEN"
             ],
         )
+
+
+class TestContainerWorkspacePathEndToEnd(CliCase):
+    """B6: ``setup-repo --container`` threads container_target to the renderer.
+
+    ``--container`` already reaches ``RepoPlan.container_target`` (pinned by
+    ``TestSetupRepo.test_container_flag_sets_container_target``); this class
+    drives the *real* provision to completion against a target directory with
+    an unambiguous basename and asserts on the parsed ``.roo/mcp.json`` it
+    writes, never on source text.
+    """
+
+    REPO_NAME = "acme-repo"
+
+    def setUp(self):
+        super().setUp()
+        self.write_env(LLM_PORT="8000")
+        self._root = tempfile.TemporaryDirectory()
+        self.addCleanup(self._root.cleanup)
+        self.target = Path(self._root.name) / self.REPO_NAME
+        self.target.mkdir()
+
+    def deployed_git_repository(self, extra_flags):
+        """Run setup-repo for real and return git --repository from the file."""
+        result = self.invoke(
+            ["setup-repo", str(self.target), "--yes"] + list(extra_flags)
+        )
+        self.assertEqual(0, result.exit_code, result.output)
+
+        deployed = json.loads(
+            (self.target / ".roo" / "mcp.json").read_text(encoding="utf-8")
+        )
+        args = deployed["mcpServers"]["git"]["args"]
+        return args[args.index("--repository") + 1]
+
+    def test_container_setup_repo_writes_the_devcontainer_mount_path(self):
+        """``--container``: the deployed file carries /workspaces/<basename>."""
+        repository = self.deployed_git_repository(["--container"])
+
+        self.assertEqual("/workspaces/{}".format(self.REPO_NAME), repository)
+
+    def test_host_setup_repo_keeps_the_resolved_host_path(self):
+        """Without ``--container`` the file carries the resolved host path."""
+        repository = self.deployed_git_repository([])
+
+        self.assertEqual(str(self.target.resolve()), repository)
