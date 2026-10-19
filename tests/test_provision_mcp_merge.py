@@ -816,5 +816,273 @@ class StoredHeadersPreservationTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Behaviour 7 (plans/mcp-container-workspace-path.md) — a re-run re-renders
+# the git path; the rendered value always wins
+# ---------------------------------------------------------------------------
+
+
+class Behaviour7RerunRerendersGitPathTests(ProvisionCase):
+    """Behaviour 7 of ``plans/mcp-container-workspace-path.md``: a re-run
+    re-renders the git ``--repository`` value in either direction.
+
+    No-production-change boundary pin. ``git`` is Anvil-owned, so the merge
+    refreshes its whole entry from the current render: a re-run with
+    ``container_target=True`` over a host-path file re-renders to
+    ``/workspaces/<basename>``, and the reverse re-run over a container-path
+    file re-renders to the resolved host path. The path is an ``args`` value,
+    so it is NEVER A2 credential-preserved — A2 blank-preservation applies to
+    ``env``/``headers`` only. User-added servers and non-empty stored
+    credentials still survive the refresh.
+
+    Green from the start: the merge logic already refreshes Anvil-owned
+    servers wholesale, and behaviours 5 and 6 mean ``render.mcp_settings``
+    now honours ``container_target``, so the two-run scenario exercises the
+    real re-render. The pin exists so a future refactor cannot silently
+    switch the path to credential-style preservation.
+    """
+
+    USER_SERVER = {
+        "command": "node",
+        "args": ["/home/user/scripts/my-server.js"],
+        "disabled": False,
+        "env": {"MY_SERVER_KEY": "my-secret"},
+    }
+
+    def _first_run(self, **plan_kwargs):
+        _provision_fresh(self.target, repo_plan=plan(**plan_kwargs))
+
+    def _git_repository(self):
+        args = self.read_json(".roo/mcp.json")["mcpServers"]["git"]["args"]
+        return args[args.index("--repository") + 1]
+
+    def _drop_package_registry_and_user_server(self):
+        """Simulate a repo provisioned before ``package-registry`` shipped.
+
+        The merge appends every rendered server missing from the existing
+        file; dropping ``package-registry`` keeps the merged document
+        equal to the rendered one, so the pin can assert the refresh is
+        exact. Mirrors the pre-package-registry fixture in
+        ``Behaviour5AnvilServerRefreshedTests``.
+        """
+        path = self.target / ".roo" / "mcp.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["mcpServers"].pop("package-registry", None)
+        data["mcpServers"].pop("my-server", None)
+        path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+    def _inject_user_server(self):
+        path = self.target / ".roo" / "mcp.json"
+        data = json.loads(path.read_text(encoding="utf-8"))
+        data["mcpServers"]["my-server"] = self.USER_SERVER
+        path.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+    def test_host_to_container_rerun_rerenders_git_to_devcontainer_mount(self):
+        # Arrange: a host render with credentials, stored on disk.
+        self._first_run(
+            github_token="ghp_first",
+            oxylabs_username="stored_user",
+            oxylabs_password="stored_pass",
+        )
+        self._drop_package_registry_and_user_server()
+        stored_repo = self._git_repository()
+        self.assertEqual(
+            str(self.target.resolve()),
+            stored_repo,
+            "The stored file must carry the resolved host path before the re-run",
+        )
+
+        # Act: a re-run in the other direction.
+        _provision_fresh(
+            self.target,
+            repo_plan=plan(
+                github_token="ghp_second",
+                oxylabs_username="new_user",
+                oxylabs_password="new_pass",
+                container_target=True,
+            ),
+        )
+
+        # Assert: the rendered container path replaces the stored host path.
+        self.assertEqual(
+            "/workspaces/{}".format(self.target.name),
+            self._git_repository(),
+            "The re-run must re-render git --repository to the devcontainer "
+            "mount; the rendered value always wins for Anvil-owned servers",
+        )
+
+    def test_container_to_host_rerun_rerenders_git_to_resolved_host_path(self):
+        # Arrange: a container render stored on disk.
+        self._first_run(
+            github_token="ghp_first",
+            oxylabs_username="stored_user",
+            oxylabs_password="stored_pass",
+            container_target=True,
+        )
+        self._drop_package_registry_and_user_server()
+        stored_repo = self._git_repository()
+        self.assertEqual(
+            "/workspaces/{}".format(self.target.name),
+            stored_repo,
+            "The stored file must carry the container path before the re-run",
+        )
+
+        # Act: a re-run in the reverse direction.
+        _provision_fresh(
+            self.target,
+            repo_plan=plan(
+                github_token="ghp_second",
+                oxylabs_username="new_user",
+                oxylabs_password="new_pass",
+                container_target=False,
+            ),
+        )
+
+        # Assert: the rendered host path replaces the stored container path.
+        self.assertEqual(
+            str(self.target.resolve()),
+            self._git_repository(),
+            "The reverse re-run must re-render git --repository to the "
+            "resolved host path; the rendered value always wins",
+        )
+
+    def test_git_entry_never_credential_preserved_equals_rendered_entry_whole(self):
+        # The pin that forbids a future refactor from extending A2
+        # preservation to ``args``: if a stored path were ever
+        # credential-preserved, this exact match would fail.
+        self._first_run(
+            github_token="ghp_first",
+            oxylabs_username="stored_user",
+            oxylabs_password="stored_pass",
+        )
+        self._drop_package_registry_and_user_server()
+
+        _provision_fresh(
+            self.target,
+            repo_plan=plan(
+                github_token="ghp_second",
+                oxylabs_username="new_user",
+                oxylabs_password="new_pass",
+                container_target=True,
+            ),
+        )
+
+        on_disk = self.read_json(".roo/mcp.json")
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder=str(self.target.resolve()),
+                github_token="ghp_second",
+                oxylabs_username="new_user",
+                oxylabs_password="new_pass",
+                container_target=True,
+            )
+        )
+        self.assertEqual(
+            on_disk,
+            rendered,
+            "A host file without user servers must merge to the rendered "
+            "document exactly: the git path is an args value, so it is "
+            "refreshed wholesale and never A2-preserved",
+        )
+
+    def test_user_server_and_non_empty_credentials_survive_container_rerun(self):
+        # A2 side of the pin: user-added servers and non-empty stored
+        # credentials still survive the refresh that re-renders the path.
+        self._first_run(
+            github_token="ghp_first",
+            oxylabs_username="stored_user",
+            oxylabs_password="stored_pass",
+        )
+        self._drop_package_registry_and_user_server()
+        self._inject_user_server()
+
+        _provision_fresh(
+            self.target,
+            repo_plan=plan(
+                github_token="ghp_second",
+                oxylabs_username="",
+                oxylabs_password="",
+                container_target=True,
+            ),
+        )
+
+        servers = self.read_json(".roo/mcp.json")["mcpServers"]
+        self.assertEqual(
+            servers["my-server"],
+            self.USER_SERVER,
+            "The user-added server must survive the re-run",
+        )
+        self.assertEqual(
+            "/workspaces/{}".format(self.target.name),
+            self._git_repository(),
+            "The re-run must still re-render the git path",
+        )
+        headers = servers["oxylabs"]["headers"]
+        self.assertEqual(
+            headers["X-Oxylabs-Username"],
+            "stored_user",
+            "An empty incoming credential must not blank the stored one (A2)",
+        )
+        self.assertEqual(
+            headers["X-Oxylabs-Password"],
+            "stored_pass",
+            "An empty incoming credential must not blank the stored one (A2)",
+        )
+        self.assertEqual(
+            servers["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"],
+            "ghp_second",
+            "A non-empty incoming credential always wins (A2)",
+        )
+
+    def test_user_server_and_non_empty_credentials_survive_host_rerun(self):
+        # The same A2 survival on the reverse direction.
+        self._first_run(
+            github_token="ghp_first",
+            oxylabs_username="stored_user",
+            oxylabs_password="stored_pass",
+            container_target=True,
+        )
+        self._drop_package_registry_and_user_server()
+        self._inject_user_server()
+
+        _provision_fresh(
+            self.target,
+            repo_plan=plan(
+                github_token="ghp_second",
+                oxylabs_username="",
+                oxylabs_password="",
+                container_target=False,
+            ),
+        )
+
+        servers = self.read_json(".roo/mcp.json")["mcpServers"]
+        self.assertEqual(
+            servers["my-server"],
+            self.USER_SERVER,
+            "The user-added server must survive the re-run",
+        )
+        self.assertEqual(
+            str(self.target.resolve()),
+            self._git_repository(),
+            "The reverse re-run must still re-render the git path",
+        )
+        headers = servers["oxylabs"]["headers"]
+        self.assertEqual(
+            headers["X-Oxylabs-Username"],
+            "stored_user",
+            "An empty incoming credential must not blank the stored one (A2)",
+        )
+        self.assertEqual(
+            headers["X-Oxylabs-Password"],
+            "stored_pass",
+            "An empty incoming credential must not blank the stored one (A2)",
+        )
+        self.assertEqual(
+            servers["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"],
+            "ghp_second",
+            "A non-empty incoming credential always wins (A2)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
