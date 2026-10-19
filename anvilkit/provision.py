@@ -820,6 +820,7 @@ def _write_mcp_settings(
         github_token=repo_plan.github_token,
         oxylabs_username=repo_plan.oxylabs_username,
         oxylabs_password=repo_plan.oxylabs_password,
+        container_target=repo_plan.container_target,
     )
 
     file_existed = mcp_path.exists()
