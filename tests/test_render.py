@@ -654,5 +654,41 @@ class TestZooSettingsContainerTarget(unittest.TestCase):
         self.assertEqual(profile["openAiBaseUrl"], "http://localhost:8000/v1")
 
 
+class TestMcpSettingsContainerTarget(unittest.TestCase):
+    """``container_target=True`` re-points the git ``--repository`` at the
+    devcontainer mount ``/workspaces/<basename>`` (the target of
+    ``workspaceMount`` in ``templates/devcontainer/devcontainer.json``),
+    instead of the host ``workspace_folder``.
+    """
+
+    def test_git_repository_maps_to_the_devcontainer_mount(self):
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/home/me/Repositories/anvil",
+                github_token="",
+                container_target=True,
+            )
+        )
+
+        self.assertEqual(
+            rendered["mcpServers"]["git"]["args"],
+            ["mcp-server-git", "--repository", "/workspaces/anvil"],
+        )
+
+    def test_trailing_slash_yields_the_same_mount_path(self):
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/home/me/anvil/",
+                github_token="",
+                container_target=True,
+            )
+        )
+
+        self.assertEqual(
+            rendered["mcpServers"]["git"]["args"],
+            ["mcp-server-git", "--repository", "/workspaces/anvil"],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
