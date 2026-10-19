@@ -686,5 +686,128 @@ class Behaviour7MalformedExistingMcpTests(ProvisionCase):
         self.assertEqual(path.read_bytes(), bad_bytes)
 
 
+# ---------------------------------------------------------------------------
+# Behaviour 4 (plans/oxylabs-hosted-mcp.md) — stored headers are preserved
+# ---------------------------------------------------------------------------
+
+
+def _hosted_oxylabs_entry(username, password, disabled=False):
+    """A hosted streamable-HTTP ``oxylabs`` entry, hand-built per the plan.
+
+    ``render.mcp_settings()`` still produces the old local ``env`` shape, so
+    this cycle is render-independent: both the existing and the rendered-side
+    fixtures are hand-built with ``json.dumps`` via ``_existing()``.
+    """
+    return {
+        "type": "streamable-http",
+        "url": "https://mcp.oxylabs.io/mcp",
+        "disabled": disabled,
+        "headers": {
+            "X-Oxylabs-Username": username,
+            "X-Oxylabs-Password": password,
+        },
+    }
+
+
+class StoredHeadersPreservationTests(unittest.TestCase):
+    """Behaviour 4 of ``plans/oxylabs-hosted-mcp.md``: a re-run without
+    credentials must not blank working stored ``headers`` values.
+
+    An empty incoming header value keeps the non-empty stored one, mirroring
+    the existing ``env`` rule; a non-empty incoming value always wins. An
+    existing entry with no ``headers`` key, or ``headers`` that is not a
+    mapping, is replaced wholesale without raising.
+    """
+
+    def setUp(self):
+        self.existing_text = _existing(
+            {"oxylabs": _hosted_oxylabs_entry("stored_user", "stored_pass")}
+        )
+
+    def _rendered_text(self, username, password):
+        return _existing(
+            {"oxylabs": _hosted_oxylabs_entry(username, password)}
+        )
+
+    def test_empty_incoming_username_header_keeps_stored_value(self):
+        # Re-run without credentials: the renderer would deliver an empty
+        # username; the merge must still keep the stored one.
+        rendered_text = self._rendered_text("", "render_pass")
+        result = json.loads(_merge(self.existing_text, rendered_text))
+        headers = result["mcpServers"]["oxylabs"]["headers"]
+        self.assertEqual(
+            headers["X-Oxylabs-Username"],
+            "stored_user",
+            "An empty incoming header value must not blank a stored one",
+        )
+
+    def test_empty_incoming_password_header_keeps_stored_value(self):
+        rendered_text = self._rendered_text("render_user", "")
+        result = json.loads(_merge(self.existing_text, rendered_text))
+        headers = result["mcpServers"]["oxylabs"]["headers"]
+        self.assertEqual(
+            headers["X-Oxylabs-Password"],
+            "stored_pass",
+            "An empty incoming header value must not blank the stored one",
+        )
+
+    def test_non_empty_incoming_username_header_wins(self):
+        rendered_text = self._rendered_text("new_user", "new_pass")
+        result = json.loads(_merge(self.existing_text, rendered_text))
+        headers = result["mcpServers"]["oxylabs"]["headers"]
+        self.assertEqual(
+            headers["X-Oxylabs-Username"],
+            "new_user",
+            "A non-empty incoming value always wins, including a deliberate "
+            "change",
+        )
+
+    def test_empty_incoming_with_empty_stored_stays_empty(self):
+        # Nothing stored, nothing incoming: the values stay empty, with no
+        # crash and no spurious value substituted.
+        existing_text = _existing({"oxylabs": _hosted_oxylabs_entry("", "")})
+        rendered_text = self._rendered_text("", "")
+        result = json.loads(_merge(existing_text, rendered_text))
+        headers = result["mcpServers"]["oxylabs"]["headers"]
+        self.assertEqual(headers["X-Oxylabs-Username"], "")
+        self.assertEqual(headers["X-Oxylabs-Password"], "")
+
+    def test_existing_entry_without_headers_key_replaced_wholesale(self):
+        # A repo still on the old local shape: its oxylabs entry has no
+        # ``headers`` key at all, so the rendered entry applies wholesale.
+        existing_text = _existing(
+            {"oxylabs": _oxylabs_entry("stored_user", "stored_pass")}
+        )
+        rendered_text = self._rendered_text("render_user", "render_pass")
+        result = json.loads(_merge(existing_text, rendered_text))
+        entry = result["mcpServers"]["oxylabs"]
+        self.assertEqual(
+            entry["headers"],
+            {
+                "X-Oxylabs-Username": "render_user",
+                "X-Oxylabs-Password": "render_pass",
+            },
+            "An existing entry with no headers key must take the rendered "
+            "headers wholesale",
+        )
+
+    def test_existing_entry_with_non_mapping_headers_replaced_wholesale(self):
+        bad_entry = _hosted_oxylabs_entry("stored_user", "stored_pass")
+        bad_entry["headers"] = "oops"
+        existing_text = _existing({"oxylabs": bad_entry})
+        rendered_text = self._rendered_text("render_user", "render_pass")
+        result = json.loads(_merge(existing_text, rendered_text))
+        entry = result["mcpServers"]["oxylabs"]
+        self.assertEqual(
+            entry["headers"],
+            {
+                "X-Oxylabs-Username": "render_user",
+                "X-Oxylabs-Password": "render_pass",
+            },
+            "A stored headers value that is not a mapping must be replaced "
+            "wholesale, not merged against",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
