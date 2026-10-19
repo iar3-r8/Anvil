@@ -116,10 +116,10 @@ def mcp_settings(
         workspace_folder if arg == "${workspaceFolder}" else arg for arg in git_args
     ]
 
-    # Always substitute env values so no `${}` tokens remain in output.
+    # Always substitute the header values so no `${}` tokens remain in output.
     # When credentials are empty, set disabled=True to signal the MCP client.
-    servers["oxylabs"]["env"]["OXYLABS_USERNAME"] = oxylabs_username
-    servers["oxylabs"]["env"]["OXYLABS_PASSWORD"] = oxylabs_password
+    servers["oxylabs"]["headers"]["X-Oxylabs-Username"] = oxylabs_username
+    servers["oxylabs"]["headers"]["X-Oxylabs-Password"] = oxylabs_password
     if not oxylabs_username and not oxylabs_password:
         servers["oxylabs"]["disabled"] = True
 

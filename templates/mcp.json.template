@@ -31,14 +31,12 @@
 			"alwaysAllow": []
 		},
 		"oxylabs": {
-			"command": "uvx",
-			"args": [
-				"oxylabs-mcp"
-			],
+			"type": "streamable-http",
+			"url": "https://mcp.oxylabs.io/mcp",
 			"disabled": false,
-			"env": {
-				"OXYLABS_USERNAME": "${OXYLABS_USERNAME}",
-				"OXYLABS_PASSWORD": "${OXYLABS_PASSWORD}"
+			"headers": {
+				"X-Oxylabs-Username": "${OXYLABS_USERNAME}",
+				"X-Oxylabs-Password": "${OXYLABS_PASSWORD}"
 			}
 		},
 		"package-registry": {
