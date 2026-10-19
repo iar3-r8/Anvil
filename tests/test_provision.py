@@ -255,6 +255,32 @@ class ArtifactTests(ProvisionCase):
             "ghp_secret",
         )
 
+    def test_container_target_mcp_json_points_git_at_the_devcontainer_mount(self):
+        """container_target=True maps git --repository to the devcontainer
+        mount point ``/workspaces/<basename>`` (behavior 5)."""
+        self.provision(repo_plan=plan(container_target=True))
+
+        config = self.read_json(".roo/mcp.json")
+
+        args = config["mcpServers"]["git"]["args"]
+        self.assertEqual(
+            "/workspaces/{}".format(self.target.name),
+            args[args.index("--repository") + 1],
+        )
+
+    def test_host_target_mcp_json_keeps_the_resolved_workspace_path(self):
+        """container_target=False keeps git --repository as the resolved
+        host path, exactly as today (behavior 5 error case)."""
+        self.provision(repo_plan=plan(container_target=False))
+
+        config = self.read_json(".roo/mcp.json")
+
+        args = config["mcpServers"]["git"]["args"]
+        self.assertEqual(
+            str(self.target.resolve()),
+            args[args.index("--repository") + 1],
+        )
+
     def test_writes_vscode_extensions(self):
         self.provision()
 

@@ -103,18 +103,36 @@ def mcp_settings(
     github_token: str,
     oxylabs_username: str = "",
     oxylabs_password: str = "",
+    container_target: bool = False,
 ) -> str:
-    """Render ``.roo/mcp.json`` as a JSON string."""
+    """Render ``.roo/mcp.json`` as a JSON string.
+
+    ``container_target`` re-points the git ``--repository`` argument from the
+    host ``workspace_folder`` at the devcontainer mount
+    ``/workspaces/<basename>`` (the target of ``workspaceMount`` in
+    ``templates/devcontainer/devcontainer.json``), so the git MCP server sees
+    the repository path as the dev container sees it.
+    """
     config = _load_json_template(MCP_TEMPLATE)
 
     servers = config["mcpServers"]
 
     servers["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"] = github_token
 
+    if container_target:
+        basename = Path(workspace_folder).name
+        if not basename:
+            raise RenderError(
+                'workspace_folder {!r} has no basename for the container-target git path'.format(
+                    workspace_folder
+                )
+            )
+        repository = "/workspaces/{}".format(basename)
+    else:
+        repository = workspace_folder
+
     git_args = servers["git"]["args"]
-    servers["git"]["args"] = [
-        workspace_folder if arg == "${workspaceFolder}" else arg for arg in git_args
-    ]
+    servers["git"]["args"] = [repository if arg == "${workspaceFolder}" else arg for arg in git_args]
 
     # Always substitute the header values so no `${}` tokens remain in output.
     # When EITHER credential is empty, set disabled=True: a partial pair can
