@@ -49,7 +49,7 @@ EXPECTED_GITHUB = {
 
 EXPECTED_GIT = {
     "command": "uvx",
-    "args": ["--with", "mcp<1.10", "mcp-server-git", "--repository", "${workspaceFolder}"],
+    "args": ["mcp-server-git", "--repository", "${workspaceFolder}"],
     "disabled": False,
     "alwaysAllow": [],
 }

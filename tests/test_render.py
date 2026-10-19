@@ -326,29 +326,25 @@ class TestMcpGoldenParity(unittest.TestCase):
 
         self.assertNotIn("${", payload)
 
-    def test_git_server_constrains_the_mcp_sdk(self):
-        """Regression: an unpinned SDK broke the git server on any fresh machine.
+    def test_git_server_args_carry_no_sdk_pin(self):
+        """Regression: the --with mcp<1.10 pin must be gone.
 
-        'uvx mcp-server-git' resolves the mcp SDK afresh, and a newer SDK moved
-        the attribute the server calls, so it died at startup with
-        "AttributeError: 'Server' object has no attribute 'list_tools'". A warm
-        uv cache hid this locally; a container exposed it. The constraint must
-        travel in the generated config, not in anyone's cache.
+        Current mcp-server-git releases require mcp>=2.3,<3
+        (https://pypi.org/project/mcp-server-git/), so the mcp<1.10 pin is
+        unsatisfiable and uvx could never resolve it. The git entry must
+        launch the package bare: uvx mcp-server-git --repository <workspace>.
         """
-        args = json.loads(
+        entry = json.loads(
             render.mcp_settings(workspace_folder="/some/repo", github_token="")
-        )["mcpServers"]["git"]["args"]
+        )["mcpServers"]["git"]
 
-        self.assertIn("--with", args)
-        self.assertEqual("mcp<1.10", args[args.index("--with") + 1])
-
-    def test_git_sdk_constraint_precedes_the_package_name(self):
-        """uvx applies --with only before the package it is running."""
-        args = json.loads(
-            render.mcp_settings(workspace_folder="/some/repo", github_token="")
-        )["mcpServers"]["git"]["args"]
-
-        self.assertLess(args.index("--with"), args.index("mcp-server-git"))
+        self.assertEqual(entry["command"], "uvx")
+        self.assertEqual(entry["args"], ["mcp-server-git", "--repository", "/some/repo"])
+        self.assertNotIn("--with", entry["args"])
+        self.assertFalse(
+            any(arg.startswith("mcp<") for arg in entry["args"]),
+            "no SDK pin of the form mcp<... may appear in the git args",
+        )
 
 
 class TestMcpOxylabs(unittest.TestCase):
