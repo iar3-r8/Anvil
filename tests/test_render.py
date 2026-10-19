@@ -453,6 +453,74 @@ class TestMcpOxylabs(unittest.TestCase):
             "both-empty credentials must leave the password header present but empty",
         )
 
+    def test_oxylabs_disabled_when_username_empty_and_password_set(self):
+        """Stricter rule (plans/oxylabs-hosted-mcp.md behaviour 2, Error clause):
+        a partial pair can never authenticate, so an empty username with a set
+        password must render disabled: true. The header values still substitute
+        exactly; only disabled is the new assertion."""
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/some/repo",
+                github_token="ghp_test",
+                oxylabs_username="",
+                oxylabs_password="test_pass",
+            )
+        )
+
+        entry = rendered["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertTrue(
+            entry.get("disabled", False),
+            "an empty username with a set password is a partial pair and "
+            "must render the server disabled",
+        )
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(
+            headers.get("X-Oxylabs-Username"),
+            "",
+            "the empty username header must still substitute as an empty string",
+        )
+        self.assertEqual(
+            headers.get("X-Oxylabs-Password"),
+            "test_pass",
+            "the set password header must substitute to its exact value",
+        )
+
+    def test_oxylabs_disabled_when_password_empty_and_username_set(self):
+        """Stricter rule (plans/oxylabs-hosted-mcp.md behaviour 2, Error clause):
+        the inverse partial pair — a set username with an empty password —
+        must also render disabled: true, with both header values substituting
+        exactly."""
+        rendered = json.loads(
+            render.mcp_settings(
+                workspace_folder="/some/repo",
+                github_token="ghp_test",
+                oxylabs_username="test_user",
+                oxylabs_password="",
+            )
+        )
+
+        entry = rendered["mcpServers"].get("oxylabs")
+        self.assertIsInstance(entry, dict, "oxylabs server entry is missing")
+        self.assertTrue(
+            entry.get("disabled", False),
+            "a set username with an empty password is a partial pair and "
+            "must render the server disabled",
+        )
+        headers = entry.get("headers")
+        self.assertIsInstance(headers, dict, "oxylabs entry must carry headers")
+        self.assertEqual(
+            headers.get("X-Oxylabs-Username"),
+            "test_user",
+            "the set username header must substitute to its exact value",
+        )
+        self.assertEqual(
+            headers.get("X-Oxylabs-Password"),
+            "",
+            "the empty password header must still substitute as an empty string",
+        )
+
     def test_backward_compat_two_positional_args(self):
         """2. Calling mcp_settings with only workspace_folder and github_token (positional) still works.
 
