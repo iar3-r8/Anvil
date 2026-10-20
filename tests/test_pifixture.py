@@ -1,12 +1,11 @@
 """Tests for anvilkit.pifixture - the bake-off fixture generator.
 
 Written before the implementation (TDD, ``plans/pi-phase1-bakeoff.md``,
-behaviours 1-2, "fixture written" and "fixture starts red and turns
-green").
+behaviours 1-3: "fixture written", "fixture starts red and turns
+green", and "fixture change detection").
 
 The fixture is GENERATED at runtime - every bake-off run must start
 known-red - so nothing is committed under ``tests/fixtures`` for it.
-This module covers behaviours 1-2; a later cycle adds behaviour 3 here.
 
 The production module ``anvilkit.pifixture`` does not exist yet, so every
 test loads it through ``_pifixture``, which fails with a clear assertion
@@ -15,6 +14,7 @@ suite is red.
 """
 
 import ast
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -295,3 +295,114 @@ class TestAssertionPasses(PifixtureTestCase):
         for entry in sys.path:
             if entry:
                 self.assertNotEqual(Path(entry).resolve(), dest_resolved)
+
+
+class TestChangedFiles(PifixtureTestCase):
+    """Behaviour 3: fixture change detection.
+
+    The pinned digest shape from ``digest_fixture(dest)`` is a ``dict``
+    mapping every file's posix-style path relative to ``dest`` (for
+    example ``"bakeoff_fixture/adder.py"``) to the sha256 hexdigest of
+    the file's bytes. ``changed_files(before, dest)`` compares the
+    current tree to that digest and returns a sorted ``List[str]``:
+
+    - a changed file appears as its relative path;
+    - a file present in ``before`` but missing now appears as
+      ``"deleted:" + relative path``, so a run that deleted the test
+      cannot be mistaken for a clean result;
+    - a file that did not exist in ``before`` appears as its relative
+      path, because a run may add files and additions are changes;
+    - an untouched tree returns ``[]``.
+    """
+
+    def _pifixture_with_changed_files(self):
+        """Import the module and assert behaviour 3's entry points exist."""
+        pifixture = self._pifixture()
+        for name in ("digest_fixture", "changed_files"):
+            self.assertTrue(
+                callable(getattr(pifixture, name, None)),
+                "anvilkit.pifixture.%s is not callable; fixture change "
+                "detection has not been implemented yet" % name,
+            )
+        return pifixture
+
+    def test_digest_fixture_returns_relative_path_to_sha256_map(self):
+        pifixture = self._pifixture_with_changed_files()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        digest = pifixture.digest_fixture(dest)
+        self.assertIsInstance(digest, dict)
+        self.assertEqual(
+            set(digest),
+            set(EXPECTED_FILES),
+            "the digest must name exactly the fixture's files, relative "
+            "to dest, with posix separators",
+        )
+        for name in EXPECTED_FILES:
+            expected = hashlib.sha256(
+                (dest / name).read_bytes()
+            ).hexdigest()
+            self.assertEqual(
+                digest[name],
+                expected,
+                "digest of %s is not its sha256" % name,
+            )
+
+    def test_changed_files_untouched_fixture_returns_empty_list(self):
+        pifixture = self._pifixture_with_changed_files()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        before = pifixture.digest_fixture(dest)
+        self.assertEqual(pifixture.changed_files(before, dest), [])
+
+    def test_changed_files_rewritten_adder_lists_only_that_file(self):
+        pifixture = self._pifixture_with_changed_files()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        before = pifixture.digest_fixture(dest)
+        (dest / "bakeoff_fixture" / "adder.py").write_text(
+            "def add(a, b):\n    return a + b\n", encoding="utf-8"
+        )
+        self.assertEqual(
+            pifixture.changed_files(before, dest),
+            ["bakeoff_fixture/adder.py"],
+        )
+
+    def test_changed_files_deleted_test_file_lists_deleted_prefix(self):
+        pifixture = self._pifixture_with_changed_files()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        before = pifixture.digest_fixture(dest)
+        (dest / "tests" / "test_adder.py").unlink()
+        self.assertEqual(
+            pifixture.changed_files(before, dest),
+            ["deleted:tests/test_adder.py"],
+        )
+
+    def test_changed_files_new_file_listed_by_relative_path(self):
+        pifixture = self._pifixture_with_changed_files()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        before = pifixture.digest_fixture(dest)
+        (dest / "bakeoff_fixture" / "helper.py").write_text(
+            "def double(n):\n    return n * 2\n", encoding="utf-8"
+        )
+        self.assertEqual(
+            pifixture.changed_files(before, dest),
+            ["bakeoff_fixture/helper.py"],
+        )
+
+    def test_changed_files_mixed_mutations_are_sorted(self):
+        pifixture = self._pifixture_with_changed_files()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        before = pifixture.digest_fixture(dest)
+        (dest / "bakeoff_fixture" / "adder.py").write_text(
+            "def add(a, b):\n    return a + b\n", encoding="utf-8"
+        )
+        (dest / "TASK.md").unlink()
+        (dest / "notes.txt").write_text("scratch\n", encoding="utf-8")
+        self.assertEqual(
+            pifixture.changed_files(before, dest),
+            ["bakeoff_fixture/adder.py", "deleted:TASK.md", "notes.txt"],
+        )
