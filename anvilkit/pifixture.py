@@ -11,6 +11,8 @@ All generated content is a fixed byte string, so two runs into two fresh
 destinations are byte-identical.
 """
 
+import subprocess
+import sys
 from pathlib import Path
 
 _ADDER_PY = (
@@ -45,6 +47,20 @@ _TASK_MD = (
     "`a - b` -> `a + b`.\n"
 )
 
+# Runner for the red/green check: executes the fixture's test module from
+# the destination (cwd) and calls each ``test_`` function directly. The
+# fixture's ``tests/`` has no ``__init__.py`` (namespace package) and its
+# test is a plain function, so neither ``unittest`` discovery nor
+# ``python -m tests.test_adder`` collects it. Any failure - assertion,
+# missing file, unimportable module - ends in a non-zero exit with the
+# traceback on stderr.
+_CHECK_PY = (
+    "from tests import test_adder\n"
+    "for name in sorted(dir(test_adder)):\n"
+    "    if name.startswith('test_'):\n"
+    "        getattr(test_adder, name)()\n"
+)
+
 
 class FixtureError(Exception):
     """Any failure to write the bake-off fixture.
@@ -76,3 +92,33 @@ def write_fixture(dest: Path) -> None:
     )
     (dest / "tests" / "test_adder.py").write_text(_TEST_ADDER_PY, encoding="utf-8")
     (dest / "TASK.md").write_text(_TASK_MD, encoding="utf-8")
+
+
+def assertion_passes(dest: Path) -> dict:
+    """Run the fixture's own unittest in a subprocess and report the result.
+
+    This is the red/green check for the bake-off host run: ``passed`` is
+    ``True`` iff the fixture's single assertion exits cleanly. The fixture
+    code never enters this process - it runs under the current interpreter
+    with the destination as cwd, so ``bakeoff_fixture.adder`` resolves
+    without an ``__init__.py`` or any path setup.
+
+    The fixture's test file defines a plain ``test_add()`` function, which
+    the ``unittest`` discovery runner never collects, so the subprocess
+    executes the test module and calls each ``test_`` function directly:
+    an assertion failure, a missing file or an import error all surface
+    as a traceback on stderr with a non-zero exit, never as an exception
+    to this caller.
+
+    Returns:
+        dict: ``{"passed": bool, "stderr": str}``.
+    """
+    dest = Path(dest)
+    result = subprocess.run(
+        [sys.executable, "-c", _CHECK_PY],
+        cwd=str(dest),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return {"passed": result.returncode == 0, "stderr": result.stderr}
