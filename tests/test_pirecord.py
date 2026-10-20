@@ -174,8 +174,15 @@ class PirecordTestCase(unittest.TestCase):
         }
 
     @staticmethod
-    def _outcome():
-        """The outcome dict exactly as pievents.outcome returns it."""
+    def _get_outcome():
+        """The outcome dict exactly as pievents.outcome returns it.
+
+        Named ``_get_outcome`` on purpose: ``unittest.TestCase`` owns an
+        instance attribute called ``_outcome`` (set by ``TestCase.run()``
+        to its internal ``_Outcome`` result tracker), which would shadow a
+        helper of that name and turn every call into
+        ``TypeError: '_Outcome' object is not callable``.
+        """
         return {
             "settled": True,
             "aborted": False,
@@ -202,11 +209,15 @@ class PirecordTestCase(unittest.TestCase):
             "after_digest": "/runs/run-json/after.sha256",
         }
 
-    def _build(self, build, **overrides):
+    def _build(self, build, config="json", **overrides):
         """Call build with one fully-populated set of dimensions.
 
-        ``overrides`` replaces individual arguments, so each error test can
-        null out exactly one dimension and nothing else.
+        ``config`` names the bake-off configuration under test (the
+        default ``"json"`` is the only one that produces a JSONL stream,
+        which is what the default ``artifacts`` carries); the
+        print/ultrawork tests pass it explicitly because those runs have
+        no JSONL. ``overrides`` replaces individual arguments, so each
+        error test can null out exactly one dimension and nothing else.
         """
         kwargs = dict(
             model="matrix.vars.coder",
@@ -215,13 +226,13 @@ class PirecordTestCase(unittest.TestCase):
             waited_for_input=False,
             artifacts=self._artifacts("/runs/run-json/events.jsonl"),
             tool_calls=self._tool_calls(),
-            outcome=self._outcome(),
+            outcome=self._get_outcome(),
             assertion=self._assertion(True),
             changed_files=["bakeoff_fixture/adder.py"],
             timestamp=TIMESTAMP,
         )
         kwargs.update(overrides)
-        return build("json", **kwargs)
+        return build(config, **kwargs)
 
 
 class TestRecordShape(PirecordTestCase):
@@ -273,6 +284,7 @@ class TestRecordShape(PirecordTestCase):
         build = self._get_build()
         record = self._build(
             build,
+            config="print",
             artifacts=self._artifacts(jsonl=None),
             changed_files=[],
         )
@@ -288,6 +300,7 @@ class TestRecordShape(PirecordTestCase):
         build = self._get_build()
         record = self._build(
             build,
+            config="ultrawork",
             artifacts=self._artifacts(jsonl=None),
         )
         self.assertEqual(record["config"], "ultrawork")
@@ -382,7 +395,7 @@ class TestConfigValidation(PirecordTestCase):
                 waited_for_input=False,
                 artifacts=self._artifacts(),
                 tool_calls=self._tool_calls(),
-                outcome=self._outcome(),
+                outcome=self._get_outcome(),
                 assertion=self._assertion(),
                 changed_files=[],
                 timestamp=TIMESTAMP,
@@ -405,7 +418,7 @@ class TestConfigValidation(PirecordTestCase):
                 waited_for_input=False,
                 artifacts=self._artifacts(),
                 tool_calls=self._tool_calls(),
-                outcome=self._outcome(),
+                outcome=self._get_outcome(),
                 assertion=self._assertion(),
                 changed_files=[],
                 timestamp=TIMESTAMP,
@@ -424,7 +437,7 @@ class TestConfigValidation(PirecordTestCase):
                     waited_for_input=False,
                     artifacts=self._artifacts(),
                     tool_calls=self._tool_calls(),
-                    outcome=self._outcome(),
+                    outcome=self._get_outcome(),
                     assertion=self._assertion(),
                     changed_files=[],
                     timestamp=TIMESTAMP,
