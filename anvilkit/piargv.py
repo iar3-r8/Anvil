@@ -11,11 +11,12 @@ need to be obeyed. The fixture directory is deliberately NOT an argument -
 the run recipe sets it as the subprocess cwd - which keeps every builder
 independent of where the fixture happens to live.
 
-``print_argv`` and ``json_argv`` exist so far; ``ultrawork_argv`` and
-``models_document`` land in later cycles of the same plan, each with its own
+``print_argv``, ``json_argv`` and ``ultrawork_argv`` exist so far;
+``models_document`` lands in a later cycle of the same plan, with its own
 red test step.
 """
 
+import re
 from typing import List
 
 
@@ -79,3 +80,45 @@ def json_argv(model_id: str, prompt: str) -> List[str]:
     """
     _validate(model_id, prompt)
     return ["pi", "--mode", "json"] + _common_tail(model_id, prompt)
+
+
+_UW_TOOLS = "read,edit,write,ulw_dispatch,ulw_complete"
+_UW_TRIGGER = re.compile(r"\b(?:ultrawork|ulw)\b", re.IGNORECASE)
+
+
+def ultrawork_argv(
+    model_id: str, prompt: str, extension_path: str
+) -> List[str]:
+    """Build the argv for the bake-off ultrawork invocation (behaviour 6).
+
+    The ``-p`` form plus the pi-ultrawork extension (``-e <path>``) and its
+    two dispatch tools. The emitted prompt is the given prompt prefixed with
+    ``"ultrawork "`` so the extension's whole-word trigger fires - unless the
+    prompt already contains the trigger as a whole word, in which case it is
+    passed through unchanged (never prefixed twice). The extension path is a
+    real argv token, included verbatim with no shell or quoting.
+
+    Raises:
+        ArgvError: ``model_id``, ``prompt`` or ``extension_path`` is empty
+            or whitespace-only.
+    """
+    _validate(model_id, prompt)
+    if not extension_path.strip():
+        raise ArgvError("extension path must not be empty")
+    emitted_prompt = (
+        prompt if _UW_TRIGGER.search(prompt) else "ultrawork " + prompt
+    )
+    return [
+        "pi",
+        "-p",
+        "-e",
+        extension_path,
+        "--model",
+        model_id,
+        "--tools",
+        _UW_TOOLS,
+        "-a",
+        "--no-session",
+        "--",
+        emitted_prompt,
+    ]
