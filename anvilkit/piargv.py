@@ -11,7 +11,7 @@ need to be obeyed. The fixture directory is deliberately NOT an argument -
 the run recipe sets it as the subprocess cwd - which keeps every builder
 independent of where the fixture happens to live.
 
-Only ``print_argv`` exists in this cycle; ``json_argv``, ``ultrawork_argv`` and
+``print_argv`` and ``json_argv`` exist so far; ``ultrawork_argv`` and
 ``models_document`` land in later cycles of the same plan, each with its own
 red test step.
 """
@@ -27,11 +27,8 @@ class ArgvError(Exception):
     """
 
 
-def print_argv(model_id: str, prompt: str) -> List[str]:
-    """Build the argv for the bake-off print invocation (behaviour 4).
-
-    The prompt is the final element, preceded by ``--`` so a prompt beginning
-    with ``-`` is passed through verbatim rather than read as a flag.
+def _validate(model_id: str, prompt: str) -> None:
+    """Raise if either input is empty or whitespace-only.
 
     Raises:
         ArgvError: ``model_id`` or ``prompt`` is empty or whitespace-only.
@@ -41,9 +38,14 @@ def print_argv(model_id: str, prompt: str) -> List[str]:
     if not prompt.strip():
         raise ArgvError("prompt must not be empty")
 
+
+def _common_tail(model_id: str, prompt: str) -> List[str]:
+    """Tokens after the harness form, shared by every invocation builder.
+
+    The prompt is the final element, preceded by ``--`` so a prompt beginning
+    with ``-`` is passed through verbatim rather than read as a flag.
+    """
     return [
-        "pi",
-        "-p",
         "--model",
         model_id,
         "--tools",
@@ -53,3 +55,27 @@ def print_argv(model_id: str, prompt: str) -> List[str]:
         "--",
         prompt,
     ]
+
+
+def print_argv(model_id: str, prompt: str) -> List[str]:
+    """Build the argv for the bake-off print invocation (behaviour 4).
+
+    Raises:
+        ArgvError: ``model_id`` or ``prompt`` is empty or whitespace-only.
+    """
+    _validate(model_id, prompt)
+    return ["pi", "-p"] + _common_tail(model_id, prompt)
+
+
+def json_argv(model_id: str, prompt: str) -> List[str]:
+    """Build the argv for the bake-off json invocation (behaviour 5).
+
+    Identical to ``print_argv``'s output except the ``-p`` token is replaced
+    by the two tokens ``--mode json`` at the same position. Both builders
+    share ``_common_tail`` so the two invocations cannot drift apart.
+
+    Raises:
+        ArgvError: ``model_id`` or ``prompt`` is empty or whitespace-only.
+    """
+    _validate(model_id, prompt)
+    return ["pi", "--mode", "json"] + _common_tail(model_id, prompt)
