@@ -1,12 +1,12 @@
 """Tests for anvilkit.pifixture - the bake-off fixture generator.
 
 Written before the implementation (TDD, ``plans/pi-phase1-bakeoff.md``,
-behaviour 1, "fixture written").
+behaviours 1-2, "fixture written" and "fixture starts red and turns
+green").
 
 The fixture is GENERATED at runtime - every bake-off run must start
 known-red - so nothing is committed under ``tests/fixtures`` for it.
-This module covers behaviour 1 only; later cycles add behaviours 2-3
-here.
+This module covers behaviours 1-2; a later cycle adds behaviour 3 here.
 
 The production module ``anvilkit.pifixture`` does not exist yet, so every
 test loads it through ``_pifixture``, which fails with a clear assertion
@@ -198,3 +198,100 @@ class TestWriteFixture(PifixtureTestCase):
         pifixture.write_fixture(first)
         pifixture.write_fixture(second)
         self.assertEqual(self._snapshot(first), self._snapshot(second))
+
+
+class TestAssertionPasses(PifixtureTestCase):
+    """Behaviour 2: the fixture starts red and turns green.
+
+    The pinned result shape is a ``dict`` carrying at least:
+
+    - ``"passed"``: a ``bool`` - ``False`` while the fixture is red,
+      ``True`` once ``adder.py`` returns ``a + b``;
+    - ``"stderr"``: a ``str`` - the subprocess's captured stderr, which
+      must carry the interpreter's failure output whenever the check
+      fails.
+
+    The fixture's test file imports ``bakeoff_fixture.adder`` with no
+    ``__init__.py`` and no path setup, so the subprocess can only
+    resolve it with the destination itself as cwd. A check that ran
+    from the repo root would stay red forever and fail the green test
+    below.
+    """
+
+    def _pifixture_with_assertion_passes(self):
+        """Import the module and assert behaviour 2's entry point exists."""
+        pifixture = self._pifixture()
+        self.assertTrue(
+            callable(getattr(pifixture, "assertion_passes", None)),
+            "anvilkit.pifixture.assertion_passes is not callable; the "
+            "red/green check has not been implemented yet",
+        )
+        return pifixture
+
+    def test_assertion_passes_fresh_fixture_returns_false(self):
+        pifixture = self._pifixture_with_assertion_passes()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        result = pifixture.assertion_passes(dest)
+        self.assertIsInstance(result, dict)
+        self.assertIs(result["passed"], False)
+        self.assertIsInstance(result["stderr"], str)
+        # The red result must carry the interpreter's failure output,
+        # not an empty string.
+        self.assertNotEqual(result["stderr"], "")
+
+    def test_assertion_passes_fixed_adder_returns_true(self):
+        pifixture = self._pifixture_with_assertion_passes()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        (dest / "bakeoff_fixture" / "adder.py").write_text(
+            "def add(a, b):\n    return a + b\n", encoding="utf-8"
+        )
+        result = pifixture.assertion_passes(dest)
+        self.assertIsInstance(result, dict)
+        self.assertIs(result["passed"], True)
+        self.assertIsInstance(result["stderr"], str)
+
+    def test_assertion_passes_absent_adder_returns_false_with_stderr(self):
+        pifixture = self._pifixture_with_assertion_passes()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        (dest / "bakeoff_fixture" / "adder.py").unlink()
+        # Must not raise: the import failure is reported, not escaped.
+        result = pifixture.assertion_passes(dest)
+        self.assertIsInstance(result, dict)
+        self.assertIs(result["passed"], False)
+        self.assertIsInstance(result["stderr"], str)
+        self.assertNotEqual(result["stderr"], "")
+        self.assertIn("adder", result["stderr"])
+
+    def test_assertion_passes_unimportable_adder_returns_false_with_stderr(self):
+        pifixture = self._pifixture_with_assertion_passes()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        # Module-level raise: importing adder in the test process would
+        # escape as RuntimeError and fail this test. It must instead
+        # surface in the captured stderr.
+        (dest / "bakeoff_fixture" / "adder.py").write_text(
+            'raise RuntimeError("adder poison 42")\n', encoding="utf-8"
+        )
+        result = pifixture.assertion_passes(dest)
+        self.assertIsInstance(result, dict)
+        self.assertIs(result["passed"], False)
+        self.assertIn("adder poison 42", result["stderr"])
+
+    def test_assertion_passes_never_imports_fixture_into_test_process(self):
+        pifixture = self._pifixture_with_assertion_passes()
+        dest = self._fresh_dest()
+        pifixture.write_fixture(dest)
+        pifixture.assertion_passes(dest)
+        # The fixture's code must have run in a subprocess, never in this
+        # one: no fixture module may be in sys.modules ...
+        for name in ("bakeoff_fixture", "bakeoff_fixture.adder", "test_adder"):
+            self.assertNotIn(name, sys.modules)
+        # ... and the destination must not have been added to this
+        # process's sys.path.
+        dest_resolved = dest.resolve()
+        for entry in sys.path:
+            if entry:
+                self.assertNotEqual(Path(entry).resolve(), dest_resolved)
