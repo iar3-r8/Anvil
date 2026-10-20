@@ -1,0 +1,59 @@
+"""JSONL event-stream reader for ``pi --mode json`` streams.
+
+Anvil consumes the Pi JSON event stream when recording bake-off runs
+(``plans/pi-phase1-bakeoff.md``). This module owns the whole job of turning
+that byte stream into structured Python data: framing the records, and - in
+later cycles - the higher-level functions built on top of the framing
+(``tool_calls`` and ``outcome`` account for tool usage and final state).
+
+Framing rule (``doc/external/pi-dev/json-event-stream.md``, "Framing and
+process I/O"): records are separated by LF only; an optional preceding
+carriage return is stripped for CRLF streams; Unicode line and paragraph
+separators (U+2028/U+2029) are ordinary string content, never boundaries.
+
+Stdlib only: ``json``. No exception type yet - ``parse`` never raises on
+malformed input, so there is no failure to classify. The module's
+one-exception convention applies once a later function that can fail is
+added.
+"""
+
+import json
+from typing import Any, Dict, List
+
+
+def parse(text: str) -> Dict[str, Any]:
+    """Split a JSONL event stream into records.
+
+    Returns a plain dict with exactly two keys, JSON-native throughout so the
+    bake-off record pipeline can embed and ``json.dumps`` it directly:
+
+    - ``"events"``: ``List[dict]`` - the parsed JSON-object records, in
+      stream order;
+    - ``"malformed_lines"``: ``int`` - how many non-blank lines were skipped.
+
+    Records are split on LF only, with an optional preceding CR stripped.
+    Blank (empty or whitespace-only) lines are skipped silently. A line that
+    is not valid JSON, or is valid JSON but not an object, is skipped and
+    counted in ``malformed_lines``; a truncated final line therefore discards
+    nothing but itself. ``parse`` never raises on malformed input.
+    """
+    events: List[dict] = []
+    malformed_lines = 0
+
+    for line in text.split("\n"):
+        # CRLF support: the CR belongs to the line ending, never to a field.
+        if line.endswith("\r"):
+            line = line[:-1]
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            malformed_lines += 1
+            continue
+        if not isinstance(record, dict):
+            malformed_lines += 1
+            continue
+        events.append(record)
+
+    return {"events": events, "malformed_lines": malformed_lines}
