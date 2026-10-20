@@ -616,5 +616,364 @@ class TestDimensionVerbatim(PirecordTestCase):
         )
 
 
+class RenderTableTestCase(PirecordTestCase):
+    """Shared setup for behaviour 12 - the go/no-go table.
+
+    The rendering is pinned cell by cell, so the implementer has one
+    correct output rather than a family of plausible ones:
+
+    - the header is ``| config | Completed | Tool calls | Wall time |
+      Tokens | Waited for input |`` - the five columns the plan names,
+      with ``config`` doubling as the row label;
+    - ``Completed`` and ``Waited for input`` render ``True`` as ``yes``
+      and ``False`` as ``no`` (plain ASCII, so the table survives PR
+      descriptions and README viewers that mangle emoji);
+    - ``Tool calls`` renders the five counters as ``<attempted>
+      attempted / <succeeded> ok / <failed> failed / <unfinished>
+      unfinished``, appending `` / <orphaned> orphaned`` only when
+      ``orphaned`` is non-zero (a clean run should not advertise the
+      counter);
+    - ``Wall time`` renders ``str(wall_time_s) + "s"`` - Python's
+      default float rendering, no rounding, no locale;
+    - ``Tokens`` renders ``tokens["totalTokens"]`` as a bare integer -
+      the total, not the input/output split, because the go/no-go
+      decision compares runs, not token economics;
+    - rows follow the input order of ``records`` (the host recipe
+      appends records in run order; re-sorting would silently reorder
+      the evidence);
+    - the final line is the verdict: ``NO-GO`` when no configuration
+      completed, ``GO (n of n completed)`` when every configuration
+      completed, ``PARTIAL (n of m completed)`` otherwise - a partial
+      bake-off is not a clean GO, because the phase decision needs
+      evidence from every configuration.
+    """
+
+    HEADER = (
+        "| config | Completed | Tool calls | Wall time | "
+        "Tokens | Waited for input |"
+    )
+    # The three canonical records: json completed and not waiting,
+    # print not completed and waiting, ultrawork not completed with one
+    # orphaned end. Every cell carries a distinct value, so a test that
+    # pins one row pins every column at once.
+    ROW_JSON = (
+        "| json | yes | 2 attempted / 1 ok / 1 failed / 0 "
+        "unfinished | 41.5s | 1550 | no |"
+    )
+    ROW_PRINT = (
+        "| print | no | 0 attempted / 0 ok / 0 failed / 0 "
+        "unfinished | 90.0s | 3000 | yes |"
+    )
+    ROW_ULTRAWORK = (
+        "| ultrawork | no | 1 attempted / 0 ok / 0 failed / 0 "
+        "unfinished / 1 orphaned | 12.0s | 200 | no |"
+    )
+
+    def _get_render_table(self) -> Callable:
+        """Fetch ``anvilkit.pirecord.render_table``, failing clearly if absent."""
+        pirecord = self._pirecord()
+        render_table = getattr(pirecord, "render_table", None)
+        self.assertTrue(
+            callable(render_table),
+            "anvilkit.pirecord.render_table is not callable; the "
+            "go/no-go table renderer (behaviour 12) has not been "
+            "implemented yet",
+        )
+        return render_table
+
+    @staticmethod
+    def _non_empty_lines(text: str) -> List[str]:
+        """Non-empty lines, stripped: blank lines are formatting, not structure."""
+        return [line.strip() for line in text.splitlines() if line.strip()]
+
+    def _outcome_with_total(self, total_tokens: int) -> Dict[str, object]:
+        """A full outcome dict with ``totalTokens`` replaced."""
+        outcome = self._get_outcome()
+        outcome["totalTokens"] = total_tokens
+        return outcome
+
+    def _record(self, build, config: str, **overrides):
+        """One full thirteen-key record via the real ``build``.
+
+        ``overrides`` flips exactly the knobs a test cares about (exit
+        code, wall time, token total, tool counters), so a key rename in
+        behaviour 11 surfaces here as a ``build`` failure, not a table
+        failure.
+        """
+        kwargs = dict(
+            model="matrix.vars.coder",
+            exit_code=0,
+            wall_time_s=41.5,
+            waited_for_input=False,
+            artifacts=self._artifacts(None),
+            tool_calls=self._tool_calls(),
+            outcome=self._get_outcome(),
+            assertion=self._assertion(True),
+            changed_files=[],
+            timestamp=TIMESTAMP,
+        )
+        kwargs.update(overrides)
+        return build(config, **kwargs)
+
+    def _three_records(self, build, order=("json", "print", "ultrawork")):
+        """The three canonical records, in the requested row order."""
+        by_config = {
+            "json": self._record(build, "json"),
+            "print": self._record(
+                build,
+                "print",
+                exit_code=1,
+                waited_for_input=True,
+                wall_time_s=90.0,
+                outcome=self._outcome_with_total(3000),
+                tool_calls={
+                    "attempted": 0,
+                    "succeeded": 0,
+                    "failed": 0,
+                    "unfinished": 0,
+                    "orphaned": 0,
+                },
+            ),
+            "ultrawork": self._record(
+                build,
+                "ultrawork",
+                exit_code=1,
+                wall_time_s=12.0,
+                outcome=self._outcome_with_total(200),
+                tool_calls={
+                    "attempted": 1,
+                    "succeeded": 0,
+                    "failed": 0,
+                    "unfinished": 0,
+                    "orphaned": 1,
+                },
+            ),
+        }
+        return [by_config[config] for config in order]
+
+
+class TestRenderTableShape(RenderTableTestCase):
+    """The Markdown table itself: pinned header, one row per
+    configuration, cells rendered exactly as pinned."""
+
+    def test_render_table_pins_header_separator_and_one_row_per_config(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        out = render_table(self._three_records(build))
+        self.assertIsInstance(
+            out,
+            str,
+            "render_table must return a Markdown string the host "
+            "recipe can paste into the recommendation page verbatim",
+        )
+        lines = self._non_empty_lines(out)
+        self.assertEqual(
+            lines[0],
+            self.HEADER,
+            "the header must be the pinned column set: the five "
+            "columns the plan names, with config as the row label",
+        )
+        self.assertIn(
+            "---",
+            lines[1],
+            "line 2 must be the Markdown separator row",
+        )
+        self.assertEqual(lines[2], self.ROW_JSON)
+        self.assertEqual(lines[3], self.ROW_PRINT)
+        self.assertEqual(lines[4], self.ROW_ULTRAWORK)
+        self.assertEqual(
+            len(lines),
+            6,
+            "exactly six non-empty lines: header, separator, three "
+            "rows (one per configuration) and the verdict - one row "
+            "per configuration, no more, no fewer",
+        )
+
+    def test_render_table_pins_completed_and_waited_as_yes_no(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        out = render_table(self._three_records(build))
+        self.assertIn(
+            "| yes |",
+            out,
+            "a True boolean cell must render as the word 'yes'",
+        )
+        self.assertIn(
+            "| no |",
+            out,
+            "a False boolean cell must render as the word 'no'",
+        )
+        self.assertNotIn("True", out)
+        self.assertNotIn("False", out)
+
+    def test_render_table_pins_tool_calls_counter_rendering(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        out = render_table(self._three_records(build))
+        self.assertIn("2 attempted / 1 ok / 1 failed / 0 unfinished", out)
+        self.assertIn("0 attempted / 0 ok / 0 failed / 0 unfinished", out)
+        self.assertIn(
+            "1 attempted / 0 ok / 0 failed / 0 unfinished / 1 orphaned",
+            out,
+            "a non-zero orphaned count is appended after the four "
+            "standard counters",
+        )
+
+    def test_render_table_omits_orphaned_counter_when_zero(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        out = render_table([self._record(build, "json")])
+        self.assertNotIn(
+            "orphaned",
+            out,
+            "a zero-orphaned run must not advertise the counter: the "
+            "word appears only when the count is non-zero",
+        )
+
+    def test_render_table_pins_tokens_as_total_not_input_or_output(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        out = render_table([self._record(build, "json")])
+        self.assertIn(
+            "| 1550 |",
+            out,
+            "the Tokens cell must render tokens.totalTokens (1550) as "
+            "a bare integer",
+        )
+        self.assertNotIn(
+            "1200",
+            out,
+            "input tokens (1200) are not rendered: the verdict "
+            "compares runs, not the input/output split",
+        )
+        self.assertNotIn("350", out)
+
+    def test_render_table_pins_wall_time_with_s_suffix(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        out = render_table(self._three_records(build))
+        self.assertIn("41.5s", out)
+        self.assertIn("90.0s", out)
+        self.assertIn("12.0s", out)
+
+    def test_render_table_rows_follow_input_order(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        records = self._three_records(build, order=("ultrawork", "print", "json"))
+        lines = self._non_empty_lines(render_table(records))
+        self.assertTrue(
+            lines[2].startswith("| ultrawork "),
+            "row 1 must be the first record passed in: rows follow "
+            "input order, the order the host recipe appended them",
+        )
+        self.assertTrue(lines[3].startswith("| print "), "row 2 must be the second record passed in")
+        self.assertTrue(lines[4].startswith("| json "), "row 3 must be the third record passed in")
+
+
+class TestRenderTableVerdict(RenderTableTestCase):
+    """The final line: NO-GO when nothing completed, GO (n of n
+    completed) when everything did, PARTIAL (n of m completed)
+    otherwise - a partial bake-off is not a clean GO."""
+
+    def test_render_table_no_go_when_no_configuration_completed(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        records = [
+            self._record(build, "print", exit_code=1),
+            self._record(build, "json", exit_code=137),
+            self._record(
+                build,
+                "ultrawork",
+                exit_code=0,
+                assertion=self._assertion(False),
+            ),
+        ]
+        lines = self._non_empty_lines(render_table(records))
+        self.assertEqual(
+            lines[-1],
+            "NO-GO",
+            "the final line must read exactly NO-GO when no "
+            "configuration completed",
+        )
+
+    def test_render_table_go_when_all_configurations_completed(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        records = [self._record(build, config) for config in CONFIG_VALUES]
+        lines = self._non_empty_lines(render_table(records))
+        self.assertEqual(
+            lines[-1],
+            "GO (3 of 3 completed)",
+            "a clean GO states the count, so the reader sees the "
+            "verdict was earned by all three configurations",
+        )
+
+    def test_render_table_partial_when_only_some_configurations_completed(self):
+        render_table = self._get_render_table()
+        build = self._get_build()
+        records = [
+            self._record(build, "print", exit_code=1),
+            self._record(build, "json"),
+            self._record(build, "ultrawork", exit_code=1),
+        ]
+        lines = self._non_empty_lines(render_table(records))
+        self.assertEqual(
+            lines[-1],
+            "PARTIAL (1 of 3 completed)",
+            "a partial bake-off is not a clean GO: the phase decision "
+            "needs evidence from every configuration",
+        )
+
+
+class TestRenderTableErrors(RenderTableTestCase):
+    """Error and edge paths: duplicate config, the empty list, and the
+    table as a read-only view of its records."""
+
+    def test_render_table_duplicate_config_raises_record_error_naming_value(self):
+        render_table = self._get_render_table()
+        record_error = self._get_record_error()
+        build = self._get_build()
+        records = [
+            self._record(build, "json"),
+            self._record(build, "json", exit_code=1),
+        ]
+        with self.assertRaises(record_error) as ctx:
+            render_table(records)
+        self.assertIn(
+            "json",
+            str(ctx.exception),
+            "the RecordError must name the duplicated config value so "
+            "the caller knows which record to fix",
+        )
+
+    def test_render_table_empty_list_returns_no_runs_recorded_row(self):
+        render_table = self._get_render_table()
+        out = render_table([])
+        self.assertIsInstance(out, str)
+        self.assertNotEqual(
+            out,
+            "",
+            "an empty record list must still render a table with a "
+            "'no runs recorded' row - never an empty string",
+        )
+        self.assertIn("no runs recorded", out)
+
+    def test_render_table_does_not_mutate_its_records(self):
+        import copy
+
+        render_table = self._get_render_table()
+        build = self._get_build()
+        records = self._three_records(build)
+        snapshot = copy.deepcopy(records)
+        render_table(records)
+        self.assertEqual(
+            records,
+            snapshot,
+            "render_table is a view: it must read the records, never "
+            "mutate them, so the caller can re-render or re-serialize "
+            "the same list afterwards",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
