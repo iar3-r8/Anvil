@@ -1,9 +1,9 @@
 """Tests for anvilkit.piargv - the bake-off invocation argv builder.
 
 Written before the implementation (TDD, ``plans/pi-phase1-bakeoff.md``,
-behaviour 4: "print invocation argv"). Only behaviour 4 is covered in
-this module; behaviours 5-6 (json/ultrawork argv) and 7 (models
-document) will land in later cycles as further classes in the same file.
+behaviour 4: "print invocation argv" and behaviour 5: "json invocation
+argv"). Behaviours 6 (ultrawork argv) and 7 (models document) will
+land in later cycles as further classes in the same file.
 
 The production module ``anvilkit.piargv`` does not exist yet, so every
 test loads it through ``_piargv``, which fails with a clear assertion
@@ -98,6 +98,81 @@ class TestPrintArgv(PiargvTestCase):
         piargv = self._piargv()
         with self.assertRaises(piargv.ArgvError):
             piargv.print_argv("llamaswap/coder", "")
+
+
+class TestJsonArgv(PiargvTestCase):
+    """Behaviour 5: json invocation argv.
+
+    Pinned signature ``json_argv(model_id, prompt) -> List[str]``. The plan
+    says the list is identical to behaviour 4's except ``-p`` replaced by
+    ``--mode json``, so the drift-critical test builds ``print_argv`` in-test
+    and pins the relationship instead of hardcoding both lists (which would
+    let the two builders drift together).
+    """
+
+    def test_json_argv_returns_exact_token_list(self):
+        piargv = self._piargv()
+        argv = piargv.json_argv("llamaswap/coder", "Edit adder.py so add(2, 3) == 5")
+        self.assertIsInstance(
+            argv,
+            list,
+            "json_argv must return a list of tokens, never a string, "
+            "so no shell re-parses it",
+        )
+        self.assertEqual(
+            argv,
+            [
+                "pi",
+                "--mode",
+                "json",
+                "--model",
+                "llamaswap/coder",
+                "--tools",
+                "read,edit,write",
+                "-a",
+                "--no-session",
+                "--",
+                "Edit adder.py so add(2, 3) == 5",
+            ],
+        )
+
+    def test_json_argv_identical_to_print_argv_except_harness_form(self):
+        piargv = self._piargv()
+        model_id = "llamaswap/coder"
+        prompt = "Edit adder.py so add(2, 3) == 5"
+        print_argv = piargv.print_argv(model_id, prompt)
+        json_argv = piargv.json_argv(model_id, prompt)
+
+        # The harness form sits immediately after the program name, and is
+        # the only difference between the two invocations.
+        self.assertEqual(json_argv[:1], ["pi"])
+        self.assertEqual(print_argv[1], "-p")
+        self.assertEqual(json_argv[1:3], ["--mode", "json"])
+        # "-p" is one token, "--mode json" is two, so the json form is
+        # exactly one token longer; every other token is element-for-element
+        # equal, with "--model" onward shifted by one position.
+        self.assertEqual(len(json_argv), len(print_argv) + 1)
+        self.assertEqual(
+            json_argv[3:],
+            print_argv[2:],
+            "every token after the harness form must be equal "
+            "element-for-element; only the harness form may differ",
+        )
+
+    def test_json_argv_empty_model_id_raises_argv_error(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError):
+            piargv.json_argv("", "Edit adder.py so add(2, 3) == 5")
+
+    def test_json_argv_whitespace_model_id_raises_argv_error(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError):
+            piargv.json_argv("   ", "Edit adder.py so add(2, 3) == 5")
+
+    def test_json_argv_empty_prompt_raises_argv_error(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError):
+            piargv.json_argv("llamaswap/coder", "")
 
 
 if __name__ == "__main__":
