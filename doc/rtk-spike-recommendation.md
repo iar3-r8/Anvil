@@ -8,13 +8,18 @@ this issue](#no-implementation-in-this-issue).
 
 The ledger, the measured evidence, the per-point verdict and the fetched pages
 behind the citations below are in [plans/rtk-spike.md](../plans/rtk-spike.md).
-The six third-party pages are saved in full under
+The nine third-party pages are saved in full under
 [`doc/external/`](external/); the byte measurements below were taken on this
 repo and are ours to state directly.
 
 ## Verdict: Reject
 
 **Reject** — do not adopt `rtk`, and do not adopt `rtk-oss` instead.
+`token-optimizer`
+([alexgreensh/token-optimizer](https://github.com/alexgreensh/token-optimizer))
+is rejected as well, for the same decisive reason and a stronger one — see
+[token-optimizer (alexgreensh/token-optimizer) compared](#token-optimizer-alexgreenshtoken-optimizer-compared)
+below.
 
 One paragraph: the decisive unknown was how much of the pipeline's token
 spend flows through Bash and through an RTK filter. Measured, it is
@@ -105,6 +110,63 @@ The only way RTK guidance could reach the agents is a file inside
 `.roo/rules/` (shared) or `.roo/rules-{slug}/` (per-mode) — ordinary rule
 text, identical in mechanism to what the rules already say.
 
+## token-optimizer (alexgreensh/token-optimizer) compared
+
+[alexgreensh/token-optimizer](https://github.com/alexgreensh/token-optimizer)
+was requested by the user on 2026-10-20 as a second option to weigh alongside
+RTK. Fetched from the public repository on 2026-10-20; the README, HOOKS.md
+and LICENSE are saved in full under
+[`doc/external/token-optimizer/`](external/token-optimizer/).
+
+What it is: a hook-wired Python/TypeScript tool (zero runtime dependencies,
+zero telemetry) that works on **eight** compression surfaces — bash output
+(113 commands), search/grep output, tabular/JSON output, file re-reads (delta
+mode + structural skeletons), large tool results (archived, expandable), model
+output verbosity (nudges) and structural context (configs, skills, MCP,
+memory audits) — plus session continuity (checkpoints/restore around
+compaction), quality scoring, loop detection and a dashboard
+([`doc/external/token-optimizer/readme.md`](external/token-optimizer/readme.md)).
+It positions itself against RTK and Headroom: "they compress command output,
+which covers 15-25% of your context. Token Optimizer covers that plus the
+other 75%."
+
+**The decisive fact: it has no Roo Code / Cline support.** The supported
+platforms are Claude Code, Codex, OpenCode, OpenClaw, Hermes, GitHub Copilot,
+Pi, Cursor, Google Antigravity and Grok Build — no Cline/Roo Code
+([`doc/external/token-optimizer/readme.md`](external/token-optimizer/readme.md)).
+Its entire mechanism is the Claude-Code-style hook API (PreToolUse /
+PostToolUse / PreCompact / SessionStart / Stop hooks dispatching
+`measure.py`, `read_cache.py`, `bash_hook.py`, `posttooluse_runner.py`), and
+the hooks are "registered in the host platform's hook system … the mechanism
+is the agent's hook API, not a rules file"
+([`doc/external/token-optimizer/hooks.md`](external/token-optimizer/hooks.md)).
+Roo Code exposes no hook API, and unlike RTK — which at least has a
+rules-file prompt nudge for Roo Code — there is **literally nothing to
+install here, in any tier**.
+
+Its broader reach does not change the verdict: the surfaces where it beats
+RTK (file re-reads, structural context, compaction continuity) are delivered
+exactly through that hook API, so none of it is reachable in this pipeline.
+The only surface that could run under a rules-file nudge would be voluntary
+bash-output compression — RTK's < 2% reach again — and its own comparison
+table marks search compression and tabular/JSON as hooks-only capabilities
+([`doc/external/token-optimizer/readme.md`](external/token-optimizer/readme.md)).
+
+Licensing is **stricter than RTK's**: PolyForm Noncommercial 1.0.0
+(source-available, not OSI-approved) plus a written small-business permission
+(fewer than 5 people AND under $20k/month revenue, whole organization) for
+internal commercial use; everything else — including offering it to third
+parties as a product or service — needs a paid commercial license
+([`doc/external/token-optimizer/license.md`](external/token-optimizer/license.md)).
+For Anvil's use (the user's own development) it sits inside the grant, like
+RTK's BUSL grant, but the grant is narrower and non-OSI.
+
+**Verdict for the comparison: rejected — for the same decisive reason as RTK
+and a stronger one.** Where RTK at least has a (rules-file) integration for
+Roo Code, token-optimizer has none, so there is nothing to adopt. If Roo Code
+ever gains a hook API, token-optimizer's broader eight-surface coverage would
+make it the more interesting of the two to re-evaluate.
+
 ## No implementation in this issue
 
 This issue is a spike. The branch touches documentation only
@@ -120,6 +182,11 @@ Re-open the question if any of these hold — none do today:
 
 - RTK adds a filter that covers `python -m unittest` output (the pipeline's
   only large bash output), or
-- Roo Code gains a hook API (a PreToolUse/PostToolUse integration), or
+- Roo Code gains a hook API (a PreToolUse/PostToolUse integration) — which
+  would also make token-optimizer the more interesting of the two to
+  re-evaluate, or
 - the pipeline's test runner moves to a tool RTK already covers (e.g.
   `pytest`).
+
+The same re-open conditions apply to token-optimizer, plus one of its own:
+it ships a Roo Code / Cline adapter (it does not today).
