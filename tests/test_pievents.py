@@ -368,3 +368,398 @@ class TestMalformedLines(PieventsTestCase):
         self.assertEqual(parsed["malformed_lines"], 3)
         for event in parsed["events"]:
             self.assertIsInstance(event, dict)
+
+
+# --- Behaviour 9: tool-call accounting -----------------------------------
+#
+# Pinned return shape: ``tool_calls(events: List[dict])`` returns a plain
+# dict with exactly five keys, all ints:
+#
+# - ``"attempted"``: number of ``tool_execution_start`` records;
+# - ``"succeeded"``: matched ``end`` records whose ``isError`` is not
+#   truthy (an ``end`` with ``isError`` absent counts as a success: the
+#   tool completed without an error flag);
+# - ``"failed"``: matched ``end`` records with ``isError`` truthy;
+# - ``"unfinished"``: ``start`` records with no matching ``end``;
+# - ``"orphaned"``: ``end`` records whose ``toolCallId`` has no ``start``.
+#
+# A plain dict, JSON-native, because behaviour 11 embeds the counts
+# verbatim in the run record and ``json.dumps``-es it. Several tests assert
+# the complete dict by value, so the coder has no room for extra keys.
+#
+# Event shapes (``doc/external/pi-dev/json-event-stream.md``, "Tool
+# execution events"): ``tool_execution_start`` carries ``toolCallId`` and
+# ``toolName``; ``tool_execution_end`` carries ``toolCallId``, ``isError``
+# (bool) and ``durationMs`` (absent when the tool did not run).
+TOOL_CALL_KEYS = {"attempted", "succeeded", "failed", "unfinished", "orphaned"}
+
+
+class ToolCallsTestCase(PieventsTestCase):
+    """Base for behaviour 9: guarded access to ``tool_calls`` and a
+    helper that builds raw JSONL text from record dicts, so the tests see
+    the real stream shape through ``parse``."""
+
+    def _tool_calls(self):
+        """Fetch ``anvilkit.pievents.tool_calls``, failing clearly if absent."""
+        pievents = self._pievents()
+        tool_calls = getattr(pievents, "tool_calls", None)
+        self.assertTrue(
+            callable(tool_calls),
+            "anvilkit.pievents.tool_calls is not callable; the "
+            "tool-call accounting (behaviour 9) has not been "
+            "implemented yet",
+        )
+        return tool_calls
+
+    @staticmethod
+    def _stream_lines(records):
+        """One JSON object per line, LF-joined, with a trailing LF."""
+        return "\n".join(json.dumps(record) for record in records) + "\n"
+
+
+class TestToolCallsReturnShape(ToolCallsTestCase):
+    """The pinned return shape: a plain dict, exactly the five counter
+    keys, all ints; empty stream yields all zeros."""
+
+    def test_tool_calls_returns_dict_with_exactly_five_int_keys(self):
+        tool_calls = self._tool_calls()
+        result = tool_calls([])
+        self.assertIsInstance(
+            result,
+            dict,
+            "tool_calls must return a plain dict, so the bake-off record "
+            "(behaviour 11) can embed it and json.dumps it directly",
+        )
+        self.assertEqual(
+            set(result),
+            TOOL_CALL_KEYS,
+            "tool_calls must return exactly the five counter keys: no "
+            "extra keys, no missing keys",
+        )
+        for key in TOOL_CALL_KEYS:
+            self.assertIsInstance(
+                result[key],
+                int,
+                "tool_calls['%s'] must be an int" % key,
+            )
+
+    def test_tool_calls_empty_events_yields_all_zero_counters(self):
+        tool_calls = self._tool_calls()
+        self.assertEqual(
+            tool_calls([]),
+            {
+                "attempted": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "unfinished": 0,
+                "orphaned": 0,
+            },
+            "an empty stream has nothing to account for: all five "
+            "counters must be exactly zero",
+        )
+
+    def test_tool_calls_on_parsed_empty_stream_yields_all_zero_counters(self):
+        # Through the real entry path: parse("") -> {"events": [], ...}
+        pievents = self._pievents()
+        tool_calls = self._tool_calls()
+        result = tool_calls(pievents.parse("")["events"])
+        self.assertEqual(
+            result,
+            {
+                "attempted": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "unfinished": 0,
+                "orphaned": 0,
+            },
+        )
+
+
+class TestToolCallsPlanGivenStream(ToolCallsTestCase):
+    """Contract 1: the plan's given stream, raw JSONL text through
+    ``parse``. Three starts (ids A, B, C) plus two ends - A with
+    ``isError: false`` and B with ``isError: true`` - leave C unfinished."""
+
+    def test_tool_calls_plan_given_stream_counts_three_one_one_one(self):
+        tool_calls = self._tool_calls()
+        pievents = self._pievents()
+        stream = self._stream_lines(
+            [
+                {"type": "tool_execution_start", "toolCallId": "A", "toolName": "read"},
+                {"type": "tool_execution_start", "toolCallId": "B", "toolName": "bash"},
+                {"type": "tool_execution_start", "toolCallId": "C", "toolName": "write"},
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "A",
+                    "toolName": "read",
+                    "result": {"ok": True},
+                    "isError": False,
+                    "durationMs": 12,
+                },
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "B",
+                    "toolName": "bash",
+                    "result": None,
+                    "isError": True,
+                    "durationMs": 40,
+                },
+            ]
+        )
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            tool_calls(events),
+            {
+                "attempted": 3,
+                "succeeded": 1,
+                "failed": 1,
+                "unfinished": 1,
+                "orphaned": 0,
+            },
+            "three starts -> attempted 3; end A (isError false) -> "
+            "succeeded 1; end B (isError true) -> failed 1; start C "
+            "never ended -> unfinished 1; every end matched a start -> "
+            "orphaned 0",
+        )
+
+
+class TestToolCallsCorrelationById(ToolCallsTestCase):
+    """Contract 2: correlation is by ``toolCallId``, not by order or
+    position: an end for id C arriving before the end for id A must
+    still credit C."""
+
+    def test_tool_calls_ends_out_of_order_credit_by_tool_call_id(self):
+        tool_calls = self._tool_calls()
+        stream = self._stream_lines(
+            [
+                {"type": "tool_execution_start", "toolCallId": "A", "toolName": "read"},
+                {"type": "tool_execution_start", "toolCallId": "B", "toolName": "bash"},
+                {"type": "tool_execution_start", "toolCallId": "C", "toolName": "edit"},
+                # end C arrives first: an order-based (positional)
+                # correlator would credit A instead.
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "C",
+                    "toolName": "edit",
+                    "result": {"ok": True},
+                    "isError": False,
+                    "durationMs": 7,
+                },
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "A",
+                    "toolName": "read",
+                    "result": None,
+                    "isError": True,
+                    "durationMs": 3,
+                },
+            ]
+        )
+        pievents = self._pievents()
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            tool_calls(events),
+            {
+                "attempted": 3,
+                "succeeded": 1,
+                "failed": 1,
+                "unfinished": 1,
+                "orphaned": 0,
+            },
+            "the ends must be matched to their starts by toolCallId: "
+            "end C is the success, end A is the failure, and B stays "
+            "unfinished even though its start is the middle one",
+        )
+
+
+class TestToolCallsOrphanedEnd(ToolCallsTestCase):
+    """Contract 3: an ``end`` with no matching ``start`` is counted in
+    ``orphaned`` and does NOT silently change ``attempted``/
+    ``succeeded``/``failed``."""
+
+    def test_tool_calls_end_without_start_is_orphaned_not_attempted(self):
+        tool_calls = self._tool_calls()
+        stream = self._stream_lines(
+            [
+                {"type": "tool_execution_start", "toolCallId": "A", "toolName": "read"},
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "A",
+                    "toolName": "read",
+                    "result": {"ok": True},
+                    "isError": False,
+                    "durationMs": 5,
+                },
+                # no start for id Z anywhere in the stream
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "Z",
+                    "toolName": "bash",
+                    "result": None,
+                    "isError": True,
+                    "durationMs": 9,
+                },
+            ]
+        )
+        pievents = self._pievents()
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            tool_calls(events),
+            {
+                "attempted": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "unfinished": 0,
+                "orphaned": 1,
+            },
+            "the orphan end for id Z is not a tool that was attempted: "
+            "attempted must stay 1 and the orphan's isError: true must "
+            "not increment failed - it goes to orphaned only",
+        )
+
+
+class TestToolCallsEndWithoutIsError(ToolCallsTestCase):
+    """Contract 4: an ``end`` whose ``isError`` field is absent counts
+    as a success - the tool completed without an error flag."""
+
+    def test_tool_calls_end_missing_isError_counts_as_succeeded(self):
+        tool_calls = self._tool_calls()
+        events = [
+            {"type": "tool_execution_start", "toolCallId": "A", "toolName": "read"},
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "A",
+                "toolName": "read",
+                "result": {"ok": True},
+                "durationMs": 11,
+                # isError deliberately absent
+            },
+        ]
+        self.assertEqual(
+            tool_calls(events),
+            {
+                "attempted": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "unfinished": 0,
+                "orphaned": 0,
+            },
+            "an end with no isError field is a completed tool without an "
+            "error flag: it is a success, not a failure and not "
+            "unfinished",
+        )
+
+
+class TestToolCallsEndWithoutDurationMs(ToolCallsTestCase):
+    """Contract 5: ``durationMs`` is absent when the tool did not run
+    (``doc/external/pi-dev/json-event-stream.md``, "Tool execution
+    events") - its absence must not disturb the five counters."""
+
+    def test_tool_calls_end_missing_durationMs_counters_unaffected(self):
+        tool_calls = self._tool_calls()
+        stream = self._stream_lines(
+            [
+                {"type": "tool_execution_start", "toolCallId": "A", "toolName": "read"},
+                {"type": "tool_execution_start", "toolCallId": "B", "toolName": "bash"},
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "A",
+                    "toolName": "read",
+                    "result": {"ok": True},
+                    "isError": False,
+                    # durationMs deliberately absent: the tool did not run
+                },
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "B",
+                    "toolName": "bash",
+                    "result": None,
+                    "isError": True,
+                    "durationMs": 21,
+                },
+            ]
+        )
+        pievents = self._pievents()
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            tool_calls(events),
+            {
+                "attempted": 2,
+                "succeeded": 1,
+                "failed": 1,
+                "unfinished": 0,
+                "orphaned": 0,
+            },
+            "durationMs is timing metadata, not a counter input: an end "
+            "lacking it is still a complete end for its toolCallId",
+        )
+
+
+class TestToolCallsNoEndsAtAll(ToolCallsTestCase):
+    """Contract 7: a stream of starts with no ends at all - every start
+    is unfinished."""
+
+    def test_tool_calls_starts_without_any_ends_are_all_unfinished(self):
+        tool_calls = self._tool_calls()
+        events = [
+            {"type": "tool_execution_start", "toolCallId": "A", "toolName": "read"},
+            {"type": "tool_execution_start", "toolCallId": "B", "toolName": "write"},
+        ]
+        self.assertEqual(
+            tool_calls(events),
+            {
+                "attempted": 2,
+                "succeeded": 0,
+                "failed": 0,
+                "unfinished": 2,
+                "orphaned": 0,
+            },
+            "with no end records at all, both starts stay unfinished and "
+            "succeeded/failed/orphaned stay zero",
+        )
+
+
+class TestToolCallsIgnoresOtherEvents(ToolCallsTestCase):
+    """A real ``--mode json`` stream interleaves session, message and
+    queue records with the tool records: only ``tool_execution_start``
+    and ``tool_execution_end`` may move the counters."""
+
+    def test_tool_calls_ignores_non_tool_event_types(self):
+        tool_calls = self._tool_calls()
+        stream = self._stream_lines(
+            [
+                {"type": "session", "version": 3, "id": "uuid", "cwd": "/path"},
+                {"type": "agent_start"},
+                {"type": "turn_start"},
+                {
+                    "type": "message_update",
+                    "usage": {"input": 10, "output": 1, "totalTokens": 11},
+                },
+                {"type": "tool_execution_start", "toolCallId": "A", "toolName": "read"},
+                {"type": "tool_execution_update", "toolCallId": "A", "partialResult": {}},
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "A",
+                    "toolName": "read",
+                    "result": {"ok": True},
+                    "isError": False,
+                    "durationMs": 2,
+                },
+                {"type": "agent_settled", "aborted": False},
+            ]
+        )
+        pievents = self._pievents()
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            tool_calls(events),
+            {
+                "attempted": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "unfinished": 0,
+                "orphaned": 0,
+            },
+            "session, agent, turn, message and tool_execution_update "
+            "records are not tool lifecycle boundaries: only the one "
+            "start/end pair must move the counters",
+        )
