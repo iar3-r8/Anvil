@@ -13,6 +13,7 @@ suite is red.
 
 import importlib
 import importlib.util
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -330,6 +331,114 @@ class TestUltraworkArgv(PiargvTestCase):
         piargv = self._piargv()
         with self.assertRaises(piargv.ArgvError):
             piargv.ultrawork_argv("llamaswap/coder", "", "./pi-ultrawork")
+
+
+class TestModelsDocument(PiargvTestCase):
+    """Behaviour 7: models document.
+
+    Pinned signature ``models_document(model_id, port, context_window,
+    max_tokens) -> dict``. ``max_tokens`` is a parameter rather than a hidden
+    default because Pi defaults ``maxTokens`` to 16384 and ``contextWindow``
+    to 128000, and long-context local models must override both, so the
+    document carries the explicit values (``doc/external/pi-dev/
+    models-configuration.md``, Models).
+
+    The dummy apiKey is pinned to ``"llamaswap-local"``: Pi needs a non-empty
+    string and the local llama-swap gateway ignores it, exactly as the
+    Ollama example shows (``doc/external/pi-dev/models.md``, Configure a
+    compatible endpoint: "The dummy key makes the model available to Pi;
+    Ollama ignores it").
+    """
+
+    def test_models_document_returns_exact_dict_shape(self):
+        piargv = self._piargv()
+        doc = piargv.models_document("llamaswap/coder", 1234, 131072, 16384)
+        self.assertIsInstance(
+            doc,
+            dict,
+            "models_document must return a dict to feed json.dumps, "
+            "never a hand-built JSON string",
+        )
+        self.assertEqual(
+            doc,
+            {
+                "providers": {
+                    "llamaswap": {
+                        "baseUrl": "http://127.0.0.1:1234/v1",
+                        "api": "openai-completions",
+                        "apiKey": "llamaswap-local",
+                        "models": [
+                            {
+                                "id": "llamaswap/coder",
+                                "contextWindow": 131072,
+                                "maxTokens": 16384,
+                            }
+                        ],
+                    }
+                }
+            },
+        )
+
+    def test_models_document_interpolates_model_id_port_and_windows_not_hardcoded(self):
+        piargv = self._piargv()
+        doc = piargv.models_document("llamaswap/other", 8080, 32768, 4096)
+        provider = doc["providers"]["llamaswap"]
+        self.assertEqual(
+            provider["baseUrl"],
+            "http://127.0.0.1:8080/v1",
+            "the port must be interpolated into the baseUrl, "
+            "never left as a template like <port>",
+        )
+        entry = provider["models"][0]
+        self.assertEqual(entry["id"], "llamaswap/other")
+        self.assertEqual(entry["contextWindow"], 32768)
+        self.assertEqual(
+            entry["maxTokens"],
+            4096,
+            "maxTokens must be the explicit argument, not Pi's 16384 default",
+        )
+        self.assertNotIn("<", provider["baseUrl"])
+
+    def test_models_document_is_json_dumps_round_trip(self):
+        piargv = self._piargv()
+        doc = piargv.models_document("llamaswap/coder", 1234, 131072, 16384)
+        serialized = json.dumps(doc, sort_keys=True)
+        self.assertEqual(
+            json.loads(serialized),
+            doc,
+            "the document must be built with json.dumps semantics, "
+            "never string substitution: every value must be a "
+            "JSON-native type and the round trip must be lossless",
+        )
+
+    def test_models_document_port_outside_1_to_65535_raises_argv_error(self):
+        piargv = self._piargv()
+        for port in (0, -1, 65536):
+            with self.subTest(port=port):
+                with self.assertRaises(piargv.ArgvError):
+                    piargv.models_document(
+                        "llamaswap/coder", port, 131072, 16384
+                    )
+
+    def test_models_document_port_at_bounds_is_accepted(self):
+        piargv = self._piargv()
+        for port in (1, 65535):
+            with self.subTest(port=port):
+                self.assertIsInstance(
+                    piargv.models_document(
+                        "llamaswap/coder", port, 131072, 16384
+                    ),
+                    dict,
+                )
+
+    def test_models_document_context_window_below_one_raises_argv_error(self):
+        piargv = self._piargv()
+        for context_window in (0, -1):
+            with self.subTest(context_window=context_window):
+                with self.assertRaises(piargv.ArgvError):
+                    piargv.models_document(
+                        "llamaswap/coder", 1234, context_window, 16384
+                    )
 
 
 if __name__ == "__main__":
