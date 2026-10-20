@@ -763,3 +763,437 @@ class TestToolCallsIgnoresOtherEvents(ToolCallsTestCase):
             "records are not tool lifecycle boundaries: only the one "
             "start/end pair must move the counters",
         )
+
+
+# --- Behaviour 10: outcome and usage ---------------------------------------
+#
+# Pinned return shape: ``outcome(events: List[dict])`` returns a plain dict
+# with exactly seven keys, JSON-native throughout:
+#
+# - ``"settled"``: ``bool`` - ``True`` iff the stream holds an
+#   ``agent_settled`` record;
+# - ``"aborted"``: ``Optional[bool]`` - takes ``agent_settled.aborted``
+#   verbatim; ``None`` when the stream has no ``agent_settled`` record OR
+#   the record carries no ``aborted`` field. Pinned: absent field means
+#   ``None``, never a coerced ``False`` - the field's mere presence is what
+#   distinguishes "the run said it was not aborted" (False) from "we do
+#   not know" (None), and ``None`` is already the never-finished sentinel,
+#   so a coerced False would silently claim knowledge the stream never gave.
+#   (An aborted run still settles: ``settled`` True, ``aborted`` True.)
+# - ``"input"`` / ``"output"`` / ``"totalTokens"``: ``int`` - from the LAST
+#   ``message_update.usage`` seen in stream order (usage is cumulative per
+#   ``doc/external/pi-dev/json-event-stream.md``, "Reconstruct streaming
+#   messages", so the last one wins; it is never summed);
+# - ``"cost_total"``: ``float`` - the flattened ``cost.total`` of that same
+#   last usage (the flattened spelling because behaviour 11's record key is
+#   ``cost_total``);
+# - ``"usage_reported"``: ``bool`` - ``True`` iff at least one
+#   ``message_update`` carried a ``usage`` field. ``False`` plus zeros is
+#   the signal that the numbers are placeholders, not measurements -
+#   Pi's docs note usage can stay zero until completion when the provider
+#   does not report it while streaming.
+#
+# A plain dict, JSON-native, because behaviour 11 embeds the fields
+# verbatim in the run record and ``json.dumps``-es it. Several tests assert
+# the complete dict by value, so the coder has no room for extra keys.
+#
+# Event shapes (``doc/external/pi-dev/json-event-stream.md``):
+# ``message_update`` carries cumulative ``usage`` (``input``, ``output``,
+# ``totalTokens``, ``cost.total``); ``agent_settled`` carries ``aborted``;
+# ``agent_end.willRetry`` precedes ``agent_settled`` and is noise for this
+# function.
+OUTCOME_KEYS = {
+    "settled",
+    "aborted",
+    "input",
+    "output",
+    "totalTokens",
+    "cost_total",
+    "usage_reported",
+}
+
+
+class OutcomeTestCase(PieventsTestCase):
+    """Base for behaviour 10: guarded access to ``outcome`` and stream
+    builders, so the tests see the real stream shape through ``parse``."""
+
+    def _get_outcome(self):
+        """Fetch ``anvilkit.pievents.outcome``, failing clearly if absent.
+
+        Named ``_get_outcome`` on purpose: ``unittest.TestCase`` owns an
+        instance attribute called ``_outcome`` (set by ``TestCase.__call__``
+        to its internal ``_Outcome`` result tracker), which would shadow a
+        helper of that name and turn every call into
+        ``TypeError: '_Outcome' object is not callable``.
+        """
+        pievents = self._pievents()
+        outcome = getattr(pievents, "outcome", None)
+        self.assertTrue(
+            callable(outcome),
+            "anvilkit.pievents.outcome is not callable; the "
+            "outcome/usage extraction (behaviour 10) has not been "
+            "implemented yet",
+        )
+        return outcome
+
+    @staticmethod
+    def _stream_lines(records):
+        """One JSON object per line, LF-joined, with a trailing LF."""
+        return "\n".join(json.dumps(record) for record in records) + "\n"
+
+    @staticmethod
+    def _usage(input_tokens, output_tokens, total_tokens, cost_total):
+        """A cumulative usage block in Pi's shape: the four fields this
+        behaviour reads, plus the cache fields that real streams carry
+        and that must be ignored by ``outcome``."""
+        return {
+            "input": input_tokens,
+            "output": output_tokens,
+            "cacheRead": 0,
+            "cacheWrite": 0,
+            "totalTokens": total_tokens,
+            "cost": {
+                "input": 0.0,
+                "output": 0.0,
+                "cacheRead": 0.0,
+                "cacheWrite": 0.0,
+                "total": cost_total,
+            },
+        }
+
+
+class TestOutcomeReturnShape(OutcomeTestCase):
+    """The pinned return shape: a plain dict, exactly the seven keys,
+    with the documented types; empty stream yields the never-finished
+    default."""
+
+    def test_outcome_returns_dict_with_exactly_seven_keys_and_types(self):
+        outcome = self._get_outcome()
+        result = outcome([])
+        self.assertIsInstance(
+            result,
+            dict,
+            "outcome must return a plain dict, so the bake-off record "
+            "(behaviour 11) can embed it and json.dumps it directly",
+        )
+        self.assertEqual(
+            set(result),
+            OUTCOME_KEYS,
+            "outcome must return exactly the seven keys: no extra keys, "
+            "no missing keys",
+        )
+        self.assertIsInstance(result["settled"], bool)
+        self.assertIs(result["aborted"], None)
+        for key in ("input", "output", "totalTokens"):
+            self.assertIsInstance(result[key], int, "outcome['%s'] must be an int" % key)
+        self.assertIsInstance(result["cost_total"], float)
+        self.assertIsInstance(result["usage_reported"], bool)
+
+    def test_outcome_empty_stream_is_never_finished_with_zero_usage(self):
+        # Contract 5: empty stream -> the run never finished and nothing
+        # was ever reported.
+        outcome = self._get_outcome()
+        self.assertEqual(
+            outcome([]),
+            {
+                "settled": False,
+                "aborted": None,
+                "input": 0,
+                "output": 0,
+                "totalTokens": 0,
+                "cost_total": 0.0,
+                "usage_reported": False,
+            },
+            "an empty stream never settled and never reported usage: "
+            "settled False, aborted None, zeros, usage_reported False",
+        )
+
+
+class TestOutcomeHappyPath(OutcomeTestCase):
+    """Contract 1: the plan's given stream, raw JSONL text through
+    ``parse`` - several cumulative ``message_update`` records with
+    increasing values, then a settled run whose ``agent_settled`` record
+    carries no ``aborted`` field. The LAST usage wins; the absent field
+    pins ``aborted`` to ``None`` (not a coerced ``False``)."""
+
+    def test_outcome_plan_given_stream_takes_last_cumulative_usage(self):
+        outcome = self._get_outcome()
+        pievents = self._pievents()
+        stream = self._stream_lines(
+            [
+                {"type": "session", "version": 3, "id": "uuid", "cwd": "/path"},
+                {"type": "agent_start"},
+                {"type": "turn_start"},
+                {
+                    "type": "message_update",
+                    "usage": self._usage(10, 5, 15, 0.0001),
+                    "assistantMessageEvent": {"type": "text_delta", "delta": "Hi"},
+                },
+                {
+                    "type": "message_update",
+                    "usage": self._usage(12, 20, 32, 0.0002),
+                    "assistantMessageEvent": {"type": "text_delta", "delta": " there"},
+                },
+                {"type": "tool_execution_start", "toolCallId": "A", "toolName": "edit"},
+                {
+                    "type": "tool_execution_end",
+                    "toolCallId": "A",
+                    "toolName": "edit",
+                    "result": {"ok": True},
+                    "isError": False,
+                    "durationMs": 3,
+                },
+                {
+                    "type": "message_update",
+                    "usage": self._usage(15, 40, 55, 0.00035),
+                    "assistantMessageEvent": {"type": "text_delta", "delta": " done"},
+                },
+                {"type": "agent_end", "messages": [], "willRetry": False},
+                # aborted deliberately absent: the field's presence is
+                # what separates False from None
+                {"type": "agent_settled"},
+            ]
+        )
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            outcome(events),
+            {
+                "settled": True,
+                "aborted": None,
+                "input": 15,
+                "output": 40,
+                "totalTokens": 55,
+                "cost_total": 0.00035,
+                "usage_reported": True,
+            },
+            "settled True from the agent_settled record; aborted None "
+            "because the record carries no aborted field (absent is not "
+            "false); tokens and cost_total from the LAST message_update."
+            "usage (15/40/55, cost.total 0.00035), not the earlier "
+            "cumulative snapshots and not a sum",
+        )
+
+    def test_outcome_agent_settled_with_explicit_false_aborted_pins_false(self):
+        # Pins the other side of the absent-field decision: when the
+        # stream DOES say "not aborted", the result is False, not None.
+        outcome = self._get_outcome()
+        events = [
+            {"type": "message_update", "usage": self._usage(3, 2, 5, 0.00005)},
+            {"type": "agent_settled", "aborted": False},
+        ]
+        self.assertEqual(
+            outcome(events),
+            {
+                "settled": True,
+                "aborted": False,
+                "input": 3,
+                "output": 2,
+                "totalTokens": 5,
+                "cost_total": 0.00005,
+                "usage_reported": True,
+            },
+            "an explicit aborted: false is known information and must "
+            "surface as False, distinct from the None of an absent "
+            "field",
+        )
+
+
+class TestOutcomeAbortedRun(OutcomeTestCase):
+    """Contract 2: an aborted run still settled - ``agent_settled`` with
+    ``aborted: true`` means ``settled`` True AND ``aborted`` True."""
+
+    def test_outcome_aborted_settled_run_reports_settled_true_aborted_true(self):
+        outcome = self._get_outcome()
+        pievents = self._pievents()
+        stream = self._stream_lines(
+            [
+                {"type": "agent_start"},
+                {
+                    "type": "message_update",
+                    "usage": self._usage(8, 11, 19, 0.00012),
+                },
+                {"type": "agent_end", "messages": [], "willRetry": False},
+                {"type": "agent_settled", "aborted": True},
+            ]
+        )
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            outcome(events),
+            {
+                "settled": True,
+                "aborted": True,
+                "input": 8,
+                "output": 11,
+                "totalTokens": 19,
+                "cost_total": 0.00012,
+                "usage_reported": True,
+            },
+            "the run ended by abort but it DID settle: settled stays "
+            "True while aborted takes the record's true; the usage "
+            "reported before the abort is still the run's usage",
+        )
+
+
+class TestOutcomeNeverFinished(OutcomeTestCase):
+    """Contract 3: usage was reported but no ``agent_settled`` record
+    ever arrived - the run never finished. ``settled`` False and
+    ``aborted`` None are the signal; the token numbers are still what
+    they are (the plan: the numbers are the numbers, ``settled`` is what
+    tells you they are final)."""
+
+    def test_outcome_usage_without_agent_settled_is_never_finished(self):
+        outcome = self._get_outcome()
+        pievents = self._pievents()
+        stream = self._stream_lines(
+            [
+                {"type": "agent_start"},
+                {"type": "turn_start"},
+                {
+                    "type": "message_update",
+                    "usage": self._usage(10, 5, 15, 0.0001),
+                },
+                {
+                    "type": "message_update",
+                    "usage": self._usage(12, 20, 32, 0.0002),
+                },
+                # the stream ends here: no agent_settled anywhere
+            ]
+        )
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            outcome(events),
+            {
+                "settled": False,
+                "aborted": None,
+                "input": 12,
+                "output": 20,
+                "totalTokens": 32,
+                "cost_total": 0.0002,
+                "usage_reported": True,
+            },
+            "without an agent_settled record the run never finished: "
+            "settled False, aborted None - but the last-seen usage is "
+            "still reported as-is, because settled is what says the "
+            "numbers are final",
+        )
+
+
+class TestOutcomeNoUsageSeen(OutcomeTestCase):
+    """Contract 4: a settled run whose stream never carried a usage
+    field - zeros plus ``usage_reported: False``, which is the signal
+    the numbers are placeholders, not measurements."""
+
+    def test_outcome_settled_run_without_any_usage_reports_zeros(self):
+        outcome = self._get_outcome()
+        pievents = self._pievents()
+        stream = self._stream_lines(
+            [
+                {"type": "agent_start"},
+                # message updates without usage (a provider that does not
+                # report usage while streaming)
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {"type": "text_delta", "delta": "Hi"},
+                },
+                {"type": "message_end", "message": {"role": "assistant"}},
+                {"type": "agent_end", "messages": [], "willRetry": False},
+                {"type": "agent_settled", "aborted": False},
+            ]
+        )
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            outcome(events),
+            {
+                "settled": True,
+                "aborted": False,
+                "input": 0,
+                "output": 0,
+                "totalTokens": 0,
+                "cost_total": 0.0,
+                "usage_reported": False,
+            },
+            "no usage was ever seen: zeros plus usage_reported False - "
+            "the downstream record must be able to tell a measured zero "
+            "from a missing measurement",
+        )
+
+
+class TestOutcomeCumulativeLastWins(OutcomeTestCase):
+    """Contract 6: usage is cumulative, so the LAST record's values win -
+    they are never added together. totalTokens 110 then 250 must yield
+    250, not 360."""
+
+    def test_outcome_two_cumulative_usage_records_yield_last_not_sum(self):
+        outcome = self._get_outcome()
+        events = [
+            {"type": "message_update", "usage": self._usage(100, 10, 110, 0.01)},
+            {"type": "message_update", "usage": self._usage(200, 50, 250, 0.025)},
+            {"type": "agent_settled", "aborted": False},
+        ]
+        self.assertEqual(
+            outcome(events),
+            {
+                "settled": True,
+                "aborted": False,
+                "input": 200,
+                "output": 50,
+                "totalTokens": 250,
+                "cost_total": 0.025,
+                "usage_reported": True,
+            },
+            "cumulative usage means the last record already contains the "
+            "whole run: 250 totalTokens, not 110 + 250 = 360, and cost "
+            "0.025, not 0.01 + 0.025 = 0.035",
+        )
+
+
+class TestOutcomeMessageUpdateWithoutUsage(OutcomeTestCase):
+    """Contract 7: a ``message_update`` without a ``usage`` field -
+    common in a real stream, where most deltas carry no usage - is
+    ignored for token purposes and does NOT reset the last-seen usage,
+    not even when it is the last record before settle."""
+
+    def test_outcome_usageless_message_updates_do_not_reset_last_usage(self):
+        outcome = self._get_outcome()
+        pievents = self._pievents()
+        stream = self._stream_lines(
+            [
+                {"type": "agent_start"},
+                {
+                    "type": "message_update",
+                    "usage": self._usage(10, 5, 15, 0.0001),
+                },
+                # a usage-less delta between the two usage-bearing updates
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {"type": "text_delta", "delta": "..."},
+                },
+                {
+                    "type": "message_update",
+                    "usage": self._usage(12, 20, 32, 0.0002),
+                },
+                # and one trailing after the last usage-bearing update:
+                # it must not clear or zero the last-seen usage
+                {
+                    "type": "message_update",
+                    "assistantMessageEvent": {"type": "text_delta", "delta": "done"},
+                },
+                {"type": "agent_settled", "aborted": False},
+            ]
+        )
+        events = pievents.parse(stream)["events"]
+        self.assertEqual(
+            outcome(events),
+            {
+                "settled": True,
+                "aborted": False,
+                "input": 12,
+                "output": 20,
+                "totalTokens": 32,
+                "cost_total": 0.0002,
+                "usage_reported": True,
+            },
+            "usage-less message_updates are content deltas, not usage "
+            "resets: the numbers must still be those of the last "
+            "usage-bearing record (12/20/32, cost.total 0.0002)",
+        )
