@@ -175,5 +175,162 @@ class TestJsonArgv(PiargvTestCase):
             piargv.json_argv("llamaswap/coder", "")
 
 
+class TestUltraworkArgv(PiargvTestCase):
+    """Behaviour 6: ultrawork invocation argv.
+
+    Pinned signature ``ultrawork_argv(model_id, prompt, extension_path)``
+    returning a ``List[str]``. Unlike the fixture cwd, the extension path is a
+    real argv token (``-e <path>``), so it is in the signature
+    (``doc/external/pi-dev/cli.md``, Resources: ``-e``/``--extension`` loads an
+    extension file or directory).
+
+    Pinned prompt prefix format: when the given prompt does not contain
+    ``ultrawork`` as a whole word, the emitted prompt element is exactly
+    ``"ultrawork " + prompt`` — the trigger word, one space, then the original
+    prompt verbatim. When the prompt already contains the whole word, it is
+    passed through unchanged. Rationale: the plan's interface fact is that the
+    trigger is the whole word ``ultrawork`` (``doc/external/pi-dev/packages/pi-ultrawork.md``:
+    "say ``ultrawork`` or ``ulw`` (as a whole word)"; plan behaviour 16 records
+    the trigger as ``\\b(ultrawork|ulw)\\b``), and behaviour 6 requires the
+    prompt's first word to be ``ultrawork`` so the trigger fires. One space is
+    the minimal separator that keeps the trigger a whole word without
+    mutating the original prompt.
+    """
+
+    def test_ultrawork_argv_returns_exact_token_list(self):
+        piargv = self._piargv()
+        argv = piargv.ultrawork_argv(
+            "llamaswap/coder",
+            "Edit adder.py so add(2, 3) == 5",
+            "./pi-ultrawork",
+        )
+        self.assertIsInstance(
+            argv,
+            list,
+            "ultrawork_argv must return a list of tokens, never a string, "
+            "so no shell re-parses it",
+        )
+        self.assertEqual(
+            argv,
+            [
+                "pi",
+                "-p",
+                "-e",
+                "./pi-ultrawork",
+                "--model",
+                "llamaswap/coder",
+                "--tools",
+                "read,edit,write,ulw_dispatch,ulw_complete",
+                "-a",
+                "--no-session",
+                "--",
+                "ultrawork Edit adder.py so add(2, 3) == 5",
+            ],
+        )
+
+    def test_ultrawork_argv_extension_path_is_included_verbatim_after_harness_form(self):
+        piargv = self._piargv()
+        ext = "/home/user/packages/pi-ultrawork/src/index.ts"
+        argv = piargv.ultrawork_argv("llamaswap/coder", "fix it", ext)
+        self.assertEqual(
+            argv[1:4],
+            ["-p", "-e", ext],
+            "the extension path must be a real argv token via -e, "
+            "included verbatim immediately after the harness form",
+        )
+        self.assertEqual(argv[-1], "ultrawork fix it")
+
+    def test_ultrawork_argv_prompt_without_trigger_is_prefixed_once(self):
+        piargv = self._piargv()
+        prompt = "Edit adder.py so add(2, 3) == 5"
+        argv = piargv.ultrawork_argv("llamaswap/coder", prompt, "./pi-ultrawork")
+        emitted = argv[-1]
+        self.assertTrue(
+            emitted.startswith("ultrawork "),
+            "the emitted prompt must begin with the whole word 'ultrawork' "
+            "so the extension's whole-word trigger fires",
+        )
+        self.assertEqual(
+            emitted,
+            "ultrawork " + prompt,
+            "the prefix must be 'ultrawork ' exactly once, with the "
+            "original prompt following verbatim",
+        )
+
+    def test_ultrawork_argv_prompt_already_containing_trigger_is_not_prefixed(self):
+        piargv = self._piargv()
+        prompt = "ultrawork: edit adder.py so add(2, 3) == 5"
+        argv = piargv.ultrawork_argv("llamaswap/coder", prompt, "./pi-ultrawork")
+        self.assertEqual(
+            argv[-1],
+            prompt,
+            "a prompt that already contains the whole word 'ultrawork' "
+            "must pass through unchanged, never prefixed twice",
+        )
+        self.assertEqual(argv[-1].count("ultrawork"), 1)
+
+    def test_ultrawork_argv_trigger_match_is_whole_word_only(self):
+        # 'ultraworking' contains the trigger as a substring, not as a whole
+        # word, so the trigger does not fire and the prompt IS prefixed
+        # (plan behaviour 16: the trigger is \b(ultrawork|ulw)\b).
+        piargv = self._piargv()
+        prompt = "I was ultraworking on this yesterday"
+        argv = piargv.ultrawork_argv("llamaswap/coder", prompt, "./pi-ultrawork")
+        self.assertEqual(argv[-1], "ultrawork " + prompt)
+
+    def test_ultrawork_argv_differs_from_print_argv_by_extension_tools_and_prompt(self):
+        piargv = self._piargv()
+        model_id = "llamaswap/coder"
+        prompt = "Edit adder.py so add(2, 3) == 5"
+        ext = "./pi-ultrawork"
+        print_argv = piargv.print_argv(model_id, prompt)
+        uw_argv = piargv.ultrawork_argv(model_id, prompt, ext)
+
+        # The only extra tokens are the -e <path> pair right after the
+        # harness form; with them removed the two invocations have equal
+        # length.
+        self.assertEqual(uw_argv[1:4], ["-p", "-e", ext])
+        aligned = uw_argv[:2] + uw_argv[4:]
+        self.assertEqual(len(aligned), len(print_argv))
+        # Exactly two positions may differ: the --tools value (the ulw pair is
+        # added to the print selection) and the final prompt (prefixed with
+        # the trigger word). Every other token must stay element-for-element.
+        diffs = [
+            i
+            for i, (a, b) in enumerate(zip(aligned, print_argv))
+            if a != b
+        ]
+        self.assertEqual(diffs, [5, len(print_argv) - 1])
+        self.assertEqual(
+            aligned[5],
+            "read,edit,write,ulw_dispatch,ulw_complete",
+        )
+
+    def test_ultrawork_argv_empty_extension_path_raises_argv_error(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError):
+            piargv.ultrawork_argv("llamaswap/coder", "fix it", "")
+
+    def test_ultrawork_argv_whitespace_extension_path_raises_argv_error(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError):
+            piargv.ultrawork_argv("llamaswap/coder", "fix it", "   ")
+
+    def test_ultrawork_argv_empty_model_id_raises_argv_error(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError):
+            piargv.ultrawork_argv("", "fix it", "./pi-ultrawork")
+
+    def test_ultrawork_argv_whitespace_model_id_raises_argv_error(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError):
+            piargv.ultrawork_argv("   ", "fix it", "./pi-ultrawork")
+
+    def test_ultrawork_argv_empty_prompt_raises_argv_error(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError):
+            piargv.ultrawork_argv("llamaswap/coder", "", "./pi-ultrawork")
+
+
 if __name__ == "__main__":
     unittest.main()
