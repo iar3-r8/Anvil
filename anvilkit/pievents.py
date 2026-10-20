@@ -57,3 +57,46 @@ def parse(text: str) -> Dict[str, Any]:
         events.append(record)
 
     return {"events": events, "malformed_lines": malformed_lines}
+
+
+def tool_calls(events: List[dict]) -> Dict[str, int]:
+    """Account for tool usage in a parsed event stream.
+
+    Returns a plain dict with exactly five keys, all ints:
+
+    - ``"attempted"``: number of ``tool_execution_start`` records (each
+      ``toolCallId`` counted once);
+    - ``"succeeded"``: matched ``tool_execution_end`` records whose
+      ``isError`` is not truthy (absent or false: the tool completed
+      without an error flag);
+    - ``"failed"``: matched ``tool_execution_end`` records whose
+      ``isError`` is truthy;
+    - ``"unfinished"``: starts whose id never gets an end;
+    - ``"orphaned"``: ends whose id has no start. An orphaned end must
+      not change ``attempted``, ``succeeded`` or ``failed``.
+
+    Correlation is by ``toolCallId``, not by stream order. ``durationMs``
+    is timing metadata and does not affect the counters. Non-tool event
+    types are ignored. Empty input yields all five counters at 0.
+    """
+    started: set = set()
+    ended: Dict[Any, bool] = {}
+
+    for event in events:
+        event_type = event.get("type")
+        tool_call_id = event.get("toolCallId")
+        if event_type == "tool_execution_start":
+            started.add(tool_call_id)
+        elif event_type == "tool_execution_end":
+            ended[tool_call_id] = bool(event.get("isError"))
+
+    matched = started & set(ended)
+    failed = sum(1 for tool_call_id in matched if ended[tool_call_id])
+
+    return {
+        "attempted": len(started),
+        "succeeded": len(matched) - failed,
+        "failed": failed,
+        "unfinished": len(started - set(ended)),
+        "orphaned": len(set(ended) - started),
+    }
