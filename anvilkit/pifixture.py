@@ -11,9 +11,11 @@ All generated content is a fixed byte string, so two runs into two fresh
 destinations are byte-identical.
 """
 
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
+from typing import Dict, List
 
 _ADDER_PY = (
     '"""Bake-off fixture module.\n'
@@ -122,3 +124,48 @@ def assertion_passes(dest: Path) -> dict:
         text=True,
     )
     return {"passed": result.returncode == 0, "stderr": result.stderr}
+
+
+def digest_fixture(dest: Path) -> Dict[str, str]:
+    """Map every regular file under ``dest`` to the sha256 hex of its bytes.
+
+    Keys are the posix-style paths relative to ``dest`` (for example
+    ``"bakeoff_fixture/adder.py"``). The walk does not assume the fixture's
+    file set - it digests whatever is present, so a run that added or
+    deleted files shows up in ``changed_files`` below.
+
+    Args:
+        dest: The fixture destination to digest.
+
+    Returns:
+        Dict[str, str]: relative posix path -> sha256 hexdigest.
+    """
+    dest = Path(dest)
+    return {
+        path.relative_to(dest).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(dest.rglob("*"))
+        if path.is_file()
+    }
+
+
+def changed_files(before: Dict[str, str], dest: Path) -> List[str]:
+    """Compare the current tree under ``dest`` to an earlier digest.
+
+    A file whose content changed and a file that was absent from ``before``
+    both appear as their relative posix path; a file present in ``before``
+    but missing now appears as ``"deleted:"`` + relative path, so a run that
+    deleted a fixture file cannot read as a clean result.
+
+    Args:
+        before: A mapping returned by :func:`digest_fixture`.
+        dest: The fixture destination to inspect.
+
+    Returns:
+        List[str]: sorted list of changed, added and deleted files.
+    """
+    after = digest_fixture(dest)
+    # A file present now that was added or rewritten appears as its
+    # relative path; deletions are reported separately with the prefix.
+    changed = [name for name in after if before.get(name) != after[name]]
+    deleted = ["deleted:" + name for name in before if name not in after]
+    return sorted(changed + deleted)
