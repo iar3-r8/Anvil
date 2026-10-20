@@ -18,7 +18,7 @@ added.
 """
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 def parse(text: str) -> Dict[str, Any]:
@@ -99,4 +99,75 @@ def tool_calls(events: List[dict]) -> Dict[str, int]:
         "failed": failed,
         "unfinished": len(started - set(ended)),
         "orphaned": len(set(ended) - started),
+    }
+
+
+def outcome(events: List[dict]) -> Dict[str, Any]:
+    """Extract a run's outcome and usage from a parsed event stream.
+
+    Returns a plain dict with exactly seven keys, JSON-native throughout:
+
+    - ``"settled"``: ``bool`` - ``True`` iff the stream holds an
+      ``agent_settled`` record (even an aborted one: an aborted run still
+      settled, ``aborted`` is what says why it ended);
+    - ``"aborted"``: ``Optional[bool]`` - takes ``agent_settled.aborted``
+      verbatim. ``None`` when there is no ``agent_settled`` record or the
+      record carries no ``aborted`` field: absent means "we do not know",
+      so it is never coerced to ``False`` (which would claim knowledge the
+      stream never gave); ``False`` means the stream said "not aborted";
+    - ``"input"`` / ``"output"`` / ``"totalTokens"``: ``int`` - from the
+      LAST ``message_update`` that carried a ``usage`` field, in stream
+      order. Usage is cumulative, so the last one already contains the
+      whole run: values are never summed. A ``message_update`` without a
+      ``usage`` field is a content delta: it does not reset the last-seen
+      usage;
+    - ``"cost_total"``: ``float`` - the flattened ``cost.total`` of that
+      same last usage;
+    - ``"usage_reported"``: ``bool`` - ``True`` iff at least one
+      ``message_update`` carried a ``usage`` field. ``False`` plus zeros
+      is the signal that the numbers are placeholders, not measurements.
+
+    Non-relevant event types (session, turn, tool, ``agent_end``) are
+    ignored. Cache fields of the usage block (``cacheRead``/``cacheWrite``,
+    ``cost.input``/...) are ignored. No ``agent_settled`` at all yields
+    ``settled`` ``False`` and ``aborted`` ``None``; no usage ever seen
+    yields zeros and ``usage_reported`` ``False``. Empty input yields
+    ``settled`` ``False``, ``aborted`` ``None``, zeros, ``usage_reported``
+    ``False``.
+    """
+    settled = False
+    aborted: Optional[bool] = None
+    usage_reported = False
+    input_tokens = 0
+    output_tokens = 0
+    total_tokens = 0
+    cost_total = 0.0
+
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "agent_settled":
+            settled = True
+            # Verbatim: "aborted" not in event -> None; present -> the
+            # value as-is. ``.get`` returns None exactly when absent.
+            aborted = event.get("aborted")
+        elif event_type == "message_update":
+            usage = event.get("usage")
+            if not isinstance(usage, dict):
+                continue
+            usage_reported = True
+            input_tokens = usage.get("input", 0)
+            output_tokens = usage.get("output", 0)
+            total_tokens = usage.get("totalTokens", 0)
+            cost = usage.get("cost")
+            if isinstance(cost, dict):
+                cost_total = cost.get("total", 0.0)
+
+    return {
+        "settled": settled,
+        "aborted": aborted,
+        "input": input_tokens,
+        "output": output_tokens,
+        "totalTokens": total_tokens,
+        "cost_total": cost_total,
+        "usage_reported": usage_reported,
     }
