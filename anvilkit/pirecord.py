@@ -13,15 +13,16 @@ the bake-off pipeline produces:
   ``anvilkit.pifixture.assertion_passes`` and the changed-files list from
   ``anvilkit.pifixture.changed_files``.
 
-This cycle owns ``build``: it validates that every dimension arrived (a
-missing one raises ``RecordError`` naming the field, so a half-recorded run
-cannot become a verdict) and assembles the record. The go/no-go table
-(``render_table``, behaviour 12) lands in a later cycle in this same module.
+``build`` validates that every dimension arrived (a missing one raises
+``RecordError`` naming the field, so a half-recorded run cannot become a
+verdict) and assembles the record. ``render_table`` (behaviour 12) renders
+a list of records as the go/no-go Markdown table plus the verdict line,
+a read-only view: it never mutates its records.
 
 Stdlib only. One exception type: ``RecordError``.
 """
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 _CONFIG_VALUES = ("print", "json", "ultrawork")
 _ARTIFACT_KEYS = ("stdout", "stderr", "jsonl", "before_digest", "after_digest")
@@ -187,3 +188,100 @@ def build(
         "model": model,
         "timestamp": timestamp,
     }
+
+
+def _format_bool_cell(value: Any) -> str:
+    """Render a boolean cell as ``yes``/``no`` - plain ASCII, so the table
+    survives PR descriptions and README viewers that mangle emoji or
+    Python literals."""
+    return "yes" if value else "no"
+
+
+def _format_tool_calls_cell(tool_calls: Dict[str, Any]) -> str:
+    """Render the tool-call counters; the orphaned counter is appended only
+    when non-zero, so a clean run does not advertise it."""
+    text = (
+        "{} attempted / {} ok / {} failed / {} unfinished".format(
+            tool_calls["attempted"],
+            tool_calls["succeeded"],
+            tool_calls["failed"],
+            tool_calls["unfinished"],
+        )
+    )
+    if tool_calls["orphaned"]:
+        text += " / {} orphaned".format(tool_calls["orphaned"])
+    return text
+
+
+def _verdict_line(completed: int, total: int) -> str:
+    """The verdict: NO-GO when nothing completed, GO when everything did,
+    PARTIAL when some did - a partial bake-off is not a clean GO."""
+    if completed == total:
+        return "GO ({} of {} completed)".format(completed, total)
+    if completed == 0:
+        return "NO-GO"
+    return "PARTIAL ({} of {} completed)".format(completed, total)
+
+
+def render_table(records: List[dict]) -> str:
+    """Render the go/no-go Markdown table (behaviour 12).
+
+    One row per record in **input order** (the evidence is in run order -
+    re-sorting would silently reorder it), columns ``config`` /
+    ``Completed`` / ``Tool calls`` / ``Wall time`` / ``Tokens`` /
+    ``Waited for input``, followed by a final verdict line:
+
+    - ``Completed`` and ``Waited for input`` render as ``yes``/``no``;
+    - ``Tool calls`` renders the four standard counters, appending the
+      orphaned counter only when it is non-zero;
+    - ``Wall time`` renders ``str(wall_time_s) + "s"``, no rounding;
+    - ``Tokens`` renders ``tokens["totalTokens"]`` as a bare integer -
+      the total, not the input/output split, because the go/no-go
+      decision compares runs;
+    - the verdict is ``NO-GO`` when no record has ``completed`` True,
+      ``GO (n of n completed)`` when all did, ``PARTIAL (n of m
+      completed)`` when some but not all.
+
+    An empty ``records`` list renders the header, the separator and a
+    single ``no runs recorded`` row - never an empty string.
+
+    This function is a read-only view: it reads the records, never
+    mutates them, so the caller can re-render or re-serialize the same
+    list afterwards.
+
+    Raises:
+        RecordError: a ``config`` value appears more than once, naming
+            the duplicated value so the caller knows which record to fix.
+    """
+    seen: Set[str] = set()
+    for record in records:
+        config = record["config"]
+        if config in seen:
+            raise RecordError(
+                "duplicate config value {!r}: the table has one row per "
+                "configuration".format(config)
+            )
+        seen.add(config)
+
+    lines = [
+        "| config | Completed | Tool calls | Wall time | Tokens | "
+        "Waited for input |",
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    if not records:
+        lines.append("| no runs recorded |")
+    else:
+        for record in records:
+            lines.append(
+                "| {} | {} | {} | {}s | {} | {} |".format(
+                    record["config"],
+                    _format_bool_cell(record["completed"]),
+                    _format_tool_calls_cell(record["tool_calls"]),
+                    record["wall_time_s"],
+                    record["tokens"]["totalTokens"],
+                    _format_bool_cell(record["waited_for_input"]),
+                )
+            )
+    completed = sum(1 for record in records if record["completed"])
+    lines.append(_verdict_line(completed, len(records)))
+    return "\n".join(lines)
