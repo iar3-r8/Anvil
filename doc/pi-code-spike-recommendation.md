@@ -6,7 +6,7 @@ as the referent. There is no GitHub issue; this document is the go/no-go
 deliverable for (a) **switch** and (b) **add**. **No implementation in this
 spike** — see [No implementation in this spike](#no-implementation-in-this-spike).
 
-The six third-party pages behind the citations are saved in full under
+The seven third-party pages behind the citations are saved in full under
 [`doc/external/pi-dev/`](external/pi-dev/); the Anvil-side facts below are
 cited from the repository files themselves.
 
@@ -114,10 +114,35 @@ feature with its own issue.
 | `config.yaml` read-only parse (`matrix.vars.coder`, `--max-model-len`) | unchanged — same source of truth | ✅ no impact |
 | devcontainer (Node.js 22.x already installed in [`templates/devcontainer/Dockerfile`](../templates/devcontainer/Dockerfile)) | `npm install -g @earendil-works/pi-coding-agent` or the pi.dev installer ([`doc/external/pi-dev/readme.md`](external/pi-dev/readme.md)) | ✅ trivial |
 
+### Multi-agent delegation on Pi
+
+One of the gaps above — subagents/mode dispatch, which Pi deliberately does not
+ship — has a concrete third-party answer: [`pi-multiagent`](https://pi.dev/packages/pi-multiagent)
+(MIT, v0.9.8, npm), saved in full at
+[`doc/external/pi-dev/packages/pi-multiagent.md`](external/pi-dev/packages/pi-multiagent.md).
+It installs one extension tool, `agent_team`, which launches child Pi sessions
+from JSON graphs (an objective, an authority block such as
+`allowFilesystemRead`, and steps that each reference a bundled package agent —
+`scout`, `planner`, `worker`, `synthesizer`, among others) with a task. The
+package's own rule is "the parent assistant stays in charge; child output is
+evidence, not instructions", which is the right shape for a TDD-style pipeline
+(plan → test → code → docs) expressed as one graph with one step per role. Three
+caveats, all from the saved page:
+
+- It is a third-party package whose code must be reviewed before install — Pi's
+  own package-page warning: "Pi packages can execute code and influence agent
+  behavior. Review the source before installing third-party packages."
+- Child sessions do not inherit the parent transcript, context files, or the
+  project `SYSTEM.md` — each role's rules would have to be carried in the graph
+  and the agent refs rather than in project instructions.
+- It does not provide per-step model routing by itself; that still needs Pi's
+  model selection or per-graph configuration, so verdict reason 1 (no per-mode
+  model routing) stands.
+
 ## No implementation in this spike
 
 This spike delivers a recommendation, not code. The branch touches
-documentation only: this file, the six pages under
+documentation only: this file, the seven pages under
 [`doc/external/pi-dev/`](external/pi-dev/), and the two link-only entries in
 [`doc/external/index.md`](external/index.md). No `anvilkit/` or `tests/` file
 is changed, and no `pi` binary is installed.
@@ -137,8 +162,7 @@ feature.
 
 ## Sources
 
-Saved in full (source URL recorded at the top of each file), fetched from the
-`main` branch of github.com/earendil-works/pi on 2026-10-20:
+Saved in full (source URL recorded at the top of each file), fetched on 2026-10-20:
 
 - [`doc/external/pi-dev/readme.md`](external/pi-dev/readme.md) — Pi identity, install (Node.js ≥ 22.19), packages, the deliberate absence of sub-agents and plan mode
 - [`doc/external/pi-dev/configuration.md`](external/pi-dev/configuration.md) — user-level and project-level configuration layout
@@ -146,6 +170,7 @@ Saved in full (source URL recorded at the top of each file), fetched from the
 - [`doc/external/pi-dev/models-configuration.md`](external/pi-dev/models-configuration.md) — `models.json` reference, `maxTokens` default 16384, `modelOverrides`
 - [`doc/external/pi-dev/mcp.md`](external/pi-dev/mcp.md) — `.pi/mcp.json` format, stdio and streamable-HTTP servers, `${NAME}` interpolation
 - [`doc/external/pi-dev/settings.md`](external/pi-dev/settings.md) — settings reference, `defaultProvider`/`defaultModel`, built-in tool list
+- [`doc/external/pi-dev/packages/pi-multiagent.md`](external/pi-dev/packages/pi-multiagent.md) — pi.dev package page for `pi-multiagent` (v0.9.8, MIT): the `agent_team` delegation tool, graph model, bundled agents, child-session isolation
 
 Link only:
 
