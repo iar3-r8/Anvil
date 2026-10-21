@@ -135,7 +135,11 @@ def ultrawork_argv(
 
 
 def models_document(
-    model_id: str, port: int, context_window: int, max_tokens: int
+    model_id: str,
+    port: int,
+    context_window: int,
+    max_tokens: int,
+    host: str = "127.0.0.1",
 ) -> dict:
     """Build the Pi agent-directory models document (behaviour 7).
 
@@ -144,6 +148,11 @@ def models_document(
     OpenAI-compatible provider, so the bake-off runs use the configured
     local model instead of a cloud key.
 
+    ``host`` is the gateway's address; it defaults to ``"127.0.0.1"`` so
+    every existing caller is unchanged, and can be set to the Compose
+    service name (``"llama-swap"``) when the document is used from inside
+    the Compose network.
+
     The document is returned as a ``dict`` of JSON-native types; callers
     serialise it with ``json.dumps``. The dummy ``apiKey`` is the fixed
     placeholder ``"llamaswap-local"`` - Pi needs a non-empty string and
@@ -151,17 +160,20 @@ def models_document(
 
     Raises:
         ArgvError: ``model_id`` is empty or whitespace-only; ``port`` is
-            outside 1-65535 (inclusive); or ``context_window`` < 1.
+            outside 1-65535 (inclusive); ``context_window`` < 1; or
+            ``host`` is empty or whitespace-only.
     """
     _validate_model_id(model_id)
     if not 1 <= port <= 65535:
         raise ArgvError("port must be in 1-65535")
     if context_window < 1:
         raise ArgvError("context window must be at least 1")
+    if not host.strip():
+        raise ArgvError("host must not be empty")
     return {
         "providers": {
             "llamaswap": {
-                "baseUrl": "http://127.0.0.1:%d/v1" % port,
+                "baseUrl": "http://%s:%d/v1" % (host, port),
                 "api": "openai-completions",
                 "apiKey": "llamaswap-local",
                 "models": [

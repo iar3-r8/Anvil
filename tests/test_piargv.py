@@ -441,5 +441,112 @@ class TestModelsDocument(PiargvTestCase):
                     )
 
 
+class TestModelsDocumentHost(PiargvTestCase):
+    """Behaviour 1 of ``plans/pi-phase1b-docker.md``: gateway host.
+
+    Pinned signature ``models_document(model_id, port, context_window,
+    max_tokens, host="127.0.0.1") -> dict``. The host parameter lets the
+    document address llama-swap from inside the Compose network
+    (``http://llama-swap:8080/v1``) while omitting it keeps every existing
+    caller on ``http://127.0.0.1:<port>/v1`` unchanged.
+
+    The in-network address ``llama-swap`` is the Compose service name on
+    ``llm-network`` (``docker-compose.yml`` ports + command rows in the
+    plan's interface-facts table), so it is the exact value the
+    ``pi-bakeoff`` service will use.
+    """
+
+    def test_models_document_default_host_is_loopback(self):
+        # Omitting host must keep the exact legacy baseUrl so every
+        # existing caller is unchanged - this is the backward-compat pin.
+        piargv = self._piargv()
+        doc = piargv.models_document("llamaswap/coder", 8080, 131072, 16384)
+        self.assertEqual(
+            doc["providers"]["llamaswap"]["baseUrl"],
+            "http://127.0.0.1:8080/v1",
+            "omitting host must yield the legacy loopback baseUrl",
+        )
+
+    def test_models_document_explicit_host_is_interpolated_into_base_url(self):
+        # Keyword call pins the parameter name; renaming it (e.g. to
+        # gateway) fails these tests with a TypeError, which is the
+        # point.
+        piargv = self._piargv()
+        doc = piargv.models_document(
+            "llamaswap/coder", 8080, 131072, 16384, host="llama-swap"
+        )
+        self.assertEqual(
+            doc["providers"]["llamaswap"]["baseUrl"],
+            "http://llama-swap:8080/v1",
+            "the host must be interpolated into the baseUrl, "
+            "replacing the loopback default",
+        )
+
+    def test_models_document_explicit_host_changes_only_base_url(self):
+        # The host parameter must touch exactly one field; every other
+        # provider key and the models entry are pinned unchanged.
+        piargv = self._piargv()
+        doc = piargv.models_document(
+            "llamaswap/coder", 8080, 131072, 16384, host="llama-swap"
+        )
+        self.assertEqual(
+            doc,
+            {
+                "providers": {
+                    "llamaswap": {
+                        "baseUrl": "http://llama-swap:8080/v1",
+                        "api": "openai-completions",
+                        "apiKey": "llamaswap-local",
+                        "models": [
+                            {
+                                "id": "llamaswap/coder",
+                                "contextWindow": 131072,
+                                "maxTokens": 16384,
+                            }
+                        ],
+                    }
+                }
+            },
+            "the host parameter must change only the baseUrl; "
+            "api, apiKey and the models list are unchanged",
+        )
+
+    def test_models_document_empty_host_raises_argv_error_naming_field(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError) as ctx:
+            piargv.models_document(
+                "llamaswap/coder", 8080, 131072, 16384, host=""
+            )
+        self.assertIn(
+            "host",
+            str(ctx.exception),
+            "the error message must name the host field",
+        )
+
+    def test_models_document_whitespace_host_raises_argv_error_naming_field(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError) as ctx:
+            piargv.models_document(
+                "llamaswap/coder", 8080, 131072, 16384, host="   "
+            )
+        self.assertIn(
+            "host",
+            str(ctx.exception),
+            "the error message must name the host field",
+        )
+
+    def test_models_document_host_does_not_disturb_port_validation(self):
+        # A valid explicit host must not mask the unchanged port
+        # check: out-of-range ports still raise ArgvError.
+        piargv = self._piargv()
+        for port in (0, 65536):
+            with self.subTest(port=port):
+                with self.assertRaises(piargv.ArgvError):
+                    piargv.models_document(
+                        "llamaswap/coder", port, 131072, 16384,
+                        host="llama-swap",
+                    )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,8 +10,9 @@ iar3-r8/anvil#48) records a verdict on two independent questions:
   would otherwise write, or should the driver use bare Pi?
 
 **(b) is answerable now and is answered here. (a) is pending the host run**
-— the three run records (`run-print/`, `run-json/`, `run-ultrawork/`) do
-not exist yet, and this document does not invent them.
+— the three run records (`results/print/`, `results/json/`,
+`results/ultrawork/`) do not exist yet, and this document does not invent
+them.
 
 ## Verdict: (b) lean bare Pi; (a) pending
 
@@ -55,7 +56,7 @@ The ultrawork run configuration in the bake-off exists to **measure**
 pi-ultrawork's overhead (does the model call `ulw_dispatch` at all on a
 single-file task? what do the `tool_calls` counters and `wall_time_s`
 record?), not to pre-commit to it. The record field to read when the
-`run-ultrawork/` record lands is `tool_calls` — a run where
+`results/ultrawork/` record lands is `tool_calls` — a run where
 `ulw_dispatch` is never called is evidence that the model does not reach
 for the layer on small tasks, recorded verbatim, not a failure to retry.
 
@@ -63,7 +64,7 @@ for the layer on small tasks, recorded verbatim, not a failure to retry.
 
 | Question | Evidence source | Status |
 |---|---|---|
-| (a) Does any configuration complete? | `completed` in each run record | **PENDING** — host run ([`README.md`](README.md), steps 5–7) |
+| (a) Does any configuration complete? | `completed` in each run record | **PENDING** — host run ([`README.md`](README.md), sections 4–5) |
 | (a) Does the model stall on input? | `waited_for_input` + evidence string in each record | PENDING |
 | (a) How much does the task cost? | `tokens`, `cost_total`, `wall_time_s` per record | PENDING |
 | (b) Does the model use `ulw_dispatch` on a trivial task? | `tool_calls` in the ultrawork record | PENDING — reinforces the lean, does not overturn the (b) verdict, which rests on the interface facts above |

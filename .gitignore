@@ -9,6 +9,8 @@
 !.roo/commands/harvest-roo-templates.md
 zoo-code-settings.json
 plans/*
+# bake-off run artifacts, one subtree per configuration (doc/pi-bakeoff)
+results/
 
 # Anvil local overrides (machine-specific, never committed)
 anvil.local.yaml

@@ -43,6 +43,32 @@ services:
       - "host.docker.internal:host-gateway"
     command: --config /app/config.yaml --listen 0.0.0.0:8080
 
+  pi-bakeoff:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.bakeoff
+    profiles: [ "bakeoff" ]
+    command: ["python3", "-m", "anvilkit.pibakeoff"]
+    environment:
+      - PI_GATEWAY_HOST=llama-swap
+      - PI_GATEWAY_PORT=8080
+    volumes:
+      - type: volume
+        source: pi-bakeoff-agent
+        target: /home/bakeoff/.pi/agent
+      - type: bind
+        source: ./results
+        target: /workspace/results
+      - type: bind
+        source: ./config.yaml
+        target: /app/config.yaml
+        read_only: true
+    networks:
+      - llm-network
+
 networks:
   llm-network:
     name: llm-network
+
+volumes:
+  pi-bakeoff-agent:
