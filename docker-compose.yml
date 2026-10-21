@@ -48,7 +48,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.bakeoff
     profiles: [ "bakeoff" ]
-    command: ["python", "-m", "anvilkit.pibakeoff"]
+    command: ["python3", "-m", "anvilkit.pibakeoff"]
     environment:
       - PI_GATEWAY_HOST=llama-swap
       - PI_GATEWAY_PORT=8080
