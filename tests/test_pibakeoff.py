@@ -1516,6 +1516,55 @@ class TestMain(PibakeoffTestCase):
         self.assertEqual("other/coder-model", recorder.calls[0]["model_id"])
         self.assertEqual(4321, recorder.calls[0]["context_window"])
 
+    def test_main_extension_path_honours_pi_extension_path_env(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        # The devcontainer's npm root (doc/external: npm root -g probes
+        # /usr/lib/node_modules there, not the bake-off image's prefix).
+        devcontainer_path = (
+            "/usr/lib/node_modules/pi-ultrawork/src/index.ts"
+        )
+        env = self._happy_env(config_path, PI_EXTENSION_PATH=devcontainer_path)
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+        # The env value reaches run_all verbatim, unmodified.
+        self.assertEqual(
+            devcontainer_path, recorder.calls[0]["extension_path"]
+        )
+
+    def test_main_extension_path_whitespace_only_treated_as_set(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        env = self._happy_env(config_path, PI_EXTENSION_PATH="   ")
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+        # main() adds no second validation: the whitespace-only value
+        # reaches run_all as-is; ultrawork_argv (anvilkit/piargv.py) is the
+        # layer that rejects it.
+        self.assertEqual("   ", recorder.calls[0]["extension_path"])
+
+    def test_main_extension_path_falls_back_to_default_when_absent_or_empty(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        for label, env in (
+            ("absent", self._happy_env(config_path)),
+            ("empty string", self._happy_env(config_path, PI_EXTENSION_PATH="")),
+        ):
+            with self.subTest(PI_EXTENSION_PATH=label):
+                patcher, recorder = self._recorder(pibakeoff)
+                with patcher, mock.patch.dict(os.environ, env):
+                    self.assertEqual(0, main())
+                # The `or`-fallback style of PI_CONFIG_PATH and
+                # PI_RESULTS_DIR: the Compose path is untouched.
+                self.assertEqual(
+                    PINNED_EXTENSION_PATH, recorder.calls[0]["extension_path"]
+                )
+
     def test_main_default_config_path_is_the_read_only_mount(self):
         main = self._get_main()
         pibakeoff = self._pibakeoff()
