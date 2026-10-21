@@ -37,16 +37,39 @@ record with ``waited_for_input`` True, the partial stream still in the
 stdout artifact and the runner's evidence in evidence.txt - never an
 exception.
 
+Behaviour 8: "entrypoint" - ``main`` is the devcontainer entrypoint
+(``python3 -m anvilkit.piapproval``): it reads the gateway host and port
+from the environment (``PI_GATEWAY_HOST`` / ``PI_GATEWAY_PORT``, both
+required and named on failure), the model id and context window from the
+read-only ``config.yaml`` (``PI_CONFIG_PATH``, defaulting to
+``_DEFAULT_CONFIG_PATH``, the repo-root config) via
+``anvilkit.config.read_models``, and the results directory from
+``PI_RESULTS_DIR`` (default ``_DEFAULT_RESULTS_DIR``); it hands everything
+to :func:`run_all` with the pinned constants ``MAX_TOKENS``, ``PROMPT``,
+``MARKER`` and ``UNREACHABLE_COMMAND``, its own ISO-8601 UTC timestamp,
+and either the injected ``runner`` or
+``anvilkit.pibakeoff.subprocess_runner`` when none is given. It returns
+the exit code - 0 whenever the four runs were measured, since a negative
+finding is a successful measurement - and the module's final line exits
+the interpreter with that code under the ``__main__`` guard, the only
+exit path in the module.
+
 One exception type: ``ApprovalError`` - raised (naming the value) for an
 unknown configuration, before the runner is invoked and before the project
-fixture is written.
+fixture is written, and (behaviour 8) for a missing, empty or
+non-numeric gateway environment variable, before ``run_all`` is reached.
 """
 
 import json
+import os
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import anvilkit.config as piconfig
 import anvilkit.piargv as piargv
+import anvilkit.pibakeoff as pibakeoff
 import anvilkit.pievents as pievents
 import anvilkit.pifixture as pifixture
 import anvilkit.pirecord as pirecord
@@ -72,13 +95,41 @@ _MCP_LIST_TIMEOUT_S = 60.0
 #: name it even when the server never connects.
 _SERVER_NAME = "anvil-trust-probe"
 
+#: The max tokens for the models document (behaviour 8).
+MAX_TOKENS = 4096
+
+#: The fixed phase-2 marker prompt (behaviour 8).
+PROMPT = (
+    "Reply with the marker token ANVIL-PHASE2-MARKER in one word, "
+    "and nothing else."
+)
+
+#: The marker token the project fixture instructs the model to echo;
+#: the assertion target for the model configs (behaviour 8).
+MARKER = "ANVIL-PHASE2-MARKER"
+
+#: The single executable not on PATH that the project mcp.json entry
+#: names (behaviour 8).
+UNREACHABLE_COMMAND = "anvil-nonexistent-mcp-server"
+
+#: The read-only llama-swap config.yaml at the repo root; the
+#: ``PI_CONFIG_PATH`` default (behaviour 8) - the same file the Compose
+#: service binds read-only at ``/app/config.yaml``.
+_DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parent.parent / "config.yaml")
+
+#: The results directory; the ``PI_RESULTS_DIR`` default, the
+#: devcontainer recipe's ``PI_RESULTS_DIR=./results`` shape (behaviour 8).
+_DEFAULT_RESULTS_DIR = "results"
+
 
 class ApprovalError(Exception):
     """Any refusal to drive a phase-2 approval configuration.
 
-    A single exception type covers the one current failure - an unknown
-    configuration value - so callers need only one ``except`` clause. The
-    message names the value so the caller knows which argument to fix.
+    A single exception type covers the current failures - an unknown
+    configuration value (behaviour 6) or a missing, empty or non-numeric
+    ``PI_GATEWAY_HOST`` / ``PI_GATEWAY_PORT`` value (behaviour 8) - so
+    callers need only one ``except`` clause. The message names the
+    offending value or variable so the caller knows what to fix.
     """
 
 
@@ -421,3 +472,96 @@ def run_all(
     table = pirecord.render_table(records)
     (base_dir / "table.md").write_text(table, encoding="utf-8")
     return records, table
+
+
+def _utc_timestamp() -> str:
+    """The driver's own ISO-8601 UTC stamp (behaviour 8), ``...Z`` form."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _env_value(name: str) -> str:
+    """A required, non-empty environment value; ``ApprovalError`` names it."""
+    value = os.environ.get(name) or ""
+    if not value:
+        raise ApprovalError(
+            "{} is required and must be non-empty".format(name)
+        )
+    return value
+
+
+def main(runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None) -> int:
+    """The devcontainer entrypoint (behaviour 8: "entrypoint").
+
+    ``plans/pi-phase2-approval.md``: ``python3 -m anvilkit.piapproval`` in
+    the devcontainer environment. Reads the gateway host and port from
+    the environment (``PI_GATEWAY_HOST`` / ``PI_GATEWAY_PORT``, both
+    required; a missing, empty or non-numeric value raises
+    :class:`ApprovalError` naming the variable, before :func:`run_all` is
+    reached), the model id and context window from the read-only
+    ``config.yaml`` via ``anvilkit.config.read_models`` (``PI_CONFIG_PATH``,
+    defaulting to :data:`_DEFAULT_CONFIG_PATH`; a ``ConfigError``
+    propagates unwrapped), and the results directory from ``PI_RESULTS_DIR``
+    (defaulting to :data:`_DEFAULT_RESULTS_DIR`), then hands everything to
+    :func:`run_all` with the pinned constants :data:`MAX_TOKENS`,
+    :data:`PROMPT`, :data:`MARKER` and :data:`UNREACHABLE_COMMAND`, its
+    own ISO-8601 UTC timestamp, and either the injected ``runner`` or
+    ``anvilkit.pibakeoff.subprocess_runner`` when none is given.
+
+    A table in which all four assertions failed is a successful run: the
+    exit code is 0 either way - a negative finding is a successful
+    measurement. The exit code is returned, never raised; only the
+    module's ``__main__`` guard exits the interpreter.
+
+    Args:
+        runner: The process-execution seam, handed to ``run_all``
+            verbatim; when ``None`` the default is
+            ``anvilkit.pibakeoff.subprocess_runner`` (imported, not
+            re-implemented).
+
+    Returns:
+        int: 0 whenever the four runs were measured.
+
+    Raises:
+        ApprovalError: ``PI_GATEWAY_HOST`` or ``PI_GATEWAY_PORT`` is
+            missing or empty, or ``PI_GATEWAY_PORT`` is not numeric -
+            in every case before ``run_all`` is reached.
+        piconfig.ConfigError: the config file is unreadable or invalid;
+            propagated unwrapped.
+    """
+    gateway_host = _env_value("PI_GATEWAY_HOST")
+    port_raw = _env_value("PI_GATEWAY_PORT")
+    try:
+        gateway_port = int(port_raw)
+    except ValueError:
+        raise ApprovalError(
+            "{} must be a numeric port, got {!r}".format(
+                "PI_GATEWAY_PORT", port_raw
+            )
+        )
+
+    config_path = os.environ.get("PI_CONFIG_PATH") or _DEFAULT_CONFIG_PATH
+    topology = piconfig.read_models(config_path)
+
+    results_dir = Path(os.environ.get("PI_RESULTS_DIR") or _DEFAULT_RESULTS_DIR)
+
+    if runner is None:
+        runner = pibakeoff.subprocess_runner
+
+    run_all(
+        results_dir,
+        runner,
+        topology.coder_id,
+        gateway_host,
+        gateway_port,
+        topology.coder_context_window,
+        MAX_TOKENS,
+        PROMPT,
+        MARKER,
+        UNREACHABLE_COMMAND,
+        timestamp=_utc_timestamp(),
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
