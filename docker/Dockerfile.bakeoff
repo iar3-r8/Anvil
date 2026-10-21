@@ -1,0 +1,27 @@
+# Bake-off image: the Pi CLI, the ultrawork extension and the anvilkit
+# harness, in one container.
+# The host needs only Docker — no sudo, no global installs, nothing on host
+# system paths. Runs on the Compose llm-network and reaches the llama-swap
+# gateway by service name (see anvilkit/piargv.py models_document).
+FROM node:24-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 bash ca-certificates git ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Exact pins: reproducible bake-off; bumps are deliberate. 1.3.0 is clear of
+# the four 2026 pi-coding-agent advisories (worst patched in 0.79.0).
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0 pi-ultrawork@1.2.0
+
+# The harness, copied in from the build context (the repo root).
+COPY anvilkit/ /app/anvilkit/
+
+# Non-root: the fixture and the agent home are written by this user.
+RUN useradd --create-home --shell /bin/bash bakeoff \
+    && mkdir -p /workspace \
+    && chown -R bakeoff:bakeoff /app /workspace
+ENV PYTHONPATH=/app
+USER bakeoff
+WORKDIR /workspace
