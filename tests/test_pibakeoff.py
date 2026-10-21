@@ -112,6 +112,33 @@ report")::
   and a pre-existing document does not make ``run_all`` fail. ``run_one``
   already rewrites the document identically on every call, so the pinned
   contract is content-idempotent, not a write count.
+
+``TestSubprocessRunner`` pins the companion seam (behaviour 7: "real
+subprocess runner")::
+
+    subprocess_runner(spec) -> result
+
+- a plain module-level function taking exactly one spec dict
+  (``{"argv": List[str], "cwd": str, "stdin": str, "timeout_s": float}``)
+  and returning exactly one result dict with exactly the six
+  runner-contract keys (``exit_code``, ``stdout``, ``stderr``,
+  ``wall_time_s``, ``timed_out``, ``evidence``) - no more, no less;
+- it executes the ``argv`` list with stdin from ``/dev/null`` in ``cwd``
+  and drains stdout continuously, so a full pipe buffer cannot stall the
+  child; on success ``timed_out`` is ``False`` and ``evidence`` ``""``;
+- a run still blocked after ``timeout_s`` is killed (SIGKILL) and
+  reported, never raised: ``timed_out`` ``True``, ``exit_code`` the
+  pinned sentinel ``-9`` (subprocess's negative-signal convention, the
+  same example this file's runner-contract docstring already uses),
+  ``evidence`` a non-empty string containing the substring
+  ``"timeout"`` and at least one digit (the elapsed seconds), and the
+  output that did arrive before the kill present in ``stdout``;
+- a spec missing ``timeout_s`` raises ``BakeoffError`` naming the key,
+  before any process is spawned.
+
+These tests run real system binaries (``/bin/echo``, ``/bin/sh -c``,
+``/bin/sleep``) - no ``pi``, no mocks - and are bounded: each test under
+~2 s, the class under ~5 s, so they are CI-safe.
 """
 
 import importlib
@@ -119,9 +146,10 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -1010,6 +1038,171 @@ class TestRunAll(PibakeoffTestCase):
         self.assertEqual(
             _expected_models_content(), models_path.read_text(encoding="utf-8")
         )
+
+
+# The six runner-contract keys, pinned exactly for the real runner: the
+# result of ``subprocess_runner`` is a dict with precisely these keys.
+_SUBPROCESS_RESULT_KEYS = {
+    "exit_code",
+    "stdout",
+    "stderr",
+    "wall_time_s",
+    "timed_out",
+    "evidence",
+}
+
+
+class TestSubprocessRunner(PibakeoffTestCase):
+    """subprocess_runner - the real subprocess implementation of the runner
+    contract (behaviour 7). Real system binaries, no pi, no mocks."""
+
+    def _get_subprocess_runner(self) -> Callable:
+        """Fetch ``anvilkit.pibakeoff.subprocess_runner``, failing clearly if absent."""
+        pibakeoff = self._pibakeoff()
+        subprocess_runner = getattr(pibakeoff, "subprocess_runner", None)
+        self.assertTrue(
+            callable(subprocess_runner),
+            "anvilkit.pibakeoff.subprocess_runner is not callable; the real "
+            "subprocess runner (behaviour 7) has not been implemented yet",
+        )
+        return subprocess_runner
+
+    def _tmpdir(self) -> Path:
+        """A per-test temporary directory, cleaned up automatically."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return Path(tmp.name)
+
+    def _spec(self, argv: List[str], cwd: Path, timeout_s: float = 10.0) -> Dict[str, Any]:
+        """The pinned invocation shape for subprocess_runner."""
+        return {
+            "argv": argv,
+            "cwd": str(cwd),
+            "stdin": "/dev/null",
+            "timeout_s": timeout_s,
+        }
+
+    def test_subprocess_runner_basic_execution_contract(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        result = subprocess_runner(self._spec(["/bin/echo", "hello"], cwd))
+        # Exactly the six runner-contract keys, no more.
+        self.assertEqual(_SUBPROCESS_RESULT_KEYS, set(result))
+        self.assertIsInstance(result["exit_code"], int)
+        self.assertEqual(0, result["exit_code"])
+        self.assertEqual("hello\n", result["stdout"])
+        self.assertEqual("", result["stderr"])
+        self.assertIsInstance(result["wall_time_s"], float)
+        self.assertGreater(result["wall_time_s"], 0.0)
+        self.assertIs(result["timed_out"], False)
+        self.assertEqual("", result["evidence"])
+
+    def test_subprocess_runner_nonzero_exit_code_reported(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        result = subprocess_runner(self._spec(["/bin/sh", "-c", "exit 3"], cwd))
+        self.assertEqual(3, result["exit_code"])
+        self.assertIs(result["timed_out"], False)
+        self.assertEqual("", result["evidence"])
+
+    def test_subprocess_runner_stderr_captured_separately(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        result = subprocess_runner(
+            self._spec(["/bin/sh", "-c", "echo out; echo err 1>&2"], cwd)
+        )
+        self.assertEqual("out\n", result["stdout"])
+        self.assertEqual("err\n", result["stderr"])
+        self.assertIs(result["timed_out"], False)
+
+    def test_subprocess_runner_cwd_honoured(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        result = subprocess_runner(self._spec(["/bin/sh", "-c", "pwd"], cwd))
+        # Symlink-tolerant: compare resolved paths (e.g. /var -> /private/var).
+        self.assertEqual(
+            Path(cwd).resolve(), Path(result["stdout"].strip()).resolve()
+        )
+
+    def test_subprocess_runner_stdin_dev_null_read_does_not_block(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        started = time.monotonic()
+        result = subprocess_runner(
+            self._spec(["/bin/sh", "-c", "read line || true"], cwd)
+        )
+        elapsed = time.monotonic() - started
+        # A read on a real tty or an inherited pipe would block until the
+        # timeout; /dev/null EOFs it immediately.
+        self.assertLess(elapsed, 5.0)
+        self.assertEqual(0, result["exit_code"])
+        self.assertEqual("", result["stdout"])
+        self.assertIs(result["timed_out"], False)
+
+    def test_subprocess_runner_large_stdout_drained_without_stall(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        # 1 MB through the pipe: a runner that stops draining would fill
+        # the pipe buffer and the child would stall until the (bounded)
+        # timeout; this pin is that it MUST complete with all the bytes.
+        result = subprocess_runner(
+            self._spec(["/bin/sh", "-c", "yes y | head -c 1000000"], cwd, timeout_s=15.0)
+        )
+        self.assertIs(result["timed_out"], False)
+        self.assertEqual(0, result["exit_code"])
+        self.assertEqual(1000000, len(result["stdout"]))
+        self.assertLess(result["wall_time_s"], 15.0)
+
+    def test_subprocess_runner_timeout_kills_process_and_returns_record(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        started = time.monotonic()
+        # Must return, never raise: a blocked run becomes a record.
+        result = subprocess_runner(
+            self._spec(["/bin/sleep", "30"], cwd, timeout_s=0.5)
+        )
+        elapsed = time.monotonic() - started
+        self.assertEqual(_SUBPROCESS_RESULT_KEYS, set(result))
+        self.assertIs(result["timed_out"], True)
+        # Pinned kill sentinel: SIGKILL, subprocess's negative-signal form.
+        self.assertEqual(-9, result["exit_code"])
+        # The evidence names the condition and carries the elapsed seconds.
+        self.assertIsInstance(result["evidence"], str)
+        self.assertNotEqual("", result["evidence"])
+        self.assertIn("timeout", result["evidence"])
+        self.assertTrue(any(ch.isdigit() for ch in result["evidence"]))
+        # The kill landed at the budget, not after the sleep completed.
+        self.assertGreaterEqual(result["wall_time_s"], 0.5)
+        self.assertLess(result["wall_time_s"], 5.0)
+        self.assertLess(elapsed, 5.0)
+
+    def test_subprocess_runner_timeout_captures_last_output_seen(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        result = subprocess_runner(
+            self._spec(["/bin/sh", "-c", "echo partial; sleep 30"], cwd, timeout_s=1.0)
+        )
+        self.assertIs(result["timed_out"], True)
+        # The output that did arrive before the kill is in stdout, not lost.
+        self.assertIn("partial", result["stdout"])
+        self.assertNotEqual("", result["evidence"])
+
+    def test_subprocess_runner_missing_timeout_s_raises_bakeoff_error_before_spawn(self):
+        subprocess_runner = self._get_subprocess_runner()
+        bakeoff_error = self._get_bakeoff_error()
+        cwd = self._tmpdir()
+        spec = {
+            "argv": ["/bin/sleep", "30"],  # would hang for 30 s if spawned
+            "cwd": str(cwd),
+            "stdin": "/dev/null",
+        }
+        started = time.monotonic()
+        with self.assertRaises(bakeoff_error) as ctx:
+            subprocess_runner(spec)
+        elapsed = time.monotonic() - started
+        self.assertIn("timeout_s", str(ctx.exception))
+        # Raised before any process spawned: no sleep in the wall time.
+        self.assertLess(elapsed, 1.0)
 
 
 if __name__ == "__main__":
