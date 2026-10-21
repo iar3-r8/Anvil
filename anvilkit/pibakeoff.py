@@ -30,15 +30,37 @@ import json
 import os
 import signal
 import subprocess
+import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+import anvilkit.config as piconfig
 import anvilkit.piargv as piargv
 import anvilkit.pievents as pievents
 import anvilkit.pifixture as pifixture
 import anvilkit.pirecord as pirecord
+
+
+# The in-container entrypoint's pinned defaults (behaviour 8). ``config.yaml``
+# is the read-only bind the compose service mounts; the results directory is
+# the repo bind the operator reads the deliverables from; the npm root is the
+# global install location the bake-off image puts pi-ultrawork in.
+_DEFAULT_CONFIG_PATH = "/app/config.yaml"
+_DEFAULT_RESULTS_DIR = "/workspace/results"
+_DEFAULT_NPM_ROOT = "/usr/local/lib/node_modules"
+
+# The phase-1 run parameters, pinned by doc/pi-bakeoff/README.md: the max
+# output tokens, the per-run wall-clock budget, and the phase-1 trivial task
+# prompt (verbatim).
+BAKEOFF_MAX_TOKENS = 4096
+BAKEOFF_TIMEOUT_S = 600.0
+BAKEOFF_PROMPT = (
+    "Edit `bakeoff_fixture/adder.py` so that `add(2, 3) == 5` passes. "
+    "The function currently returns `a - b`; change it to `a + b`."
+)
 
 
 class BakeoffError(Exception):
@@ -480,3 +502,81 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
        "timed_out": timed_out,
        "evidence": evidence,
    }
+
+
+def main(
+   runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None
+) -> int:
+   """The in-container entrypoint (behaviour 8: "entrypoint and compose
+   wiring").
+
+   Reads the gateway address from the service environment, the model id and
+   context window from llama-swap's ``config.yaml`` (the read-only bind the
+   compose service mounts), and drives all three configurations through
+   :func:`run_all` with the module's pinned constants. The files on disk
+   (the records, the table) are the deliverable, so the returned
+   ``(records, table)`` is discarded.
+
+   Args:
+       runner: The process-execution seam; defaults to the module's own
+           :func:`subprocess_runner`. Tests inject a fake here.
+
+   Returns:
+       int: 0 on a completed ``run_all`` - even when the table reads
+       NO-GO, a run that measured a verdict is a successful run.
+
+   Raises:
+       BakeoffError: ``PI_GATEWAY_HOST`` is missing or empty, or
+           ``PI_GATEWAY_PORT`` is missing, empty or non-numeric; the
+           variable is named and ``run_all`` is never reached.
+       anvilkit.config.ConfigError: the ``PI_CONFIG_PATH`` file is
+           unreadable or semantically invalid; propagated unwrapped.
+   """
+   gateway_host = os.environ.get("PI_GATEWAY_HOST", "")
+   if not gateway_host:
+       raise BakeoffError(
+           "PI_GATEWAY_HOST must be set and non-empty (the in-network "
+           "gateway address)"
+       )
+
+   gateway_port_raw = os.environ.get("PI_GATEWAY_PORT", "")
+   if not gateway_port_raw:
+       raise BakeoffError(
+           "PI_GATEWAY_PORT must be set and non-empty (the gateway port)"
+       )
+   try:
+       gateway_port = int(gateway_port_raw)
+   except ValueError:
+       raise BakeoffError(
+           "PI_GATEWAY_PORT must be a number, got {!r}".format(
+               gateway_port_raw
+           )
+       ) from None
+
+   config_path = os.environ.get("PI_CONFIG_PATH") or _DEFAULT_CONFIG_PATH
+   results_dir = os.environ.get("PI_RESULTS_DIR") or _DEFAULT_RESULTS_DIR
+   extension_path = str(
+       Path(_DEFAULT_NPM_ROOT) / "pi-ultrawork" / "src" / "index.ts"
+   )
+   timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+   topology = piconfig.read_models(Path(config_path))
+   run_all(
+       Path(results_dir),
+       runner if runner is not None else subprocess_runner,
+       topology.coder_id,
+       BAKEOFF_PROMPT,
+       extension_path,
+       gateway_host,
+       gateway_port,
+       topology.coder_context_window,
+       BAKEOFF_MAX_TOKENS,
+       BAKEOFF_TIMEOUT_S,
+       timestamp=timestamp,
+       agent_home=None,
+   )
+   return 0
+
+
+if __name__ == "__main__":
+   sys.exit(main())

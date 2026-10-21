@@ -48,6 +48,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.bakeoff
     profiles: [ "bakeoff" ]
+    command: ["python", "-m", "anvilkit.pibakeoff"]
     environment:
       - PI_GATEWAY_HOST=llama-swap
       - PI_GATEWAY_PORT=8080
@@ -58,6 +59,10 @@ services:
       - type: bind
         source: ./results
         target: /workspace/results
+      - type: bind
+        source: ./config.yaml
+        target: /app/config.yaml
+        read_only: true
     networks:
       - llm-network
 
