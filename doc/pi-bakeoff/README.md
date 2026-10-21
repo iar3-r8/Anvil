@@ -106,7 +106,7 @@ docker compose --profile bakeoff run --rm pi-bakeoff
 daemon creates it **as root**, and the container's non-root `bakeoff` user
 cannot write into a root-owned directory.
 
-The service carries the command — `command: ["python", "-m",
+The service carries the command — `command: ["python3", "-m",
 "anvilkit.pibakeoff"]` — so the operator passes nothing after the service
 name. The entry point ([`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py)
 `main`) reads the gateway host and port from the service env (a missing,
@@ -251,7 +251,7 @@ them:
 | `npm install -g @earendil-works/pi-coding-agent` | pinned `@earendil-works/pi-coding-agent@1.3.0` in the image, `--ignore-scripts` |
 | local `pi-ultrawork` checkout, path by hand | pinned `pi-ultrawork@1.2.0` in the image; the entry path is the pinned global npm root |
 | the repo virtualenv for the harness | `anvilkit/` copied into the image, `PYTHONPATH=/app` |
-| the operator assembles and runs the three argvs by hand | one command — the service's `command` is `python -m anvilkit.pibakeoff`; the model id comes from the mounted `config.yaml` |
+| the operator assembles and runs the three argvs by hand | one command — the service's `command` is `python3 -m anvilkit.pibakeoff`; the model id comes from the mounted `config.yaml` |
 | gateway at `127.0.0.1:<published port>` | gateway at `llama-swap:8080` in-network, from the service env |
 | artifacts scattered under `run-<config>/` | everything under the `./results` bind mount |
 
