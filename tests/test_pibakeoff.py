@@ -134,7 +134,13 @@ subprocess runner")::
   ``"timeout"`` and at least one digit (the elapsed seconds), and the
   output that did arrive before the kill present in ``stdout``;
 - a spec missing ``timeout_s`` raises ``BakeoffError`` naming the key,
-  before any process is spawned.
+  before any process is spawned;
+- an optional ``spec["env"]`` dict is merged over ``os.environ`` for the
+  child (``plans/pi-phase2-approval.md``, behaviour 4: "runner environment
+  overlay"), so a key the overlay names carries the child's value while
+  every other parent variable survives; an absent or ``None`` ``env``
+  inherits the parent environment unchanged; a non-dict ``env`` raises
+  ``BakeoffError`` naming the key, before any process is spawned.
 
 These tests run real system binaries (``/bin/echo``, ``/bin/sh -c``,
 ``/bin/sleep``) - no ``pi``, no mocks - and are bounded: each test under
@@ -1241,6 +1247,86 @@ class TestSubprocessRunner(PibakeoffTestCase):
             subprocess_runner(spec)
         elapsed = time.monotonic() - started
         self.assertIn("timeout_s", str(ctx.exception))
+        # Raised before any process spawned: no sleep in the wall time.
+        self.assertLess(elapsed, 1.0)
+
+    def test_subprocess_runner_env_dict_overlays_parent_env(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        with mock.patch.dict(
+            os.environ, {"ANVIL_TEST_PARENT_VAR": "parent-value"}
+        ):
+            spec = self._spec(
+                [
+                    "/bin/sh",
+                    "-c",
+                    "printf '%s\\n%s\\n' "
+                    "\"$ANVIL_TEST_OVERLAY_VAR\" \"$ANVIL_TEST_PARENT_VAR\"",
+                ],
+                cwd,
+            )
+            spec["env"] = {"ANVIL_TEST_OVERLAY_VAR": "overridden"}
+            result = subprocess_runner(spec)
+        lines = result["stdout"].splitlines()
+        # The overlay key carries the spec value, not the parent's.
+        self.assertEqual("overridden", lines[0])
+        # The overlay merges over os.environ: other parent variables survive.
+        self.assertEqual("parent-value", lines[1])
+        self.assertEqual(0, result["exit_code"])
+        self.assertIs(result["timed_out"], False)
+
+    def test_subprocess_runner_env_absent_inherits_parent_env(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        with mock.patch.dict(
+            os.environ, {"ANVIL_TEST_PARENT_VAR": "parent-value"}
+        ):
+            spec = self._spec(
+                ["/bin/sh", "-c", "printf '%s\\n' \"$ANVIL_TEST_PARENT_VAR\""],
+                cwd,
+            )
+            self.assertNotIn("env", spec)
+            result = subprocess_runner(spec)
+        # No env key: the child inherits the parent environment unchanged.
+        self.assertEqual("parent-value\n", result["stdout"])
+        self.assertEqual(0, result["exit_code"])
+        self.assertIs(result["timed_out"], False)
+
+    def test_subprocess_runner_env_none_inherits_parent_env(self):
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        with mock.patch.dict(
+            os.environ, {"ANVIL_TEST_PARENT_VAR": "parent-value"}
+        ):
+            spec = self._spec(
+                ["/bin/sh", "-c", "printf '%s\\n' \"$ANVIL_TEST_PARENT_VAR\""],
+                cwd,
+            )
+            spec["env"] = None
+            result = subprocess_runner(spec)
+        # An explicit None is the same as an absent env key.
+        self.assertEqual("parent-value\n", result["stdout"])
+        self.assertEqual(0, result["exit_code"])
+        self.assertIs(result["timed_out"], False)
+
+    def test_subprocess_runner_env_non_dict_raises_bakeoff_error_before_spawn(
+        self,
+    ):
+        subprocess_runner = self._get_subprocess_runner()
+        bakeoff_error = self._get_bakeoff_error()
+        cwd = self._tmpdir()
+        spec = {
+            "argv": ["/bin/sleep", "30"],  # would hang for 30 s if spawned
+            "cwd": str(cwd),
+            "stdin": "/dev/null",
+            "timeout_s": 10.0,
+            "env": "not-a-dict",
+        }
+        started = time.monotonic()
+        with self.assertRaises(bakeoff_error) as ctx:
+            subprocess_runner(spec)
+        elapsed = time.monotonic() - started
+        self.assertIn("env", str(ctx.exception))
         # Raised before any process spawned: no sleep in the wall time.
         self.assertLess(elapsed, 1.0)
 
