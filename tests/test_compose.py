@@ -667,6 +667,76 @@ class BakeoffServiceDefinitionTests(BakeoffServiceCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# pi-bakeoff entrypoint and compose wiring (behaviour 8 of
+# plans/pi-phase1b-docker.md).
+#
+# The in-container entrypoint is `python -m anvilkit.pibakeoff` (behaviour 8
+# of the plan: "it reads PI_GATEWAY_HOST/PI_GATEWAY_PORT from the
+# environment ... the model id and context window from the read-only mounted
+# config.yaml via anvilkit.config.read_models ... it runs run_all against
+# /workspace/results and exits 0 when done"). For that to work the service
+# must pin `command` to the module and bind-mount the llama-swap config
+# read-only at /app/config.yaml so `read_models` can resolve the coder model.
+#
+# Until the coder adds both, every test below fails with the explicit
+# message naming the missing key - never a bare KeyError.
+# ---------------------------------------------------------------------------
+
+BAKEOFF_COMMAND = ["python", "-m", "anvilkit.pibakeoff"]
+CONFIG_BIND_TARGET = "/app/config.yaml"
+CONFIG_BIND_SOURCE = "./config.yaml"
+
+
+class BakeoffEntrypointWiringTests(BakeoffServiceCase):
+    """Behaviour 8: the service's command and its read-only config mount."""
+
+    def test_command_runs_the_pibakeoff_module(self):
+        self.assertEqual(
+            self.service.get("command"),
+            BAKEOFF_COMMAND,
+            "pi-bakeoff must set command: {} so `docker compose run` "
+            "drives the in-container driver (behaviour 8); a missing or "
+            "different command means the operator must hand it one, which "
+            "is what the pre-behaviour-8 recipe did".format(BAKEOFF_COMMAND),
+        )
+
+    def test_config_yaml_is_bind_mounted_read_only_at_app_config(self):
+        entries = [
+            e
+            for e in self.volume_entries()
+            if e.get("target") == CONFIG_BIND_TARGET
+        ]
+        self.assertTrue(
+            entries,
+            "pi-bakeoff must bind-mount config.yaml at {!r} so "
+            "anvilkit.config.read_models can resolve the coder model "
+            "(behaviour 8)".format(CONFIG_BIND_TARGET),
+        )
+        entry = entries[0]
+        self.assertEqual(
+            entry.get("type"),
+            "bind",
+            "the config mount at {!r} must be a bind (llama-swap's "
+            "read-only config), got: {!r}".format(CONFIG_BIND_TARGET, entry),
+        )
+        self.assertEqual(
+            entry.get("source"),
+            CONFIG_BIND_SOURCE,
+            "the config bind source must be the repo-root {!r} (the "
+            "llama-swap config Anvil reads), got: "
+            "{!r}".format(CONFIG_BIND_SOURCE, entry.get("source")),
+        )
+        # The pin: read_only is exactly True. `main` must only read the
+        # config, never write it back - a read-only bind enforces that.
+        self.assertIs(
+            entry.get("read_only"),
+            True,
+            "the config bind at {!r} must be read-only (read_only: true); "
+            "got: {!r}".format(CONFIG_BIND_TARGET, entry),
+        )
+
+
 class BakeoffServiceAbsenceTests(BakeoffServiceCase):
     """What the pi-bakeoff service must NOT mount (asserted by absence)."""
 

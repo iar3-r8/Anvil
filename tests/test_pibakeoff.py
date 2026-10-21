@@ -139,11 +139,50 @@ subprocess runner")::
 These tests run real system binaries (``/bin/echo``, ``/bin/sh -c``,
 ``/bin/sleep``) - no ``pi``, no mocks - and are bounded: each test under
 ~2 s, the class under ~5 s, so they are CI-safe.
+
+``TestMain`` pins the in-container entrypoint (behaviour 8: "entrypoint
+and compose wiring")::
+
+    main(runner=None) -> int
+
+- ``main`` returns the exit code and never calls ``sys.exit`` itself -
+  the module's ``__main__`` guard does, pinned as source text: the
+  module's last statement is ``sys.exit(main())`` under ``if __name__ ==
+  "__main__":``, and it is the only ``sys.exit`` in the module;
+- the gateway host and port come from the environment: a missing or
+  empty ``PI_GATEWAY_HOST``/``PI_GATEWAY_PORT`` raises ``BakeoffError``
+  naming the variable, and a non-numeric port raises ``BakeoffError``
+  too - in every case before ``run_all`` is reached;
+- the model id and context window come from
+  ``anvilkit.config.read_models`` of the ``PI_CONFIG_PATH`` file (default
+  the module constant ``_DEFAULT_CONFIG_PATH == "/app/config.yaml"``,
+  the read-only bind the compose service mounts); an unreadable file
+  raises ``anvilkit.config``'s ``ConfigError`` unwrapped;
+- ``max_tokens``, the per-run timeout and the task prompt are module
+  constants: ``BAKEOFF_MAX_TOKENS == 4096``, ``BAKEOFF_TIMEOUT_S ==
+  600.0``, ``BAKEOFF_PROMPT`` (the phase-1 trivial task prompt,
+  verbatim); the ultrawork extension path is
+  ``<npm_root>/pi-ultrawork/src/index.ts`` with ``npm_root`` defaulting
+  to the module constant ``_DEFAULT_NPM_ROOT ==
+  "/usr/local/lib/node_modules"``;
+- results land in ``PI_RESULTS_DIR`` (default the module constant
+  ``_DEFAULT_RESULTS_DIR == "/workspace/results"``), passed to
+  ``run_all`` as a ``Path``;
+- an injected ``runner`` is handed to ``run_all`` verbatim; when
+  ``runner`` is ``None`` the default is the module's own
+  ``subprocess_runner`` (identity, not equality);
+- ``main`` supplies its own ``timestamp`` (ISO-8601 UTC,
+  ``YYYY-MM-DDTHH:MM:SSZ``) and passes ``agent_home=None`` (the
+  container default);
+- a NO-GO table is a successful run: the exit code is 0 either way.
 """
 
 import importlib
 import importlib.util
+import inspect
 import json
+import os
+import re
 import sys
 import tempfile
 import time
@@ -156,6 +195,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import anvilkit.config as piconfig
 import anvilkit.pievents as pievents
 import anvilkit.pirecord as pirecord
 import anvilkit.piargv as piargv
@@ -1203,6 +1243,362 @@ class TestSubprocessRunner(PibakeoffTestCase):
         self.assertIn("timeout_s", str(ctx.exception))
         # Raised before any process spawned: no sleep in the wall time.
         self.assertLess(elapsed, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# anvilkit.pibakeoff.main - the in-container entrypoint
+# (plans/pi-phase1b-docker.md, behaviour 8: "entrypoint and compose
+# wiring"). Written before the implementation; the module has no ``main``
+# yet, so every test below fails with the explicit message
+# "anvilkit.pibakeoff.main is not callable" - never a bare AttributeError.
+#
+# The ``run_all`` seam is monkeypatched with a signature-bound recorder,
+# so no test touches pi, npm or the gateway; the environment is patched
+# per test (``PI_GATEWAY_HOST``/``PI_GATEWAY_PORT`` required,
+# ``PI_CONFIG_PATH`` and ``PI_RESULTS_DIR`` optional).
+# ---------------------------------------------------------------------------
+
+# The phase-1 trivial task prompt (doc/pi-bakeoff/README.md), verbatim.
+BAKEOFF_PROMPT_PIN = (
+    "Edit `bakeoff_fixture/adder.py` so that `add(2, 3) == 5` passes. "
+    "The function currently returns `a - b`; change it to `a + b`."
+)
+
+# A minimal config.yaml in the exact shape anvilkit.config.read_models
+# expects: matrix.vars.coder naming a model present in the models section,
+# with the context window carried in the cmd's --max-model-len.
+CONFIG_YAML_PIN = """\
+port: 8080
+
+matrix:
+  vars:
+    coder: "test/coder-model"
+
+models:
+  "test/coder-model":
+    cmd: "vllm serve --model test/coder-model --max-model-len 12345"
+"""
+
+PINNED_MAX_TOKENS = 4096
+PINNED_TIMEOUT_S = 600.0
+PINNED_DEFAULT_CONFIG_PATH = "/app/config.yaml"
+PINNED_DEFAULT_RESULTS_DIR = "/workspace/results"
+PINNED_DEFAULT_NPM_ROOT = "/usr/local/lib/node_modules"
+PINNED_EXTENSION_PATH = (
+    "/usr/local/lib/node_modules/pi-ultrawork/src/index.ts"
+)
+
+TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+class TestMain(PibakeoffTestCase):
+    """main - the in-container entrypoint (behaviour 8)."""
+
+    def _get_main(self) -> Callable:
+        """Fetch ``anvilkit.pibakeoff.main``, failing clearly if absent."""
+        pibakeoff = self._pibakeoff()
+        main = getattr(pibakeoff, "main", None)
+        self.assertTrue(
+            callable(main),
+            "anvilkit.pibakeoff.main is not callable; the in-container "
+            "entrypoint (behaviour 8) has not been implemented yet",
+        )
+        return main
+
+    def _get_constant(self, name: str):
+        """Fetch a module constant, failing clearly if it is absent."""
+        pibakeoff = self._pibakeoff()
+        value = getattr(pibakeoff, name, None)
+        self.assertIsNotNone(
+            value,
+            "anvilkit.pibakeoff.{} is missing; the entrypoint constants "
+            "(behaviour 8) have not been implemented yet".format(name),
+        )
+        return value
+
+    @staticmethod
+    def _env(**overrides) -> Dict[str, str]:
+        """A hermetic environment: no PI_* keys except the ones given."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PI_")}
+        env.update(overrides)
+        return env
+
+    def _write_config(self, text: str = CONFIG_YAML_PIN) -> Path:
+        """A real tmp config.yaml for read_models to parse."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _happy_env(self, config_path: Path, **extra) -> Dict[str, str]:
+        """The valid service environment, pointed at a real tmp config."""
+        env = self._env(
+            PI_GATEWAY_HOST="llama-swap",
+            PI_GATEWAY_PORT="8080",
+            PI_CONFIG_PATH=str(config_path),
+        )
+        env.update(extra)
+        return env
+
+    def _recorder(self, pibakeoff, table: str = "NO-GO"):
+        """A ``run_all`` stand-in that records its bound call arguments.
+
+        Signature-bound against the real ``run_all`` so the pin does not
+        depend on whether ``main`` calls it positionally or by keyword.
+        Returns ``(patcher, recorder)``; ``recorder.calls`` is the list of
+        bound-argument dicts, one entry per call.
+        """
+        real_run_all = pibakeoff.run_all
+        signature = inspect.signature(real_run_all)
+
+        def recorder(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            recorder.calls.append(dict(bound.arguments))
+            return ([{"config": "print"}], table)
+
+        recorder.calls = []
+        return mock.patch.object(pibakeoff, "run_all", recorder), recorder
+
+    def test_main_missing_gateway_host_raises_bakeoff_error_naming_it(self):
+        main = self._get_main()
+        bakeoff_error = self._get_bakeoff_error()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        del env["PI_GATEWAY_HOST"]
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            with self.assertRaises(bakeoff_error) as ctx:
+                main()
+        self.assertIn("PI_GATEWAY_HOST", str(ctx.exception))
+        self.assertEqual([], recorder.calls)
+
+    def test_main_empty_gateway_port_raises_bakeoff_error_naming_it(self):
+        main = self._get_main()
+        bakeoff_error = self._get_bakeoff_error()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        env = self._happy_env(config_path, PI_GATEWAY_PORT="")
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            with self.assertRaises(bakeoff_error) as ctx:
+                main()
+        self.assertIn("PI_GATEWAY_PORT", str(ctx.exception))
+        self.assertEqual([], recorder.calls)
+
+    def test_main_non_numeric_gateway_port_raises_bakeoff_error_naming_it(self):
+        main = self._get_main()
+        bakeoff_error = self._get_bakeoff_error()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        env = self._happy_env(config_path, PI_GATEWAY_PORT="not-a-port")
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            with self.assertRaises(bakeoff_error) as ctx:
+                main()
+        self.assertIn("PI_GATEWAY_PORT", str(ctx.exception))
+        self.assertEqual([], recorder.calls)
+
+    def test_main_unreadable_config_raises_config_error_unwrapped(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        missing = config_path.parent / "does-not-exist.yaml"
+        env = self._happy_env(config_path, PI_CONFIG_PATH=str(missing))
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            # The ConfigError from anvilkit.config, propagated as-is -
+            # not wrapped into a BakeoffError or any other type.
+            with self.assertRaises(piconfig.ConfigError):
+                main()
+        self.assertEqual([], recorder.calls)
+
+    def test_main_passes_gateway_env_and_config_topology_to_run_all(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            exit_code = main()
+        self.assertEqual(0, exit_code)
+        self.assertEqual(1, len(recorder.calls))
+        seen = recorder.calls[0]
+        # Results land at the pinned container results directory, as a Path.
+        self.assertEqual(Path(PINNED_DEFAULT_RESULTS_DIR), seen["base_dir"])
+        # The model id and context window are read_models' answer, verbatim.
+        self.assertEqual("test/coder-model", seen["model_id"])
+        self.assertEqual(12345, seen["context_window"])
+        # The gateway address is the service environment, port as an int.
+        self.assertEqual("llama-swap", seen["gateway_host"])
+        self.assertEqual(8080, seen["gateway_port"])
+        self.assertIsInstance(seen["gateway_port"], int)
+        # runner=None defaults to the module's own subprocess_runner.
+        self.assertIs(pibakeoff.subprocess_runner, seen["runner"])
+        # main supplies the stamp itself; the container default agent home.
+        self.assertRegex(seen["timestamp"], TIMESTAMP_PATTERN)
+        self.assertIsNone(seen["agent_home"])
+
+    def test_main_passes_pinned_module_constants_to_run_all(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        # The constants exist and carry the pinned values.
+        self.assertEqual(
+            PINNED_DEFAULT_CONFIG_PATH,
+            self._get_constant("_DEFAULT_CONFIG_PATH"),
+        )
+        self.assertEqual(
+            PINNED_DEFAULT_RESULTS_DIR,
+            self._get_constant("_DEFAULT_RESULTS_DIR"),
+        )
+        self.assertEqual(
+            PINNED_DEFAULT_NPM_ROOT,
+            self._get_constant("_DEFAULT_NPM_ROOT"),
+        )
+        self.assertEqual(
+            PINNED_MAX_TOKENS, self._get_constant("BAKEOFF_MAX_TOKENS")
+        )
+        self.assertEqual(
+            PINNED_TIMEOUT_S, self._get_constant("BAKEOFF_TIMEOUT_S")
+        )
+        self.assertEqual(
+            BAKEOFF_PROMPT_PIN, self._get_constant("BAKEOFF_PROMPT")
+        )
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+        seen = recorder.calls[0]
+        # And the constants are exactly what the driver receives.
+        self.assertEqual(PINNED_MAX_TOKENS, seen["max_tokens"])
+        self.assertEqual(PINNED_TIMEOUT_S, seen["timeout_s"])
+        self.assertEqual(BAKEOFF_PROMPT_PIN, seen["prompt"])
+        # The ultrawork extension entry, from the pinned global npm root.
+        self.assertEqual(PINNED_EXTENSION_PATH, seen["extension_path"])
+        self.assertEqual(
+            str(Path(PINNED_DEFAULT_NPM_ROOT) / "pi-ultrawork" / "src" / "index.ts"),
+            seen["extension_path"],
+        )
+
+    def test_main_results_dir_honours_pi_results_dir_env(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        env = self._happy_env(config_path, PI_RESULTS_DIR="/custom/results")
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+        self.assertEqual(Path("/custom/results"), recorder.calls[0]["base_dir"])
+
+    def test_main_config_path_honours_pi_config_path_env(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        other_config = (
+            "port: 8080\n"
+            "\n"
+            "matrix:\n"
+            "  vars:\n"
+            '    coder: "other/coder-model"\n'
+            "\n"
+            "models:\n"
+            '  "other/coder-model":\n'
+            '    cmd: "vllm serve --max-model-len 4321"\n'
+        )
+        config_path = self._write_config(other_config)
+        env = self._happy_env(config_path)
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+        # The env-named file is the one read_models parsed.
+        self.assertEqual("other/coder-model", recorder.calls[0]["model_id"])
+        self.assertEqual(4321, recorder.calls[0]["context_window"])
+
+    def test_main_default_config_path_is_the_read_only_mount(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        env = self._env(
+            PI_GATEWAY_HOST="llama-swap",
+            PI_GATEWAY_PORT="8080",
+        )
+
+        def read_models_spy(path):
+            read_models_spy.calls.append(path)
+            return piconfig.ModelTopology(
+                coder_id="spied/coder",
+                coder_context_window=777,
+                embedder_id=None,
+                gateway_port=8080,
+            )
+
+        read_models_spy.calls = []
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch("anvilkit.config.read_models", read_models_spy):
+            with mock.patch.dict(os.environ, env):
+                self.assertEqual(0, main())
+        # With PI_CONFIG_PATH unset, the default is the module constant.
+        self.assertEqual(1, len(read_models_spy.calls))
+        self.assertEqual(
+            Path(self._get_constant("_DEFAULT_CONFIG_PATH")),
+            Path(read_models_spy.calls[0]),
+        )
+        self.assertEqual(
+            Path(PINNED_DEFAULT_CONFIG_PATH), Path(read_models_spy.calls[0])
+        )
+        self.assertEqual("spied/coder", recorder.calls[0]["model_id"])
+        self.assertEqual(777, recorder.calls[0]["context_window"])
+
+    def test_main_injected_runner_passed_to_run_all_verbatim(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        fake_runner = object()
+        patcher, recorder = self._recorder(pibakeoff)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main(runner=fake_runner))
+        self.assertIs(fake_runner, recorder.calls[0]["runner"])
+
+    def test_main_exit_zero_when_table_is_nongo(self):
+        main = self._get_main()
+        pibakeoff = self._pibakeoff()
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        # The recorder's canned table is a NO-GO: the verdict is data, not
+        # an exit condition - a run that measured a NO-GO is a successful
+        # run, so main still returns 0.
+        patcher, _ = self._recorder(pibakeoff, table="NO-GO")
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+
+    def test_main_guard_is_the_only_sys_exit_and_is_last(self):
+        pibakeoff = self._pibakeoff()
+        source = Path(pibakeoff.__file__).read_text(encoding="utf-8")
+        # The house rule: library code returns the exit code; only the
+        # module's __main__ guard may call sys.exit.
+        self.assertEqual(
+            1,
+            source.count("sys.exit"),
+            "sys.exit must appear exactly once, in the __main__ guard; "
+            "main() must return the exit code, not call sys.exit itself",
+        )
+        lines = [line for line in source.splitlines() if line.strip()]
+        self.assertGreaterEqual(
+            len(lines), 2, "the module source has no __main__ guard"
+        )
+        self.assertEqual(
+            'if __name__ == "__main__":',
+            lines[-2].strip(),
+            "the module's final statement must be guarded by "
+            "if __name__ == '__main__':",
+        )
+        self.assertEqual(
+            "sys.exit(main())",
+            lines[-1].strip(),
+            "the __main__ guard must be sys.exit(main())",
+        )
 
 
 if __name__ == "__main__":
