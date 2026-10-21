@@ -30,7 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 BAKEOFF_DOCKERFILE = REPO_ROOT / "docker" / "Dockerfile.bakeoff"
 
 BASE_IMAGE = "node:24-bookworm-slim"
-APT_PACKAGES = ("python3", "bash", "ca-certificates", "git", "ripgrep")
+APT_PACKAGES = ("python3", "python3-yaml", "bash", "ca-certificates", "git", "ripgrep")
 NPM_INSTALL = "npm install -g --ignore-scripts"
 PI_AGENT_PIN = "@earendil-works/pi-coding-agent@1.3.0"
 ULTRAWORK_PIN = "pi-ultrawork@1.2.0"
