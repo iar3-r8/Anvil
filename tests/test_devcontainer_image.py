@@ -18,6 +18,10 @@ Like ``tests/test_bakeoff_image.py``, only each ``RUN`` instruction's first
 physical line is read (``tests/test_bakeoff_image.py:40``,
 ``docker/Dockerfile.bakeoff:26-27``), so the whole install must sit on that
 one line — a first line ending in a backslash does not count.
+
+``TestTemplateDevcontainerMirror`` (behaviour 4 of the same plan) pins the
+same line in ``templates/devcontainer/Dockerfile`` and asserts it is byte
+identical to the devcontainer line, so a half-applied mirror cannot land.
 """
 
 import re
@@ -30,6 +34,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 DEVCONTAINER_DOCKERFILE = REPO_ROOT / ".devcontainer" / "Dockerfile"
+TEMPLATES_DOCKERFILE = REPO_ROOT / "templates" / "devcontainer" / "Dockerfile"
 
 NPM_INSTALL = "npm install -g"
 IGNORE_SCRIPTS = "--ignore-scripts"
@@ -58,6 +63,12 @@ def _npm_install_run_lines(text):
         for line in _instruction_lines(text, "RUN")
         if re.search(r"\bnpm\s+install\b", line)
     ]
+
+
+def _npm_install_g_run_lines(text):
+    """First physical lines of every ``RUN`` instruction that runs
+    ``npm install -g`` — the install line the two Dockerfiles must mirror."""
+    return [line for line in _npm_install_run_lines(text) if NPM_INSTALL in line]
 
 
 class DevcontainerImageCase(unittest.TestCase):
@@ -155,6 +166,95 @@ class TestDevcontainerNpmGlobals(DevcontainerImageCase):
                     "%s must be pinned to exactly %s, found: %r"
                     % (package, version, suffix.split()[:2]),
                 )
+
+
+class TestTemplateDevcontainerMirror(DevcontainerImageCase):
+    """Behaviour 4: the provisioned template mirrors the devcontainer's
+    npm-install line, byte for byte."""
+
+    @property
+    def template_text(self):
+        if not TEMPLATES_DOCKERFILE.is_file():
+            self.fail("templates/devcontainer/Dockerfile does not exist")
+        return TEMPLATES_DOCKERFILE.read_text(encoding="utf-8")
+
+    def test_template_npm_install_run_first_line_carries_both_pinned_globals(self):
+        npm_lines = _npm_install_g_run_lines(self.template_text)
+
+        self.assertTrue(
+            npm_lines,
+            "no RUN npm install -g first line found in "
+            "templates/devcontainer/Dockerfile; the provisioned template must "
+            "mirror the devcontainer install line (behaviour 4 of "
+            "plans/pi-bakeoff-devcontainer.md)",
+        )
+        self.assertTrue(
+            any(
+                IGNORE_SCRIPTS in line
+                and PI_AGENT_PIN in line
+                and ULTRAWORK_PIN in line
+                and not line.rstrip().endswith("\\")
+                for line in npm_lines
+            ),
+            "expected the RUN first physical line in templates/devcontainer/"
+            "Dockerfile to contain %s, %s and %s, all on that single line (a "
+            "first line ending in a backslash does not count); got: %r"
+            % (IGNORE_SCRIPTS, PI_AGENT_PIN, ULTRAWORK_PIN, npm_lines),
+        )
+
+    def test_template_npm_install_line_identical_to_devcontainer(self):
+        template_lines = _npm_install_g_run_lines(self.template_text)
+        devcontainer_lines = _npm_install_g_run_lines(self.text)
+
+        self.assertTrue(
+            devcontainer_lines,
+            "no RUN npm install -g first line found in .devcontainer/Dockerfile",
+        )
+        self.assertTrue(
+            template_lines,
+            "no RUN npm install -g first line found in "
+            "templates/devcontainer/Dockerfile",
+        )
+        self.assertEqual(
+            template_lines[0],
+            devcontainer_lines[0],
+            "the npm install line diverged between the two Dockerfiles: "
+            "templates/devcontainer/Dockerfile has %r, .devcontainer/Dockerfile "
+            "has %r" % (template_lines[0], devcontainer_lines[0]),
+        )
+
+    def test_template_npm_install_run_precedes_user_vscode(self):
+        npm_line = None
+        user_line = None
+        for index, raw in enumerate(self.template_text.splitlines()):
+            stripped = raw.strip()
+            if (
+                npm_line is None
+                and re.match(r"^RUN\b", stripped, re.IGNORECASE)
+                and NPM_INSTALL in stripped
+            ):
+                npm_line = index
+            if user_line is None and re.match(
+                r"^USER\s+vscode\b", stripped, re.IGNORECASE
+            ):
+                user_line = index
+
+        self.assertIsNotNone(
+            user_line,
+            "no 'USER vscode' instruction found in templates/devcontainer/Dockerfile",
+        )
+        self.assertIsNotNone(
+            npm_line,
+            "no RUN npm install -g first line found in "
+            "templates/devcontainer/Dockerfile",
+        )
+        self.assertLess(
+            npm_line,
+            user_line,
+            "the npm install RUN (line %d) must appear before 'USER vscode' "
+            "(line %d) in templates/devcontainer/Dockerfile, mirroring "
+            ".devcontainer/Dockerfile" % (npm_line + 1, user_line + 1),
+        )
 
 
 if __name__ == "__main__":
