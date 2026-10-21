@@ -39,7 +39,7 @@ verdict is a valid recorded outcome
 
 - **No Node, no npm, no sudo, no `~/.pi` on the host.** The phase-1 recipe
   required all of the first three; the container carries them instead
-  (section 8).
+  (section 9).
 
 ## 2. Where the model and gateway values come from
 
@@ -70,7 +70,7 @@ directory**, not a project `.pi/` file
 In the bake-off container the agent home is `/home/bakeoff`, and the
 driver writes the document to
 `/home/bakeoff/.pi/agent/models.json` on every run, into the named volume
-`pi-bakeoff-agent` (section 6). It builds it with
+`pi-bakeoff-agent` (section 7). It builds it with
 [`anvilkit/piargv.py`](../../anvilkit/piargv.py)
 `models_document(model_id, port, context_window, max_tokens, host=...)`;
 the `host` parameter carries the in-network address (`"llama-swap"`) — its
@@ -110,7 +110,7 @@ mismatch: when your host UID is not the container `bakeoff` user's UID
 (1001) and the shell's umask gives the directory a restrictive mode (750
 under umask 027), the container user falls into the "other" class, which
 that mode gives no permission, and the run dies on its first write to
-`/workspace/results`. (Reading the artifacts back is covered in section 5;
+`/workspace/results`. (Reading the artifacts back is covered in section 6;
 this is about the run itself being able to write.)
 
 The service carries the command — `command: ["python3", "-m",
@@ -175,7 +175,71 @@ The prompt (the task, verbatim):
 > Edit `bakeoff_fixture/adder.py` so that `add(2, 3) == 5` passes. The
 > function currently returns `a - b`; change it to `a + b`.
 
-## 5. Read the results
+## 5. Run in the devcontainer (development)
+
+Section 4 is the operator-facing recipe: a committed image, one Compose
+command, nothing on the host. This is the developer-facing one: the same
+driver, run in the devcontainer, for fast functional iteration on
+`anvilkit/` without rebuilding the Compose image between edits. The
+devcontainer's
+[`Dockerfile`](../../.devcontainer/Dockerfile) bakes in the same pinned
+npm globals as the bake-off image —
+`@earendil-works/pi-coding-agent@1.3.0` and `pi-ultrawork@1.2.0`,
+`--ignore-scripts`, installed as root before `USER vscode` — so the run
+needs no `npm install`. Rebuild the container once after pulling this
+branch (the devcontainer "Rebuild Container" action) so those globals
+land; without the rebuild the run dies on a missing `pi` binary.
+
+Prerequisite: the llama-swap gateway running on the host via
+`docker compose --profile coder up -d` (section 1) — the devcontainer
+reaches it as a host process, not in-network. From the repo root inside
+the devcontainer:
+
+```sh
+export PI_GATEWAY_HOST=host.docker.internal
+export PI_GATEWAY_PORT=8080   # LLM_PORT from .env
+export PI_CONFIG_PATH=./config.yaml
+export PI_RESULTS_DIR=./results
+export PI_EXTENSION_PATH=$(npm root -g)/pi-ultrawork/src/index.ts
+.venv/bin/python -m anvilkit.pibakeoff
+```
+
+- **`PI_GATEWAY_HOST=host.docker.internal`** — the devcontainer carries
+  `--add-host=host.docker.internal:host-gateway`
+  ([`.devcontainer/devcontainer.json`](../../.devcontainer/devcontainer.json)).
+  `127.0.0.1` inside the container is the container itself and is
+  unreachable to the gateway — the same failure mode section 2 explains
+  for the in-network address, mirrored at the host boundary.
+- **`PI_GATEWAY_PORT`** is `LLM_PORT` from the repo-root `.env`
+  (gitignored; created by `./anvil init` or implicitly on first use) —
+  `8080` in this checkout — the port `docker compose` publishes the
+  gateway to ([`docker-compose.yml`](../../docker-compose.yml)
+  `llama-swap.ports`).
+- **`PI_CONFIG_PATH=./config.yaml`** — the repo-root
+  [`config.yaml`](../../config.yaml), read-only to Anvil; the entry
+  point's default is the Compose image's `/app/config.yaml`, which does
+  not exist here
+  ([`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py)
+  `PI_CONFIG_PATH` read, `or`-fallback).
+- **`PI_RESULTS_DIR=./results`** — the repo-root `./results/`, the same
+  shape as the Compose recipe's (section 6): one subtree per
+  configuration plus `table.md`.
+- **`PI_EXTENSION_PATH`** — the `$(npm root -g)` form is deliberate: the
+  devcontainer's npm root is `/usr/lib/node_modules` (the nodesource
+  package prefix), not the bake-off image's
+  `/usr/local/lib/node_modules` — the entry point's default
+  `_DEFAULT_NPM_ROOT` is the latter, so without the override the
+  ultrawork run dies on a missing extension file. Resolving the root
+  with `npm` at run time keeps the command working if the nodesource
+  prefix ever changes. `main` reads the variable with the same
+  `or`-fallback
+  ([`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py) `main`).
+
+The run is not verified end to end in this section: the image rebuild
+and the run are yours — this documents the command, not a result. A run
+that produces a NO-GO table still exits 0, as in section 4.
+
+## 6. Read the results
 
 On the host, under `./results/` — one subtree per configuration plus the
 table:
@@ -212,7 +276,7 @@ results/
   land in a directory whose files you may still read but not modify.
   Re-run into a fresh `./results` (delete it first) to start clean.
 
-## 6. Guardrails
+## 7. Guardrails
 
 - **No sudo.** Pi has no built-in permission system — it runs with the
   launching user's permissions
@@ -229,7 +293,7 @@ results/
   recorded outcome: the task is not simplified, retried or worked around
   ([`recommendation.md`](recommendation.md)).
 
-## 7. The `-a` / project-trust interaction
+## 8. The `-a` / project-trust interaction
 
 Every bake-off argv passes `-a` (`--approve`), which "trusts
 project-local configuration and resources for this process"
@@ -244,7 +308,7 @@ operator-supplied. The advisory's own recommendation for unattended
 automation is a container carrying only the needed files
 (GHSA-mqxh-6gq7-558m), which is exactly the shape of this recipe.
 
-## 8. What changed from the phase-1 recipe
+## 9. What changed from the phase-1 recipe
 
 The phase-1 recipe
 ([`plans/pi-phase1-bakeoff.md`](../../plans/pi-phase1-bakeoff.md)) ran on a
@@ -264,4 +328,5 @@ them:
 
 The host operator's whole job is now: clone, start the gateway,
 `mkdir -p ./results`, run the one `docker compose` command in section 4,
-and read `./results/table.md`.
+and read `./results/table.md`. (The developer iterating on the harness
+itself runs the same driver in the devcontainer instead — section 5.)
