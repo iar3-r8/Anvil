@@ -548,5 +548,199 @@ class TestModelsDocumentHost(PiargvTestCase):
                     )
 
 
+class TestApprovalArgv(PiargvTestCase):
+    """Behaviour 2 of ``plans/pi-phase2-approval.md``: approval argv.
+
+    Pinned signature ``approval_argv(model_id, prompt, approve) -> List[str]``.
+    The token sequence is pinned exactly (order matters): ``-nt`` disables all
+    built-in, extension and MCP tools so the model cannot reach the marker
+    file through the ``read`` tool and the only path to it is the trusted
+    system-prompt append (``doc/external/pi-dev/cli.md``, ``-nt``/
+    ``--no-tools``); ``-a``/``-na`` selects project trust
+    (``doc/external/pi-dev/cli.md``, ``-a``/``--approve``). The prompt is the
+    final element after ``--``, so a leading-dash prompt passes through
+    verbatim.
+    """
+
+    def test_approval_argv_approve_returns_exact_token_list(self):
+        piargv = self._piargv()
+        argv = piargv.approval_argv(
+            "llamaswap/coder", "Edit adder.py so add(2, 3) == 5", approve=True
+        )
+        self.assertIsInstance(
+            argv,
+            list,
+            "approval_argv must return a list of tokens, never a string, "
+            "so no shell re-parses it",
+        )
+        self.assertEqual(
+            argv,
+            [
+                "pi",
+                "--mode",
+                "json",
+                "--model",
+                "llamaswap/coder",
+                "-nt",
+                "-a",
+                "--no-session",
+                "--",
+                "Edit adder.py so add(2, 3) == 5",
+            ],
+        )
+
+    def test_approval_argv_no_approve_returns_exact_token_list(self):
+        piargv = self._piargv()
+        argv = piargv.approval_argv(
+            "llamaswap/coder", "Edit adder.py so add(2, 3) == 5", approve=False
+        )
+        self.assertIsInstance(
+            argv,
+            list,
+            "approval_argv must return a list of tokens, never a string, "
+            "so no shell re-parses it",
+        )
+        self.assertEqual(
+            argv,
+            [
+                "pi",
+                "--mode",
+                "json",
+                "--model",
+                "llamaswap/coder",
+                "-nt",
+                "-na",
+                "--no-session",
+                "--",
+                "Edit adder.py so add(2, 3) == 5",
+            ],
+        )
+
+    def test_approval_argv_approve_and_no_approve_differ_only_in_trust_flag(self):
+        piargv = self._piargv()
+        model_id = "llamaswap/coder"
+        prompt = "Edit adder.py so add(2, 3) == 5"
+        approve_argv = piargv.approval_argv(model_id, prompt, approve=True)
+        no_approve_argv = piargv.approval_argv(model_id, prompt, approve=False)
+        diffs = [
+            i
+            for i, (a, b) in enumerate(zip(approve_argv, no_approve_argv))
+            if a != b
+        ]
+        self.assertEqual(
+            diffs,
+            [6],
+            "approve=True and approve=False must differ in exactly one "
+            "position - the trust flag token - with every other token "
+            "element-for-element equal",
+        )
+        self.assertEqual(approve_argv[6], "-a")
+        self.assertEqual(no_approve_argv[6], "-na")
+
+    def test_approval_argv_prompt_beginning_with_dash_is_included_as_is(self):
+        # "--" already precedes the prompt, so a leading-dash prompt is
+        # safe and must be passed through verbatim, not rejected.
+        piargv = self._piargv()
+        prompt = "-a --mode json -- evil prompt"
+        argv = piargv.approval_argv("llamaswap/coder", prompt, approve=True)
+        self.assertEqual(argv[-1], prompt)
+        self.assertEqual(argv[-2], "--")
+
+    def test_approval_argv_empty_model_id_raises_argv_error_naming_field(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError) as ctx:
+            piargv.approval_argv("", "Edit adder.py so add(2, 3) == 5", approve=True)
+        self.assertIn(
+            "model",
+            str(ctx.exception),
+            "the error message must name the model id field",
+        )
+
+    def test_approval_argv_whitespace_model_id_raises_argv_error_naming_field(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError) as ctx:
+            piargv.approval_argv("   ", "Edit adder.py so add(2, 3) == 5", approve=False)
+        self.assertIn(
+            "model",
+            str(ctx.exception),
+            "the error message must name the model id field",
+        )
+
+    def test_approval_argv_empty_prompt_raises_argv_error_naming_field(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError) as ctx:
+            piargv.approval_argv("llamaswap/coder", "", approve=True)
+        self.assertIn(
+            "prompt",
+            str(ctx.exception),
+            "the error message must name the prompt field",
+        )
+
+    def test_approval_argv_whitespace_prompt_raises_argv_error_naming_field(self):
+        piargv = self._piargv()
+        with self.assertRaises(piargv.ArgvError) as ctx:
+            piargv.approval_argv("llamaswap/coder", "   ", approve=False)
+        self.assertIn(
+            "prompt",
+            str(ctx.exception),
+            "the error message must name the prompt field",
+        )
+
+
+class TestMcpListArgv(PiargvTestCase):
+    """Behaviour 3 of ``plans/pi-phase2-approval.md``: mcp-list argv.
+
+    Pinned signature ``mcp_list_argv(approve) -> List[str]``. The six-token
+    list is pinned exactly: ``pi mcp list --json`` with the trust flag last.
+    ``pi mcp list`` is a shell command that works outside a session and does
+    not load extensions (``doc/external/pi-dev/mcp.md``); ``--json`` makes it
+    print machine-readable state. The list goes straight to ``subprocess``,
+    so a rejected ``-a``/``-na`` flag is a recorded finding, not a builder
+    error - the builder performs no validation beyond the branch.
+    """
+
+    def test_mcp_list_argv_approve_returns_exact_token_list(self):
+        piargv = self._piargv()
+        argv = piargv.mcp_list_argv(approve=True)
+        self.assertIsInstance(
+            argv,
+            list,
+            "mcp_list_argv must return a list of tokens, never a string, "
+            "so no shell re-parses it",
+        )
+        self.assertEqual(
+            argv,
+            ["pi", "mcp", "list", "--json", "-a"],
+        )
+
+    def test_mcp_list_argv_no_approve_returns_exact_token_list(self):
+        piargv = self._piargv()
+        argv = piargv.mcp_list_argv(approve=False)
+        self.assertIsInstance(
+            argv,
+            list,
+            "mcp_list_argv must return a list of tokens, never a string, "
+            "so no shell re-parses it",
+        )
+        self.assertEqual(
+            argv,
+            ["pi", "mcp", "list", "--json", "-na"],
+        )
+
+    def test_mcp_list_argv_approve_and_no_approve_differ_only_in_trust_flag(self):
+        piargv = self._piargv()
+        approve_argv = piargv.mcp_list_argv(approve=True)
+        no_approve_argv = piargv.mcp_list_argv(approve=False)
+        self.assertEqual(len(approve_argv), 5)
+        self.assertEqual(
+            approve_argv[:4],
+            ["pi", "mcp", "list", "--json"],
+            "the subcommand tokens must be identical in both branches; "
+            "only the final trust flag may differ",
+        )
+        self.assertEqual(approve_argv[4], "-a")
+        self.assertEqual(no_approve_argv[4], "-na")
+
+
 if __name__ == "__main__":
     unittest.main()
