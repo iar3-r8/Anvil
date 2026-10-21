@@ -124,6 +124,15 @@ OUTCOME_KEYS = {
     "usage_reported",
 }
 CONFIG_VALUES = ("print", "json", "ultrawork")
+# The four phase-2 approval configurations widened in by
+# plans/pi-phase2-approval.md behaviour 1: the -a / -na model runs and the
+# two `pi mcp list` probes, recorded into the same thirteen-key record.
+PHASE2_CONFIG_VALUES = (
+    "approve",
+    "no-approve",
+    "mcp-list-approve",
+    "mcp-list-no-approve",
+)
 
 # The pinned timestamp format: ISO-8601 UTC, no offset, Z suffix.
 TIMESTAMP = "2026-10-20T21:00:00Z"
@@ -443,6 +452,28 @@ class TestConfigValidation(PirecordTestCase):
                     timestamp=TIMESTAMP,
                 )
                 self.assertEqual(record["config"], config)
+
+    def test_build_accepts_each_phase2_config_with_thirteen_keys(self):
+        # plans/pi-phase2-approval.md behaviour 1: each of the four
+        # approval configurations must build the same closed
+        # thirteen-key record as the bake-off ones - no extra key, no
+        # missing key - and carry the configuration verbatim.
+        build = self._get_build()
+        for config in PHASE2_CONFIG_VALUES:
+            with self.subTest(config=config):
+                record = self._build(build, config=config)
+                self.assertEqual(
+                    set(record),
+                    RECORD_KEYS,
+                    "build with the phase-2 configuration %r must "
+                    "return exactly the thirteen pinned keys" % config,
+                )
+                self.assertEqual(
+                    record["config"],
+                    config,
+                    "the record must carry the phase-2 configuration "
+                    "%r verbatim" % config,
+                )
 
 
 class TestMissingDimensions(PirecordTestCase):
@@ -868,6 +899,34 @@ class TestRenderTableShape(RenderTableTestCase):
         )
         self.assertTrue(lines[3].startswith("| print "), "row 2 must be the second record passed in")
         self.assertTrue(lines[4].startswith("| json "), "row 3 must be the third record passed in")
+
+    def test_render_table_phase2_configs_one_row_each_in_input_order(self):
+        # plans/pi-phase2-approval.md behaviour 1: the table renders one
+        # row per phase-2 configuration, in the order the records
+        # arrived - the order piapproval.run_all fixed, not lexicographic.
+        render_table = self._get_render_table()
+        build = self._get_build()
+        order = (
+            "mcp-list-no-approve",
+            "approve",
+            "mcp-list-approve",
+            "no-approve",
+        )
+        records = [self._record(build, config) for config in order]
+        lines = self._non_empty_lines(render_table(records))
+        for index, config in enumerate(order):
+            self.assertTrue(
+                lines[2 + index].startswith("| {} ".format(config)),
+                "row {} must lead with the phase-2 configuration "
+                "{!r}: the table renders one row per value, in input "
+                "order".format(index + 1, config),
+            )
+        self.assertEqual(
+            len(lines),
+            7,
+            "exactly seven non-empty lines: header, separator, four "
+            "rows (one per phase-2 configuration) and the verdict",
+        )
 
 
 class TestRenderTableVerdict(RenderTableTestCase):
