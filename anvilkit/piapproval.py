@@ -1,7 +1,8 @@
-"""Phase-2 approval run driver - one job: drive one approval configuration.
+"""Phase-2 approval run driver - one job: drive the approval configurations.
 
 ``plans/pi-phase2-approval.md``, behaviour 6: "run one approval
-configuration". ``run_one`` drives one of the four phase-2 configurations -
+configuration" and behaviour 7: "run all four and report". ``run_one``
+drives one of the four phase-2 configurations -
 ``approve``, ``no-approve``, ``mcp-list-approve``, ``mcp-list-no-approve`` -
 end to end: it writes the project fixture (``anvilkit.pitrust``) into the
 project directory, writes the models document into the ISOLATED per-run
@@ -43,7 +44,7 @@ fixture is written.
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import anvilkit.piargv as piargv
 import anvilkit.pievents as pievents
@@ -289,3 +290,134 @@ def run_one(
         changed_files=[],
         timestamp=timestamp,
     )
+
+
+def _fallback_record(
+    config: str, results_dir: Path, model_id: str, message: str, timestamp: str
+) -> Dict[str, Any]:
+    """The no-measurement record for a configuration whose runner raised.
+
+    Mirrors ``anvilkit.pibakeoff._fallback_record``: the exception's message
+    lands as the assertion's stderr (the closed thirteen-key record shape has
+    no free-form evidence field); everything else is the baseline: a non-zero
+    sentinel exit code, zero wall time, no changed files, the empty-stream
+    counters and outcome, and the pinned artifact paths with ``jsonl`` None.
+    """
+    return pirecord.build(
+        config,
+        model=model_id,
+        exit_code=1,
+        wall_time_s=0.0,
+        waited_for_input=True,
+        artifacts={
+            "stdout": str(results_dir / "stdout"),
+            "stderr": str(results_dir / "stderr"),
+            "jsonl": None,
+            "before_digest": str(results_dir / "before.sha256"),
+            "after_digest": str(results_dir / "after.sha256"),
+        },
+        tool_calls=pievents.tool_calls([]),
+        outcome=pievents.outcome([]),
+        assertion={"passed": False, "stderr": message},
+        changed_files=[],
+        timestamp=timestamp,
+    )
+
+
+def run_all(
+    base_dir: Union[Path, str],
+    runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+    model_id: str,
+    gateway_host: str,
+    gateway_port: int,
+    context_window: int,
+    max_tokens: int,
+    prompt: str,
+    marker: str,
+    unreachable_command: str,
+    *,
+    timestamp: str,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Drive all four phase-2 approval configurations end to end and report.
+
+    ``plans/pi-phase2-approval.md``, behaviour 7: "run all four and report".
+    A thin orchestrator over :func:`run_one`: the four configurations run in
+    the fixed order ``approve``, ``no-approve``, ``mcp-list-approve``,
+    ``mcp-list-no-approve``, each against ``<base_dir>/<config>/project``
+    (the fixture destination and the runner's cwd) with artifacts under
+    ``<base_dir>/<config>/results`` and the per-run agent directory at
+    ``<base_dir>/<config>/agent`` (one fresh, isolated agent directory per
+    configuration, never the invoking user's home). ``base_dir`` and the
+    per-config directories are created. After each configuration a
+    ``record.json`` with content exactly ``json.dumps(record,
+    sort_keys=True)`` is written to the results directory. Finally
+    ``table.md`` is written to ``<base_dir>/table.md`` with content exactly
+    ``pirecord.render_table(records)`` (records in run order), and that same
+    string is returned.
+
+    Failure isolation (mirroring ``anvilkit.pibakeoff.run_all``): if
+    ``run_one`` raises for one configuration (any exception from the runner
+    or the run), the exception is caught and a no-measurement fallback record
+    is built for that configuration - the exception's message becomes the
+    assertion's stderr - so the other configurations still run and the table
+    still renders one row per configuration. No exception escapes.
+
+    Args:
+        base_dir: The run root; created if missing, with one ``<config>``
+            subtree per configuration.
+        runner: The process-execution seam, passed to ``run_one`` verbatim.
+        model_id: The model id for the argv and the models document.
+        gateway_host: The gateway host for the models document.
+        gateway_port: The gateway port for the models document.
+        context_window: The context window for the models document.
+        max_tokens: The max tokens for the models document.
+        prompt: The fixed phase-2 marker prompt.
+        marker: The marker token the project fixture instructs the model to
+            echo; the assertion target for the model configs.
+        unreachable_command: The single executable not on PATH that the
+            project mcp.json entry names.
+        timestamp: The ISO-8601 UTC stamp stored verbatim in every record;
+            the driver owns the clock and passes it through.
+
+    Returns:
+        Tuple[List[Dict[str, Any]], str]: the records in run order and the
+        rendered table.
+    """
+    base_dir = Path(base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    records: List[Dict[str, Any]] = []
+    for config in _CONFIG_VALUES:
+        project_dir = base_dir / config / "project"
+        agent_dir = base_dir / config / "agent"
+        results_dir = base_dir / config / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            record = run_one(
+                config,
+                project_dir,
+                results_dir,
+                runner,
+                agent_dir,
+                model_id,
+                gateway_host,
+                gateway_port,
+                context_window,
+                max_tokens,
+                prompt,
+                marker,
+                unreachable_command,
+                timestamp=timestamp,
+            )
+        except Exception as exc:
+            record = _fallback_record(
+                config, results_dir, model_id, str(exc), timestamp
+            )
+        (results_dir / "record.json").write_text(
+            json.dumps(record, sort_keys=True), encoding="utf-8"
+        )
+        records.append(record)
+
+    table = pirecord.render_table(records)
+    (base_dir / "table.md").write_text(table, encoding="utf-8")
+    return records, table
