@@ -99,12 +99,19 @@ The `apiKey` is a fixed dummy — the local gateway ignores it
 
 ```sh
 mkdir -p ./results
+chmod 777 ./results
 docker compose --profile bakeoff run --rm pi-bakeoff
 ```
 
 `mkdir -p ./results` first: if the bind source is missing, the Docker
 daemon creates it **as root**, and the container's non-root `bakeoff` user
-cannot write into a root-owned directory.
+cannot write into a root-owned directory. The `chmod 777` covers the other
+mismatch: when your host UID is not the container `bakeoff` user's UID
+(1001) and the shell's umask gives the directory a restrictive mode (750
+under umask 027), the container user falls into the "other" class, which
+that mode gives no permission, and the run dies on its first write to
+`/workspace/results`. (Reading the artifacts back is covered in section 5;
+this is about the run itself being able to write.)
 
 The service carries the command — `command: ["python3", "-m",
 "anvilkit.pibakeoff"]` — so the operator passes nothing after the service
