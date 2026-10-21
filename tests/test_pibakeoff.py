@@ -83,6 +83,35 @@ unchanged):
 
 One exception type: ``BakeoffError`` - raised (naming the value) for an
 unknown ``config``; no runner invocation happens in that case.
+
+``TestRunAll`` pins the companion driver (behaviour 5: "run all and
+report")::
+
+    run_all(base_dir, runner, model_id, prompt, extension_path,
+            gateway_host, gateway_port, context_window, max_tokens,
+            timeout_s, *, timestamp, agent_home=None) -> (records, table)
+
+- the three configurations run through ``run_one`` in the fixed order
+  ``print``, ``json``, ``ultrawork`` (the table renders in input order),
+  each with ``fixture_dir = base_dir/<config>/fixture`` and
+  ``results_dir = base_dir/<config>/results``; ``run_all`` creates
+  ``base_dir`` and the per-config directories;
+- after each run, ``<results_dir>/record.json`` exists with content
+  exactly ``json.dumps(record, sort_keys=True)``;
+- ``<base_dir>/table.md`` exists with content exactly
+  ``pirecord.render_table(records)`` (records in run order), and the
+  returned ``table`` is that same string;
+- a runner exception for one configuration does not abort the other two:
+  the failed configuration still gets a record - ``waited_for_input``
+  True, ``exit_code`` 1, ``wall_time_s`` 0.0, ``changed_files`` [], the
+  empty-stream tool-call counters and outcome, and the exception's
+  message (``str(exc)``) as the assertion's stderr - so the table still
+  renders one row per configuration;
+- the models document at ``<agent_home>/.pi/agent/models.json`` carries
+  exactly ``json.dumps`` of ``piargv.models_document`` for the gateway,
+  and a pre-existing document does not make ``run_all`` fail. ``run_one``
+  already rewrites the document identically on every call, so the pinned
+  contract is content-idempotent, not a write count.
 """
 
 import importlib
@@ -593,6 +622,56 @@ class TestBlockedRun(PibakeoffTestCase):
         )
 
 
+# The fixed run order for run_all (behaviour 5): the table renders in
+# input order, so the order is part of the observable contract.
+RUN_ALL_CONFIGS = ("print", "json", "ultrawork")
+
+# The deterministic fake's canned result per configuration: a function of
+# the argv it receives, so every config's record is predictable. json gets
+# the JSON event stream and turns the fixture green; print also turns the
+# fixture green (so the success table is PARTIAL, not GO); ultrawork stays
+# red.
+_RUN_ALL_RESULTS = {
+    "print": {
+        "exit_code": 0,
+        "stdout": "print done\n",
+        "stderr": "",
+        "wall_time_s": 2.5,
+        "timed_out": False,
+        "evidence": "",
+    },
+    "json": {
+        "exit_code": 0,
+        "stdout": JSONL_STREAM,
+        "stderr": "",
+        "wall_time_s": 1.25,
+        "timed_out": False,
+        "evidence": "",
+    },
+    "ultrawork": {
+        "exit_code": 0,
+        "stdout": "ultrawork done\n",
+        "stderr": "",
+        "wall_time_s": 3.75,
+        "timed_out": False,
+        "evidence": "",
+    },
+}
+
+
+def _expected_models_content() -> str:
+    """The exact models-document content run_all must leave on disk."""
+    return json.dumps(
+        piargv.models_document(
+            MODEL_ID,
+            GATEWAY_PORT,
+            CONTEXT_WINDOW,
+            MAX_TOKENS,
+            host=GATEWAY_HOST,
+        )
+    )
+
+
 class TestErrors(PibakeoffTestCase):
     """An unknown configuration value raises BakeoffError naming it, and
     no runner invocation happens."""
@@ -606,6 +685,331 @@ class TestErrors(PibakeoffTestCase):
             self._run(run_one, dirs, "stream", fake)
         self.assertIn("stream", str(ctx.exception))
         self.assertEqual([], fake._calls)
+
+
+class TestRunAll(PibakeoffTestCase):
+    """run_all drives all three configurations end to end and reports
+    (behaviour 5: "run all and report")."""
+
+    def _get_run_all(self) -> Callable:
+        """Fetch ``anvilkit.pibakeoff.run_all``, failing clearly if absent."""
+        pibakeoff = self._pibakeoff()
+        run_all = getattr(pibakeoff, "run_all", None)
+        self.assertTrue(
+            callable(run_all),
+            "anvilkit.pibakeoff.run_all is not callable; the run-all "
+            "driver (behaviour 5) has not been implemented yet",
+        )
+        return run_all
+
+    def _all_fake(self, fail_on: Optional[str] = None) -> Callable:
+        """A deterministic fake runner keyed on the argv it receives.
+
+        The configuration is recovered from the argv tokens (``--mode``
+        marks json, ``-e`` marks ultrawork, neither marks print) so the
+        fake's behaviour is a pure function of its input. ``print`` and
+        ``json`` rewrite the fixture's adder to the correct
+        implementation (turning the assertion green); ``ultrawork``
+        leaves it red. ``fail_on`` makes the fake raise ``OSError`` for
+        that configuration, simulating a runner that blows up mid-run.
+        """
+
+        def fake_runner(invocation: Dict) -> Dict:
+            fake_runner._calls.append(dict(invocation))
+            argv = invocation["argv"]
+            if argv[1] == "--mode":
+                config = "json"
+            elif "-e" in argv:
+                config = "ultrawork"
+            else:
+                config = "print"
+            if fail_on is not None and config == fail_on:
+                raise OSError("boom-" + config)
+            if config in ("print", "json"):
+                adder = Path(invocation["cwd"]) / "bakeoff_fixture" / "adder.py"
+                adder.write_text(
+                    adder.read_text(encoding="utf-8").replace(
+                        "return a - b", "return a + b"
+                    ),
+                    encoding="utf-8",
+                )
+            return dict(_RUN_ALL_RESULTS[config])
+
+        fake_runner._calls = []
+        return fake_runner
+
+    def _call_run_all(self, run_all, base_dir, dirs, fake):
+        """Call run_all with the standard inputs; the pinned call shape."""
+        return run_all(
+            base_dir,
+            fake,
+            MODEL_ID,
+            PROMPT,
+            EXTENSION_PATH,
+            GATEWAY_HOST,
+            GATEWAY_PORT,
+            CONTEXT_WINDOW,
+            MAX_TOKENS,
+            TIMEOUT_S,
+            timestamp=TIMESTAMP,
+            agent_home=dirs["agent_home"],
+        )
+
+    @staticmethod
+    def _expected_record(
+        config: str,
+        base_dir: Path,
+        *,
+        exit_code: int,
+        wall_time_s: float,
+        changed: List[str],
+        passed: bool,
+        events: List[dict],
+        jsonl: Optional[str],
+    ) -> Dict:
+        """The record pirecord.build must produce for a run-all config."""
+        results = base_dir / config / "results"
+        return pirecord.build(
+            config,
+            model=MODEL_ID,
+            exit_code=exit_code,
+            wall_time_s=wall_time_s,
+            waited_for_input=False,
+            artifacts={
+                "stdout": str(results / "stdout"),
+                "stderr": str(results / "stderr"),
+                "jsonl": jsonl,
+                "before_digest": str(results / "before.sha256"),
+                "after_digest": str(results / "after.sha256"),
+            },
+            tool_calls=pievents.tool_calls(events),
+            outcome=pievents.outcome(events),
+            assertion={"passed": passed, "stderr": ""},
+            changed_files=changed,
+            timestamp=TIMESTAMP,
+        )
+
+    @staticmethod
+    def _failure_record(config: str, base_dir: Path, message: str) -> Dict:
+        """The pinned record for a configuration whose runner raised.
+
+        The exception's message lands as the assertion's stderr (the
+        record's closed thirteen-key shape has no free-form evidence
+        field); everything else is the no-measurement baseline: a
+        non-zero sentinel exit code, zero wall time, no changed files,
+        the empty-stream counters and outcome.
+        """
+        results = base_dir / config / "results"
+        return pirecord.build(
+            config,
+            model=MODEL_ID,
+            exit_code=1,
+            wall_time_s=0.0,
+            waited_for_input=True,
+            artifacts={
+                "stdout": str(results / "stdout"),
+                "stderr": str(results / "stderr"),
+                "jsonl": None,
+                "before_digest": str(results / "before.sha256"),
+                "after_digest": str(results / "after.sha256"),
+            },
+            tool_calls=pievents.tool_calls([]),
+            outcome=pievents.outcome([]),
+            assertion={"passed": False, "stderr": message},
+            changed_files=[],
+            timestamp=TIMESTAMP,
+        )
+
+    def _assert_record(self, record, expected):
+        """Full-shape equality, masking the assertion's stderr the way
+        the run_one tests do (its exact text is interpreter-dependent)."""
+        self.assertEqual(RECORD_KEYS, set(record))
+        actual = dict(record)
+        actual_assertion = actual.pop("assertion")
+        expected = dict(expected)
+        expected_assertion = expected.pop("assertion")
+        self.assertEqual(expected, actual)
+        self.assertEqual(expected_assertion["passed"], actual_assertion["passed"])
+        self.assertIsInstance(actual_assertion["stderr"], str)
+
+    def test_run_all_invokes_runner_once_per_config_in_fixed_order(self):
+        run_all = self._get_run_all()
+        dirs = self._fresh()
+        base_dir = dirs["results"]
+        fake = self._all_fake()
+        records, _ = self._call_run_all(run_all, base_dir, dirs, fake)
+        # Exactly three runner invocations, one per configuration, in the
+        # pinned order, each against its own per-config fixture directory.
+        self.assertEqual(3, len(fake._calls))
+        expected_argv = [
+            piargv.print_argv(MODEL_ID, PROMPT),
+            piargv.json_argv(MODEL_ID, PROMPT),
+            piargv.ultrawork_argv(MODEL_ID, PROMPT, EXTENSION_PATH),
+        ]
+        for index, (config, argv) in enumerate(zip(RUN_ALL_CONFIGS, expected_argv)):
+            self.assertEqual(
+                {
+                    "argv": argv,
+                    "cwd": str(base_dir / config / "fixture"),
+                    "stdin": "/dev/null",
+                    "timeout_s": TIMEOUT_S,
+                },
+                fake._calls[index],
+            )
+        self.assertEqual(
+            [record["config"] for record in records], list(RUN_ALL_CONFIGS)
+        )
+
+    def test_run_all_writes_record_json_sort_keys_per_config(self):
+        run_all = self._get_run_all()
+        dirs = self._fresh()
+        base_dir = dirs["results"]
+        fake = self._all_fake()
+        records, _ = self._call_run_all(run_all, base_dir, dirs, fake)
+        for config, record in zip(RUN_ALL_CONFIGS, records):
+            record_path = base_dir / config / "results" / "record.json"
+            self.assertTrue(record_path.is_file())
+            self.assertEqual(
+                json.dumps(record, sort_keys=True),
+                record_path.read_text(encoding="utf-8"),
+            )
+
+    def test_run_all_records_match_pirecord_build_per_config(self):
+        run_all = self._get_run_all()
+        dirs = self._fresh()
+        base_dir = dirs["results"]
+        fake = self._all_fake()
+        records, _ = self._call_run_all(run_all, base_dir, dirs, fake)
+        json_events = pievents.parse(JSONL_STREAM)["events"]
+        expected = {
+            "print": self._expected_record(
+                "print",
+                base_dir,
+                exit_code=0,
+                wall_time_s=2.5,
+                changed=["bakeoff_fixture/adder.py"],
+                passed=True,
+                events=[],
+                jsonl=None,
+            ),
+            "json": self._expected_record(
+                "json",
+                base_dir,
+                exit_code=0,
+                wall_time_s=1.25,
+                changed=["bakeoff_fixture/adder.py"],
+                passed=True,
+                events=json_events,
+                jsonl=str(base_dir / "json" / "results" / "events.jsonl"),
+            ),
+            "ultrawork": self._expected_record(
+                "ultrawork",
+                base_dir,
+                exit_code=0,
+                wall_time_s=3.75,
+                changed=[],
+                passed=False,
+                events=[],
+                jsonl=None,
+            ),
+        }
+        for record in records:
+            self._assert_record(record, expected[record["config"]])
+
+    def test_run_all_writes_table_md_and_returns_same_table(self):
+        run_all = self._get_run_all()
+        dirs = self._fresh()
+        base_dir = dirs["results"]
+        fake = self._all_fake()
+        records, table = self._call_run_all(run_all, base_dir, dirs, fake)
+        table_path = base_dir / "table.md"
+        self.assertTrue(table_path.is_file())
+        rendered = pirecord.render_table(records)
+        # The table is written to table.md AND returned, byte-identical.
+        self.assertEqual(rendered, table)
+        self.assertEqual(rendered, table_path.read_text(encoding="utf-8"))
+        # print and json turned green, ultrawork stayed red: PARTIAL, in
+        # run order.
+        self.assertTrue(table.endswith("PARTIAL (2 of 3 completed)"))
+
+    def test_run_all_failed_config_does_not_abort_others(self):
+        run_all = self._get_run_all()
+        dirs = self._fresh()
+        base_dir = dirs["results"]
+        fake = self._all_fake(fail_on="json")
+        records, table = self._call_run_all(run_all, base_dir, dirs, fake)
+        # All three invocations happened; the order is unchanged.
+        self.assertEqual(3, len(fake._calls))
+        self.assertEqual(
+            [record["config"] for record in records], list(RUN_ALL_CONFIGS)
+        )
+        print_record, json_record, ultrawork_record = records
+        # The sibling configurations still built normal records.
+        self._assert_record(
+            print_record,
+            self._expected_record(
+                "print",
+                base_dir,
+                exit_code=0,
+                wall_time_s=2.5,
+                changed=["bakeoff_fixture/adder.py"],
+                passed=True,
+                events=[],
+                jsonl=None,
+            ),
+        )
+        self._assert_record(
+            ultrawork_record,
+            self._expected_record(
+                "ultrawork",
+                base_dir,
+                exit_code=0,
+                wall_time_s=3.75,
+                changed=[],
+                passed=False,
+                events=[],
+                jsonl=None,
+            ),
+        )
+        # The failed configuration's record is still built, with the
+        # exception message as the assertion's stderr.
+        expected_failure = self._failure_record("json", base_dir, "boom-json")
+        self._assert_record(json_record, expected_failure)
+        self.assertEqual("boom-json", json_record["assertion"]["stderr"])
+        self.assertFalse(json_record["completed"])
+        # Its record.json is still written.
+        record_path = base_dir / "json" / "results" / "record.json"
+        self.assertTrue(record_path.is_file())
+        self.assertEqual(
+            json.dumps(json_record, sort_keys=True),
+            record_path.read_text(encoding="utf-8"),
+        )
+        # The table still renders one row per configuration.
+        self.assertIn("| print |", table)
+        self.assertIn("| json |", table)
+        self.assertIn("| ultrawork |", table)
+        self.assertTrue(table.endswith("PARTIAL (1 of 3 completed)"))
+
+    def test_run_all_writes_models_document_with_pinned_content(self):
+        run_all = self._get_run_all()
+        dirs = self._fresh()
+        self._call_run_all(run_all, dirs["results"], dirs, self._all_fake())
+        models_path = dirs["agent_home"] / ".pi" / "agent" / "models.json"
+        self.assertTrue(models_path.is_file())
+        self.assertEqual(
+            _expected_models_content(), models_path.read_text(encoding="utf-8")
+        )
+
+    def test_run_all_tolerates_preexisting_models_document(self):
+        run_all = self._get_run_all()
+        dirs = self._fresh()
+        models_path = dirs["agent_home"] / ".pi" / "agent" / "models.json"
+        models_path.parent.mkdir(parents=True)
+        models_path.write_text(_expected_models_content(), encoding="utf-8")
+        self._call_run_all(run_all, dirs["results"], dirs, self._all_fake())
+        self.assertEqual(
+            _expected_models_content(), models_path.read_text(encoding="utf-8")
+        )
 
 
 if __name__ == "__main__":
