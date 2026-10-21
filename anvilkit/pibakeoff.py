@@ -17,13 +17,21 @@ the seam: the caller injects a ``runner`` callable that takes one invocation
 dict (``argv``, ``cwd``, ``stdin``, ``timeout_s``) and returns one result dict
 (``exit_code``, ``stdout``, ``stderr``, ``wall_time_s``, ``timed_out``,
 ``evidence``), so the driver is importable and testable without ``pi`` or
-Docker installed.
+Docker installed. ``subprocess_runner`` is the production implementation of
+that seam: it spawns the argv list, drains both pipes from reader threads so
+a full pipe buffer cannot stall the child, and reports a timed-out run as a
+blocked-run result (killed, never raised).
 
 One exception type: ``BakeoffError`` - raised for an unknown configuration
 value, naming it, before any runner invocation happens.
 """
 
 import json
+import os
+import signal
+import subprocess
+import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -332,3 +340,143 @@ def run_all(
     table = pirecord.render_table(records)
     (base_dir / "table.md").write_text(table, encoding="utf-8")
     return records, table
+
+
+def _drain_pipe(fd: int, buffer: List[bytes]) -> None:
+   """Reader-thread body: accumulate the pipe into ``buffer`` until EOF.
+
+   Continuous draining is the load-bearing part of the runner contract:
+   Pi's JSON event stream (``doc/external/pi-dev/json-event-stream.md``)
+   must never be allowed to stall on a full pipe buffer, so the reader
+   loops until the child closes the pipe. The read is a raw ``os.read``
+   on the file descriptor, not a buffered ``read(n)``: a buffered read
+   would block until a full ``n`` bytes arrive, losing partial output
+   that must survive the kill path (e.g. a line printed right before a
+   long sleep).
+   """
+   while True:
+       chunk = os.read(fd, 65536)
+       if not chunk:
+           return
+       buffer.append(chunk)
+
+
+def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
+   """The production runner: execute the spec, drain, and report.
+
+   The real implementation of the runner seam the driver takes as an
+   injected callable: spawn ``spec["argv"]`` as a list with
+   ``subprocess.Popen`` (never a string, never ``shell=True``) in
+   ``spec["cwd"]`` with stdin from ``/dev/null``, then drain stdout and
+   stderr each from its own reader thread so neither can stall on a full
+   pipe buffer, while the main thread enforces the wall-clock deadline
+   ``spec["timeout_s"]``.
+
+   A run still blocked after the deadline is killed (SIGKILL) and reported,
+   never raised: the child runs in its own session, the whole process
+   group is SIGKILLed, and the result carries ``timed_out`` True,
+   ``exit_code`` ``-9`` (subprocess's negative-signal convention for a
+   SIGKILL), the elapsed seconds as ``wall_time_s``, an ``evidence``
+   string naming the timeout with the budget, and the partial output
+   captured so far in ``stdout``. A plain ``communicate(timeout=...)``
+   would not do: on timeout it discards the partial output the blocked-run
+   path relies on.
+
+   Args:
+       spec: The invocation dict: ``argv`` (list of strings), ``cwd``
+           (string), ``stdin`` (string; ``/dev/null``), ``timeout_s``
+           (float, the wall-clock budget).
+
+   Returns:
+       Dict[str, Any]: exactly the six runner-contract keys, ``exit_code``
+       (int), ``stdout`` (str), ``stderr`` (str), ``wall_time_s`` (float),
+       ``timed_out`` (bool) and ``evidence`` (str, ``""`` unless blocked).
+
+   Raises:
+       BakeoffError: the spec is missing ``timeout_s``; the key is named
+       and no process is spawned.
+   """
+   timeout_s = spec.get("timeout_s")
+   if timeout_s is None:
+       raise BakeoffError("spec is missing the required key 'timeout_s'")
+
+   argv: List[str] = spec["argv"]
+   # start_new_session=True gives the child its own session and process
+   # group, so the timeout kill can SIGKILL the whole group: a command
+   # line like ``sh -c "echo partial; sleep 30"`` would otherwise
+   # orphan the sleep, which keeps the pipe write-ends open, the readers
+   # never see EOF, and the bounded joins stall for the full budget.
+   proc = subprocess.Popen(
+       argv,
+       cwd=spec["cwd"],
+       stdin=subprocess.DEVNULL,
+       stdout=subprocess.PIPE,
+       stderr=subprocess.PIPE,
+       start_new_session=True,
+   )
+
+   stdout_buffer: List[bytes] = []
+   stderr_buffer: List[bytes] = []
+   stdout_reader = threading.Thread(
+       target=_drain_pipe, args=(proc.stdout.fileno(), stdout_buffer)
+   )
+   stderr_reader = threading.Thread(
+       target=_drain_pipe, args=(proc.stderr.fileno(), stderr_buffer)
+   )
+   stdout_reader.start()
+   stderr_reader.start()
+
+   start = time.monotonic()
+   deadline = start + timeout_s
+   timed_out = False
+   while True:
+       remaining = deadline - time.monotonic()
+       if remaining <= 0:
+           timed_out = True
+           # Kill the whole group (the child is its own session leader, so
+           # pgid == pid) and reap the direct child.
+           os.killpg(proc.pid, signal.SIGKILL)
+           proc.wait()
+           break
+       try:
+           proc.wait(timeout=remaining)
+           break
+       except subprocess.TimeoutExpired:
+           continue
+
+   elapsed = time.monotonic() - start
+   # On the kill path the group was SIGKILLed and the direct child reaped;
+   # -9 is the pinned sentinel, subprocess's negative-signal form for
+   # SIGKILL. On success wait() already reaped the child, so returncode is
+   # the process's own status.
+   exit_code = -9 if timed_out else proc.returncode
+
+   # Join both readers on every path: on success the pipes are closed and
+   # the threads are already out; on the kill path the group SIGKILL
+   # closes the pipes, so the bounded joins cannot leak a thread.
+   stdout_reader.join(timeout=5.0)
+   stderr_reader.join(timeout=5.0)
+
+   # Release the pipe file descriptors on both paths; the captured bytes
+   # are already in the buffers, so closing loses nothing.
+   if proc.stdout is not None:
+       proc.stdout.close()
+   if proc.stderr is not None:
+       proc.stderr.close()
+
+   stdout = b"".join(stdout_buffer).decode("utf-8", "replace")
+   stderr = b"".join(stderr_buffer).decode("utf-8", "replace")
+
+   if timed_out:
+       evidence = "timeout after {}s; process killed".format(timeout_s)
+   else:
+       evidence = ""
+
+   return {
+       "exit_code": exit_code,
+       "stdout": stdout,
+       "stderr": stderr,
+       "wall_time_s": elapsed,
+       "timed_out": timed_out,
+       "evidence": evidence,
+   }
