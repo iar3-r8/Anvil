@@ -70,6 +70,13 @@ Pinned ``run_one`` responsibilities:
 - artifacts ``stdout`` and ``stderr`` in ``results_dir`` for every config,
   and ``events.jsonl`` (verbatim stdout) ONLY for the two ``--mode json``
   configs - absent for the mcp-list configs;
+- the before/after digest artifacts ``before.sha256`` / ``after.sha256``
+  in ``results_dir`` for every config: a SHA-256 manifest of the files
+  under ``project_dir`` (relative posix path -> hexdigest, the
+  ``pifixture.digest_fixture`` shape, ``json.dumps`` sorted) taken before
+  the runner is invoked and after it returns. The phase-2 runs disable
+  all tools (``-nt``), so the agent cannot modify the project fixture and
+  the two manifests are byte-identical;
 - the record is exactly what ``pirecord.build`` produces, with the
   assertion dimension computed from the captured assistant output (the
   runner's stdout): for the model configs the marker must be present; for
@@ -85,6 +92,7 @@ One exception type: ``ApprovalError`` - raised (naming the value) for an
 unknown ``config``, before the runner is invoked.
 """
 
+import hashlib
 import importlib
 import importlib.util
 import json
@@ -737,6 +745,110 @@ class TestRecordAndArtifacts(PiapprovalTestCase):
                 self.assertEqual(
                     str(stderr_artifact),
                     record["artifacts"]["stderr"],
+                )
+
+    def test_before_digest_artifact_written_to_results_dir(self):
+        run_one = self._get_run_one()
+        dirs = self._fresh()
+        fake = self._fake()
+        record = self._run(run_one, dirs, "approve", fake)
+        before_path = dirs["results"] / "before.sha256"
+        self.assertTrue(
+            before_path.is_file(),
+            "run_one must materialise the before-run digest at "
+            "results/before.sha256 so the record's before_digest artifact "
+            "does not dangle",
+        )
+        self.assertEqual(
+            str(before_path),
+            record["artifacts"]["before_digest"],
+            "the record's before_digest artifact must point at the "
+            "materialised before.sha256 file",
+        )
+
+    def test_after_digest_artifact_written_to_results_dir(self):
+        run_one = self._get_run_one()
+        dirs = self._fresh()
+        fake = self._fake()
+        record = self._run(run_one, dirs, "no-approve", fake)
+        after_path = dirs["results"] / "after.sha256"
+        self.assertTrue(
+            after_path.is_file(),
+            "run_one must materialise the after-run digest at "
+            "results/after.sha256 so the record's after_digest artifact "
+            "does not dangle",
+        )
+        self.assertEqual(
+            str(after_path),
+            record["artifacts"]["after_digest"],
+            "the record's after_digest artifact must point at the "
+            "materialised after.sha256 file",
+        )
+
+    def test_before_and_after_digest_artifacts_are_byte_identical(self):
+        run_one = self._get_run_one()
+        dirs = self._fresh()
+        fake = self._fake()
+        self._run(run_one, dirs, "approve", fake)
+        before_path = dirs["results"] / "before.sha256"
+        after_path = dirs["results"] / "after.sha256"
+        self.assertTrue(
+            before_path.is_file(),
+            "run_one must materialise before.sha256 in the results "
+            "directory",
+        )
+        self.assertTrue(
+            after_path.is_file(),
+            "run_one must materialise after.sha256 in the results "
+            "directory",
+        )
+        self.assertEqual(
+            before_path.read_bytes(),
+            after_path.read_bytes(),
+            "the phase-2 runs disable all tools (-nt), so the agent "
+            "cannot modify the project fixture; the before and after "
+            "manifests must be byte-identical",
+        )
+
+    def test_digest_artifacts_parse_as_relative_path_manifest(self):
+        run_one = self._get_run_one()
+        dirs = self._fresh()
+        fake = self._fake()
+        self._run(run_one, dirs, "approve", fake)
+        for name in ("before.sha256", "after.sha256"):
+            with self.subTest(artifact=name):
+                manifest = json.loads(
+                    (dirs["results"] / name).read_text(encoding="utf-8")
+                )
+                self.assertIsInstance(
+                    manifest,
+                    dict,
+                    name + " must parse as a JSON object (the "
+                    "pifixture.digest_fixture shape)",
+                )
+                self.assertTrue(
+                    all(
+                        isinstance(key, str) and not key.startswith("/")
+                        for key in manifest
+                    ),
+                    "manifest keys must be relative posix paths from "
+                    "project_dir",
+                )
+                self.assertIn(
+                    ".pi/mcp.json",
+                    manifest,
+                    "the manifest must include the project fixture file "
+                    ".pi/mcp.json (relative to project_dir)",
+                )
+                expected_digest = hashlib.sha256(
+                    (dirs["project"] / ".pi" / "mcp.json").read_bytes()
+                ).hexdigest()
+                self.assertEqual(
+                    expected_digest,
+                    manifest[".pi/mcp.json"],
+                    "the manifest's .pi/mcp.json entry must be the "
+                    "sha256 hexdigest of the fixture file under "
+                    "project_dir",
                 )
 
     def test_missing_marker_is_recorded_not_raised(self):
