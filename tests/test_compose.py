@@ -480,14 +480,22 @@ class AvailabilityTests(unittest.TestCase):
 # parts of the file the green step must not clobber.
 #
 # Pinned compose forms (the coder implements exactly these):
-#   build        the string form "./docker/Dockerfile.bakeoff"
+#   build        the dict form {context: ".", dockerfile: "docker/Dockerfile.bakeoff"}
 #   environment  a list of "KEY=value" strings, as llama-swap already uses
 #   volumes      long object form {type, source, target} for every entry
 # ---------------------------------------------------------------------------
 
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
 BAKEOFF_SERVICE = "pi-bakeoff"
-BAKEOFF_BUILD_PATH = "./docker/Dockerfile.bakeoff"
+# The string build form is unbuildable: a string whose path names a
+# Dockerfile makes the build context the Dockerfile's own directory
+# (docker/), and docker/Dockerfile.bakeoff COPYs anvilkit/, which exists
+# only at the repo root. The dict form puts the context at the repo root
+# and addresses the Dockerfile relative to it.
+BAKEOFF_BUILD = {
+    "context": ".",
+    "dockerfile": "docker/Dockerfile.bakeoff",
+}
 AGENT_HOME_TARGET = "/home/bakeoff/.pi/agent"
 RESULTS_TARGET = "/workspace/results"
 GATEWAY_ENV_VARS = ("PI_GATEWAY_HOST=llama-swap", "PI_GATEWAY_PORT=8080")
@@ -557,11 +565,11 @@ class BakeoffServiceDefinitionTests(BakeoffServiceCase):
     def test_build_is_the_bakeoff_dockerfile(self):
         self.assertEqual(
             self.service.get("build"),
-            BAKEOFF_BUILD_PATH,
-            "pi-bakeoff must build from the string form {!r} "
-            "(repo-root relative, no context/dockerfile pair)".format(
-                BAKEOFF_BUILD_PATH
-            ),
+            BAKEOFF_BUILD,
+            "pi-bakeoff must build from the dict form "
+            "{{context: '.', dockerfile: 'docker/Dockerfile.bakeoff'}} "
+            "(context at the repo root; a string build form would make "
+            "docker/ the context and break the COPY anvilkit/)".format(),
         )
 
     def test_service_joins_the_llm_network(self):
