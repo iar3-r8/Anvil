@@ -90,22 +90,64 @@ Pinned ``run_one`` responsibilities:
 
 One exception type: ``ApprovalError`` - raised (naming the value) for an
 unknown ``config``, before the runner is invoked.
+
+``TestMain`` pins the entrypoint (behaviour 8: "entrypoint")::
+
+    main(runner=None) -> int
+
+- ``main`` returns the exit code and never calls ``sys.exit`` itself -
+  the module's ``__main__`` guard does, pinned as source text: the
+  module's last statement is ``sys.exit(main())`` under ``if __name__ ==
+  "__main__":``, and it is the only ``sys.exit`` in the module;
+- the gateway host and port come from the environment: a missing or
+  empty ``PI_GATEWAY_HOST`` raises ``ApprovalError`` naming the
+  variable, and a missing, empty or non-numeric ``PI_GATEWAY_PORT``
+  raises ``ApprovalError`` naming the variable too - in every case
+  before ``run_all`` is reached (the recorder sees zero calls);
+- the model id and context window come from
+  ``anvilkit.config.read_models`` of the ``PI_CONFIG_PATH`` file (default
+  the module constant ``_DEFAULT_CONFIG_PATH``, the repo-root
+  ``config.yaml`` relative to the repo - the same file the Compose
+  service binds read-only at ``/app/config.yaml``); an unreadable or
+  invalid file raises ``anvilkit.config``'s ``ConfigError`` unwrapped;
+- ``max_tokens``, ``prompt``, ``marker`` and ``unreachable_command`` are
+  module constants (``MAX_TOKENS == 4096``, ``PROMPT``, ``MARKER``,
+  ``UNREACHABLE_COMMAND`` - the phase-2 values these tests already own);
+  they reach ``run_all`` verbatim;
+- results land in ``PI_RESULTS_DIR`` (default the module constant
+  ``_DEFAULT_RESULTS_DIR``, the repo-root ``./results``-shaped default),
+  passed to ``run_all`` as a ``Path``;
+- an injected ``runner`` is handed to ``run_all`` verbatim; when
+  ``runner`` is ``None`` the default is the module's own
+  ``subprocess_runner`` seam (``anvilkit.pibakeoff.subprocess_runner``,
+  imported - not re-implemented);
+- ``main`` supplies its own ``timestamp`` (ISO-8601 UTC,
+  ``YYYY-MM-DDTHH:MM:SSZ``);
+- a table in which all four assertions failed is a successful run: the
+  exit code is 0 either way - a negative finding is a successful
+  measurement.
 """
 
 import hashlib
 import importlib
 import importlib.util
+import inspect
 import json
+import os
+import re
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import anvilkit.config as piconfig
+import anvilkit.pibakeoff as pibakeoff
 import anvilkit.piargv as piargv
 import anvilkit.pievents as pievents
 import anvilkit.pirecord as pirecord
@@ -1386,6 +1428,367 @@ class TestRunAll(PiapprovalTestCase):
         for config in CONFIGS:
             self.assertIn("| " + config + " |", table)
         self.assertTrue(table.endswith("PARTIAL (3 of 4 completed)"))
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 8: "entrypoint" (``python3 -m anvilkit.piapproval``)
+#
+# The ``run_all`` seam is monkeypatched with a signature-bound recorder,
+# so no test touches pi, the gateway or the real config.yaml; the
+# environment is patched per test (``PI_GATEWAY_HOST``/``PI_GATEWAY_PORT``
+# required, ``PI_CONFIG_PATH`` and ``PI_RESULTS_DIR`` optional).
+# ---------------------------------------------------------------------------
+
+# A minimal config.yaml in the exact shape anvilkit.config.read_models
+# expects: matrix.vars.coder naming a model present in the models section,
+# with the context window carried in the cmd's --max-model-len.
+CONFIG_YAML_PIN = """\
+port: 8080
+
+matrix:
+  vars:
+    coder: "test/coder-model"
+
+models:
+  "test/coder-model":
+    cmd: "vllm serve --model test/coder-model --max-model-len 12345"
+"""
+
+# The entrypoint's pinned defaults (behaviour 8): the repo-root
+# read-only config.yaml, and the repo-root ./results-shaped results dir
+# (the devcontainer recipe's PI_RESULTS_DIR=./results shape).
+PINNED_DEFAULT_CONFIG_PATH = str(REPO_ROOT / "config.yaml")
+PINNED_DEFAULT_RESULTS_DIR = "results"
+
+TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+
+
+class TestMain(PiapprovalTestCase):
+    """main - the devcontainer entrypoint (behaviour 8)."""
+
+    def _get_main(self) -> Callable:
+        """Fetch ``anvilkit.piapproval.main``, failing clearly if absent."""
+        piapproval = self._piapproval()
+        main = getattr(piapproval, "main", None)
+        self.assertTrue(
+            callable(main),
+            "anvilkit.piapproval.main is not callable; the devcontainer "
+            "entrypoint (behaviour 8) has not been implemented yet",
+        )
+        return main
+
+    def _get_constant(self, name: str):
+        """Fetch a module constant, failing clearly if it is absent."""
+        piapproval = self._piapproval()
+        value = getattr(piapproval, name, None)
+        self.assertIsNotNone(
+            value,
+            "anvilkit.piapproval.{} is missing; the entrypoint constants "
+            "(behaviour 8) have not been implemented yet".format(name),
+        )
+        return value
+
+    @staticmethod
+    def _env(**overrides) -> Dict[str, str]:
+        """A hermetic environment: no PI_* keys except the ones given."""
+        env = {k: v for k, v in os.environ.items() if not k.startswith("PI_")}
+        env.update(overrides)
+        return env
+
+    def _write_config(self, text: str = CONFIG_YAML_PIN) -> Path:
+        """A real tmp config.yaml for read_models to parse."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "config.yaml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def _happy_env(self, config_path: Path, **extra) -> Dict[str, str]:
+        """The valid devcontainer environment, pointed at a real tmp config."""
+        env = self._env(
+            PI_GATEWAY_HOST="host.docker.internal",
+            PI_GATEWAY_PORT="8080",
+            PI_CONFIG_PATH=str(config_path),
+        )
+        env.update(extra)
+        return env
+
+    def _recorder(self, piapproval, table: str = "NO-GO (0 of 4 passed)"):
+        """A ``run_all`` stand-in that records its bound call arguments.
+
+        Signature-bound against the real ``run_all`` so the pin does not
+        depend on whether ``main`` calls it positionally or by keyword.
+        Returns ``(patcher, recorder)``; ``recorder.calls`` is the list of
+        bound-argument dicts, one entry per call. The canned records all
+        carry a failed assertion: a negative finding is a successful
+        measurement, and ``main`` must not care.
+        """
+        real_run_all = piapproval.run_all
+        signature = inspect.signature(real_run_all)
+
+        def recorder(*args, **kwargs):
+            bound = signature.bind(*args, **kwargs)
+            bound.apply_defaults()
+            recorder.calls.append(dict(bound.arguments))
+            return (
+                [
+                    {"config": config, "assertion": {"passed": False}}
+                    for config in CONFIGS
+                ],
+                table,
+            )
+
+        recorder.calls = []
+        return mock.patch.object(piapproval, "run_all", recorder), recorder
+
+    def test_main_missing_or_empty_gateway_host_raises_approval_error_naming_it(
+        self,
+    ):
+        main = self._get_main()
+        approval_error = self._get_approval_error()
+        piapproval = self._piapproval()
+        config_path = self._write_config()
+        envs = {
+            "missing": {
+                k: v for k, v in self._happy_env(config_path).items()
+                if k != "PI_GATEWAY_HOST"
+            },
+            "empty": self._happy_env(config_path, PI_GATEWAY_HOST=""),
+        }
+        for label, env in envs.items():
+            with self.subTest(PI_GATEWAY_HOST=label):
+                patcher, recorder = self._recorder(piapproval)
+                with patcher, mock.patch.dict(os.environ, env):
+                    with self.assertRaises(approval_error) as ctx:
+                        main()
+                self.assertIn("PI_GATEWAY_HOST", str(ctx.exception))
+                self.assertEqual([], recorder.calls)
+
+    def test_main_missing_or_empty_gateway_port_raises_approval_error_naming_it(
+        self,
+    ):
+        main = self._get_main()
+        approval_error = self._get_approval_error()
+        piapproval = self._piapproval()
+        config_path = self._write_config()
+        envs = {
+            "missing": {
+                k: v for k, v in self._happy_env(config_path).items()
+                if k != "PI_GATEWAY_PORT"
+            },
+            "empty": self._happy_env(config_path, PI_GATEWAY_PORT=""),
+        }
+        for label, env in envs.items():
+            with self.subTest(PI_GATEWAY_PORT=label):
+                patcher, recorder = self._recorder(piapproval)
+                with patcher, mock.patch.dict(os.environ, env):
+                    with self.assertRaises(approval_error) as ctx:
+                        main()
+                self.assertIn("PI_GATEWAY_PORT", str(ctx.exception))
+                self.assertEqual([], recorder.calls)
+
+    def test_main_non_numeric_gateway_port_raises_approval_error_naming_it(
+        self,
+    ):
+        main = self._get_main()
+        approval_error = self._get_approval_error()
+        piapproval = self._piapproval()
+        config_path = self._write_config()
+        env = self._happy_env(config_path, PI_GATEWAY_PORT="not-a-port")
+        patcher, recorder = self._recorder(piapproval)
+        with patcher, mock.patch.dict(os.environ, env):
+            with self.assertRaises(approval_error) as ctx:
+                main()
+        self.assertIn("PI_GATEWAY_PORT", str(ctx.exception))
+        self.assertEqual([], recorder.calls)
+
+    def test_main_unreadable_config_raises_config_error_unwrapped(self):
+        main = self._get_main()
+        piapproval = self._piapproval()
+        config_path = self._write_config()
+        missing = config_path.parent / "does-not-exist.yaml"
+        env = self._happy_env(config_path, PI_CONFIG_PATH=str(missing))
+        patcher, recorder = self._recorder(piapproval)
+        with patcher, mock.patch.dict(os.environ, env):
+            # The ConfigError from anvilkit.config, propagated as-is -
+            # not wrapped into an ApprovalError or any other type.
+            with self.assertRaises(piconfig.ConfigError):
+                main()
+        self.assertEqual([], recorder.calls)
+
+    def test_main_passes_gateway_env_and_config_topology_to_run_all(self):
+        main = self._get_main()
+        piapproval = self._piapproval()
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        patcher, recorder = self._recorder(piapproval)
+        with patcher, mock.patch.dict(os.environ, env):
+            exit_code = main()
+        self.assertEqual(0, exit_code)
+        self.assertEqual(1, len(recorder.calls))
+        seen = recorder.calls[0]
+        # Results land at the pinned repo-root results directory, as a Path.
+        self.assertEqual(Path(PINNED_DEFAULT_RESULTS_DIR), seen["base_dir"])
+        # The model id and context window are read_models' answer, verbatim.
+        self.assertEqual("test/coder-model", seen["model_id"])
+        self.assertEqual(12345, seen["context_window"])
+        # The gateway address is the devcontainer environment, port as int.
+        self.assertEqual("host.docker.internal", seen["gateway_host"])
+        self.assertEqual(8080, seen["gateway_port"])
+        self.assertIsInstance(seen["gateway_port"], int)
+        # runner=None defaults to the imported pibakeoff subprocess_runner.
+        self.assertIs(pibakeoff.subprocess_runner, seen["runner"])
+        # main supplies the stamp itself.
+        self.assertRegex(seen["timestamp"], TIMESTAMP_PATTERN)
+
+    def test_main_passes_pinned_module_constants_to_run_all(self):
+        main = self._get_main()
+        piapproval = self._piapproval()
+        # The constants exist and carry the pinned values.
+        self.assertEqual(
+            PINNED_DEFAULT_CONFIG_PATH,
+            self._get_constant("_DEFAULT_CONFIG_PATH"),
+        )
+        self.assertEqual(
+            PINNED_DEFAULT_RESULTS_DIR,
+            self._get_constant("_DEFAULT_RESULTS_DIR"),
+        )
+        self.assertEqual(MAX_TOKENS, self._get_constant("MAX_TOKENS"))
+        self.assertEqual(PROMPT, self._get_constant("PROMPT"))
+        self.assertEqual(MARKER, self._get_constant("MARKER"))
+        self.assertEqual(
+            UNREACHABLE_COMMAND, self._get_constant("UNREACHABLE_COMMAND")
+        )
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        patcher, recorder = self._recorder(piapproval)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+        seen = recorder.calls[0]
+        # And the constants are exactly what the driver receives.
+        self.assertEqual(MAX_TOKENS, seen["max_tokens"])
+        self.assertEqual(PROMPT, seen["prompt"])
+        self.assertEqual(MARKER, seen["marker"])
+        self.assertEqual(UNREACHABLE_COMMAND, seen["unreachable_command"])
+
+    def test_main_results_dir_honours_pi_results_dir_env(self):
+        main = self._get_main()
+        piapproval = self._piapproval()
+        config_path = self._write_config()
+        env = self._happy_env(config_path, PI_RESULTS_DIR="/custom/results")
+        patcher, recorder = self._recorder(piapproval)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+        self.assertEqual(
+            Path("/custom/results"), recorder.calls[0]["base_dir"]
+        )
+
+    def test_main_config_path_honours_pi_config_path_env(self):
+        main = self._get_main()
+        piapproval = self._piapproval()
+        other_config = (
+            "port: 8080\n"
+            "\n"
+            "matrix:\n"
+            "  vars:\n"
+            '    coder: "other/coder-model"\n'
+            "\n"
+            "models:\n"
+            '  "other/coder-model":\n'
+            '    cmd: "vllm serve --max-model-len 4321"\n'
+        )
+        config_path = self._write_config(other_config)
+        env = self._happy_env(config_path)
+        patcher, recorder = self._recorder(piapproval)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+        # The env-named file is the one read_models parsed.
+        self.assertEqual("other/coder-model", recorder.calls[0]["model_id"])
+        self.assertEqual(4321, recorder.calls[0]["context_window"])
+
+    def test_main_default_config_path_is_the_repo_root_config(self):
+        main = self._get_main()
+        piapproval = self._piapproval()
+        env = self._env(
+            PI_GATEWAY_HOST="host.docker.internal",
+            PI_GATEWAY_PORT="8080",
+        )
+
+        def read_models_spy(path):
+            read_models_spy.calls.append(path)
+            return piconfig.ModelTopology(
+                coder_id="spied/coder",
+                coder_context_window=777,
+                embedder_id=None,
+                gateway_port=8080,
+            )
+
+        read_models_spy.calls = []
+        patcher, recorder = self._recorder(piapproval)
+        with patcher, mock.patch("anvilkit.config.read_models", read_models_spy):
+            with mock.patch.dict(os.environ, env):
+                self.assertEqual(0, main())
+        # With PI_CONFIG_PATH unset, the default is the module constant.
+        self.assertEqual(1, len(read_models_spy.calls))
+        self.assertEqual(
+            Path(self._get_constant("_DEFAULT_CONFIG_PATH")),
+            Path(read_models_spy.calls[0]),
+        )
+        self.assertEqual(
+            Path(PINNED_DEFAULT_CONFIG_PATH), Path(read_models_spy.calls[0])
+        )
+        self.assertEqual("spied/coder", recorder.calls[0]["model_id"])
+        self.assertEqual(777, recorder.calls[0]["context_window"])
+
+    def test_main_injected_runner_passed_to_run_all_verbatim(self):
+        main = self._get_main()
+        piapproval = self._piapproval()
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        fake_runner = object()
+        patcher, recorder = self._recorder(piapproval)
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main(runner=fake_runner))
+        self.assertIs(fake_runner, recorder.calls[0]["runner"])
+
+    def test_main_exit_zero_when_all_assertions_failed(self):
+        main = self._get_main()
+        piapproval = self._piapproval()
+        config_path = self._write_config()
+        env = self._happy_env(config_path)
+        # The recorder's canned run measured all four configurations and
+        # every assertion failed: a negative finding is a successful
+        # measurement, so main still returns 0.
+        patcher, _ = self._recorder(piapproval, table="NO-GO (0 of 4 passed)")
+        with patcher, mock.patch.dict(os.environ, env):
+            self.assertEqual(0, main())
+
+    def test_main_guard_is_the_only_sys_exit_and_is_last(self):
+        piapproval = self._piapproval()
+        source = Path(piapproval.__file__).read_text(encoding="utf-8")
+        # The house rule: library code returns the exit code; only the
+        # module's __main__ guard may call sys.exit.
+        self.assertEqual(
+            1,
+            source.count("sys.exit"),
+            "sys.exit must appear exactly once, in the __main__ guard; "
+            "main() must return the exit code, not call sys.exit itself",
+        )
+        lines = [line for line in source.splitlines() if line.strip()]
+        self.assertGreaterEqual(
+            len(lines), 2, "the module source has no __main__ guard"
+        )
+        self.assertEqual(
+            'if __name__ == "__main__":',
+            lines[-2].strip(),
+            "the module's final statement must be guarded by "
+            "if __name__ == '__main__':",
+        )
+        self.assertEqual(
+            "sys.exit(main())",
+            lines[-1].strip(),
+            "the __main__ guard must be sys.exit(main())",
+        )
 
 
 if __name__ == "__main__":
