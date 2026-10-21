@@ -24,7 +24,15 @@ Stdlib only. One exception type: ``RecordError``.
 
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-_CONFIG_VALUES = ("print", "json", "ultrawork")
+_CONFIG_VALUES = (
+    "print",
+    "json",
+    "ultrawork",
+    "approve",
+    "no-approve",
+    "mcp-list-approve",
+    "mcp-list-no-approve",
+)
 _ARTIFACT_KEYS = ("stdout", "stderr", "jsonl", "before_digest", "after_digest")
 _TOOL_CALL_KEYS = ("attempted", "succeeded", "failed", "unfinished", "orphaned")
 _OUTCOME_KEYS = (
