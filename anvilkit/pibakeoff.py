@@ -555,7 +555,7 @@ def main(
 
    config_path = os.environ.get("PI_CONFIG_PATH") or _DEFAULT_CONFIG_PATH
    results_dir = os.environ.get("PI_RESULTS_DIR") or _DEFAULT_RESULTS_DIR
-   extension_path = str(
+   extension_path = os.environ.get("PI_EXTENSION_PATH") or str(
        Path(_DEFAULT_NPM_ROOT) / "pi-ultrawork" / "src" / "index.ts"
    )
    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
