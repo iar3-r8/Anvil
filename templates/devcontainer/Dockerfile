@@ -29,6 +29,13 @@ RUN git config --system credential.helper \
 
 RUN pip install --no-cache-dir uv==0.8.5
 
+# Exact pins: reproducible image; bumps are deliberate. 1.3.0 is clear of
+# the four 2026 pi-coding-agent advisories (worst patched in 0.79.0),
+# matching the bake-off image (docker/Dockerfile.bakeoff). One line:
+# the vscode user (uid 1000) cannot write the global npm root, so the
+# globals must be installed as root, before USER vscode.
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0 pi-ultrawork@1.2.0
+
 RUN groupadd -g 1000 vscode && \
     useradd -u 1000 -g 1000 -m vscode -s /bin/bash && \
     echo "vscode ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/vscode && \
