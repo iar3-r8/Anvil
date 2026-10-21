@@ -1,8 +1,13 @@
-"""Bake-off run driver - one job: drive one bake-off configuration end to end.
+"""Bake-off run driver - one job: drive bake-off configurations end to end.
 
-Phase 1b (``plans/pi-phase1b-docker.md``, behaviour 4) runs one of the three
-bake-off configurations - print, json, ultrawork - against a fresh fixture
-directory and returns the ``anvilkit.pirecord.build`` record for it.
+Phase 1b (``plans/pi-phase1b-docker.md``) drives the three bake-off
+configurations - print, json, ultrawork. Behaviour 4 (``run_one``) runs one
+of them against a fresh fixture directory and returns the
+``anvilkit.pirecord.build`` record for it; behaviour 5 (``run_all``) is a
+thin orchestrator over it - the three configurations in the fixed order, a
+``record.json`` per configuration, one ``table.md`` for the lot, and a
+no-measurement fallback record when one configuration's runner raises, so a
+single failure never aborts the other two.
 
 This module decides nothing about tokens: the argv comes verbatim from
 ``anvilkit.piargv``, the fixture and digests from ``anvilkit.pifixture``, the
@@ -20,7 +25,7 @@ value, naming it, before any runner invocation happens.
 
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import anvilkit.piargv as piargv
 import anvilkit.pievents as pievents
@@ -195,3 +200,135 @@ def run_one(
         changed_files=changed,
         timestamp=timestamp,
     )
+
+
+# The fixed run-all order (behaviour 5); the table renders in input order,
+# so the order is part of the observable contract.
+_RUN_ALL_CONFIGS: Tuple[str, ...] = ("print", "json", "ultrawork")
+
+
+def _fallback_record(
+    config: str, results_dir: Path, model_id: str, message: str, timestamp: str
+) -> Dict[str, Any]:
+    """The no-measurement record for a configuration whose runner raised.
+
+    The exception's message lands as the assertion's stderr (the closed
+    thirteen-key record shape has no free-form evidence field); everything
+    else is the baseline: a non-zero sentinel exit code, zero wall time, no
+    changed files, the empty-stream counters and outcome, and the pinned
+    artifact paths with ``jsonl`` None.
+    """
+    return pirecord.build(
+        config,
+        model=model_id,
+        exit_code=1,
+        wall_time_s=0.0,
+        waited_for_input=True,
+        artifacts={
+            "stdout": str(results_dir / "stdout"),
+            "stderr": str(results_dir / "stderr"),
+            "jsonl": None,
+            "before_digest": str(results_dir / "before.sha256"),
+            "after_digest": str(results_dir / "after.sha256"),
+        },
+        tool_calls=pievents.tool_calls([]),
+        outcome=pievents.outcome([]),
+        assertion={"passed": False, "stderr": message},
+        changed_files=[],
+        timestamp=timestamp,
+    )
+
+
+def run_all(
+    base_dir: Path,
+    runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+    model_id: str,
+    prompt: str,
+    extension_path: str,
+    gateway_host: str,
+    gateway_port: int,
+    context_window: int,
+    max_tokens: int,
+    timeout_s: float,
+    *,
+    timestamp: str,
+    agent_home: Optional[Path] = None,
+) -> Tuple[List[Dict[str, Any]], str]:
+    """Drive all three bake-off configurations end to end and report.
+
+    A thin orchestrator over :func:`run_one`: the configurations run in the
+    fixed order ``print``, ``json``, ``ultrawork``, each against
+    ``<base_dir>/<config>/fixture`` with artifacts under
+    ``<base_dir>/<config>/results`` (``base_dir`` and the per-config
+    directories are created). After each configuration a ``record.json``
+    with content exactly ``json.dumps(record, sort_keys=True)`` is written
+    to the results directory. Finally ``table.md`` is written to
+    ``<base_dir>/table.md`` with content exactly
+    ``pirecord.render_table(records)`` (records in run order), and that same
+    string is returned.
+
+    Failure isolation: if ``run_one`` raises for one configuration (any
+    exception from the runner or the run), the exception is caught and a
+    no-measurement fallback record is built for that configuration - the
+    exception's message becomes the assertion's stderr - so the other
+    configurations still run and the table still renders one row per
+    configuration.
+
+    Args:
+        base_dir: The run root; created if missing, with one ``<config>``
+            subtree per configuration.
+        runner: The process-execution seam, passed to ``run_one`` verbatim.
+        model_id: The model id for the argv and the models document.
+        prompt: The task prompt passed to each invocation.
+        extension_path: The pi-ultrawork extension path (ultrawork only).
+        gateway_host: The gateway host for the models document.
+        gateway_port: The gateway port for the models document.
+        context_window: The context window for the models document.
+        max_tokens: The max tokens for the models document.
+        timeout_s: The wall-clock budget handed to the runner.
+        timestamp: The ISO-8601 UTC stamp stored verbatim in every record;
+            the driver owns the clock and passes it through.
+        agent_home: The agent home for the models document; defaults to
+            the user's home when ``None``.
+
+    Returns:
+        Tuple[List[Dict[str, Any]], str]: the records in run order and the
+        rendered table.
+    """
+    base_dir = Path(base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    records: List[Dict[str, Any]] = []
+    for config in _RUN_ALL_CONFIGS:
+        fixture_dir = base_dir / config / "fixture"
+        results_dir = base_dir / config / "results"
+        results_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            record = run_one(
+                config,
+                fixture_dir,
+                results_dir,
+                runner,
+                model_id,
+                prompt,
+                extension_path,
+                gateway_host,
+                gateway_port,
+                context_window,
+                max_tokens,
+                timeout_s,
+                timestamp=timestamp,
+                agent_home=agent_home,
+            )
+        except Exception as exc:
+            record = _fallback_record(
+                config, results_dir, model_id, str(exc), timestamp
+            )
+        (results_dir / "record.json").write_text(
+            json.dumps(record, sort_keys=True), encoding="utf-8"
+        )
+        records.append(record)
+
+    table = pirecord.render_table(records)
+    (base_dir / "table.md").write_text(table, encoding="utf-8")
+    return records, table
