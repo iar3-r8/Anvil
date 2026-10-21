@@ -1025,5 +1025,368 @@ class TestTimeoutAndUnknownConfig(PiapprovalTestCase):
         )
 
 
+class TestRunAll(PiapprovalTestCase):
+    """run_all drives all four phase-2 configurations end to end and
+    reports (plans/pi-phase2-approval.md, behaviour 7: "run all four and
+    report").
+
+    Pinned signature::
+
+        run_all(base_dir, runner, model_id, gateway_host, gateway_port,
+                context_window, max_tokens, prompt, marker,
+                unreachable_command, *, timestamp) -> (records, table)
+
+    Pinned layout: each configuration runs against
+    ``<base_dir>/<config>/project`` (the fixture destination and the
+    runner's cwd) with artifacts under ``<base_dir>/<config>/results``;
+    the per-run agent directory is ``<base_dir>/<config>/agent`` (one
+    fresh, isolated agent directory per configuration, never the
+    invoking user's home). ``record.json`` (content exactly
+    ``json.dumps(record, sort_keys=True)``) lands in each configuration's
+    results directory; ``table.md`` (content exactly
+    ``pirecord.render_table(records)``, records in run order) is written
+    to ``<base_dir>/table.md`` and the same string is returned.
+
+    Failure isolation: if ``run_one`` raises for one configuration (any
+    exception from the runner or the run), the exception is caught and a
+    no-measurement fallback record is built for that configuration - the
+    exception's message becomes the assertion's stderr - so the other
+    configurations still run and the table still renders one row per
+    configuration.
+    """
+
+    def _get_run_all(self) -> Callable:
+        """Fetch ``anvilkit.piapproval.run_all``, failing clearly if absent."""
+        piapproval = self._piapproval()
+        run_all = getattr(piapproval, "run_all", None)
+        self.assertTrue(
+            callable(run_all),
+            "anvilkit.piapproval.run_all is not callable; the run-all "
+            "driver (behaviour 7) has not been implemented yet",
+        )
+        return run_all
+
+    def _all_fake(self, fail_on: Optional[str] = None) -> Callable:
+        """A deterministic fake runner keyed on the argv it receives.
+
+        The configuration is recovered from the argv tokens (``mcp`` is
+        the second token for the mcp-list configs; ``-a``/``-na`` picks
+        the approve variant) so the fake's behaviour is a pure function
+        of its input. The model configs answer with the marker stream,
+        the mcp-list configs with the probe-server document. ``fail_on``
+        makes the fake raise ``OSError`` for that configuration,
+        simulating a runner that blows up mid-run.
+        """
+
+        def fake_runner(invocation: Dict[str, Any]) -> Dict[str, Any]:
+            fake_runner._calls.append(dict(invocation))
+            argv = invocation["argv"]
+            if argv[1] == "mcp":
+                config = (
+                    "mcp-list-approve" if "-a" in argv else "mcp-list-no-approve"
+                )
+                payload = MCP_LIST_WITH_SERVER
+            elif "-a" in argv:
+                config = "approve"
+                payload = JSONL_WITH_MARKER
+            else:
+                config = "no-approve"
+                payload = JSONL_WITH_MARKER
+            if fail_on is not None and config == fail_on:
+                raise OSError("boom-" + config)
+            return self._result_with_stdout(payload)
+
+        fake_runner._calls = []
+        return fake_runner
+
+    @staticmethod
+    def _result_with_stdout(stdout: str, stderr: str = "") -> Dict[str, Any]:
+        result = PiapprovalTestCase._default_result()
+        result["stdout"] = stdout
+        result["stderr"] = stderr
+        return result
+
+    def _call_run_all(self, run_all, base_dir, fake):
+        """Call run_all with the standard inputs; the pinned call shape."""
+        return run_all(
+            base_dir,
+            fake,
+            MODEL_ID,
+            GATEWAY_HOST,
+            GATEWAY_PORT,
+            CONTEXT_WINDOW,
+            MAX_TOKENS,
+            PROMPT,
+            MARKER,
+            UNREACHABLE_COMMAND,
+            timestamp=TIMESTAMP,
+        )
+
+    @staticmethod
+    def _expected_record(config: str, base_dir: Path) -> Dict[str, Any]:
+        """The record pirecord.build must produce for a run-all config.
+
+        Mirrors ``PiapprovalTestCase._expected_record`` with the
+        run-all layout: the artifacts live under
+        ``<base_dir>/<config>/results``.
+        """
+        results = base_dir / config / "results"
+        stdout = JSONL_WITH_MARKER if config in (
+            "approve",
+            "no-approve",
+        ) else MCP_LIST_WITH_SERVER
+        events = (
+            pievents.parse(stdout)["events"]
+            if config in ("approve", "no-approve")
+            else []
+        )
+        if config in ("approve", "no-approve"):
+            passed = MARKER in stdout
+            kind = "marker"
+            detail = (
+                "marker found in assistant output"
+                if passed
+                else "marker not found in assistant output"
+            )
+        else:
+            passed = SERVER_NAME in stdout
+            kind = "server-name"
+            detail = (
+                "server name present in mcp list output"
+                if passed
+                else "server name absent from mcp list output"
+            )
+        return pirecord.build(
+            config,
+            model=MODEL_ID,
+            exit_code=0,
+            wall_time_s=1.5,
+            waited_for_input=False,
+            artifacts={
+                "stdout": str(results / "stdout"),
+                "stderr": str(results / "stderr"),
+                "jsonl": (
+                    str(results / "events.jsonl")
+                    if config in ("approve", "no-approve")
+                    else None
+                ),
+                "before_digest": str(results / "before.sha256"),
+                "after_digest": str(results / "after.sha256"),
+            },
+            tool_calls=pievents.tool_calls(events),
+            outcome=pievents.outcome(events),
+            assertion={"passed": passed, "kind": kind, "detail": detail},
+            changed_files=[],
+            timestamp=TIMESTAMP,
+        )
+
+    @staticmethod
+    def _failure_record(config: str, base_dir: Path, message: str) -> Dict:
+        """The pinned record for a configuration whose runner raised.
+
+        The exception's message lands as the assertion's stderr (the
+        record's closed thirteen-key shape has no free-form evidence
+        field); everything else is the no-measurement baseline: a
+        non-zero sentinel exit code, zero wall time, no changed files,
+        the empty-stream counters and outcome.
+        """
+        results = base_dir / config / "results"
+        return pirecord.build(
+            config,
+            model=MODEL_ID,
+            exit_code=1,
+            wall_time_s=0.0,
+            waited_for_input=True,
+            artifacts={
+                "stdout": str(results / "stdout"),
+                "stderr": str(results / "stderr"),
+                "jsonl": None,
+                "before_digest": str(results / "before.sha256"),
+                "after_digest": str(results / "after.sha256"),
+            },
+            tool_calls=pievents.tool_calls([]),
+            outcome=pievents.outcome([]),
+            assertion={"passed": False, "stderr": message},
+            changed_files=[],
+            timestamp=TIMESTAMP,
+        )
+
+    def _assert_record(self, record, expected):
+        """Full-shape equality, masking the assertion's stderr the way
+        the run_one tests do (its exact text is not pinned for the
+        normal configs)."""
+        self.assertEqual(RECORD_KEYS, set(record))
+        actual = dict(record)
+        actual_assertion = actual.pop("assertion")
+        expected = dict(expected)
+        expected_assertion = expected.pop("assertion")
+        self.assertEqual(expected, actual)
+        self.assertEqual(
+            expected_assertion.get("passed"), actual_assertion.get("passed")
+        )
+
+    def test_run_all_is_callable(self):
+        self._get_run_all()
+
+    def test_run_all_invokes_runner_once_per_config_in_fixed_order(self):
+        run_all = self._get_run_all()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base_dir = Path(tmp.name) / "run"
+        fake = self._all_fake()
+        records, _ = self._call_run_all(run_all, base_dir, fake)
+        # Exactly four runner invocations, one per configuration, in the
+        # pinned order, each against its own per-config project directory
+        # with a per-config agent directory in the env overlay.
+        self.assertEqual(4, len(fake._calls))
+        expected_argv = [
+            piargv.approval_argv(MODEL_ID, PROMPT, True),
+            piargv.approval_argv(MODEL_ID, PROMPT, False),
+            piargv.mcp_list_argv(True),
+            piargv.mcp_list_argv(False),
+        ]
+        expected_budgets = [
+            BUDGET_APPROVE_S,
+            BUDGET_APPROVE_S,
+            BUDGET_MCP_LIST_S,
+            BUDGET_MCP_LIST_S,
+        ]
+        for index, (config, argv, budget) in enumerate(
+            zip(CONFIGS, expected_argv, expected_budgets)
+        ):
+            self.assertEqual(
+                {
+                    "argv": argv,
+                    "cwd": str(base_dir / config / "project"),
+                    "stdin": "/dev/null",
+                    "timeout_s": budget,
+                    "env": {"PI_CODING_AGENT_DIR": str(base_dir / config / "agent")},
+                },
+                fake._calls[index],
+                "the runner invocation for "
+                + config
+                + " must carry exactly the config's argv, cwd = the "
+                "per-config project dir, stdin /dev/null, the config's "
+                "budget, and an env dict pointing PI_CODING_AGENT_DIR at "
+                "the per-config agent directory",
+            )
+        self.assertEqual(
+            [record["config"] for record in records], list(CONFIGS)
+        )
+
+    def test_run_all_writes_record_json_sort_keys_per_config(self):
+        run_all = self._get_run_all()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base_dir = Path(tmp.name) / "run"
+        fake = self._all_fake()
+        records, _ = self._call_run_all(run_all, base_dir, fake)
+        for config, record in zip(CONFIGS, records):
+            record_path = base_dir / config / "results" / "record.json"
+            self.assertTrue(
+                record_path.is_file(),
+                config + " must write record.json to its own results dir",
+            )
+            self.assertEqual(
+                json.dumps(record, sort_keys=True),
+                record_path.read_text(encoding="utf-8"),
+                config + "'s record.json must carry exactly "
+                "json.dumps(record, sort_keys=True)",
+            )
+
+    def test_run_all_records_match_pirecord_build_per_config(self):
+        run_all = self._get_run_all()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base_dir = Path(tmp.name) / "run"
+        fake = self._all_fake()
+        records, _ = self._call_run_all(run_all, base_dir, fake)
+        for record in records:
+            self._assert_record(
+                record, self._expected_record(record["config"], base_dir)
+            )
+
+    def test_run_all_writes_table_md_and_returns_same_table(self):
+        run_all = self._get_run_all()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base_dir = Path(tmp.name) / "run"
+        fake = self._all_fake()
+        records, table = self._call_run_all(run_all, base_dir, fake)
+        table_path = base_dir / "table.md"
+        self.assertTrue(
+            table_path.is_file(),
+            "run_all must write table.md to the base dir",
+        )
+        rendered = pirecord.render_table(records)
+        # The table is written to table.md AND returned, byte-identical.
+        self.assertEqual(
+            rendered,
+            table,
+            "the returned table must be exactly pirecord.render_table"
+            " (records in run order)",
+        )
+        self.assertEqual(
+            rendered,
+            table_path.read_text(encoding="utf-8"),
+            "table.md must carry exactly pirecord.render_table(records)",
+        )
+        # One row per configuration, in run order.
+        for config in CONFIGS:
+            self.assertIn("| " + config + " |", table)
+
+    def test_run_all_failed_config_does_not_abort_others(self):
+        run_all = self._get_run_all()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base_dir = Path(tmp.name) / "run"
+        fake = self._all_fake(fail_on="no-approve")
+        records, table = self._call_run_all(run_all, base_dir, fake)
+        # All four invocations happened; the order is unchanged.
+        self.assertEqual(4, len(fake._calls))
+        self.assertEqual(
+            [record["config"] for record in records], list(CONFIGS)
+        )
+        approve_record, no_approve_record, mcp_a_record, mcp_na_record = records
+        # The sibling configurations still built normal records.
+        self._assert_record(
+            approve_record, self._expected_record("approve", base_dir)
+        )
+        self._assert_record(
+            mcp_a_record, self._expected_record("mcp-list-approve", base_dir)
+        )
+        self._assert_record(
+            mcp_na_record,
+            self._expected_record("mcp-list-no-approve", base_dir),
+        )
+        # The failed configuration's record is still built, with the
+        # exception message as the assertion's stderr.
+        expected_failure = self._failure_record(
+            "no-approve", base_dir, "boom-no-approve"
+        )
+        self._assert_record(no_approve_record, expected_failure)
+        self.assertEqual(
+            "boom-no-approve",
+            no_approve_record["assertion"]["stderr"],
+            "the fallback record's assertion stderr must carry the "
+            "exception's message",
+        )
+        self.assertFalse(
+            no_approve_record["completed"],
+            "a no-measurement fallback record must not be completed",
+        )
+        # Its record.json is still written.
+        record_path = base_dir / "no-approve" / "results" / "record.json"
+        self.assertTrue(record_path.is_file())
+        self.assertEqual(
+            json.dumps(no_approve_record, sort_keys=True),
+            record_path.read_text(encoding="utf-8"),
+        )
+        # The table still renders one row per configuration, in order.
+        for config in CONFIGS:
+            self.assertIn("| " + config + " |", table)
+        self.assertTrue(table.endswith("PARTIAL (3 of 4 completed)"))
+
+
 if __name__ == "__main__":
     unittest.main()
