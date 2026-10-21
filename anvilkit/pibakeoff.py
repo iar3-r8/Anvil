@@ -407,7 +407,8 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
    Args:
        spec: The invocation dict: ``argv`` (list of strings), ``cwd``
            (string), ``stdin`` (string; ``/dev/null``), ``timeout_s``
-           (float, the wall-clock budget).
+           (float, the wall-clock budget), and optionally ``env`` (a
+           dict merged over the parent environment for the child).
 
    Returns:
        Dict[str, Any]: exactly the six runner-contract keys, ``exit_code``
@@ -416,11 +417,23 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
 
    Raises:
        BakeoffError: the spec is missing ``timeout_s``; the key is named
-       and no process is spawned.
+       and no process is spawned. Also raised when ``env`` is present
+       but not a dict: the key is named and no process is spawned.
    """
    timeout_s = spec.get("timeout_s")
    if timeout_s is None:
        raise BakeoffError("spec is missing the required key 'timeout_s'")
+
+   # The optional env overlay: absent or None inherits the parent
+   # environment unchanged (every existing caller is unaffected); a dict
+   # is merged over os.environ with the overlay winning. Any other type
+   # is a programming error named and rejected before the spawn.
+   env_overlay = spec.get("env")
+   if env_overlay is not None and not isinstance(env_overlay, dict):
+       raise BakeoffError(
+           "spec key 'env' must be a dict (or absent/None to inherit "
+           "the parent environment)"
+       )
 
    argv: List[str] = spec["argv"]
    # start_new_session=True gives the child its own session and process
@@ -428,6 +441,12 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
    # line like ``sh -c "echo partial; sleep 30"`` would otherwise
    # orphan the sleep, which keeps the pipe write-ends open, the readers
    # never see EOF, and the bounded joins stall for the full budget.
+   # env=None (the spawn default) inherits the parent environment, so
+   # the absent/None overlay case spawns exactly as before; a dict
+   # overlays the parent, whose keys are never deleted.
+   proc_env: Optional[Dict[str, str]] = (
+       None if env_overlay is None else {**os.environ, **env_overlay}
+   )
    proc = subprocess.Popen(
        argv,
        cwd=spec["cwd"],
@@ -435,6 +454,7 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
        stdout=subprocess.PIPE,
        stderr=subprocess.PIPE,
        start_new_session=True,
+       env=proc_env,
    )
 
    stdout_buffer: List[bytes] = []
