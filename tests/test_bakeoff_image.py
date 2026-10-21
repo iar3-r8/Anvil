@@ -216,6 +216,41 @@ class TestBakeoffImageContent(BakeoffImageCase):
             "the bake-off image must run as a non-root user, got USER %r" % value,
         )
 
+    def test_run_instruction_creates_agent_home_owned_by_container_user(self):
+        user_lines = _instruction_lines(self.text, "USER")
+        self.assertTrue(user_lines, "no USER instruction found")
+        # The last USER instruction wins: that is the identity the
+        # container actually runs as.
+        parts = user_lines[-1].split(None, 1)
+        user = parts[1].split(":", 1)[0].strip() if len(parts) > 1 else ""
+        agent_dir = "/home/%s/.pi/agent" % user
+
+        run_lines = _instruction_lines(self.text, "RUN")
+        creating = [
+            line
+            for line in run_lines
+            if agent_dir in line and re.search(r"\b(mkdir|chown)\b", line)
+        ]
+        self.assertTrue(
+            creating,
+            "no RUN instruction creates %s; the named volume is created "
+            "empty, so without content at the agent home in the image "
+            "Docker's first-mount copy-up never runs and the mountpoint "
+            "lands root-owned (the container user cannot write "
+            "models.json into it); got RUN lines: %r"
+            % (agent_dir, run_lines),
+        )
+        chowning = [
+            line for line in creating if re.search(r"\bchown\b", line) and user in line
+        ]
+        self.assertTrue(
+            chowning,
+            "no RUN instruction chowns %s to the container user %r; the "
+            "copy-up must transfer the directory with the container "
+            "user's ownership, so the driver can write into the volume "
+            "(created lines: %r)" % (agent_dir, user, creating),
+        )
+
     def test_workdir_is_workspace(self):
         workdir_lines = _instruction_lines(self.text, "WORKDIR")
 
