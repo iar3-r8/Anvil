@@ -29,7 +29,8 @@ Pinned signature::
   every test passes an explicit temp directory;
 - ``model_id``, ``gateway_host``, ``gateway_port``, ``context_window``,
   ``max_tokens``: feed both the argv (``model_id``) and the models document
-  written to ``<agent_dir>/.pi/agent/models.json``;
+  written to ``<agent_dir>/models.json`` (flat - ``PI_CODING_AGENT_DIR``
+  names the agent directory itself);
 - ``prompt``: the fixed phase-2 marker prompt (the tests own its value);
 - ``marker``: the marker token the project fixture's APPEND_SYSTEM.md
   instructs the model to echo;
@@ -57,14 +58,16 @@ Pinned ``run_one`` responsibilities:
   (``.pi/settings.json``, ``.pi/APPEND_SYSTEM.md`` carrying the marker,
   ``.pi/mcp.json`` with the one unreachable stdio server named
   ``anvil-trust-probe``);
-- the models document at ``<agent_dir>/.pi/agent/models.json`` - exactly
+- the models document at ``<agent_dir>/models.json`` (flat -
+  ``PI_CODING_AGENT_DIR`` names the agent directory itself) - exactly
   ``json.dumps`` of
   ``piargv.models_document(model_id, gateway_port, context_window,
   max_tokens, host=gateway_host)``; the agent directory is a DIFFERENT
   directory from the project directory;
 - the runner invoked exactly once, with the config's exact argv
   (``piargv.approval_argv(model_id, prompt, approve)`` /
-  ``piargv.mcp_list_argv(approve)``), ``cwd = str(project_dir)``, stdin
+  ``piargv.mcp_list_argv()`` - no argument, no approve flag),
+  ``cwd = str(project_dir)``, stdin
   ``/dev/null``, the config's budget, and an ``env`` dict carrying
   ``PI_CODING_AGENT_DIR`` pointing at the per-run agent directory;
 - artifacts ``stdout`` and ``stderr`` in ``results_dir`` for every config,
@@ -604,11 +607,12 @@ class TestModelsDocumentAndProject(PiapprovalTestCase):
         dirs = self._fresh()
         fake = self._fake()
         self._run(run_one, dirs, "approve", fake)
-        models_path = dirs["agent_dir"] / ".pi" / "agent" / "models.json"
+        models_path = dirs["agent_dir"] / "models.json"
         self.assertTrue(
             models_path.is_file(),
-            "the models document must be written to "
-            "<agent_dir>/.pi/agent/models.json",
+            "the models document must be written flat to "
+            "<agent_dir>/models.json (PI_CODING_AGENT_DIR names the agent "
+            "directory itself)",
         )
         expected = piargv.models_document(
             MODEL_ID,
@@ -636,7 +640,7 @@ class TestModelsDocumentAndProject(PiapprovalTestCase):
             "directory",
         )
         self.assertTrue(
-            (dirs["agent_dir"] / ".pi" / "agent" / "models.json").is_file(),
+            (dirs["agent_dir"] / "models.json").is_file(),
             "the models document must live under the agent directory, "
             "not the project directory",
         )
