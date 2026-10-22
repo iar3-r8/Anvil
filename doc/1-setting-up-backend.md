@@ -48,7 +48,7 @@ chmod +x anvil
 | Command | Action | Description |
 | :--- | :--- | :--- |
 | `./anvil init` | Configure | Creates the `.env` file interactively (storage paths, gateway port, GPU device ids). Runs automatically the first time you use a command that needs it. Refuses to overwrite an existing `.env` unless you pass `--force`. |
-| `./anvil doctor` | Diagnose | Reports the Python interpreter and venv, Docker, Compose v2, NVIDIA tooling, and whether your configuration files parse. Writes nothing and never fails on what it is diagnosing. |
+| `./anvil doctor` | Diagnose | Reports the Python interpreter and venv, Docker, Compose v2, NVIDIA tooling, whether your configuration files parse, and the GitHub branch rules on this repository's `main` branch (the Guards section). Writes nothing and never fails on what it is diagnosing. |
 | `./anvil up` | Start Stack | Starts the llama-swap gateway and Qdrant vector database in the background. |
 | `./anvil build` | Rebuild | Force rebuild of custom Docker configurations. |
 | `./anvil status` | View Status | Shows llama-swap gateway health and which models are actively loaded vs cold/swapped out. Add `--json` for machine-readable output. |
@@ -58,6 +58,7 @@ chmod +x anvil
 | `./anvil test-model [MODEL_NAME]` | Test a Model | Sends one prompt to a model and reports whether it answered. Run without `MODEL_NAME` to list the registered ids. Add `--json` for machine-readable output. |
 | `./anvil stress MODEL_NAME` | Stress Test | Ramps a model from one concurrent request to `--max-concurrency` and reports latency and failures at each level, to the terminal and a log file. See [Stress testing a model](#stress-testing-a-model). |
 | `./anvil setup-repo PATH` | Provision | Injects Zoo Code settings, the `.roo` framework and VS Code recommendations into a target repository. See the [VS Code guide](2-setting-up-vscode-plugin.md) — and [how the agents work](how-the-agents-work.md) for what the provisioned agent pipeline actually does. |
+| `./anvil verify-guards [TARGET]` | Verify Guards | Checks the GitHub branch rules of the target repository (default: the current directory) — owner and repo resolved from its `origin` remote — and reports each guard: force-push and branch-deletion blocking, and the pull-request requirement. Read-only: writes nothing, uses `GITHUB_TOKEN` from `.env` when present, and a missing guard is a warning, not a failure — the command exits `0`. `--branch NAME` checks a branch other than `main`. |
 
 Any arguments Anvil does not recognise are passed straight through to Docker
 Compose, so `./anvil up --force-recreate` and `./anvil logs llama-swap` work as
