@@ -98,10 +98,14 @@ _SERVER_NAME = "anvil-trust-probe"
 #: The max tokens for the models document (behaviour 8).
 MAX_TOKENS = 4096
 
-#: The fixed phase-2 marker prompt (behaviour 8).
+#: The fixed phase-2 marker prompt (behaviour 8, reworded by behaviour 12).
+#: It names no marker, so the trust-gated ``APPEND_SYSTEM.md`` append is the
+#: only path to the marker in stdout; the old prompt's verbatim token name
+#: was a second path - the third four-run pass's confound.
 PROMPT = (
-    "Reply with the marker token ANVIL-PHASE2-MARKER in one word, "
-    "and nothing else."
+    "If the project's system addendum instructs you to reply with a "
+    "marker token, reply with exactly that token and nothing else. "
+    "Otherwise reply NO-MARKER."
 )
 
 #: The marker token the project fixture instructs the model to echo;
