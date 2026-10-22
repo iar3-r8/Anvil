@@ -1,4 +1,4 @@
-"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-3).
+"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-4).
 
 Written before the implementation (TDD RED step for behaviour 1 of
 plans/pi-guard-verification.md: the history-rewrite guard).
@@ -11,13 +11,19 @@ yields a ``passed`` finding naming the rule's API type and its
 (history rewritten unrecoverably) and the fix. An empty array warns on both.
 
 No test performs real network I/O: the input is a recorded response fixture
-(a plain list of dicts in the shape the endpoint documents).
+(a plain list of dicts in the shape the endpoint documents). Behaviour 4's
+tests go one step further and inject a recorded *opener* (a urlopen-like
+callable) so the fetch path runs over recorded responses with no live network.
 """
 
+import json
+import socket
 import sys
 import unittest
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -371,6 +377,327 @@ class RenderFindingTests(unittest.TestCase):
                     line,
                     "the rendered warn line must name the concrete fix, e.g. "
                     "a doc path under doc/external/github/",
+                )
+
+
+class _FakeResponse:
+    """A minimal urlopen response: readable and usable as a context manager."""
+
+    def __init__(self, body: bytes, status: int = 200) -> None:
+        self._body = body
+        self.status = status
+
+    def getcode(self) -> int:
+        return self.status
+
+    def read(self) -> bytes:
+        return self._body
+
+    def __enter__(self) -> "_FakeResponse":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool:
+        return False
+
+
+def _opener(outcome: Any) -> Any:
+    """A urlopen-like callable that plays back one recorded outcome.
+
+    ``outcome`` is either an exception to raise on call (a recorded failure)
+    or a :class:`_FakeResponse` to return (a recorded success). Accepts
+    whatever argument shape the implementation hands it, so the test does
+    not depend on the exact call signature.
+    """
+
+    def opener(*args: Any, **kwargs: Any) -> Any:
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    return opener
+
+
+class _SkippedAssertions:
+    """Mixin of shared assertions on what a failed fetch must turn into.
+
+    Deliberately a plain mixin, not a ``unittest.TestCase``: only the
+    concrete test classes inherit ``unittest.TestCase`` (with this mixin
+    second, for the assertion methods), which is what the test loader
+    looks for when discovering tests.
+
+    Behaviour 4 of plans/pi-guard-verification.md: a check that cannot run
+    yields a ``skipped`` finding carrying the reason - never ``passed``,
+    never an exception. One skipped finding per defined check, each with a
+    non-empty reason and a non-empty remedy (behaviour 5 invariant: a
+    finding that cannot say what the user can do to make the check runnable
+    is a programming error).
+    """
+
+    def _assert_skipped_findings(self, findings: Any, reason: str) -> None:
+        self.assertIsInstance(findings, list)
+        checks = [_field(f, "check") for f in findings]
+        self.assertEqual(
+            checks.count("history_rewrite"),
+            1,
+            "exactly one skipped finding expected for the history_rewrite check",
+        )
+        self.assertEqual(
+            checks.count("review"),
+            1,
+            "exactly one skipped finding expected for the review check",
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["skipped", "skipped"],
+            "every affected check must yield a skipped finding, in a "
+            "visually distinct shape from a pass",
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "passed"],
+            [],
+            "a skipped finding never counts toward a clean report",
+        )
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                carried = _field(finding, "reason") or _field(finding, "danger")
+                self.assertTrue(
+                    carried,
+                    "each skipped finding carries a non-empty reason",
+                )
+                self.assertIn(
+                    reason,
+                    carried,
+                    "the reason the fetch failed must reach the finding, so "
+                    "the user sees why the check did not run",
+                )
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "each skipped finding carries a non-empty remedy naming "
+                    "what the user can do to make the check runnable",
+                )
+
+
+class FetchBranchRulesTests(unittest.TestCase, _SkippedAssertions):
+    """Behaviour 4: an unreachable or unreadable rules endpoint is skipped, not passed.
+
+    ``fetch_branch_rules(owner, repo, branch, token=None, opener=None,
+    timeout=None)`` is expected to take an injectable opener (a urlopen-like
+    callable, the same seam ``anvilkit/health.py`` uses) and to return
+    ``(rules, None)`` on a 200 with a JSON array, or ``(None, reason)`` on
+    any failure - never raising. A missing token is NOT an automatic skip:
+    the endpoint allows unauthenticated access on public repositories
+    (plans/pi-guard-verification.md, Assumptions), so a missing token means
+    an unauthenticated attempt, and only actual request failure skips.
+    Every test below runs over a recorded opener - no live network.
+    """
+
+    def _fetcher(self) -> Any:
+        fetcher = getattr(piguard, "fetch_branch_rules", None)
+        self.assertTrue(
+            callable(fetcher),
+            "anvilkit.piguard.fetch_branch_rules is not callable; the rules "
+            "endpoint fetch has not been implemented yet",
+        )
+        return fetcher
+
+    def test_url_error_returns_none_and_reason_without_raising(self):
+        fetch = self._fetcher()
+
+        rules, reason = fetch(
+            "owner",
+            "repo",
+            "main",
+            opener=_opener(urllib.error.URLError("Name or service not known")),
+        )
+
+        self.assertIsNone(rules, "no rules exist when the request never lands")
+        self.assertIsInstance(reason, str)
+        self.assertTrue(
+            reason, "a failed fetch must record the reason it failed"
+        )
+
+        self._assert_skipped_findings(piguard.skipped_findings(reason), reason)
+
+    def test_timeout_returns_none_and_reason_without_raising(self):
+        # A network timeout is a skipped, not a fail (plan Assumptions): a
+        # slow GitHub must not make a provisioning command unusable.
+        fetch = self._fetcher()
+        for label, outcome in (
+            ("bare socket.timeout", socket.timeout("timed out")),
+            (
+                "URLError wrapping socket.timeout",
+                urllib.error.URLError(socket.timeout("timed out")),
+            ),
+        ):
+            with self.subTest(timeout=label):
+                rules, reason = fetch(
+                    "owner", "repo", "main", opener=_opener(outcome)
+                )
+
+                self.assertIsNone(rules)
+                self.assertIsInstance(reason, str)
+                self.assertTrue(reason, "a timeout must record the reason")
+
+                self._assert_skipped_findings(
+                    piguard.skipped_findings(reason), reason
+                )
+
+    def test_http_404_returns_non_blaming_reason(self):
+        # A 404 on a private repo may be a plan limit - rulesets are
+        # unavailable on private repos under GitHub Free (plan Notes) - so
+        # the reason must name the situation, not accuse the user.
+        fetch = self._fetcher()
+        url = "https://api.github.com/repos/owner/repo/rules/branches/main"
+
+        rules, reason = fetch(
+            "owner",
+            "repo",
+            "main",
+            opener=_opener(urllib.error.HTTPError(url, 404, "Not Found", None, None)),
+        )
+
+        self.assertIsNone(rules)
+        self.assertIsInstance(reason, str)
+        self.assertTrue(
+            reason, "a 404 must still record a non-empty reason"
+        )
+        self.assertNotIn(
+            "you",
+            reason.lower(),
+            "a 404 may be a plan limit (rulesets unavailable on private "
+            "repos under GitHub Free); the reason must not accuse the user",
+        )
+
+        findings = piguard.skipped_findings(reason)
+        self._assert_skipped_findings(findings, reason)
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                self.assertEqual(_field(finding, "status"), "skipped")
+
+    def test_non_json_body_returns_none_and_reason_without_raising(self):
+        fetch = self._fetcher()
+
+        rules, reason = fetch(
+            "owner",
+            "repo",
+            "main",
+            opener=_opener(_FakeResponse(b"<html>GitHub</html>")),
+        )
+
+        self.assertIsNone(
+            rules, "an unreadable body must not be reported as rules"
+        )
+        self.assertIsInstance(reason, str)
+        self.assertTrue(
+            reason, "an unreadable body must record the reason"
+        )
+
+        self._assert_skipped_findings(piguard.skipped_findings(reason), reason)
+
+    def test_json_array_returns_rules_and_none_usable_by_checks(self):
+        # Success-path regression: a working response still produces real
+        # findings, and the fetched rules plug straight into the check
+        # functions.
+        fetch = self._fetcher()
+        body = json.dumps(
+            [
+                rule("non_fast_forward", "main-guard"),
+                rule("deletion", "main-guard"),
+                pull_request_rule("main-guard", 1),
+            ]
+        ).encode("utf-8")
+
+        rules, reason = fetch(
+            "owner", "repo", "main", opener=_opener(_FakeResponse(body))
+        )
+
+        self.assertIsNone(reason, "a 200 with a JSON array is a success")
+        self.assertIsInstance(rules, list)
+        self.assertTrue(
+            all(isinstance(r, dict) for r in rules),
+            "each rule must be the parsed element from the response",
+        )
+
+        history = piguard.check_history_rewrite(rules)
+        self.assertEqual(
+            [_field(f, "status") for f in history],
+            ["passed", "passed"],
+            "fetched rules must flow into real findings: both history-rewrite "
+            "rules active means two passed findings",
+        )
+        review = piguard.check_review(rules)
+        self.assertEqual(
+            [_field(f, "status") for f in review],
+            ["passed"],
+            "fetched rules must flow into real findings: pull_request active "
+            "means one passed review finding",
+        )
+        self.assertEqual(
+            _field(review[0], "required_approving_review_count"),
+            1,
+            "the recorded review count must survive the fetch",
+        )
+
+
+class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
+    """Behaviour 4 (rendering half): a skipped finding is visually distinct from a pass.
+
+    ``skipped_findings(reason)`` yields one ``skipped`` finding per defined
+    check (history_rewrite, review), each carrying the reason and a remedy
+    naming what the user can do to make the check runnable.
+    ``render_finding`` already carries the reason for a skipped finding; the
+    rendered line must say the check could not run - never a passed-style
+    ``ok:`` prefix.
+    """
+
+    def _skipped_findings(self) -> Any:
+        producer = getattr(piguard, "skipped_findings", None)
+        self.assertTrue(
+            callable(producer),
+            "anvilkit.piguard.skipped_findings is not callable; the "
+            "skipped-finding producer has not been implemented yet",
+        )
+        return producer
+
+    def test_one_skipped_finding_per_check_carries_reason_and_remedy(self):
+        reason = "GitHub was unreachable: connection refused"
+
+        findings = self._skipped_findings()(reason)
+
+        self._assert_skipped_findings(findings, reason)
+
+    def test_rendered_skipped_finding_is_visually_distinct_from_a_pass(self):
+        reason = "GitHub was unreachable: connection refused"
+        findings = self._skipped_findings()(reason)
+        passed_line = piguard.render_finding(
+            piguard.check_history_rewrite(
+                [rule("non_fast_forward", "main-guard")]
+            )[0]
+        )
+
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                line = piguard.render_finding(finding)
+                self.assertIn(
+                    "skipped",
+                    line.lower(),
+                    "the rendered skipped line must say the check was skipped",
+                )
+                self.assertIn(
+                    reason,
+                    line,
+                    "the rendered skipped line must carry the reason",
+                )
+                self.assertNotIn(
+                    "ok:",
+                    line,
+                    "a skipped finding must never carry a passed-style "
+                    "'ok:' prefix",
+                )
+                self.assertNotEqual(
+                    line,
+                    passed_line,
+                    "a skipped finding is visually distinct from a pass",
                 )
 
 
