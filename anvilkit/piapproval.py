@@ -140,8 +140,8 @@ def _argv_for(config: str, model_id: str, prompt: str) -> List[str]:
     if config == "no-approve":
         return piargv.approval_argv(model_id, prompt, False)
     if config == "mcp-list-approve":
-        return piargv.mcp_list_argv(True)
-    return piargv.mcp_list_argv(False)
+        return piargv.mcp_list_argv()
+    return piargv.mcp_list_argv()
 
 
 def _budget_for(config: str) -> float:

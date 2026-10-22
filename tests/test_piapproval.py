@@ -392,9 +392,9 @@ class PiapprovalTestCase(unittest.TestCase):
         if config == "no-approve":
             return piargv.approval_argv(MODEL_ID, PROMPT, False)
         if config == "mcp-list-approve":
-            return piargv.mcp_list_argv(True)
+            return piargv.mcp_list_argv()
         if config == "mcp-list-no-approve":
-            return piargv.mcp_list_argv(False)
+            return piargv.mcp_list_argv()
         raise AssertionError("unknown config in test: " + config)
 
     @staticmethod
@@ -519,7 +519,11 @@ class TestRunOneInvocation(PiapprovalTestCase):
         fake = self._fake(result=self._result_with_stdout(MCP_LIST_WITH_SERVER))
         self._run(run_one, dirs, "mcp-list-no-approve", fake)
         self._assert_invocation(fake, dirs, "mcp-list-no-approve")
-        self.assertIn("-na", fake._calls[0]["argv"])
+        # Live pi 1.3.0 rejects -a/-na on the subcommand: the mcp-list argv
+        # carries no trust flag for either mcp-list configuration (the trust
+        # difference is materialised by the trust store, not a flag).
+        self.assertNotIn("-a", fake._calls[0]["argv"])
+        self.assertNotIn("-na", fake._calls[0]["argv"])
 
     def test_budget_approve_is_300_seconds(self):
         run_one = self._get_run_one()
@@ -1284,8 +1288,8 @@ class TestRunAll(PiapprovalTestCase):
         expected_argv = [
             piargv.approval_argv(MODEL_ID, PROMPT, True),
             piargv.approval_argv(MODEL_ID, PROMPT, False),
-            piargv.mcp_list_argv(True),
-            piargv.mcp_list_argv(False),
+            piargv.mcp_list_argv(),
+            piargv.mcp_list_argv(),
         ]
         expected_budgets = [
             BUDGET_APPROVE_S,

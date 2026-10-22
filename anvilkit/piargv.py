@@ -217,13 +217,13 @@ def approval_argv(model_id: str, prompt: str, approve: bool) -> List[str]:
     ]
 
 
-def mcp_list_argv(approve: bool) -> List[str]:
+def mcp_list_argv() -> List[str]:
     """Build the argv for the phase-2 ``pi mcp list`` probe (behaviour 3).
 
     A shell command that works outside a session and does not load
-    extensions; ``--json`` prints machine-readable state and the trust
-    flag selects project trust. No validation beyond the branch: a
-    rejected ``-a``/``-na`` flag is a recorded finding, not a builder
-    error.
+    extensions; ``--json`` prints machine-readable state. Live pi 1.3.0
+    accepts only ``pi mcp list [--json]`` - there is no trust flag on this
+    subcommand; the trust difference is materialised by run_one seeding
+    the agent-directory trust.json, not a flag.
     """
-    return ["pi", "mcp", "list", "--json", "-a" if approve else "-na"]
+    return ["pi", "mcp", "list", "--json"]
