@@ -59,6 +59,23 @@ _DANGERS = {
     ),
 }
 
+# What an agent could do while a check is unmeasured, per check: the
+# specific reason names why the check did not run, the danger names the
+# hole the report cannot rule out. A skipped finding carries both, so it
+# stands on its own rather than leaning on the renderer.
+_SKIPPED_DANGERS = {
+    CHECK_HISTORY_REWRITE: (
+        "whether the branch history can be rewritten by a force push, or "
+        "the branch itself deleted, is unmeasured: an agent could do "
+        "either with no gate, and this report cannot rule it out"
+    ),
+    CHECK_REVIEW: (
+        "whether an agent's change can land on the branch unreviewed is "
+        "unmeasured: a push could go straight to the branch, and this "
+        "report cannot rule it out"
+    ),
+}
+
 
 def fetch_branch_rules(
     owner: str,
@@ -147,9 +164,11 @@ def skipped_findings(reason: str) -> List[Dict[str, Any]]:
 
     A check that could not run - a failed or unreadable fetch - must never
     count toward a clean report, so each defined check gets its own
-    ``skipped`` finding carrying ``reason`` and a non-empty ``remedy``
-    naming what makes the check runnable again (behaviours 4 and 5).
-    ``render_finding`` renders the ``reason`` field for skipped lines.
+    ``skipped`` finding carrying ``reason`` (why it did not run), a
+    non-empty ``danger`` naming the unmeasured hole the report cannot rule
+    out, and a non-empty ``remedy`` naming what makes the check runnable
+    again (behaviours 4 and 5). ``render_finding`` renders the ``reason``
+    field for skipped lines; the finding stands on its own either way.
     """
     findings = []
     for check in (CHECK_HISTORY_REWRITE, CHECK_REVIEW):
@@ -158,7 +177,7 @@ def skipped_findings(reason: str) -> List[Dict[str, Any]]:
                 "status": "skipped",
                 "check": check,
                 "rule": None,
-                "danger": "",
+                "danger": _SKIPPED_DANGERS[check],
                 "source": None,
                 "reason": reason,
                 "remedy": (
