@@ -1,4 +1,4 @@
-"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-6).
+"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-7).
 
 Written before the implementation (TDD RED step for behaviour 1 of
 plans/pi-guard-verification.md: the history-rewrite guard).
@@ -1079,6 +1079,181 @@ class ResolveRepositoryTests(unittest.TestCase):
                         "a non-GitHub origin must yield no repository "
                         "identity - never a guess",
                     )
+
+
+class SummarizeTests(unittest.TestCase):
+    """Behaviour 7: the exit-status seam - ``summarize(findings)``.
+
+    The ``verify-guards`` command interprets its findings to decide its exit
+    status. That interpretation is a pure function of the findings, so it is
+    testable with no typer and no network: 0 when nothing failed, non-zero
+    (1) when any finding has status ``fail``. ``warn`` and ``skipped`` alone
+    yield 0: a warning or an unrunnable check is reported, not a failure.
+    This slice emits no ``fail`` finding, but the contract is what the
+    follow-up slice's fail findings will drive, so it is pinned now.
+    """
+
+    def _summarizer(self) -> Any:
+        summarizer = getattr(piguard, "summarize", None)
+        self.assertTrue(
+            callable(summarizer),
+            "anvilkit.piguard.summarize is not callable; the exit-status "
+            "seam has not been implemented yet",
+        )
+        return summarizer
+
+    def _fail_finding(self) -> Dict[str, Any]:
+        """One ``fail`` finding in the module's own finding shape."""
+        return {
+            "status": "fail",
+            "check": "history_rewrite",
+            "rule": "non_fast_forward",
+            "danger": "branch history can be rewritten by a force push",
+            "source": "main-protected",
+            "remedy": "add a 'non_fast_forward' rule; see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+
+    def test_passed_warn_and_skipped_findings_alone_yield_zero(self):
+        summarize = self._summarizer()
+        findings = (
+            piguard.check_history_rewrite([rule("non_fast_forward", "main-guard")])
+            + piguard.check_review([rule("non_fast_forward", "main-guard")])
+            + piguard.skipped_findings("GitHub was unreachable")
+        )
+
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [],
+            "fixture sanity: this slice emits no fail finding",
+        )
+        self.assertIn(
+            _field(findings[0], "status"),
+            ("passed", "warn", "skipped"),
+            "fixture sanity: the findings are drawn from the three "
+            "non-failing statuses",
+        )
+
+        self.assertEqual(
+            summarize(findings),
+            0,
+            "warn and skipped alone must exit 0 - only a fail finding "
+            "exits non-zero",
+        )
+
+    def test_exactly_one_fail_finding_yields_one(self):
+        summarize = self._summarizer()
+        findings = (
+            piguard.check_history_rewrite(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + piguard.check_review(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+            + [self._fail_finding()]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [self._fail_finding()],
+            "fixture sanity: exactly one fail finding among the passes, "
+            "warns and skips",
+        )
+
+        self.assertEqual(
+            summarize(findings),
+            1,
+            "a single fail finding among passes, warns and skips must "
+            "yield the non-zero exit status 1",
+        )
+
+    def test_empty_findings_yield_zero(self):
+        summarize = self._summarizer()
+
+        self.assertEqual(
+            summarize([]),
+            0,
+            "no findings at all means nothing failed",
+        )
+
+
+class RenderReportTests(unittest.TestCase):
+    """Behaviour 7: the report seam - ``render_report(findings)``.
+
+    The report always prints - including on failure - so it must contain one
+    line per finding, in order, delegating each line to
+    ``render_finding``: passed, warn, skipped and fail alike, nothing
+    dropped. A pure function over the findings, so it is testable with no
+    typer and no network.
+    """
+
+    def _report_renderer(self) -> Any:
+        renderer = getattr(piguard, "render_report", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.piguard.render_report is not callable; the report "
+            "renderer has not been implemented yet",
+        )
+        return renderer
+
+    def test_mixed_findings_render_one_line_each_in_order(self):
+        render = self._report_renderer()
+        passed = piguard.check_history_rewrite(
+            [rule("non_fast_forward", "main-guard")]
+        )[0]
+        warn = piguard.check_review(
+            [rule("non_fast_forward", "main-guard")]
+        )[0]
+        skipped = piguard.skipped_findings("GitHub was unreachable")[0]
+        fail = {
+            "status": "fail",
+            "check": "history_rewrite",
+            "rule": "non_fast_forward",
+            "danger": "branch history can be rewritten by a force push",
+            "source": "main-protected",
+            "remedy": "add a 'non_fast_forward' rule; see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+        findings = [passed, warn, skipped, fail]
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["passed", "warn", "skipped", "fail"],
+            "fixture sanity: one finding of each status",
+        )
+
+        lines = render(findings)
+
+        self.assertIsInstance(lines, list)
+        self.assertEqual(
+            len(lines),
+            4,
+            "one line per finding - a report that drops a finding hides "
+            "what happened, including on failure",
+        )
+        for finding, line in zip(findings, lines):
+            with self.subTest(status=_field(finding, "status")):
+                self.assertEqual(
+                    line,
+                    piguard.render_finding(finding),
+                    "each report line must be render_finding of that "
+                    "finding, so the report and the single-finding renderer "
+                    "can never drift apart",
+                )
+
+    def test_empty_findings_render_empty_report(self):
+        render = self._report_renderer()
+
+        self.assertEqual(
+            render([]),
+            [],
+            "no findings means no report lines",
+        )
 
 
 if __name__ == "__main__":

@@ -252,6 +252,7 @@ class TestSubcommandsExist(CliCase):
         "init",
         "doctor",
         "stress",
+        "verify-guards",
     )
 
     def registered_names(self):
