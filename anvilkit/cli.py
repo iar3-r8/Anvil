@@ -22,7 +22,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import click
 import typer
@@ -1469,8 +1469,58 @@ def doctor(ctx: typer.Context) -> None:
         )
 
     _report_config_health(shared)
+    _report_guards(shared)
 
     shared.echo(_SEPARATOR)
+
+
+def _report_guards(shared: Context) -> None:
+    """The Guards section: the piguard findings for the project's own repository.
+
+    Runs the same guard flow verify-guards uses, but always against this
+    project's directory, and reports rather than exits: doctor's exit status
+    is unchanged by any finding, and it still writes nothing.
+    """
+    shared.echo("")
+    shared.echo("Guards")
+
+    repository = piguard.resolve_repository(shared.root)
+    token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
+
+    findings: List[Dict[str, Any]]
+    if repository is None:
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the project has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(shared.root)
+        )
+        findings = piguard.skipped_findings(reason)
+    else:
+        owner, repo = repository
+        rules, fetch_reason = piguard.fetch_branch_rules(
+            owner, repo, "main", token
+        )
+        if rules is None:
+            findings = piguard.skipped_findings(fetch_reason)
+        else:
+            findings = (
+                piguard.check_history_rewrite(rules)
+                + piguard.check_review(rules)
+            )
+
+    for finding in findings:
+        label = finding.get("rule")
+        if not label:
+            label = "skipped: {}".format(finding.get("check"))
+        shared.echo(
+            _report_line(
+                label,
+                "{} {}".format(
+                    _mark(finding.get("status") == "passed"),
+                    piguard.render_finding(finding),
+                ),
+            )
+        )
 
 
 def _report_config_health(shared: Context) -> None:
