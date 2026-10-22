@@ -1,4 +1,4 @@
-"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviour 1).
+"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-3).
 
 Written before the implementation (TDD RED step for behaviour 1 of
 plans/pi-guard-verification.md: the history-rewrite guard).
@@ -240,6 +240,138 @@ class CheckReviewGuardTests(unittest.TestCase):
             _field(passed[0], "remedy"),
             "every finding carries a non-empty remedy",
         )
+
+
+class RenderFindingTests(unittest.TestCase):
+    """Behaviour 3: a rendered finding states the bypass-visibility caveat.
+
+    GitHub returns ``bypass_actors`` only to users with write access to the
+    ruleset (doc/external/github/rest-api-endpoints-for-rules.md), so a
+    passed rule finding rendered on a read-only token must never claim the
+    branch is simply "protected": it must say the rule is present and that
+    the bypass list is not visible. An unseen ``bypass_actors`` entry is an
+    unmeasured hole.
+
+    ``render_finding(finding)`` is expected to take one finding dict (the
+    shape the check functions return) and return the human-readable line
+    for it; no network is involved. Skipped-finding rendering is deferred to
+    behaviour 4's tests, since the module emits no ``skipped`` status yet.
+    """
+
+    def _render_finding(self):
+        """Fetch ``anvilkit.piguard.render_finding``, failing clearly if absent."""
+        renderer = getattr(piguard, "render_finding", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.piguard.render_finding is not callable; the finding "
+            "renderer has not been implemented yet",
+        )
+        return renderer
+
+    def test_passed_history_rewrite_findings_state_rule_type_and_bypass_invisibility(self):
+        render = self._render_finding()
+        findings = piguard.check_history_rewrite(
+            [
+                rule("non_fast_forward", "main-guard"),
+                rule("deletion", "main-guard"),
+            ]
+        )
+
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["passed", "passed"],
+            "fixture sanity: both rules active means two passed findings",
+        )
+        for finding in findings:
+            with self.subTest(rule=_field(finding, "rule")):
+                line = render(finding)
+                self.assertIsInstance(line, str)
+                self.assertIn(
+                    _field(finding, "rule"),
+                    line,
+                    "the rendered line must name the rule's API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "a passed finding must say the bypass list is not visible "
+                    "on a read-only token",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "a passed finding on a read-only token must never claim "
+                    "the branch is simply 'protected' - an unseen "
+                    "bypass_actors entry is an unmeasured hole",
+                )
+
+    def test_passed_review_finding_states_caveat_and_keeps_review_count_visible(self):
+        render = self._render_finding()
+        for count in (0, 2):
+            with self.subTest(count=count):
+                findings = piguard.check_review(
+                    [pull_request_rule("main-guard", count)]
+                )
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: pull_request active means one passed finding",
+                )
+                line = render(findings[0])
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive on a passed review finding",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                self.assertRegex(
+                    line,
+                    r"\b{}\b".format(count),
+                    "the recorded required-approving-review count of {} must "
+                    "stay visible in the rendered line - a zero count must "
+                    "not be hidden by the caveat".format(count),
+                )
+
+    def test_warn_finding_lines_name_danger_and_remedy(self):
+        render = self._render_finding()
+        for label, findings in (
+            (
+                "history_rewrite warn",
+                piguard.check_history_rewrite(
+                    [rule("non_fast_forward", "main-guard")]
+                ),
+            ),
+            (
+                "review warn",
+                piguard.check_review(
+                    [rule("non_fast_forward", "main-guard")]
+                ),
+            ),
+        ):
+            with self.subTest(warn=label):
+                warns = [f for f in findings if _field(f, "status") == "warn"]
+                self.assertEqual(
+                    len(warns),
+                    1,
+                    "fixture sanity: one warn finding expected",
+                )
+                warn = warns[0]
+                line = render(warn)
+                self.assertIn(
+                    _field(warn, "danger"),
+                    line,
+                    "the rendered warn line must name the danger",
+                )
+                self.assertIn(
+                    "doc/external/github",
+                    line,
+                    "the rendered warn line must name the concrete fix, e.g. "
+                    "a doc path under doc/external/github/",
+                )
 
 
 if __name__ == "__main__":
