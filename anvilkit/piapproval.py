@@ -208,9 +208,21 @@ def run_one(
     document flat to ``<agent_dir>/models.json`` (``agent_dir`` is the
     ISOLATED per-run agent directory - ``PI_CODING_AGENT_DIR`` names the
     agent directory itself, whose default is ``~/.pi/agent`` - never
-    defaulted to the user's home); write the before-run project digest (the
-    ``pifixture.digest_fixture`` manifest of ``project_dir``, serialised
-    sorted) to ``before.sha256`` in ``results_dir``; invoke ``runner``
+    defaulted to the user's home); materialise the pinned trust-store
+    state (behaviour 10 - live pi 1.3.0 rejects ``-a``/``-na`` on the
+    ``pi mcp list`` subcommand, so its trust decision comes only from
+    ``<agent_dir>/trust.json``, pi's ProjectTrustStore, a JSON map of
+    the canonicalised cwd to bool): for ``mcp-list-approve`` write
+    ``<agent_dir>/trust.json`` containing exactly the one-entry object
+    mapping ``str(project_dir.resolve())`` to ``True`` (the resolved
+    path is the key pi looks up; a pre-existing file - canary or
+    leftover - is overwritten, the agent directory is fresh per run);
+    for every other config ensure ``<agent_dir>/trust.json`` does NOT
+    exist, removing a pre-existing one, so the no-approve side and the
+    two model configs stay unconfounded; write the before-run project
+    digest (the ``pifixture.digest_fixture`` manifest of ``project_dir``,
+    serialised sorted) to ``before.sha256`` in ``results_dir``; invoke
+    ``runner``
     exactly once with the configuration's argv, the project directory as
     cwd, stdin ``/dev/null``, the configuration's budget (300 s for the
     model runs, 60 s for the mcp-list runs) and an ``env`` overlay
@@ -282,6 +294,20 @@ def run_one(
         ),
         encoding="utf-8",
     )
+
+    # Trust-store seeding (behaviour 10): live pi 1.3.0 rejects -a/-na on
+    # the pi mcp list subcommand, so the mcp-list trust decision comes
+    # only from <agent_dir>/trust.json (pi's ProjectTrustStore). Seed the
+    # resolved project dir for mcp-list-approve; ensure NO trust.json for
+    # every other config, removing a pre-existing one.
+    trust_path = agent_dir / "trust.json"
+    if config == "mcp-list-approve":
+        trust_path.write_text(
+            json.dumps({str(project_dir.resolve()): True}),
+            encoding="utf-8",
+        )
+    elif trust_path.is_file():
+        trust_path.unlink()
 
     before_manifest = json.dumps(
         pifixture.digest_fixture(project_dir), sort_keys=True
