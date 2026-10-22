@@ -158,6 +158,46 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def render_finding(finding: Dict[str, Any]) -> str:
+    """One human-readable line per finding; no network, no exit.
+
+    A ``passed`` line names the rule's API type and states that the rule
+    is present - plus the caveat that ``bypass_actors`` is only returned
+    to users with write access to the ruleset, so on a read-only token the
+    branch must never be called simply "protected": an unseen bypass entry
+    is an unmeasured hole. A passed review finding also keeps its recorded
+    ``required_approving_review_count`` visible. A ``warn`` line names the
+    danger and the remedy. A ``skipped`` line carries the reason the check
+    could not run.
+    """
+    rule = finding.get("rule")
+    status = finding.get("status")
+    if status == "passed":
+        line = (
+            "ok: the {} rule is present - but the bypass list is not "
+            "visible on a read-only token (bypass_actors is only returned "
+            "to users with write access to the ruleset)".format(rule)
+        )
+        count = finding.get("required_approving_review_count")
+        if count is not None:
+            line += " ({} required approvals)".format(count)
+        return line
+    if status == "warn":
+        return "warn: {} - {}; fix: {}".format(
+            rule, finding.get("danger"), finding.get("remedy")
+        )
+    if status == "skipped":
+        reason = (
+            finding.get("reason")
+            or finding.get("danger")
+            or "no reason recorded"
+        )
+        return "skipped: {} check could not run: {}".format(
+            finding.get("check"), reason
+        )
+    return "unknown: {} finding for rule {}".format(status, rule)
+
+
 def _or_unknown(value: Any) -> str:
     """A ruleset_source is expected on every active rule; name the gap if not."""
     if isinstance(value, str) and value:
