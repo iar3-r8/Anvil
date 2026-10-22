@@ -1,4 +1,4 @@
-"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-4).
+"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-5).
 
 Written before the implementation (TDD RED step for behaviour 1 of
 plans/pi-guard-verification.md: the history-rewrite guard).
@@ -23,7 +23,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -699,6 +699,205 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
                     passed_line,
                     "a skipped finding is visually distinct from a pass",
                 )
+
+
+class FindingInvariantsTests(unittest.TestCase):
+    """Behaviour 5: findings carry danger and remedy - a boundary pin.
+
+    A finding with an empty remedy is a programming error, so this class
+    sweeps EVERY finding the module can emit as of today - every documented
+    rules-array shape through both check functions, and the skipped findings
+    for every fetch failure mode - and pins the invariants: a known status, a
+    non-empty string remedy on every finding, a non-empty danger on every
+    non-passing finding, and a renderable non-empty line. The sweep exercises
+    the module as it is and may already pass; its job is to break on future
+    drift, so a finding that later drops its remedy or its danger must fail
+    these tests, and the assertions must never be weakened to get back to
+    green.
+    """
+
+    _KNOWN_STATUSES = ("passed", "warn", "skipped", "fail")
+
+    def _rule_shapes(self) -> List[Tuple[str, List[Dict[str, Any]]]]:
+        """Every rules-array shape the check functions can be asked about today."""
+        return [
+            ("empty array", []),
+            (
+                "non_fast_forward alone",
+                [rule("non_fast_forward", "main-guard")],
+            ),
+            ("deletion alone", [rule("deletion", "main-guard")]),
+            (
+                "pull_request alone, zero approvals",
+                [pull_request_rule("main-guard", 0)],
+            ),
+            (
+                "pull_request alone, one approval",
+                [pull_request_rule("main-guard", 1)],
+            ),
+            (
+                "all three rules, zero approvals",
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                    pull_request_rule("main-guard", 0),
+                ],
+            ),
+            (
+                "all three rules, one approval",
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                    pull_request_rule("main-guard", 1),
+                ],
+            ),
+        ]
+
+    def _skip_reasons(self) -> List[Tuple[str, str]]:
+        """(label, reason) for every fetch failure mode, over recorded openers."""
+        url = "https://api.github.com/repos/owner/repo/rules/branches/main"
+        pairs: List[Tuple[str, str]] = []
+        for label, outcome in (
+            ("no network", urllib.error.URLError("Name or service not known")),
+            ("timeout", socket.timeout("timed out")),
+            (
+                "http 404",
+                urllib.error.HTTPError(url, 404, "Not Found", None, None),
+            ),
+            ("non-JSON body", _FakeResponse(b"<html>GitHub</html>")),
+        ):
+            with self.subTest(skip_reason=label):
+                rules, reason = piguard.fetch_branch_rules(
+                    "owner", "repo", "main", opener=_opener(outcome)
+                )
+                self.assertIsNone(
+                    rules,
+                    "a failed fetch must not be reported as rules",
+                )
+                self.assertIsInstance(
+                    reason,
+                    str,
+                    "a failed fetch must record a string reason",
+                )
+                self.assertTrue(
+                    reason,
+                    "a failed fetch must record a non-empty reason",
+                )
+            pairs.append((label, reason))
+        return pairs
+
+    def _every_finding(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Every finding the module can emit as of today, with a label.
+
+        Adding a rule type, a check, a status or a fetch failure mode to the
+        module without adding it here would silently un-pin the invariant:
+        keep the module's emitters and this sweep in sync.
+        """
+        findings: List[Tuple[str, Dict[str, Any]]] = []
+        for label, rules in self._rule_shapes():
+            for check in (piguard.check_history_rewrite, piguard.check_review):
+                for finding in check(rules):
+                    findings.append(
+                        (
+                            "{}/{}: {} on rule {!r}".format(
+                                label,
+                                check.__name__,
+                                _field(finding, "status"),
+                                _field(finding, "rule"),
+                            ),
+                            finding,
+                        )
+                    )
+        for label, reason in self._skip_reasons():
+            for finding in piguard.skipped_findings(reason):
+                findings.append(
+                    (
+                        "fetch({})/{}/{}".format(
+                            label,
+                            _field(finding, "check"),
+                            _field(finding, "rule"),
+                        ),
+                        finding,
+                    )
+                )
+        return findings
+
+    def test_every_finding_the_module_can_emit_carries_danger_and_remedy(self):
+        findings = self._every_finding()
+        self.assertGreater(
+            len(findings),
+            0,
+            "the sweep produced no findings; the input shapes must exercise "
+            "the module's real output",
+        )
+
+        for label, finding in findings:
+            with self.subTest(finding=label):
+                status = _field(finding, "status")
+                self.assertIn(
+                    status,
+                    self._KNOWN_STATUSES,
+                    "finding status {!r} is not one of the four known "
+                    "statuses; the report cannot interpret it".format(status),
+                )
+                remedy = _field(finding, "remedy")
+                self.assertIsInstance(
+                    remedy,
+                    str,
+                    "remedy must be a string, not {!r}".format(
+                        type(remedy).__name__
+                    ),
+                )
+                self.assertTrue(
+                    remedy,
+                    "a finding with an empty remedy is a programming error: "
+                    "it cannot name the concrete fix",
+                )
+                if status != "passed":
+                    danger = _field(finding, "danger")
+                    self.assertIsInstance(
+                        danger,
+                        str,
+                        "danger must be a string, not {!r}".format(
+                            type(danger).__name__
+                        ),
+                    )
+                    self.assertTrue(
+                        danger,
+                        "a non-passing finding ({}) must name what an agent "
+                        "could do; its danger is empty".format(status),
+                    )
+                line = piguard.render_finding(finding)
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "render_finding must produce a non-empty line",
+                )
+
+    def test_non_passing_findings_name_a_doc_path_under_doc_external_github(self):
+        checked = 0
+        for label, finding in self._every_finding():
+            status = _field(finding, "status")
+            if status not in ("warn", "skipped"):
+                continue
+            checked += 1
+            with self.subTest(finding=label):
+                remedy = _field(finding, "remedy") or ""
+                self.assertIn(
+                    "doc/external/github/",
+                    remedy,
+                    "the {} finding on rule {!r} must name a doc path under "
+                    "doc/external/github/ in its remedy, so a reviewer can "
+                    "check the claim against the saved documentation".format(
+                        status, _field(finding, "rule")
+                    ),
+                )
+        self.assertGreater(
+            checked,
+            0,
+            "the sweep produced no warn or skipped findings; the input shapes "
+            "must produce some",
+        )
 
 
 if __name__ == "__main__":
