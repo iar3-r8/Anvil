@@ -205,9 +205,10 @@ def run_one(
     before the project fixture is written); create ``results_dir`` if
     missing (its parent must exist); write the project fixture via
     ``pitrust.write_project`` into ``project_dir``; write the models
-    document to ``<agent_dir>/.pi/agent/models.json`` (parents created;
-    ``agent_dir`` is the ISOLATED per-run agent directory, never defaulted
-    to the user's home); write the before-run project digest (the
+    document flat to ``<agent_dir>/models.json`` (``agent_dir`` is the
+    ISOLATED per-run agent directory - ``PI_CODING_AGENT_DIR`` names the
+    agent directory itself, whose default is ``~/.pi/agent`` - never
+    defaulted to the user's home); write the before-run project digest (the
     ``pifixture.digest_fixture`` manifest of ``project_dir``, serialised
     sorted) to ``before.sha256`` in ``results_dir``; invoke ``runner``
     exactly once with the configuration's argv, the project directory as
@@ -267,7 +268,7 @@ def run_one(
     project_dir.mkdir(parents=True, exist_ok=True)
     pitrust.write_project(project_dir, marker, unreachable_command)
 
-    models_path = agent_dir / ".pi" / "agent" / "models.json"
+    models_path = agent_dir / "models.json"
     models_path.parent.mkdir(parents=True, exist_ok=True)
     models_path.write_text(
         json.dumps(
