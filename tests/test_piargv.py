@@ -690,18 +690,22 @@ class TestApprovalArgv(PiargvTestCase):
 class TestMcpListArgv(PiargvTestCase):
     """Behaviour 3 of ``plans/pi-phase2-approval.md``: mcp-list argv.
 
-    Pinned signature ``mcp_list_argv(approve) -> List[str]``. The six-token
-    list is pinned exactly: ``pi mcp list --json`` with the trust flag last.
-    ``pi mcp list`` is a shell command that works outside a session and does
-    not load extensions (``doc/external/pi-dev/mcp.md``); ``--json`` makes it
-    print machine-readable state. The list goes straight to ``subprocess``,
-    so a rejected ``-a``/``-na`` flag is a recorded finding, not a builder
-    error - the builder performs no validation beyond the branch.
+    Pinned signature ``mcp_list_argv() -> List[str]``, taking no argument.
+    Live pi 1.3.0 accepts only ``pi mcp list [--json]`` - the ``-a``/``-na``
+    trust flags are rejected with a usage error (plan interface facts,
+    verified against the live binary; ``doc/external/pi-dev/cli.md``,
+    ``pi mcp list``) - so the builder emits exactly the four tokens
+    ``pi mcp list --json``: no trust flag, no branch, no input to validate.
+    The subcommand's project trust is resolved from
+    ``<agent_dir>/trust.json`` instead (plan behaviour 10). ``pi mcp list``
+    is a shell command that works outside a session and does not load
+    extensions (``doc/external/pi-dev/mcp.md``); ``--json`` makes it print
+    machine-readable state.
     """
 
-    def test_mcp_list_argv_approve_returns_exact_token_list(self):
+    def test_mcp_list_argv_returns_exact_token_list(self):
         piargv = self._piargv()
-        argv = piargv.mcp_list_argv(approve=True)
+        argv = piargv.mcp_list_argv()
         self.assertIsInstance(
             argv,
             list,
@@ -710,36 +714,23 @@ class TestMcpListArgv(PiargvTestCase):
         )
         self.assertEqual(
             argv,
-            ["pi", "mcp", "list", "--json", "-a"],
-        )
-
-    def test_mcp_list_argv_no_approve_returns_exact_token_list(self):
-        piargv = self._piargv()
-        argv = piargv.mcp_list_argv(approve=False)
-        self.assertIsInstance(
-            argv,
-            list,
-            "mcp_list_argv must return a list of tokens, never a string, "
-            "so no shell re-parses it",
-        )
-        self.assertEqual(
-            argv,
-            ["pi", "mcp", "list", "--json", "-na"],
-        )
-
-    def test_mcp_list_argv_approve_and_no_approve_differ_only_in_trust_flag(self):
-        piargv = self._piargv()
-        approve_argv = piargv.mcp_list_argv(approve=True)
-        no_approve_argv = piargv.mcp_list_argv(approve=False)
-        self.assertEqual(len(approve_argv), 5)
-        self.assertEqual(
-            approve_argv[:4],
             ["pi", "mcp", "list", "--json"],
-            "the subcommand tokens must be identical in both branches; "
-            "only the final trust flag may differ",
         )
-        self.assertEqual(approve_argv[4], "-a")
-        self.assertEqual(no_approve_argv[4], "-na")
+
+    def test_mcp_list_argv_carries_no_trust_flag_token(self):
+        # The subcommand exits 1 with a usage error on -a/-na (live pi
+        # 1.3.0), so a stray trust flag would break the probe: pin its
+        # absence explicitly alongside the exact-list pin.
+        piargv = self._piargv()
+        argv = piargv.mcp_list_argv()
+        for flag in ("-a", "-na", "--approve", "--no-approve"):
+            with self.subTest(flag=flag):
+                self.assertNotIn(
+                    flag,
+                    argv,
+                    "the subcommand rejects trust flags; the argv must "
+                    "carry exactly pi mcp list --json and nothing else",
+                )
 
 
 if __name__ == "__main__":
