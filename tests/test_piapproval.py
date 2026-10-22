@@ -79,6 +79,14 @@ Pinned ``run_one`` responsibilities:
   ``cwd = str(project_dir)``, stdin
   ``/dev/null``, the config's budget, and an ``env`` dict carrying
   ``PI_CODING_AGENT_DIR`` pointing at the per-run agent directory;
+- the env overlay carries ``PI_CODING_AGENT_DIR`` as the **resolved
+  absolute** agent directory (``str(agent_dir.resolve())``) for every
+  config, even when the caller passed a relative ``agent_dir``
+  (behaviour 11) - the child's cwd is the project directory, so pi
+  would resolve a relative value against the project directory to a
+  non-existent ``<project>/agent`` and silently ignore the real agent
+  directory (live pi 1.3.0: flat models.json -> "Model not found",
+  seeded trust.json -> "project is not trusted");
 - artifacts ``stdout`` and ``stderr`` in ``results_dir`` for every config,
   and ``events.jsonl`` (verbatim stdout) ONLY for the two ``--mode json``
   configs - absent for the mcp-list configs;
@@ -598,6 +606,66 @@ class TestRunOneInvocation(PiapprovalTestCase):
             "the env overlay must point PI_CODING_AGENT_DIR at the "
             "per-run agent directory",
         )
+
+    def test_env_carries_resolved_absolute_agent_dir_when_agent_dir_is_relative(
+        self,
+    ):
+        """Behaviour 11: a relative agent_dir still reaches the child absolute.
+
+        The child's cwd is the project directory, so pi resolves a relative
+        PI_CODING_AGENT_DIR against the project directory to
+        <project>/agent - a non-existent agent directory it silently
+        ignores. The env value must be the resolved absolute agent
+        directory regardless of how the caller expressed it.
+        """
+        run_one = self._get_run_one()
+        for config in CONFIGS:
+            with self.subTest(config=config):
+                dirs = self._fresh()
+                # The same directory the fixtures own, expressed relative to
+                # the process cwd (the repo root) - the shape run_all passes
+                # when PI_RESULTS_DIR is relative, e.g. ./results.
+                relative_agent_dir = os.path.relpath(str(dirs["agent_dir"]))
+                self.assertFalse(
+                    os.path.isabs(relative_agent_dir),
+                    "the fixture did not produce a relative agent dir; "
+                    "the test would not exercise the relative path",
+                )
+                fake = self._fake()
+                self._run(
+                    run_one,
+                    dirs,
+                    config,
+                    fake,
+                    agent_dir=relative_agent_dir,
+                )
+                self.assertEqual(
+                    1,
+                    len(fake._calls),
+                    "the runner must be invoked exactly once per run_one",
+                )
+                env = fake._calls[0]["env"]
+                self.assertIsInstance(
+                    env,
+                    dict,
+                    "the runner invocation must carry an env overlay dict",
+                )
+                recorded = env.get("PI_CODING_AGENT_DIR")
+                self.assertTrue(
+                    os.path.isabs(recorded or ""),
+                    "PI_CODING_AGENT_DIR must be an absolute path even when "
+                    "the caller passed a relative agent_dir; the child's "
+                    "cwd is the project directory, so a relative value "
+                    "resolves to <project>/agent and pi ignores the real "
+                    "agent directory, got {!r}".format(recorded),
+                )
+                self.assertEqual(
+                    str(dirs["agent_dir"].resolve()),
+                    recorded,
+                    "the env overlay must carry the resolved absolute "
+                    "agent directory, not the caller's relative value; "
+                    "the fixtures' directory resolves to this path",
+                )
 
     @staticmethod
     def _result_with_stdout(stdout: str) -> Dict[str, Any]:
