@@ -15,10 +15,13 @@ danger - or make the check runnable - is a programming error, not a result.
 """
 
 import json
+import re
 import socket
+import subprocess
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 CHECK_HISTORY_REWRITE = "history_rewrite"
 CHECK_REVIEW = "review"
@@ -350,3 +353,82 @@ def _or_unknown(value: Any) -> str:
     if isinstance(value, str) and value:
         return value
     return "unknown"
+
+
+# Owner/repo pair shapes a GitHub remote can take: HTTPS and SSH, each with or
+# without the .git suffix. Both host spellings are anchored so a lookalike
+# host (bitbucket.org, gitlab.com, ...) can never match (behaviour 6 of
+# plans/pi-guard-verification.md: never a guess).
+_GITHUB_HTTPS_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/?\.git/?$")
+_GITHUB_HTTPS_BARE_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)$")
+_GITHUB_SSH_RE = re.compile(r"^git@github\.com:([^/]+)/([^/]+)/?\.git/?$")
+_GITHUB_SSH_BARE_RE = re.compile(r"^git@github\.com:([^/]+)/([^/]+)$")
+
+
+def parse_github_remote(url: str) -> Optional[Tuple[str, str]]:
+    """Parse ``(owner, repo)`` from a GitHub remote URL; never raises.
+
+    The HTTPS and SSH forms of the same remote give the same answer, with the
+    ``.git`` suffix stripped: ``https://github.com/owner/repo[.git]`` and
+    ``git@github.com:owner/repo[.git]`` all yield ``("owner", "repo")``.
+
+    Anything the parser cannot account for - a non-GitHub host, an unparsable
+    string, an empty owner or repo - yields ``None``: a URL that does not
+    name a GitHub repository exactly is a skip, not a guess (behaviour 6).
+    """
+    if not isinstance(url, str):
+        return None
+    for pattern in (
+        _GITHUB_HTTPS_RE,
+        _GITHUB_HTTPS_BARE_RE,
+        _GITHUB_SSH_RE,
+        _GITHUB_SSH_BARE_RE,
+    ):
+        match = pattern.match(url)
+        if match is None:
+            continue
+        owner, repo = match.group(1), match.group(2)
+        if owner and repo:
+            return owner, repo
+        return None
+    return None
+
+
+def resolve_repository(
+    path: Union[str, Path],
+    runner: Optional[Callable[..., str]] = None,
+) -> Optional[Tuple[str, str]]:
+    """Resolve ``(owner, repo)`` from the origin remote of the git repo at ``path``.
+
+    ``runner`` is an injectable seam (the same discipline as the opener in
+    :func:`fetch_branch_rules`): a callable returning the origin URL string,
+    or empty / raising when there is no remote. When ``runner`` is ``None``
+    the real ``git remote get-url origin`` runs via subprocess - a list,
+    never a shell - and a non-zero exit or empty output is treated as
+    no-remote, exactly as a raising or empty runner would be.
+
+    The origin URL is fed to :func:`parse_github_remote`, so no origin or a
+    non-GitHub origin yields ``None``: the identity is either known or
+    absent, never guessed (behaviour 6).
+    """
+    if runner is None:
+        def runner() -> str:
+            completed = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=str(path),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError(
+                    "git remote get-url origin exited {}".format(completed.returncode)
+                )
+            return completed.stdout.decode("utf-8", errors="replace").strip()
+
+    try:
+        origin = runner()
+    except Exception:
+        return None
+    if not isinstance(origin, str) or not origin.strip():
+        return None
+    return parse_github_remote(origin.strip())
