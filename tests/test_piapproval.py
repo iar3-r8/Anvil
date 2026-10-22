@@ -64,6 +64,15 @@ Pinned ``run_one`` responsibilities:
   ``piargv.models_document(model_id, gateway_port, context_window,
   max_tokens, host=gateway_host)``; the agent directory is a DIFFERENT
   directory from the project directory;
+- trust-store seeding (behaviour 10) - live pi 1.3.0 rejects ``-a``/
+  ``-na`` on the ``pi mcp list`` subcommand, so the trust decision for
+  the mcp-list pair comes from ``<agent_dir>/trust.json`` (pi's
+  ProjectTrustStore: a JSON map of the resolved absolute project
+  directory to true), not from a flag: for ``mcp-list-approve`` a
+  trust.json of exactly ``{str(project_dir.resolve()): True}`` is
+  written, for ``mcp-list-no-approve`` NO trust.json is written, and
+  the two model configs seed nothing either, keeping their
+  ``-a``/``-na`` distinction flag-driven and unconfounded;
 - the runner invoked exactly once, with the config's exact argv
   (``piargv.approval_argv(model_id, prompt, approve)`` /
   ``piargv.mcp_list_argv()`` - no argument, no approve flag),
@@ -680,6 +689,103 @@ class TestModelsDocumentAndProject(PiapprovalTestCase):
             "the single mcpServers entry must name the unreachable "
             "command passed to run_one",
         )
+
+
+class TestTrustStoreSeeding(PiapprovalTestCase):
+    """Trust-store seeding materialises the mcp-list difference (behaviour
+    10): live pi 1.3.0 rejects -a/-na on the pi mcp list subcommand, so
+    the mcp-list trust decision comes from <agent_dir>/trust.json - pi's
+    ProjectTrustStore, a JSON map of the resolved absolute project
+    directory to true - not from a flag.
+
+    Every test pre-seeds <agent_dir>/trust.json with a canary entry under
+    an unrelated key, so the pinned trust state is one ``run_one`` must
+    actively materialise (a pre-existing trust.json is overwritten - the
+    agent directory is fresh per run), not one the tests would pass on
+    the current no-op production:
+
+    - ``mcp-list-approve`` must overwrite the canary with exactly
+      ``{str(project_dir.resolve()): true}``;
+    - ``mcp-list-no-approve`` must end with NO trust.json on disk, so
+      the project is untrusted and ``pi mcp list`` reports the empty
+      server list plus the not-trusted note;
+    - the two model configs must also end with NO trust.json, keeping
+      their ``-a``/``-na`` distinction flag-driven and unconfounded.
+    """
+
+    @staticmethod
+    def _trust_path(dirs: Dict[str, Path]) -> Path:
+        return dirs["agent_dir"] / "trust.json"
+
+    @staticmethod
+    def _result_with_stdout(stdout: str) -> Dict[str, Any]:
+        result = PiapprovalTestCase._default_result()
+        result["stdout"] = stdout
+        return result
+
+    @staticmethod
+    def _seed_canary(dirs: Dict[str, Path]) -> None:
+        """A pre-existing trust.json under an unrelated key."""
+        path = TestTrustStoreSeeding._trust_path(dirs)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"trust-store-canary": True}), encoding="utf-8"
+        )
+
+    def test_mcp_list_approve_seeds_trust_store_with_resolved_project_dir(self):
+        run_one = self._get_run_one()
+        dirs = self._fresh()
+        self._seed_canary(dirs)
+        fake = self._fake(result=self._result_with_stdout(MCP_LIST_WITH_SERVER))
+        self._run(run_one, dirs, "mcp-list-approve", fake)
+        trust_path = self._trust_path(dirs)
+        self.assertTrue(
+            trust_path.is_file(),
+            "mcp-list-approve must seed <agent_dir>/trust.json so pi mcp "
+            "list trusts the project and loads .pi/mcp.json",
+        )
+        self.assertEqual(
+            {str(dirs["project"].resolve()): True},
+            json.loads(trust_path.read_text(encoding="utf-8")),
+            "the trust store must map exactly the resolved absolute "
+            "project directory to true - the canonical form pi's "
+            "ProjectTrustStore looks up - and must overwrite any "
+            "pre-existing trust.json; the pre-seeded canary must not "
+            "survive",
+        )
+
+    def test_mcp_list_no_approve_seeds_no_trust_store(self):
+        run_one = self._get_run_one()
+        dirs = self._fresh()
+        self._seed_canary(dirs)
+        fake = self._fake(result=self._result_with_stdout(MCP_LIST_WITHOUT_SERVER))
+        self._run(run_one, dirs, "mcp-list-no-approve", fake)
+        self.assertFalse(
+            self._trust_path(dirs).exists(),
+            "mcp-list-no-approve must end with NO <agent_dir>/trust.json "
+            "so the project is untrusted and pi mcp list reports an "
+            "empty server list with the not-trusted note; the "
+            "pre-seeded canary must not survive a run that leaves the "
+            "project untrusted",
+        )
+
+    def test_model_configs_seed_no_trust_store(self):
+        run_one = self._get_run_one()
+        for config in ("approve", "no-approve"):
+            with self.subTest(config=config):
+                dirs = self._fresh()
+                self._seed_canary(dirs)
+                fake = self._fake(
+                    result=self._result_with_stdout(JSONL_WITH_MARKER)
+                )
+                self._run(run_one, dirs, config, fake)
+                self.assertFalse(
+                    self._trust_path(dirs).exists(),
+                    config + " must end with NO <agent_dir>/trust.json - "
+                    "the model pair's trust distinction stays "
+                    "flag-driven (-a / -na) and unconfounded, so the "
+                    "pre-seeded canary must not survive",
+                )
 
 
 class TestRecordAndArtifacts(PiapprovalTestCase):
