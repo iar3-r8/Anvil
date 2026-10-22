@@ -916,6 +916,11 @@ class ParseGithubRemoteTests(unittest.TestCase):
     HTTPS_BARE = "https://github.com/owner/repo"
     SSH_WITH = "git@github.com:owner/repo.git"
     SSH_BARE = "git@github.com:owner/repo"
+    # HTTPS remotes with a userinfo component - the form git leaves behind
+    # after a clone with an embedded token (plans/pi-guard-verification.md,
+    # behaviour 6: a resolvable GitHub remote must never be a false skip).
+    HTTPS_USERINFO = "https://user:token@github.com/owner/repo.git"
+    HTTPS_USERINFO_BARE = "https://user@github.com/owner/repo"
 
     def _parser(self) -> Any:
         parser = getattr(piguard, "parse_github_remote", None)
@@ -955,6 +960,76 @@ class ParseGithubRemoteTests(unittest.TestCase):
             "HTTPS and SSH forms of the same remote must give the same answer",
         )
         self.assertEqual(parse(self.SSH_BARE), ("owner", "repo"))
+
+    def test_https_remote_with_user_token_credentials_matches_clean_form(self):
+        parse = self._parser()
+
+        self.assertEqual(
+            parse(self.HTTPS_USERINFO),
+            ("owner", "repo"),
+            "an HTTPS remote with embedded credentials is a resolvable "
+            "GitHub remote - it must parse to the same (owner, repo) as "
+            "the clean form, never a false skip",
+        )
+        self.assertEqual(
+            parse(self.HTTPS_USERINFO),
+            parse(self.HTTPS_WITH),
+            "credentials in the URL must not change the answer",
+        )
+
+    def test_https_remote_with_username_only_userinfo_matches_clean_form(self):
+        parse = self._parser()
+
+        self.assertEqual(
+            parse(self.HTTPS_USERINFO_BARE),
+            ("owner", "repo"),
+            "a username-only userinfo component must not change the answer",
+        )
+        self.assertEqual(
+            parse(self.HTTPS_USERINFO_BARE),
+            parse(self.HTTPS_BARE),
+        )
+
+    def test_parsed_credential_remote_returns_no_credential(self):
+        parse = self._parser()
+        for url in (self.HTTPS_USERINFO, self.HTTPS_USERINFO_BARE):
+            with self.subTest(url=url):
+                result = parse(url)
+
+                self.assertIsNotNone(
+                    result,
+                    "a credentialed GitHub remote must parse, not skip",
+                )
+                self.assertNotIn(
+                    "token",
+                    result,
+                    "the credential must never appear in a returned value",
+                )
+                self.assertNotIn(
+                    "user",
+                    result,
+                    "the username must never appear in a returned value",
+                )
+                self.assertEqual(
+                    result,
+                    ("owner", "repo"),
+                    "the returned tuple must be byte-equal to the "
+                    "clean-form tuple: owner and repo are the only "
+                    "things a parse can return",
+                )
+
+    def test_non_github_credential_remotes_do_not_parse(self):
+        parse = self._parser()
+        for url in (
+            "https://user:token@bitbucket.org/owner/repo.git",
+            "https://user@gitlab.com/owner/repo",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(
+                    parse(url),
+                    "credentials on a non-GitHub host must not make the "
+                    "host parse - never a guess",
+                )
 
     def test_non_github_remotes_do_not_parse(self):
         parse = self._parser()
@@ -1052,6 +1127,30 @@ class ResolveRepositoryTests(unittest.TestCase):
         )
         self.assertEqual(ssh, ("owner", "repo"))
 
+    def test_origin_https_github_with_credentials_returns_same_pair(self):
+        resolve = self._resolver()
+
+        with tempfile.TemporaryDirectory() as path:
+            credentialed = resolve(
+                path,
+                runner=self._fake_runner(
+                    "https://user:token@github.com/owner/repo.git"
+                ),
+            )
+            clean = resolve(
+                path,
+                runner=self._fake_runner("https://github.com/owner/repo.git"),
+            )
+
+        self.assertEqual(
+            credentialed,
+            clean,
+            "a credentialed origin and the clean origin of the same "
+            "repository must give the same answer - a resolvable GitHub "
+            "remote must never be a false skip",
+        )
+        self.assertEqual(credentialed, ("owner", "repo"))
+
     def test_no_origin_returns_none(self):
         resolve = self._resolver()
         for label, runner in (
@@ -1064,6 +1163,20 @@ class ResolveRepositoryTests(unittest.TestCase):
                         resolve(path, runner=runner),
                         "no origin remote must yield no repository identity "
                         "- never a guess",
+                    )
+
+    def test_non_github_credential_origin_returns_none(self):
+        resolve = self._resolver()
+        for url in (
+            "https://user:token@bitbucket.org/owner/repo.git",
+            "https://user@gitlab.com/owner/repo",
+        ):
+            with self.subTest(url=url):
+                with tempfile.TemporaryDirectory() as path:
+                    self.assertIsNone(
+                        resolve(path, runner=self._fake_runner(url)),
+                        "credentials on a non-GitHub origin must not make "
+                        "the origin resolvable - never a guess",
                     )
 
     def test_non_github_origin_returns_none(self):
