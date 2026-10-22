@@ -1,4 +1,4 @@
-"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-5).
+"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-6).
 
 Written before the implementation (TDD RED step for behaviour 1 of
 plans/pi-guard-verification.md: the history-rewrite guard).
@@ -19,6 +19,7 @@ callable) so the fetch path runs over recorded responses with no live network.
 import json
 import socket
 import sys
+import tempfile
 import unittest
 import urllib.error
 import urllib.request
@@ -898,6 +899,186 @@ class FindingInvariantsTests(unittest.TestCase):
             "the sweep produced no warn or skipped findings; the input shapes "
             "must produce some",
         )
+
+
+class ParseGithubRemoteTests(unittest.TestCase):
+    """Behaviour 6: owner/repo parsed from a GitHub remote URL.
+
+    ``parse_github_remote(url)`` is expected to be a pure parser: the HTTPS
+    and SSH forms of a GitHub remote yield the same ``(owner, repo)`` pair
+    with any ``.git`` suffix stripped, and anything else - a non-GitHub
+    host, an unparsable string, an empty owner or repo - yields a falsy
+    return. It must never guess and never raise: a URL it cannot account
+    for is a skip, not a guess (plans/pi-guard-verification.md, behaviour 6).
+    """
+
+    HTTPS_WITH = "https://github.com/owner/repo.git"
+    HTTPS_BARE = "https://github.com/owner/repo"
+    SSH_WITH = "git@github.com:owner/repo.git"
+    SSH_BARE = "git@github.com:owner/repo"
+
+    def _parser(self) -> Any:
+        parser = getattr(piguard, "parse_github_remote", None)
+        self.assertTrue(
+            callable(parser),
+            "anvilkit.piguard.parse_github_remote is not callable; the "
+            "GitHub remote parser has not been implemented yet",
+        )
+        return parser
+
+    def test_https_remote_with_git_suffix_returns_owner_repo(self):
+        parse = self._parser()
+
+        self.assertEqual(parse(self.HTTPS_WITH), ("owner", "repo"))
+
+    def test_https_remote_without_git_suffix_matches_git_form(self):
+        parse = self._parser()
+
+        self.assertEqual(
+            parse(self.HTTPS_BARE),
+            parse(self.HTTPS_WITH),
+            "the .git suffix must not change the answer",
+        )
+        self.assertEqual(parse(self.HTTPS_BARE), ("owner", "repo"))
+
+    def test_ssh_remote_forms_match_https_form(self):
+        parse = self._parser()
+
+        self.assertEqual(
+            parse(self.SSH_WITH),
+            parse(self.SSH_BARE),
+            "the .git suffix must not change the answer on an SSH remote",
+        )
+        self.assertEqual(
+            parse(self.SSH_WITH),
+            parse(self.HTTPS_WITH),
+            "HTTPS and SSH forms of the same remote must give the same answer",
+        )
+        self.assertEqual(parse(self.SSH_BARE), ("owner", "repo"))
+
+    def test_non_github_remotes_do_not_parse(self):
+        parse = self._parser()
+        for url in (
+            "https://bitbucket.org/owner/repo.git",
+            "git@bitbucket.org:owner/repo.git",
+            "https://gitlab.com/owner/repo.git",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(
+                    parse(url),
+                    "a non-GitHub remote must not parse - never a guess",
+                )
+
+    def test_unparsable_urls_return_none_without_raising(self):
+        parse = self._parser()
+        for url in (
+            "https://github.com/owner",
+            "not a url at all",
+            "",
+        ):
+            with self.subTest(url=url):
+                self.assertIsNone(
+                    parse(url),
+                    "an unparsable remote must not parse - never an exception",
+                )
+
+
+class ResolveRepositoryTests(unittest.TestCase):
+    """Behaviour 6: owner/repo resolved from the target directory's origin.
+
+    ``resolve_repository(path, runner=None)`` is expected to resolve the
+    target repository's ``origin`` remote through an injectable runner - a
+    callable that returns the origin URL, or returns empty / raises when
+    there is no remote - and feed it to the pure parser. The suite runs
+    offline: a GitHub origin in either form gives the parsed pair, a missing
+    or non-GitHub origin gives a falsy return, so every network check
+    becomes a skip rather than a guess.
+    """
+
+    def _resolver(self) -> Any:
+        resolver = getattr(piguard, "resolve_repository", None)
+        self.assertTrue(
+            callable(resolver),
+            "anvilkit.piguard.resolve_repository is not callable; the "
+            "repository-identity resolver has not been implemented yet",
+        )
+        return resolver
+
+    def _fake_runner(self, url: Optional[str], exc: Any = None) -> Any:
+        """A runner that plays back one recorded origin outcome.
+
+        Accepts whatever argument shape the implementation hands it, so the
+        test does not depend on the exact call signature (same seam
+        discipline as ``_opener`` above).
+        """
+
+        def runner(*args: Any, **kwargs: Any) -> str:
+            if exc is not None:
+                raise exc
+            if url is None:
+                return ""
+            return url
+
+        return runner
+
+    def test_origin_https_github_returns_pair(self):
+        resolve = self._resolver()
+
+        with tempfile.TemporaryDirectory() as path:
+            result = resolve(
+                path,
+                runner=self._fake_runner("https://github.com/owner/repo.git"),
+            )
+
+        self.assertEqual(result, ("owner", "repo"))
+
+    def test_origin_ssh_github_returns_same_pair(self):
+        resolve = self._resolver()
+
+        with tempfile.TemporaryDirectory() as path:
+            https = resolve(
+                path,
+                runner=self._fake_runner("https://github.com/owner/repo"),
+            )
+            ssh = resolve(
+                path,
+                runner=self._fake_runner("git@github.com:owner/repo.git"),
+            )
+
+        self.assertEqual(
+            ssh,
+            https,
+            "HTTPS and SSH origin remotes must give the same answer",
+        )
+        self.assertEqual(ssh, ("owner", "repo"))
+
+    def test_no_origin_returns_none(self):
+        resolve = self._resolver()
+        for label, runner in (
+            ("empty output", self._fake_runner(None)),
+            ("raises", self._fake_runner(None, exc=RuntimeError("no remote origin"))),
+        ):
+            with self.subTest(no_remote=label):
+                with tempfile.TemporaryDirectory() as path:
+                    self.assertIsNone(
+                        resolve(path, runner=runner),
+                        "no origin remote must yield no repository identity "
+                        "- never a guess",
+                    )
+
+    def test_non_github_origin_returns_none(self):
+        resolve = self._resolver()
+        for url in (
+            "https://bitbucket.org/owner/repo.git",
+            "https://gitlab.com/owner/repo.git",
+        ):
+            with self.subTest(url=url):
+                with tempfile.TemporaryDirectory() as path:
+                    self.assertIsNone(
+                        resolve(path, runner=self._fake_runner(url)),
+                        "a non-GitHub origin must yield no repository "
+                        "identity - never a guess",
+                    )
 
 
 if __name__ == "__main__":
