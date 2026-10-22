@@ -14,7 +14,9 @@ independent of where the fixture happens to live.
 ``print_argv``, ``json_argv`` and ``ultrawork_argv`` build the three
 invocations; ``models_document`` builds the Pi agent-directory models
 document (``~/.pi/agent/models.json`` on the host, not a project file)
-that points Pi at the local llama-swap gateway.
+that points Pi at the local llama-swap gateway. The phase-2 approval
+spike (``plans/pi-phase2-approval.md``) adds ``approval_argv`` and
+``mcp_list_argv`` for its two recorded probes.
 """
 
 import re
@@ -186,3 +188,42 @@ def models_document(
             }
         }
     }
+
+
+def approval_argv(model_id: str, prompt: str, approve: bool) -> List[str]:
+    """Build the argv for the phase-2 approval invocation (behaviour 2).
+
+    Runs the prompt in JSON mode with all tools disabled (``-nt``) so the
+    model cannot reach the marker file through the ``read`` tool and the
+    only path to it is the trusted system-prompt append; ``-a``/``-na``
+    selects project trust. The prompt is the final element after ``--``,
+    so a leading-dash prompt passes through verbatim.
+
+    Raises:
+        ArgvError: ``model_id`` or ``prompt`` is empty or whitespace-only.
+    """
+    _validate(model_id, prompt)
+    return [
+        "pi",
+        "--mode",
+        "json",
+        "--model",
+        model_id,
+        "-nt",
+        "-a" if approve else "-na",
+        "--no-session",
+        "--",
+        prompt,
+    ]
+
+
+def mcp_list_argv() -> List[str]:
+    """Build the argv for the phase-2 ``pi mcp list`` probe (behaviour 3).
+
+    A shell command that works outside a session and does not load
+    extensions; ``--json`` prints machine-readable state. Live pi 1.3.0
+    accepts only ``pi mcp list [--json]`` - there is no trust flag on this
+    subcommand; the trust difference is materialised by run_one seeding
+    the agent-directory trust.json, not a flag.
+    """
+    return ["pi", "mcp", "list", "--json"]
