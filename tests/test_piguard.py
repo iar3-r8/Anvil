@@ -125,5 +125,122 @@ class CheckHistoryRewriteTests(unittest.TestCase):
         )
 
 
+def pull_request_rule(ruleset_source: str, count: int) -> Dict[str, Any]:
+    """A ``pull_request`` element carrying an approving-review count."""
+    return {
+        "type": "pull_request",
+        "ruleset_source_type": "repository",
+        "ruleset_source": ruleset_source,
+        "ruleset_id": 1,
+        "parameters": {"required_approving_review_count": count},
+    }
+
+
+class CheckReviewGuardTests(unittest.TestCase):
+    """Behaviour 2: review guard reported from a rules response."""
+
+    def test_pull_request_present_passes_naming_check_and_ruleset_source(self):
+        findings = piguard.check_review(
+            [
+                pull_request_rule("main-protected", 1),
+                rule("non_fast_forward", "main-protected"),
+            ]
+        )
+
+        passed = [
+            f
+            for f in findings
+            if _field(f, "status") == "passed" and _field(f, "check") == "review"
+        ]
+        self.assertEqual(
+            len(passed),
+            1,
+            "one passed review finding expected when pull_request is active",
+        )
+        finding = passed[0]
+        self.assertEqual(_field(finding, "rule"), "pull_request")
+        self.assertEqual(
+            _field(finding, "source"),
+            "main-protected",
+            "finding must name the rule's ruleset_source",
+        )
+        self.assertEqual(
+            _field(finding, "required_approving_review_count"),
+            1,
+            "finding must record the required approving review count",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_pull_request_absent_warns_naming_danger_and_remedy(self):
+        for label, rules in (
+            (
+                "only non_fast_forward active",
+                [rule("non_fast_forward", "main-protected")],
+            ),
+            ("empty array", []),
+        ):
+            with self.subTest(absent=label):
+                findings = piguard.check_review(rules)
+
+                warns = [
+                    f
+                    for f in findings
+                    if _field(f, "status") == "warn" and _field(f, "check") == "review"
+                ]
+                self.assertEqual(
+                    len(warns),
+                    1,
+                    "one warn review finding expected when pull_request is absent",
+                )
+                warn = warns[0]
+                self.assertEqual(_field(warn, "rule"), "pull_request")
+                self.assertTrue(
+                    _field(warn, "danger"),
+                    "warn finding must name the danger (change lands unreviewed)",
+                )
+                self.assertTrue(
+                    "doc/external/github" in (_field(warn, "remedy") or ""),
+                    "warn finding must name a concrete fix, e.g. a doc path "
+                    "under doc/external/github/",
+                )
+                self.assertEqual(
+                    [
+                        f
+                        for f in findings
+                        if _field(f, "status") == "passed"
+                        and _field(f, "check") == "review"
+                    ],
+                    [],
+                    "no passed review finding when pull_request is absent",
+                )
+
+    def test_zero_required_approvals_passes_but_records_zero_count(self):
+        findings = piguard.check_review([pull_request_rule("main-protected", 0)])
+
+        passed = [
+            f
+            for f in findings
+            if _field(f, "status") == "passed" and _field(f, "check") == "review"
+        ]
+        self.assertEqual(
+            len(passed),
+            1,
+            "a pull_request rule with zero required approvals still passes",
+        )
+        self.assertEqual(
+            _field(passed[0], "required_approving_review_count"),
+            0,
+            "zero approvals is a weaker guard than the name suggests; "
+            "the count must be visible on the finding",
+        )
+        self.assertTrue(
+            _field(passed[0], "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
