@@ -13,6 +13,7 @@ cannot say how to fix the danger is a programming error, not a result.
 from typing import Any, Dict, List
 
 CHECK_HISTORY_REWRITE = "history_rewrite"
+CHECK_REVIEW = "review"
 
 # The API rule types the history-rewrite guard looks for, in report order.
 # These are the API names, not the UI labels: the endpoint returns
@@ -35,6 +36,10 @@ _DANGERS = {
     "deletion": (
         "the branch itself can be deleted unrecoverably, taking its whole "
         "history with it, with no review gate"
+    ),
+    "pull_request": (
+        "an agent's change can land on the branch unreviewed: a push goes "
+        "straight to the branch, with no review gate"
     ),
 }
 
@@ -91,6 +96,66 @@ def check_history_rewrite(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             )
 
     return findings
+
+
+def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One review finding: passed if ``pull_request`` is active, warn if not.
+
+    ``rules`` is the parsed body of
+    ``GET /repos/{owner}/{repo}/rules/branches/{branch}``: a list, and only
+    ``type``, ``ruleset_source`` and ``parameters`` of a ``pull_request``
+    element are read. A rule present yields a ``passed`` finding naming the
+    rule's API type and its ``ruleset_source``, with
+    ``parameters.required_approving_review_count`` recorded on the finding -
+    zero approvals is a weaker guard than the name suggests, and the report
+    must show it. A rule absent yields a ``warn`` finding naming the danger
+    (a change can land unreviewed) and a concrete fix.
+    """
+    rule = None
+    for candidate in rules:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("type") == "pull_request":
+            rule = candidate
+            break
+
+    if rule is None:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_REVIEW,
+                "rule": "pull_request",
+                "danger": _DANGERS["pull_request"],
+                "source": None,
+                "remedy": (
+                    "add a 'pull_request' rule to a ruleset covering this "
+                    "branch: rule semantics in {}, endpoint in {}".format(
+                        _RULES_DOC, _ENDPOINT_DOC
+                    )
+                ),
+            }
+        ]
+
+    parameters = rule.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {}
+    count = parameters.get("required_approving_review_count")
+    return [
+        {
+            "status": "passed",
+            "check": CHECK_REVIEW,
+            "rule": "pull_request",
+            "danger": "",
+            "source": _or_unknown(rule.get("ruleset_source")),
+            "required_approving_review_count": count,
+            "remedy": (
+                "nothing to do - the 'pull_request' rule is active for this "
+                "branch, requiring {} approving review(s); see {}".format(
+                    count, _RULES_DOC
+                )
+            ),
+        }
+    ]
 
 
 def _or_unknown(value: Any) -> str:
