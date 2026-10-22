@@ -226,7 +226,10 @@ def run_one(
     exactly once with the configuration's argv, the project directory as
     cwd, stdin ``/dev/null``, the configuration's budget (300 s for the
     model runs, 60 s for the mcp-list runs) and an ``env`` overlay
-    carrying ``PI_CODING_AGENT_DIR`` pointing at the agent directory;
+    carrying ``PI_CODING_AGENT_DIR`` as the resolved absolute agent
+    directory (``agent_dir.resolve()``): the child's cwd is the project
+    directory, so a relative value would resolve against the wrong base
+    and pi would ignore the real agent directory;
     write the after-run digest to ``after.sha256``; capture stdout
     and stderr as artifacts; drain stdout to ``events.jsonl`` for the two
     ``--mode json`` configs only; for a timed-out run write the runner's
@@ -322,7 +325,7 @@ def run_one(
             "cwd": str(project_dir),
             "stdin": "/dev/null",
             "timeout_s": _budget_for(config),
-            "env": {"PI_CODING_AGENT_DIR": str(agent_dir)},
+            "env": {"PI_CODING_AGENT_DIR": str(agent_dir.resolve())},
         }
     )
 
