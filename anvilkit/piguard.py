@@ -1,19 +1,35 @@
-"""Pure checks over GitHub branch rules, returning findings.
+"""Checks over GitHub branch rules, returning findings.
 
-The module's single job: interpret the JSON array returned by
-``GET /repos/{owner}/{repo}/rules/branches/{branch}`` and report, per rule
-type, whether a guard is present. It never touches the network, never writes,
-and never calls ``sys.exit`` — a check that cannot run is reported by its
-caller as ``skipped``; this module only judges what it is handed.
+Two jobs, in one pipeline. First, :func:`fetch_branch_rules` performs the
+``GET /repos/{owner}/{repo}/rules/branches/{branch}`` request and translates
+every network or payload failure into a ``reason`` - it never raises, and a
+missing token is not a skip, only an unauthenticated attempt: the endpoint
+allows that on public repositories. Second, the check functions interpret the
+JSON array and report, per rule type, whether a guard is present; a check
+that could not run becomes a ``skipped`` finding via
+:func:`skipped_findings`, never a pass.
 
-Every finding it can emit carries a non-empty ``remedy``: a finding that
-cannot say how to fix the danger is a programming error, not a result.
+The module never writes and never calls ``sys.exit``. Every finding it can
+emit carries a non-empty ``remedy``: a finding that cannot say how to fix the
+danger - or make the check runnable - is a programming error, not a result.
 """
 
-from typing import Any, Dict, List
+import json
+import socket
+import urllib.error
+import urllib.request
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 CHECK_HISTORY_REWRITE = "history_rewrite"
 CHECK_REVIEW = "review"
+
+# The rules endpoint lives on the API host, not the web host. Two GETs per
+# run, run rarely, so no caching (plans/pi-guard-verification.md).
+_RULES_API_BASE = "https://api.github.com"
+
+# Generous on purpose: a slow GitHub must not turn a live check into a
+# skipped one (plans/pi-guard-verification.md, Assumptions).
+DEFAULT_RULES_TIMEOUT = 10.0
 
 # The API rule types the history-rewrite guard looks for, in report order.
 # These are the API names, not the UI labels: the endpoint returns
@@ -42,6 +58,118 @@ _DANGERS = {
         "straight to the branch, with no review gate"
     ),
 }
+
+
+def fetch_branch_rules(
+    owner: str,
+    repo: str,
+    branch: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = DEFAULT_RULES_TIMEOUT,
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Fetch the active rules for ``branch``; never raises.
+
+    Builds ``GET {api}/repos/{owner}/{repo}/rules/branches/{branch}`` with
+    ``Accept: application/vnd.github+json``. A ``token`` adds the
+    ``Authorization`` header; without one the request goes out
+    unauthenticated, which the endpoint allows on public repositories - a
+    missing token is therefore not a skip, only an actual request failure
+    is (plans/pi-guard-verification.md, Assumptions).
+
+    Returns ``(rules, None)`` on a 200 whose body is a JSON array, and
+    ``(None, reason)`` on a ``URLError``, a timeout (including a
+    ``socket.timeout`` wrapped in a ``URLError``), an ``HTTPError``, or a
+    non-JSON body. A network timeout is a skipped, not a fail: a slow
+    GitHub must not make a provisioning command unusable.
+
+    ``opener`` defaults to ``urllib.request.urlopen``; tests inject a
+    recorded opener, so the suite never touches the live network.
+    """
+    if opener is None:
+        opener = urllib.request.urlopen
+    if timeout is None:
+        timeout = DEFAULT_RULES_TIMEOUT
+
+    url = "{}/repos/{}/{}{}/rules/branches/{}".format(
+        _RULES_API_BASE, owner, repo, "", branch
+    )
+    headers = {"Accept": "application/vnd.github+json"}
+    if token:
+        headers["Authorization"] = "Bearer {}".format(token)
+    request = urllib.request.Request(url, headers=headers)
+
+    try:
+        with opener(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            # Rulesets are unavailable on private repos under GitHub Free,
+            # so a 404 may be a plan limit, not a misconfiguration
+            # (doc/external/github/available-rules-for-rulesets.md). Name
+            # the situation; do not accuse whoever is reading the report.
+            return None, (
+                "GitHub returned 404 for the branch rules of {}/{} "
+                "({}): rulesets are unavailable on private repos under "
+                "GitHub Free, so this may be a plan limit rather than a "
+                "misconfiguration; see {}".format(
+                    owner, repo, url, _RULES_DOC
+                )
+            )
+        return None, "GitHub returned HTTP {} for {}".format(exc.code, url)
+    except socket.timeout as exc:
+        return None, (
+            "timed out after {}s contacting {}".format(timeout, url)
+        )
+    except urllib.error.URLError as exc:
+        # URLError wraps the real cause, including socket.timeout on some
+        # versions (same pattern as anvilkit/health.py).
+        if isinstance(exc.reason, socket.timeout):
+            return None, "timed out after {}s contacting {}".format(timeout, url)
+        return None, "GitHub was unreachable for {}: {}".format(url, exc.reason)
+    except OSError as exc:
+        return None, "GitHub was unreachable for {}: {}".format(url, exc)
+
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:
+        return None, "GitHub returned a non-JSON body for {}: {}".format(url, exc)
+    if not isinstance(payload, list):
+        return None, (
+            "GitHub returned a JSON body that is not a rules array for "
+            "{}: expected a list".format(url)
+        )
+    return payload, None
+
+
+def skipped_findings(reason: str) -> List[Dict[str, Any]]:
+    """One ``skipped`` finding per defined check, in report order.
+
+    A check that could not run - a failed or unreadable fetch - must never
+    count toward a clean report, so each defined check gets its own
+    ``skipped`` finding carrying ``reason`` and a non-empty ``remedy``
+    naming what makes the check runnable again (behaviours 4 and 5).
+    ``render_finding`` renders the ``reason`` field for skipped lines.
+    """
+    findings = []
+    for check in (CHECK_HISTORY_REWRITE, CHECK_REVIEW):
+        findings.append(
+            {
+                "status": "skipped",
+                "check": check,
+                "rule": None,
+                "danger": "",
+                "source": None,
+                "reason": reason,
+                "remedy": (
+                    "make the rules endpoint reachable and readable - "
+                    "check network access to api.github.com and, for "
+                    "private repos, a token with Metadata read - then re-"
+                    "run; endpoint in {}".format(_ENDPOINT_DOC)
+                ),
+            }
+        )
+    return findings
 
 
 def check_history_rewrite(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
