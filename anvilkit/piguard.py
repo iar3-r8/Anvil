@@ -348,6 +348,34 @@ def render_finding(finding: Dict[str, Any]) -> str:
     return "unknown: {} finding for rule {}".format(status, rule)
 
 
+def summarize(findings: List[Dict[str, Any]]) -> int:
+    """The exit-status seam: ``1`` when any finding has status ``fail``, else ``0``.
+
+    The ``verify-guards`` command interprets its findings to decide its exit
+    status; that interpretation is a pure function of the findings, so it is
+    testable with no typer and no network. ``warn`` and ``skipped`` alone
+    yield ``0``: a warning or an unrunnable check is reported, not a failure
+    (behaviour 7 of plans/pi-guard-verification.md). This slice emits no
+    ``fail`` finding, but the contract is what the follow-up slice's fail
+    findings will drive, so it is pinned now.
+    """
+    for finding in findings:
+        if finding.get("status") == "fail":
+            return 1
+    return 0
+
+
+def render_report(findings: List[Dict[str, Any]]) -> List[str]:
+    """One line per finding, in order; empty findings yield an empty report.
+
+    The report always prints - including on failure - so nothing may be
+    dropped: each line delegates to :func:`render_finding`, which is the only
+    place a finding's text is written, so the report and the single-finding
+    renderer can never drift apart (behaviour 7).
+    """
+    return [render_finding(finding) for finding in findings]
+
+
 def _or_unknown(value: Any) -> str:
     """A ruleset_source is expected on every active rule; name the gap if not."""
     if isinstance(value, str) and value:
