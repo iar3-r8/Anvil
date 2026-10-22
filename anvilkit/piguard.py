@@ -384,11 +384,14 @@ def _or_unknown(value: Any) -> str:
 
 
 # Owner/repo pair shapes a GitHub remote can take: HTTPS and SSH, each with or
-# without the .git suffix. Both host spellings are anchored so a lookalike
-# host (bitbucket.org, gitlab.com, ...) can never match (behaviour 6 of
-# plans/pi-guard-verification.md: never a guess).
-_GITHUB_HTTPS_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/?\.git/?$")
-_GITHUB_HTTPS_BARE_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)$")
+# without the .git suffix. The HTTPS forms also accept an optional userinfo
+# component (user or user:token) before the host - the form git leaves behind
+# after a clone with an embedded token - which is discarded so the credential
+# can never reach a returned value (behaviour 6). Both host spellings are
+# anchored so a lookalike host (bitbucket.org, gitlab.com, ...) can never
+# match, even with a userinfo (plans/pi-guard-verification.md: never a guess).
+_GITHUB_HTTPS_RE = re.compile(r"^https://(?:[^/@]+@)?github\.com/([^/]+)/([^/]+)/?\.git/?$")
+_GITHUB_HTTPS_BARE_RE = re.compile(r"^https://(?:[^/@]+@)?github\.com/([^/]+)/([^/]+)$")
 _GITHUB_SSH_RE = re.compile(r"^git@github\.com:([^/]+)/([^/]+)/?\.git/?$")
 _GITHUB_SSH_BARE_RE = re.compile(r"^git@github\.com:([^/]+)/([^/]+)$")
 
