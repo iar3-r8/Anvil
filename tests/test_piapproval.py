@@ -182,8 +182,9 @@ TIMESTAMP = "2026-10-21T00:00:00Z"
 # The tests own these values; the module takes them as arguments and must
 # never hardcode them.
 PROMPT = (
-    "Reply with the marker token ANVIL-PHASE2-MARKER in one word, "
-    "and nothing else."
+    "If the project's system addendum instructs you to reply with a "
+    "marker token, reply with exactly that token and nothing else. "
+    "Otherwise reply NO-MARKER."
 )
 MARKER = "ANVIL-PHASE2-MARKER"
 UNREACHABLE_COMMAND = "anvil-nonexistent-mcp-server"
