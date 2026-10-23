@@ -805,6 +805,37 @@ class TestInit(CliCase):
         self.assertEqual("1", values["LLM_DEVICE_ID_2"])
         self.assertEqual("2", values["INDEXER_STORAGE_DEVICE_ID"])
 
+    def test_yes_without_tier_records_mid_and_todays_device_spread(self):
+        """``init --yes`` with no ``--tier`` is byte-for-byte today's default.
+
+        Boundary pin (plans/vllm-tier-setups.md, behaviour 13:
+        mid_is_the_non_interactive_default): the tier work must not have
+        moved an existing default. ``--yes`` resolves ``mid`` — not the
+        first entry of the tier table — and the four device values must
+        stay ``0`` / ``0`` / ``1`` / ``2``. ``test_defaults_match_the_bash_script``
+        pins the device spread without the tier key and
+        ``test_env_records_the_resolved_tier_id`` pins the tier key without
+        the device spread; this test asserts the five together, in one run.
+        """
+        self.invoke(["init", "--yes"])
+        values = self.env_values()
+        self.assertEqual(
+            {
+                "ANVIL_TIER": "mid",
+                "LLM_DEVICE_ID_0": "0",
+                "LLM_DEVICE_ID_1": "0",
+                "LLM_DEVICE_ID_2": "1",
+                "INDEXER_STORAGE_DEVICE_ID": "2",
+            },
+            {key: values[key] for key in (
+                "ANVIL_TIER",
+                "LLM_DEVICE_ID_0",
+                "LLM_DEVICE_ID_1",
+                "LLM_DEVICE_ID_2",
+                "INDEXER_STORAGE_DEVICE_ID",
+            )},
+        )
+
     def test_default_port_comes_from_anvil_yaml(self):
         from anvilkit import config
 
