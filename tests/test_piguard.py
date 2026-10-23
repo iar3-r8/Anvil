@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import piguard  # noqa: E402
+from anvilkit import piruleset  # noqa: E402
 
 
 def _field(finding: Any, name: str) -> Any:
@@ -249,6 +250,506 @@ class CheckReviewGuardTests(unittest.TestCase):
         )
 
 
+def update_rule(
+    ruleset_source: str, parameters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """An ``update`` element; ``parameters=None`` omits the key entirely."""
+    element: Dict[str, Any] = {
+        "type": "update",
+        "ruleset_source_type": "repository",
+        "ruleset_source": ruleset_source,
+        "ruleset_id": 1,
+    }
+    if parameters is not None:
+        element["parameters"] = parameters
+    return element
+
+
+class CheckUpdateTests(unittest.TestCase):
+    """Behaviour 1 of plans/verify-guards-five-rules.md: the update-restriction
+    guard reported from a rules response.
+
+    ``check_update(rules)`` takes the parsed ``/rules/branches`` array and
+    reports one finding for the ``update`` rule: a rule present yields a
+    ``passed`` finding under the ``update_restriction`` check, naming the
+    rule's API type and its ``ruleset_source`` and recording
+    ``parameters.update_allows_fetch_and_merge`` on the finding (a weak value
+    passes but stays visible, the zero-approvals precedent); a rule absent
+    yields a ``warn`` finding naming the danger (anyone with push access can
+    push straight to the branch, with no gate) and a remedy citing both saved
+    docs (doc/external/github/rest-api-endpoints-for-rules.md:134,
+    doc/external/github/available-rules-for-rulesets.md:32).
+    """
+
+    def test_update_rule_present_yields_one_passed_finding_recording_parameter(self):
+        findings = piguard.check_update(
+            [
+                update_rule("main-protected", {"update_allows_fetch_and_merge": True}),
+                rule("non_fast_forward", "main-protected"),
+            ]
+        )
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "check_update reports one finding for the update rule",
+        )
+        finding = findings[0]
+        self.assertEqual(_field(finding, "status"), "passed")
+        self.assertEqual(
+            _field(finding, "check"),
+            "update_restriction",
+            "the update check runs under its own check constant",
+        )
+        self.assertEqual(
+            _field(finding, "rule"),
+            "update",
+            "finding must name the rule's API type",
+        )
+        self.assertEqual(
+            _field(finding, "source"),
+            "main-protected",
+            "finding must name the rule's ruleset_source",
+        )
+        self.assertEqual(
+            _field(finding, "update_allows_fetch_and_merge"),
+            True,
+            "finding must record parameters.update_allows_fetch_and_merge",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_update_absent_warns_naming_danger_and_both_saved_docs(self):
+        for label, rules in (
+            (
+                "only non_fast_forward active",
+                [rule("non_fast_forward", "main-protected")],
+            ),
+            ("empty array", []),
+            ("only non-dict elements", ["not a dict", 42, None]),
+        ):
+            with self.subTest(absent=label):
+                findings = piguard.check_update(rules)
+
+                warns = [f for f in findings if _field(f, "status") == "warn"]
+                self.assertEqual(
+                    len(warns),
+                    1,
+                    "one warn update finding expected when the update rule "
+                    "is absent",
+                )
+                warn = warns[0]
+                self.assertEqual(
+                    _field(warn, "check"),
+                    "update_restriction",
+                    "the warn must carry the update check constant",
+                )
+                self.assertEqual(_field(warn, "rule"), "update")
+                self.assertTrue(
+                    _field(warn, "danger"),
+                    "warn finding must name the danger: anyone with push "
+                    "access can push straight to the branch, with no gate",
+                )
+                remedy = _field(warn, "remedy") or ""
+                self.assertIn(
+                    "doc/external/github/available-rules-for-rulesets.md",
+                    remedy,
+                    "the warn remedy must cite the saved rules doc, so a "
+                    "reviewer can check the claim",
+                )
+                self.assertIn(
+                    "doc/external/github/rest-api-endpoints-for-rules.md",
+                    remedy,
+                    "the warn remedy must cite the saved endpoint doc, so a "
+                    "reviewer can check the claim",
+                )
+                self.assertEqual(
+                    [
+                        f
+                        for f in findings
+                        if _field(f, "status") == "passed"
+                    ],
+                    [],
+                    "no passed update finding when the update rule is absent",
+                )
+
+    def test_missing_or_non_dict_parameters_records_none_and_never_raises(self):
+        cases = (
+            ("parameters key absent", update_rule("main-protected")),
+            (
+                "parameters is None",
+                dict(update_rule("main-protected"), parameters=None),
+            ),
+            (
+                "parameters is not a dict",
+                dict(
+                    update_rule("main-protected"),
+                    parameters=["update_allows_fetch_and_merge"],
+                ),
+            ),
+        )
+        for label, element in cases:
+            with self.subTest(parameters=label):
+                findings = piguard.check_update([element])
+
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "an update rule whose parameters cannot be read still "
+                    "yields one finding - never an exception",
+                )
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "passed",
+                    "a present update rule passes even when its parameters "
+                    "are unreadable",
+                )
+                self.assertIsNone(
+                    _field(finding, "update_allows_fetch_and_merge"),
+                    "an unreadable parameters object must record None, not "
+                    "raise or guess a value",
+                )
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every finding carries a non-empty remedy",
+                )
+
+    def test_false_allows_fetch_and_merge_passes_but_records_false(self):
+        findings = piguard.check_update(
+            [
+                update_rule(
+                    "main-protected",
+                    {"update_allows_fetch_and_merge": False},
+                )
+            ]
+        )
+
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "a present update rule with a weak value still passes - the "
+            "weak value is recorded, not hidden (zero-approvals precedent)",
+        )
+        self.assertEqual(
+            _field(finding, "update_allows_fetch_and_merge"),
+            False,
+            "a False value must stay visible on the finding - it means "
+            "fetches and merges are the only allowed updates",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_source_is_unknown_when_ruleset_source_absent_or_blank(self):
+        for label, element in (
+            (
+                "ruleset_source absent",
+                dict(
+                    (k, v)
+                    for k, v in update_rule(
+                        "main-protected",
+                        {"update_allows_fetch_and_merge": True},
+                    ).items()
+                    if k != "ruleset_source"
+                ),
+            ),
+            (
+                "ruleset_source blank",
+                update_rule("", {"update_allows_fetch_and_merge": True}),
+            ),
+        ):
+            with self.subTest(source=label):
+                findings = piguard.check_update([element])
+
+                self.assertEqual(len(findings), 1)
+                finding = findings[0]
+                self.assertEqual(_field(finding, "status"), "passed")
+                self.assertEqual(
+                    _field(finding, "source"),
+                    "unknown",
+                    "an absent or blank ruleset_source must be named "
+                    "'unknown' on the finding",
+                )
+
+
+def file_path_rule(
+    ruleset_source: str, parameters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """A ``file_path_restriction`` element; ``parameters=None`` omits the key entirely."""
+    element: Dict[str, Any] = {
+        "type": "file_path_restriction",
+        "ruleset_source_type": "repository",
+        "ruleset_source": ruleset_source,
+        "ruleset_id": 1,
+    }
+    if parameters is not None:
+        element["parameters"] = parameters
+    return element
+
+
+class CheckFilePathsTests(unittest.TestCase):
+    """Behaviour 2 of plans/verify-guards-five-rules.md: the file-path
+    restriction guard reported from a rules response.
+
+    ``check_file_paths(rules)`` takes the parsed ``/rules/branches`` array
+    and reports one finding for the ``file_path_restriction`` rule: a rule
+    present yields a ``passed`` finding under the ``file_paths`` check,
+    naming the rule's API type and its ``ruleset_source`` and recording
+    ``parameters.restricted_file_paths`` as a list on the finding (an empty
+    list passes but stays visible, the zero-approvals precedent); a rule
+    absent yields a ``warn`` finding naming the danger (a push can change
+    ``.github/workflows/**`` - the paths the rule restricts, e.g. what CI
+    runs - with no gate) and a remedy citing both saved docs
+    (doc/external/github/available-rules-for-rulesets.md,
+    doc/external/github/rest-api-endpoints-for-rules.md:137).
+    """
+
+    def test_file_path_rule_present_yields_one_passed_finding_recording_paths(self):
+        findings = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                ),
+                rule("non_fast_forward", "main-protected"),
+            ]
+        )
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "check_file_paths reports one finding for the "
+            "file_path_restriction rule",
+        )
+        finding = findings[0]
+        self.assertEqual(_field(finding, "status"), "passed")
+        self.assertEqual(
+            _field(finding, "check"),
+            "file_paths",
+            "the file-path check runs under its own check constant",
+        )
+        self.assertEqual(
+            _field(finding, "rule"),
+            "file_path_restriction",
+            "finding must name the rule's API type",
+        )
+        self.assertEqual(
+            _field(finding, "source"),
+            "main-protected",
+            "finding must name the rule's ruleset_source",
+        )
+        self.assertEqual(
+            _field(finding, "restricted_file_paths"),
+            [".github/workflows/**"],
+            "finding must record the exact restricted_file_paths list the "
+            "rule carries - the value build_ruleset writes",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_file_path_absent_warns_naming_danger_and_both_saved_docs(self):
+        for label, rules in (
+            (
+                "only non_fast_forward active",
+                [rule("non_fast_forward", "main-protected")],
+            ),
+            ("empty array", []),
+            ("only non-dict elements", ["not a dict", 42, None]),
+        ):
+            with self.subTest(absent=label):
+                findings = piguard.check_file_paths(rules)
+
+                warns = [f for f in findings if _field(f, "status") == "warn"]
+                self.assertEqual(
+                    len(warns),
+                    1,
+                    "one warn file-path finding expected when the "
+                    "file_path_restriction rule is absent",
+                )
+                warn = warns[0]
+                self.assertEqual(
+                    _field(warn, "check"),
+                    "file_paths",
+                    "the warn must carry the file-path check constant",
+                )
+                self.assertEqual(_field(warn, "rule"), "file_path_restriction")
+                self.assertTrue(
+                    _field(warn, "danger"),
+                    "warn finding must name the danger: a push can change "
+                    ".github/workflows/** - what CI runs - with no gate",
+                )
+                remedy = _field(warn, "remedy") or ""
+                self.assertIn(
+                    "doc/external/github/available-rules-for-rulesets.md",
+                    remedy,
+                    "the warn remedy must cite the saved rules doc, so a "
+                    "reviewer can check the claim",
+                )
+                self.assertIn(
+                    "doc/external/github/rest-api-endpoints-for-rules.md",
+                    remedy,
+                    "the warn remedy must cite the saved endpoint doc, so a "
+                    "reviewer can check the claim",
+                )
+                self.assertEqual(
+                    [
+                        f
+                        for f in findings
+                        if _field(f, "status") == "passed"
+                    ],
+                    [],
+                    "no passed file-path finding when the rule is absent",
+                )
+
+    def test_missing_or_non_dict_parameters_records_empty_list_and_never_raises(self):
+        cases = (
+            ("parameters key absent", file_path_rule("main-protected")),
+            (
+                "parameters is None",
+                dict(file_path_rule("main-protected"), parameters=None),
+            ),
+            (
+                "parameters is not a dict",
+                dict(
+                    file_path_rule("main-protected"),
+                    parameters=["restricted_file_paths"],
+                ),
+            ),
+            (
+                "restricted_file_paths is not a list",
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": ".github/workflows/**"},
+                ),
+            ),
+        )
+        for label, element in cases:
+            with self.subTest(parameters=label):
+                findings = piguard.check_file_paths([element])
+
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "a file_path_restriction rule whose parameters cannot "
+                    "be read still yields one finding - never an exception",
+                )
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "passed",
+                    "a present file_path_restriction rule passes even when "
+                    "its parameters are unreadable",
+                )
+                self.assertEqual(
+                    _field(finding, "restricted_file_paths"),
+                    [],
+                    "an unreadable parameters object must record an empty "
+                    "list, not None - an empty restriction set is the "
+                    "only honest value",
+                )
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every finding carries a non-empty remedy",
+                )
+
+    def test_empty_restricted_file_paths_passes_but_records_empty_list(self):
+        findings = piguard.check_file_paths(
+            [file_path_rule("main-protected", {"restricted_file_paths": []})]
+        )
+
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "a present rule with an empty restriction list still passes - "
+            "the weak value is recorded, not hidden (zero-approvals "
+            "precedent)",
+        )
+        self.assertEqual(
+            _field(finding, "restricted_file_paths"),
+            [],
+            "an empty restriction list must stay visible on the finding - "
+            "it means the rule restricts nothing",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_duplicated_file_path_rule_elements_first_wins(self):
+        findings = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "first-ruleset",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                ),
+                file_path_rule(
+                    "second-ruleset",
+                    {"restricted_file_paths": ["src/**"]},
+                ),
+            ]
+        )
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "a duplicated file_path_restriction rule yields one finding, "
+            "as check_history_rewrite does",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "source"),
+            "first-ruleset",
+            "the first element wins when the rule type is duplicated",
+        )
+        self.assertEqual(
+            _field(finding, "restricted_file_paths"),
+            [".github/workflows/**"],
+            "the first element's paths win when the rule type is "
+            "duplicated",
+        )
+
+    def test_source_is_unknown_when_ruleset_source_absent_or_blank(self):
+        for label, element in (
+            (
+                "ruleset_source absent",
+                dict(
+                    (k, v)
+                    for k, v in file_path_rule(
+                        "main-protected",
+                        {"restricted_file_paths": [".github/workflows/**"]},
+                    ).items()
+                    if k != "ruleset_source"
+                ),
+            ),
+            (
+                "ruleset_source blank",
+                file_path_rule("", {"restricted_file_paths": [".github/workflows/**"]}),
+            ),
+        ):
+            with self.subTest(source=label):
+                findings = piguard.check_file_paths([element])
+
+                self.assertEqual(len(findings), 1)
+                finding = findings[0]
+                self.assertEqual(_field(finding, "status"), "passed")
+                self.assertEqual(
+                    _field(finding, "source"),
+                    "unknown",
+                    "an absent or blank ruleset_source must be named "
+                    "'unknown' on the finding",
+                )
+
+
 class RenderFindingTests(unittest.TestCase):
     """Behaviour 3: a rendered finding states the bypass-visibility caveat.
 
@@ -343,6 +844,299 @@ class RenderFindingTests(unittest.TestCase):
                     "not be hidden by the caveat".format(count),
                 )
 
+    def test_passed_update_finding_states_caveat_and_keeps_allows_fetch_and_merge_visible(self):
+        render = self._render_finding()
+        for value in (True, False):
+            with self.subTest(value=value):
+                findings = piguard.check_update(
+                    [
+                        update_rule(
+                            "main-guard",
+                            {"update_allows_fetch_and_merge": value},
+                        )
+                    ]
+                )
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: update rule active means one passed finding",
+                )
+                self.assertEqual(
+                    _field(findings[0], "update_allows_fetch_and_merge"),
+                    value,
+                    "fixture sanity: the check records the parameter value",
+                )
+                line = render(findings[0])
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "a passed finding must render a non-empty line",
+                )
+                self.assertIn(
+                    "update",
+                    line,
+                    "the rendered line must name the update rule's API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive on a passed update finding - "
+                    "bypass_actors is only returned to users with write "
+                    "access, so the line must never claim the branch is "
+                    "simply 'protected'",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                self.assertIn(
+                    "True" if value else "False",
+                    line,
+                    "the recorded update_allows_fetch_and_merge value of {} "
+                    "must stay visible in the rendered line - a weak value "
+                    "must not be hidden by the caveat".format(value),
+                )
+
+    def test_passed_update_finding_with_unreadable_parameters_renders_without_claiming_a_value(self):
+        render = self._render_finding()
+        for label, element in (
+            ("parameters key absent", update_rule("main-guard")),
+            (
+                "parameters is None",
+                dict(update_rule("main-guard"), parameters=None),
+            ),
+            (
+                "parameters is not a dict",
+                dict(
+                    update_rule("main-guard"),
+                    parameters=["update_allows_fetch_and_merge"],
+                ),
+            ),
+        ):
+            with self.subTest(parameters=label):
+                findings = piguard.check_update([element])
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: a present update rule passes even when "
+                    "its parameters are unreadable",
+                )
+                self.assertIsNone(
+                    _field(findings[0], "update_allows_fetch_and_merge"),
+                    "fixture sanity: an unreadable parameters object records "
+                    "None, not a guess",
+                )
+
+                line = render(findings[0])
+
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "a passed finding must render a non-empty line",
+                )
+                self.assertIn(
+                    "update",
+                    line,
+                    "the rendered line must still name the update rule's "
+                    "API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive when no value was returned",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                self.assertNotIn(
+                    "True",
+                    line,
+                    "no value was returned, so the line must not claim True",
+                )
+                self.assertNotIn(
+                    "False",
+                    line,
+                    "no value was returned, so the line must not claim False",
+                )
+
+    def test_passed_file_path_finding_states_caveat_and_keeps_restricted_paths_visible(self):
+        render = self._render_finding()
+        for paths in (
+            [".github/workflows/**"],
+            [".github/workflows/**", "config.yaml"],
+        ):
+            with self.subTest(paths=paths):
+                findings = piguard.check_file_paths(
+                    [
+                        file_path_rule(
+                            "main-guard",
+                            {"restricted_file_paths": list(paths)},
+                        )
+                    ]
+                )
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: file_path_restriction active means one "
+                    "passed finding",
+                )
+                self.assertEqual(
+                    _field(findings[0], "restricted_file_paths"),
+                    list(paths),
+                    "fixture sanity: the check records the "
+                    "restricted_file_paths list",
+                )
+                line = render(findings[0])
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "a passed finding must render a non-empty line",
+                )
+                self.assertIn(
+                    "file_path_restriction",
+                    line,
+                    "the rendered line must name the rule's API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive on a passed file-path finding - "
+                    "bypass_actors is only returned to users with write "
+                    "access, so the line must never claim the branch is "
+                    "simply 'protected'",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                for path in paths:
+                    self.assertIn(
+                        path,
+                        line,
+                        "every recorded restricted path ({}) must stay "
+                        "visible in the rendered line - no path may be "
+                        "elided or truncated, so a reader sees exactly what "
+                        "is restricted".format(path),
+                    )
+
+    def test_passed_file_path_finding_with_empty_restricted_paths_renders_explicit_no_paths(self):
+        render = self._render_finding()
+        findings = piguard.check_file_paths(
+            [file_path_rule("main-guard", {"restricted_file_paths": []})]
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["passed"],
+            "fixture sanity: a present rule with an empty restriction list "
+            "still passes",
+        )
+        self.assertEqual(
+            _field(findings[0], "restricted_file_paths"),
+            [],
+            "fixture sanity: an empty restriction list is recorded",
+        )
+        line = render(findings[0])
+        self.assertIsInstance(line, str)
+        self.assertTrue(
+            line,
+            "a passed finding must render a non-empty line",
+        )
+        self.assertIn(
+            "file_path_restriction",
+            line,
+            "the rendered line must name the rule's API type",
+        )
+        self.assertIn(
+            "bypass",
+            line.lower(),
+            "the caveat must survive on a passed file-path finding",
+        )
+        self.assertNotIn(
+            "protected",
+            line.lower(),
+            "an empty restriction list must render an explicit 'no restricted "
+            "paths recorded' rather than a bare 'protected'",
+        )
+        self.assertIn(
+            "no restricted paths recorded",
+            line,
+            "an empty restriction list must render the explicit phrase 'no "
+            "restricted paths recorded' (case-sensitive) - a weak value is "
+            "recorded, not hidden (zero-approvals precedent)",
+        )
+
+    def test_passed_file_path_finding_with_unreadable_parameters_renders_without_claiming_a_path(self):
+        render = self._render_finding()
+        for label, element in (
+            ("parameters key absent", file_path_rule("main-guard")),
+            (
+                "parameters is None",
+                dict(file_path_rule("main-guard"), parameters=None),
+            ),
+            (
+                "parameters is not a dict",
+                dict(
+                    file_path_rule("main-guard"),
+                    parameters=["restricted_file_paths"],
+                ),
+            ),
+            (
+                "restricted_file_paths is not a list",
+                file_path_rule(
+                    "main-guard",
+                    {"restricted_file_paths": ".github/workflows/**"},
+                ),
+            ),
+        ):
+            with self.subTest(parameters=label):
+                findings = piguard.check_file_paths([element])
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: a present rule passes even when its "
+                    "parameters are unreadable",
+                )
+                self.assertEqual(
+                    _field(findings[0], "restricted_file_paths"),
+                    [],
+                    "fixture sanity: an unreadable parameters object records "
+                    "an empty list, not a guess",
+                )
+
+                line = render(findings[0])
+
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "a passed finding must render a non-empty line",
+                )
+                self.assertIn(
+                    "file_path_restriction",
+                    line,
+                    "the rendered line must still name the rule's API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive when no paths were returned",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                self.assertIn(
+                    "no restricted paths recorded",
+                    line,
+                    "no paths were returned, so the line must read 'no "
+                    "restricted paths recorded' - it must not claim a path "
+                    "that was not returned",
+                )
+
     def test_warn_finding_lines_name_danger_and_remedy(self):
         render = self._render_finding()
         for label, findings in (
@@ -428,28 +1222,29 @@ class _SkippedAssertions:
 
     Behaviour 4 of plans/pi-guard-verification.md: a check that cannot run
     yields a ``skipped`` finding carrying the reason - never ``passed``,
-    never an exception. One skipped finding per defined check, each with a
-    non-empty reason and a non-empty remedy (behaviour 5 invariant: a
-    finding that cannot say what the user can do to make the check runnable
-    is a programming error).
+    never an exception. One skipped finding per defined check - the four
+    check constants (history_rewrite, review, update_restriction,
+    file_paths) - each with a non-empty reason and a non-empty remedy
+    (behaviour 5 invariant: a finding that cannot say what the user can do
+    to make the check runnable is a programming error).
     """
 
     def _assert_skipped_findings(self, findings: Any, reason: str) -> None:
         self.assertIsInstance(findings, list)
-        checks = [_field(f, "check") for f in findings]
         self.assertEqual(
-            checks.count("history_rewrite"),
-            1,
-            "exactly one skipped finding expected for the history_rewrite check",
+            len(findings),
+            4,
+            "one skipped finding expected per defined check: "
+            "history_rewrite, review, update_restriction and file_paths",
         )
         self.assertEqual(
-            checks.count("review"),
-            1,
-            "exactly one skipped finding expected for the review check",
+            [_field(f, "check") for f in findings],
+            ["history_rewrite", "review", "update_restriction", "file_paths"],
+            "exactly one skipped finding per check constant, in report order",
         )
         self.assertEqual(
             [_field(f, "status") for f in findings],
-            ["skipped", "skipped"],
+            ["skipped", "skipped", "skipped", "skipped"],
             "every affected check must yield a skipped finding, in a "
             "visually distinct shape from a pass",
         )
@@ -644,7 +1439,8 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
     """Behaviour 4 (rendering half): a skipped finding is visually distinct from a pass.
 
     ``skipped_findings(reason)`` yields one ``skipped`` finding per defined
-    check (history_rewrite, review), each carrying the reason and a remedy
+    check - the four check constants (history_rewrite, review,
+    update_restriction, file_paths) - each carrying the reason and a remedy
     naming what the user can do to make the check runnable.
     ``render_finding`` already carries the reason for a skipped finding; the
     rendered line must say the check could not run - never a passed-style
@@ -701,16 +1497,59 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
                     "a skipped finding is visually distinct from a pass",
                 )
 
+    def test_skipped_finding_per_check_carries_check_specific_danger(self):
+        # A skipped finding must stand on its own rather than leaning on the
+        # renderer: the danger text names the unmeasured hole of its own
+        # check, so the four findings cannot all carry one shared danger -
+        # the history_rewrite one differs from the review one, and the
+        # update_restriction and file_paths findings name the update and
+        # file-path holes rather than copying the first two.
+        reason = "GitHub was unreachable: connection refused"
+
+        findings = self._skipped_findings()(reason)
+
+        self.assertEqual(
+            len(findings),
+            4,
+            "one skipped finding expected per defined check: "
+            "history_rewrite, review, update_restriction and file_paths",
+        )
+        texts: List[Tuple[str, str]] = []
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                text = (
+                    _field(finding, "danger")
+                    or _field(finding, "reason")
+                    or ""
+                )
+                self.assertTrue(
+                    text,
+                    "each skipped finding must carry a non-empty danger or "
+                    "reason naming the unmeasured hole of its own check",
+                )
+                texts.append((_field(finding, "check") or "", text))
+        distinct = {text for _check, text in texts}
+        self.assertGreaterEqual(
+            len(distinct),
+            3,
+            "the four skipped findings' danger texts must be specific to "
+            "their check, not one shared copy: the two original checks "
+            "already differ, so at least three distinct texts are expected "
+            "across four findings",
+        )
+
 
 class FindingInvariantsTests(unittest.TestCase):
     """Behaviour 5: findings carry danger and remedy - a boundary pin.
 
     A finding with an empty remedy is a programming error, so this class
     sweeps EVERY finding the module can emit as of today - every documented
-    rules-array shape through both check functions, and the skipped findings
-    for every fetch failure mode - and pins the invariants: a known status, a
-    non-empty string remedy on every finding, a non-empty danger on every
-    non-passing finding, and a renderable non-empty line. The sweep exercises
+    rules-array shape through all four check functions
+    (``check_history_rewrite``, ``check_review``, ``check_update`` and
+    ``check_file_paths``), and the skipped findings for every fetch failure
+    mode - and pins the invariants: a known status, a non-empty string
+    remedy on every finding, a non-empty danger on every non-passing
+    finding, and a renderable non-empty line. The sweep exercises
     the module as it is and may already pass; its job is to break on future
     drift, so a finding that later drops its remedy or its danger must fail
     these tests, and the assertions must never be weakened to get back to
@@ -750,6 +1589,56 @@ class FindingInvariantsTests(unittest.TestCase):
                     rule("non_fast_forward", "main-guard"),
                     rule("deletion", "main-guard"),
                     pull_request_rule("main-guard", 1),
+                ],
+            ),
+            (
+                "update alone",
+                [
+                    update_rule(
+                        "main-guard",
+                        {"update_allows_fetch_and_merge": True},
+                    )
+                ],
+            ),
+            (
+                "file_path_restriction alone",
+                [
+                    file_path_rule(
+                        "main-guard",
+                        {"restricted_file_paths": [".github/workflows/**"]},
+                    )
+                ],
+            ),
+            (
+                "all five rules",
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                    pull_request_rule("main-guard", 1),
+                    update_rule(
+                        "main-guard",
+                        {"update_allows_fetch_and_merge": True},
+                    ),
+                    file_path_rule(
+                        "main-guard",
+                        {"restricted_file_paths": [".github/workflows/**"]},
+                    ),
+                ],
+            ),
+            (
+                "all five rules, weak parameters",
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                    pull_request_rule("main-guard", 0),
+                    update_rule(
+                        "main-guard",
+                        {"update_allows_fetch_and_merge": False},
+                    ),
+                    file_path_rule(
+                        "main-guard",
+                        {"restricted_file_paths": []},
+                    ),
                 ],
             ),
         ]
@@ -796,7 +1685,12 @@ class FindingInvariantsTests(unittest.TestCase):
         """
         findings: List[Tuple[str, Dict[str, Any]]] = []
         for label, rules in self._rule_shapes():
-            for check in (piguard.check_history_rewrite, piguard.check_review):
+            for check in (
+                piguard.check_history_rewrite,
+                piguard.check_review,
+                piguard.check_update,
+                piguard.check_file_paths,
+            ):
                 for finding in check(rules):
                     findings.append(
                         (
@@ -1366,6 +2260,135 @@ class RenderReportTests(unittest.TestCase):
             render([]),
             [],
             "no findings means no report lines",
+        )
+
+
+class RulesetWriteLockstepTests(unittest.TestCase):
+    """Behaviour 9 of plans/verify-guards-five-rules.md: the ruleset-write /
+    verify-guards lockstep - a boundary pin.
+
+    ``build_ruleset()`` (anvilkit/piruleset.py) is the writer side: the five
+    rules Anvil provisions. ``check_all`` (anvilkit/piguard.py) is the reader
+    side: what verify-guards measures. A rule added to ``build_ruleset``
+    without a matching check fails this test - which is its purpose. The
+    fixture translates ``build_ruleset()["rules"]`` into the
+    ``/rules/branches`` element shape (each element gains
+    ``ruleset_source_type``, ``ruleset_source`` and ``ruleset_id``; the
+    element's ``type`` and ``parameters`` are copied through unchanged into
+    fresh dicts, so the ``build_ruleset()`` result is never mutated) and runs
+    ``check_all`` over it with no live import: the live GitHub import stays a
+    reader's step, never a suite step.
+    """
+
+    EXPECTED_REPORT_ORDER = (
+        "non_fast_forward",
+        "deletion",
+        "pull_request",
+        "update",
+        "file_path_restriction",
+    )
+
+    def _check_all(self) -> Any:
+        check_all = getattr(piguard, "check_all", None)
+        self.assertTrue(
+            callable(check_all),
+            "anvilkit.piguard.check_all is not callable; the check_all "
+            "seam has not been implemented yet",
+        )
+        return check_all
+
+    def _fixture(self) -> List[Dict[str, Any]]:
+        """build_ruleset() rules translated into the /rules/branches shape.
+
+        Fresh dicts throughout: the build_ruleset() result is copied, never
+        mutated, so a check that misbehaves cannot poison the writer side.
+        """
+        fixture: List[Dict[str, Any]] = []
+        for element in piruleset.build_ruleset()["rules"]:
+            fresh: Dict[str, Any] = {
+                "type": element["type"],
+                "ruleset_source_type": "repository",
+                "ruleset_source": "main-protected",
+                "ruleset_id": 1,
+            }
+            if "parameters" in element:
+                fresh["parameters"] = dict(element["parameters"])
+            fixture.append(fresh)
+        return fixture
+
+    def test_check_all_over_build_ruleset_fixture_yields_five_passed_findings_one_per_rule(self):
+        check_all = self._check_all()
+        fixture = self._fixture()
+
+        findings = check_all(fixture)
+
+        self.assertEqual(
+            len(findings),
+            5,
+            "one finding per rule build_ruleset writes - exactly five",
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["passed"] * 5,
+            "every rule build_ruleset writes must measure as passed - a "
+            "rule the writer side provisions that the reader side cannot "
+            "pass is a hole in the guard",
+        )
+        self.assertEqual(
+            [_field(f, "rule") for f in findings],
+            list(self.EXPECTED_REPORT_ORDER),
+            "findings must report one per rule type, in the planned report "
+            "order: non_fast_forward, deletion, pull_request, update, "
+            "file_path_restriction",
+        )
+        by_rule = {_field(f, "rule"): f for f in findings}
+        self.assertEqual(
+            _field(by_rule["pull_request"], "required_approving_review_count"),
+            1,
+            "the review finding must record the count build_ruleset writes "
+            "(required_approving_review_count: 1)",
+        )
+        self.assertIs(
+            _field(by_rule["update"], "update_allows_fetch_and_merge"),
+            True,
+            "the update finding must record the value build_ruleset writes "
+            "(update_allows_fetch_and_merge: True)",
+        )
+        self.assertEqual(
+            _field(by_rule["file_path_restriction"], "restricted_file_paths"),
+            [".github/workflows/**"],
+            "the file-path finding must record the paths build_ruleset "
+            "writes (restricted_file_paths: ['.github/workflows/**'])",
+        )
+
+    def test_check_all_covers_every_rule_build_ruleset_writes(self):
+        """Lockstep: the rule types check_all reports must equal the rule
+        types build_ruleset writes, and the count must stay exactly five.
+
+        A rule added to build_ruleset without a matching check breaks the
+        set equality and the count assertion - which is this test's purpose.
+        The live GitHub import stays a reader's step, never a suite step.
+        """
+        check_all = self._check_all()
+        fixture = self._fixture()
+
+        findings = check_all(fixture)
+
+        self.assertEqual(
+            len(findings),
+            5,
+            "exactly five findings: build_ruleset writes five rules, so a "
+            "sixth rule type on either side must break this test",
+        )
+        fixture_types = {element["type"] for element in fixture}
+        finding_types = {_field(f, "rule") for f in findings}
+        self.assertEqual(
+            fixture_types,
+            finding_types,
+            "check_all must report exactly the rule types build_ruleset "
+            "writes - a rule added to the writer side without a matching "
+            "check (or a finding for a rule it does not write) is the hole "
+            "this test exists to catch",
         )
 
 

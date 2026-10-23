@@ -1504,10 +1504,7 @@ def _report_guards(shared: Context) -> None:
         if rules is None:
             findings = piguard.skipped_findings(fetch_reason)
         else:
-            findings = (
-                piguard.check_history_rewrite(rules)
-                + piguard.check_review(rules)
-            )
+            findings = piguard.check_all(rules)
 
     for finding in findings:
         label = finding.get("rule")
@@ -1611,10 +1608,7 @@ def verify_guards(
         if rules is None:
             findings = piguard.skipped_findings(fetch_reason)
         else:
-            findings = (
-                piguard.check_history_rewrite(rules)
-                + piguard.check_review(rules)
-            )
+            findings = piguard.check_all(rules)
 
     shared.echo("Guards report")
     shared.echo(_SEPARATOR)

@@ -25,6 +25,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 CHECK_HISTORY_REWRITE = "history_rewrite"
 CHECK_REVIEW = "review"
+CHECK_UPDATE_RESTRICTION = "update_restriction"
+CHECK_FILE_PATHS = "file_paths"
 
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
@@ -60,6 +62,19 @@ _DANGERS = {
         "an agent's change can land on the branch unreviewed: a push goes "
         "straight to the branch, with no review gate"
     ),
+    "update": (
+        "anyone with push access can push straight to the branch, with no "
+        "gate: the update rule would restrict ref updates to users with "
+        "bypass permission, and without it ordinary pushes are all that "
+        "stands between a ref and a rewrite"
+    ),
+    "file_path_restriction": (
+        "a push can change the restricted file paths - "
+        ".github/workflows/**, what CI runs - with no gate: the rule "
+        "would prevent commits that include changes in those paths from "
+        "being pushed to the commit graph, and without it an agent's "
+        "change lands on them directly"
+    ),
 }
 
 # What an agent could do while a check is unmeasured, per check: the
@@ -76,6 +91,18 @@ _SKIPPED_DANGERS = {
         "whether an agent's change can land on the branch unreviewed is "
         "unmeasured: a push could go straight to the branch, and this "
         "report cannot rule it out"
+    ),
+    CHECK_UPDATE_RESTRICTION: (
+        "whether updates to the branch are restricted to users with "
+        "bypass permission is unmeasured: without the 'update' rule, "
+        "anyone with push access can push straight to the branch, with "
+        "no gate, and this report cannot rule it out"
+    ),
+    CHECK_FILE_PATHS: (
+        "whether the restricted file paths - .github/workflows/**, what "
+        "CI runs - are protected from pushes is unmeasured: without the "
+        "'file_path_restriction' rule, a push can change them, with no "
+        "gate, and this report cannot rule it out"
     ),
 }
 
@@ -174,7 +201,12 @@ def skipped_findings(reason: str) -> List[Dict[str, Any]]:
     field for skipped lines; the finding stands on its own either way.
     """
     findings = []
-    for check in (CHECK_HISTORY_REWRITE, CHECK_REVIEW):
+    for check in (
+        CHECK_HISTORY_REWRITE,
+        CHECK_REVIEW,
+        CHECK_UPDATE_RESTRICTION,
+        CHECK_FILE_PATHS,
+    ):
         findings.append(
             {
                 "status": "skipped",
@@ -308,6 +340,163 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One update finding: passed if ``update`` is active, warn if not.
+
+    ``rules`` is the parsed body of
+    ``GET /repos/{owner}/{repo}/rules/branches/{branch}``: a list, and only
+    ``type``, ``ruleset_source`` and ``parameters`` of an ``update`` element
+    are read. A rule present yields a ``passed`` finding under the
+    ``update_restriction`` check naming the rule's API type and its
+    ``ruleset_source``, with
+    ``parameters.update_allows_fetch_and_merge`` recorded on the finding -
+    ``False`` means fetches and merges are the only allowed updates, a
+    weaker restriction than the name suggests, and the report must show it
+    (the zero-approvals precedent). An unreadable ``parameters`` object
+    records ``None`` rather than guessing. A rule absent yields a ``warn``
+    finding naming the danger (anyone with push access can push straight to
+    the branch, with no gate) and a concrete fix.
+    """
+    rule = None
+    for candidate in rules:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("type") == "update":
+            rule = candidate
+            break
+
+    if rule is None:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_UPDATE_RESTRICTION,
+                "rule": "update",
+                "danger": _DANGERS["update"],
+                "source": None,
+                "remedy": (
+                    "add an 'update' rule to a ruleset covering this "
+                    "branch: rule semantics in {}, endpoint in {}".format(
+                        _RULES_DOC, _ENDPOINT_DOC
+                    )
+                ),
+            }
+        ]
+
+    parameters = rule.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {}
+    allows_fetch_and_merge = parameters.get("update_allows_fetch_and_merge")
+    return [
+        {
+            "status": "passed",
+            "check": CHECK_UPDATE_RESTRICTION,
+            "rule": "update",
+            "danger": "",
+            "source": _or_unknown(rule.get("ruleset_source")),
+            "update_allows_fetch_and_merge": allows_fetch_and_merge,
+            "remedy": (
+                "nothing to do - the 'update' rule is active for this "
+                "branch, update_allows_fetch_and_merge: {}; see {}".format(
+                    allows_fetch_and_merge, _RULES_DOC
+                )
+            ),
+        }
+    ]
+
+
+def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One file-path finding: passed if ``file_path_restriction`` is active, warn if not.
+
+    ``rules`` is the parsed body of
+    ``GET /repos/{owner}/{repo}/rules/branches/{branch}``: a list, and only
+    ``type``, ``ruleset_source`` and ``parameters`` of a
+    ``file_path_restriction`` element are read. A rule present yields a
+    ``passed`` finding under the ``file_paths`` check naming the rule's API
+    type and its ``ruleset_source``, with
+    ``parameters.restricted_file_paths`` recorded on the finding - an empty
+    list is a rule that restricts nothing, a weaker guard than the name
+    suggests, and the report must show it (the zero-approvals precedent). An
+    unreadable ``parameters`` object, a missing ``restricted_file_paths``
+    key, or a value that is not a list records an empty list rather than
+    ``None``: an empty restriction set is the only honest value for a rule
+    whose paths cannot be read, and the finding must never raise. A rule
+    absent yields a ``warn`` finding naming the danger (a push can change
+    ``.github/workflows/**`` - what CI runs - with no gate) and a concrete
+    fix. A duplicated rule type takes the first element, as
+    :func:`check_history_rewrite` does.
+    """
+    rule = None
+    for candidate in rules:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("type") == "file_path_restriction":
+            rule = candidate
+            break
+
+    if rule is None:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_FILE_PATHS,
+                "rule": "file_path_restriction",
+                "danger": _DANGERS["file_path_restriction"],
+                "source": None,
+                "remedy": (
+                    "add a 'file_path_restriction' rule to a ruleset "
+                    "covering this branch: rule semantics in {}, endpoint "
+                    "in {}".format(_RULES_DOC, _ENDPOINT_DOC)
+                ),
+            }
+        ]
+
+    parameters = rule.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {}
+    restricted_file_paths = parameters.get("restricted_file_paths")
+    if not isinstance(restricted_file_paths, list):
+        restricted_file_paths = []
+    return [
+        {
+            "status": "passed",
+            "check": CHECK_FILE_PATHS,
+            "rule": "file_path_restriction",
+            "danger": "",
+            "source": _or_unknown(rule.get("ruleset_source")),
+            "restricted_file_paths": restricted_file_paths,
+            "remedy": (
+                "nothing to do - the 'file_path_restriction' rule is "
+                "active for this branch, restricted_file_paths: {}; see "
+                "{}".format(restricted_file_paths, _RULES_DOC)
+            ),
+        }
+    ]
+
+
+def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The concatenation of every defined check, in fixed report order.
+
+    Runs :func:`check_history_rewrite`, :func:`check_review`,
+    :func:`check_update` and :func:`check_file_paths` in that order and
+    returns their findings concatenated, so a five-rule array yields
+    exactly five findings - one per rule - with the two history-rewrite
+    rules first. This is the single seam both CLI call sites
+    (verify-guards and doctor's Guards section) report through: a check
+    added here reaches both without edits to either (behaviour 7 of
+    plans/verify-guards-five-rules.md). The function fetches nothing and
+    never calls ``sys.exit``: an empty array yields five ``warn``
+    findings and raises nothing.
+    """
+    findings: List[Dict[str, Any]] = []
+    for check in (
+        check_history_rewrite,
+        check_review,
+        check_update,
+        check_file_paths,
+    ):
+        findings.extend(check(rules))
+    return findings
+
+
 def render_finding(finding: Dict[str, Any]) -> str:
     """One human-readable line per finding; no network, no exit.
 
@@ -316,9 +505,16 @@ def render_finding(finding: Dict[str, Any]) -> str:
     to users with write access to the ruleset, so on a read-only token the
     branch must never be called simply "protected": an unseen bypass entry
     is an unmeasured hole. A passed review finding also keeps its recorded
-    ``required_approving_review_count`` visible. A ``warn`` line names the
-    danger and the remedy. A ``skipped`` line carries the reason the check
-    could not run.
+    ``required_approving_review_count`` visible, and a passed update
+    finding keeps its recorded ``update_allows_fetch_and_merge`` visible -
+    a weak value stays on the line (the zero-approvals precedent) - while
+    a finding whose parameters were unreadable claims no value at all. A
+    passed file-path finding keeps its recorded ``restricted_file_paths``
+    visible, listing every recorded path verbatim with no elision; an
+    empty recorded list - explicit ``[]`` or an unreadable parameter -
+    renders the explicit "no restricted paths recorded" rather than a
+    bare "protected". A ``warn`` line names the danger and the remedy. A
+    ``skipped`` line carries the reason the check could not run.
     """
     rule = finding.get("rule")
     status = finding.get("status")
@@ -331,6 +527,17 @@ def render_finding(finding: Dict[str, Any]) -> str:
         count = finding.get("required_approving_review_count")
         if count is not None:
             line += " ({} required approvals)".format(count)
+        allows = finding.get("update_allows_fetch_and_merge")
+        if allows is not None:
+            line += " (update_allows_fetch_and_merge: {})".format(allows)
+        paths = finding.get("restricted_file_paths")
+        if paths is not None:
+            if paths:
+                line += " (restricted_file_paths: {})".format(
+                    ", ".join(str(path) for path in paths)
+                )
+            else:
+                line += " (no restricted paths recorded)"
         return line
     if status == "warn":
         return "warn: {} - {}; fix: {}".format(
