@@ -924,6 +924,11 @@ class TestInitTierQuestionFirst(CliCase):
         with mock.patch.object(cli, "_is_interactive", return_value=True):
             return self.invoke(["init"], input=stdin)
 
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
     def test_tier_question_is_asked_before_any_device_id_question(self):
         """The rendered output must carry the tier menu before the first prompt.
 
