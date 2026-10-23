@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 CHECK_HISTORY_REWRITE = "history_rewrite"
 CHECK_REVIEW = "review"
 CHECK_UPDATE_RESTRICTION = "update_restriction"
+CHECK_FILE_PATHS = "file_paths"
 
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
@@ -66,6 +67,13 @@ _DANGERS = {
         "gate: the update rule would restrict ref updates to users with "
         "bypass permission, and without it ordinary pushes are all that "
         "stands between a ref and a rewrite"
+    ),
+    "file_path_restriction": (
+        "a push can change the restricted file paths - "
+        ".github/workflows/**, what CI runs - with no gate: the rule "
+        "would prevent commits that include changes in those paths from "
+        "being pushed to the commit graph, and without it an agent's "
+        "change lands on them directly"
     ),
 }
 
@@ -374,6 +382,74 @@ def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "branch, update_allows_fetch_and_merge: {}; see {}".format(
                     allows_fetch_and_merge, _RULES_DOC
                 )
+            ),
+        }
+    ]
+
+
+def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One file-path finding: passed if ``file_path_restriction`` is active, warn if not.
+
+    ``rules`` is the parsed body of
+    ``GET /repos/{owner}/{repo}/rules/branches/{branch}``: a list, and only
+    ``type``, ``ruleset_source`` and ``parameters`` of a
+    ``file_path_restriction`` element are read. A rule present yields a
+    ``passed`` finding under the ``file_paths`` check naming the rule's API
+    type and its ``ruleset_source``, with
+    ``parameters.restricted_file_paths`` recorded on the finding - an empty
+    list is a rule that restricts nothing, a weaker guard than the name
+    suggests, and the report must show it (the zero-approvals precedent). An
+    unreadable ``parameters`` object, a missing ``restricted_file_paths``
+    key, or a value that is not a list records an empty list rather than
+    ``None``: an empty restriction set is the only honest value for a rule
+    whose paths cannot be read, and the finding must never raise. A rule
+    absent yields a ``warn`` finding naming the danger (a push can change
+    ``.github/workflows/**`` - what CI runs - with no gate) and a concrete
+    fix. A duplicated rule type takes the first element, as
+    :func:`check_history_rewrite` does.
+    """
+    rule = None
+    for candidate in rules:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("type") == "file_path_restriction":
+            rule = candidate
+            break
+
+    if rule is None:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_FILE_PATHS,
+                "rule": "file_path_restriction",
+                "danger": _DANGERS["file_path_restriction"],
+                "source": None,
+                "remedy": (
+                    "add a 'file_path_restriction' rule to a ruleset "
+                    "covering this branch: rule semantics in {}, endpoint "
+                    "in {}".format(_RULES_DOC, _ENDPOINT_DOC)
+                ),
+            }
+        ]
+
+    parameters = rule.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {}
+    restricted_file_paths = parameters.get("restricted_file_paths")
+    if not isinstance(restricted_file_paths, list):
+        restricted_file_paths = []
+    return [
+        {
+            "status": "passed",
+            "check": CHECK_FILE_PATHS,
+            "rule": "file_path_restriction",
+            "danger": "",
+            "source": _or_unknown(rule.get("ruleset_source")),
+            "restricted_file_paths": restricted_file_paths,
+            "remedy": (
+                "nothing to do - the 'file_path_restriction' rule is "
+                "active for this branch, restricted_file_paths: {}; see "
+                "{}".format(restricted_file_paths, _RULES_DOC)
             ),
         }
     ]
