@@ -154,5 +154,39 @@ class TestCoderIdsBroadcast(TiersTestCase):
             split_coder_ids(plan, "   ")
 
 
+class TestCoderIdsRejectOverflow(TiersTestCase):
+    """Behaviour 5: more coder ids than the tier has slots fails loudly.
+
+    ``split_coder_ids`` must not silently broadcast or drop ids when the user
+    names more GPUs than the tier's coder model spans. The rejection names the
+    tier and its coder-slot count so the user sees what to change.
+    """
+
+    def test_low_tier_rejects_two_coder_ids_naming_the_tier_and_slot_count(self):
+        tiers = self._tiers()
+        plan = tiers.plan("low")
+        with self.assertRaises(tiers.TierError) as ctx:
+            tiers.split_coder_ids(plan, "1,2")
+        message = str(ctx.exception)
+        # The error must name the tier and its coder-slot count.
+        self.assertIn(plan.id, message)
+        self.assertIn(str(plan.coder_slots), message)
+
+    def test_mid_tier_rejects_three_coder_ids_naming_the_tier_and_slot_count(self):
+        tiers = self._tiers()
+        plan = tiers.plan("mid")
+        with self.assertRaises(tiers.TierError) as ctx:
+            tiers.split_coder_ids(plan, "1,2,3")
+        message = str(ctx.exception)
+        self.assertIn(plan.id, message)
+        self.assertIn(str(plan.coder_slots), message)
+
+    def test_mid_tier_accepts_exactly_two_coder_ids(self):
+        tiers = self._tiers()
+        plan = tiers.plan("mid")
+        # Exactly as many ids as slots is the accepted path, not overflow.
+        self.assertEqual(("1", "2"), tuple(tiers.split_coder_ids(plan, "1,2")))
+
+
 if __name__ == "__main__":
     unittest.main()

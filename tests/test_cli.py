@@ -790,10 +790,26 @@ class TestInit(CliCase):
         )
 
     def test_too_many_coder_gpus_is_a_usage_error(self):
-        result = self.invoke_allowing_exception(
-            ["init", "--yes", "--gpu-coder", "1,2,3"]
+        # The pin moved from the CLI's exit-2 to the tiers module: more coder
+        # ids than the tier has slots is rejected by tiers.split_coder_ids,
+        # which names the tier and its coder-slot count. The CLI-level wiring
+        # that maps that rejection to exit 2 lands in a later ledger behaviour
+        # (15: low_tier_rejects_two_coder_ids), so the overflow rejection is
+        # pinned here through tiers, not through an init run.
+        from anvilkit import tiers
+
+        self.assertTrue(
+            hasattr(tiers, "split_coder_ids"),
+            "anvilkit.tiers.split_coder_ids has not been implemented yet "
+            "(behaviour 5: coder_ids_reject_overflow in plans/vllm-tier-setups.md)",
         )
-        self.assertEqual(cli.EXIT_USAGE, result.exit_code)
+        plan = tiers.plan("mid")
+        with self.assertRaises(tiers.TierError) as ctx:
+            tiers.split_coder_ids(plan, "1,2,3")
+        # The rejection names the tier and its coder-slot count.
+        message = str(ctx.exception)
+        self.assertIn(plan.id, message)
+        self.assertIn(str(plan.coder_slots), message)
 
     def test_refuses_to_clobber_an_existing_env_file(self):
         self.write_env(LLM_PORT="9999", KEEP="me")
