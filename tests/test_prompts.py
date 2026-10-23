@@ -468,6 +468,57 @@ class ChooseTests(PromptCase):
         self.assertEqual(value, "claude-opus-5")
 
 
+class ChooseWithoutCustomTests(PromptCase):
+    """Behaviour 7 (menu_without_custom): the tier menu has no escape hatch.
+
+    ``allow_custom=False`` drops the appended ``CUSTOM_CHOICE_LABEL`` entry and
+    sizes the selection range to the options alone, so a tier menu never offers
+    a free-form model id. The default stays ``allow_custom=True``, so the
+    Anthropic menu in ``ChooseTests`` is untouched.
+    """
+
+    TIERS = [
+        {"id": "low", "label": "1 GPU / 40 GB"},
+        {"id": "mid", "label": "2 GPUs / 80 GB"},
+        {"id": "high", "label": "8 GPUs / 320 GB"},
+    ]
+
+    def _choose_without_custom(self, stdin, **kwargs):
+        params = dict(
+            prompt="Select tier",
+            options=self.TIERS,
+            default="mid",
+            allow_custom=False,
+        )
+        params.update(kwargs)
+        return self.call(prompts.choose, stdin=stdin, **params)
+
+    def test_choose_without_custom_returns_the_third_option_id(self):
+        value, _ = self._choose_without_custom("3\n")
+        self.assertEqual(value, "high")
+
+    def test_choose_without_custom_menu_has_no_custom_entry(self):
+        _, output = self._choose_without_custom("3\n")
+        self.assertNotIn(prompts.CUSTOM_CHOICE_LABEL, output)
+
+    def test_choose_without_custom_menu_ends_at_the_last_option(self):
+        """With three options the highest numbered item is 3, not a fourth."""
+        _, output = self._choose_without_custom("3\n")
+        self.assertIn("3)", output)
+        self.assertNotIn("4)", output)
+
+    def test_choose_default_still_offers_the_custom_entry(self):
+        """Guarding the default: no ``allow_custom`` kwarg keeps the escape hatch."""
+        _value, output = self.call(
+            prompts.choose,
+            prompt="Select tier",
+            options=self.TIERS,
+            default="mid",
+            stdin="\n",
+        )
+        self.assertIn(prompts.CUSTOM_CHOICE_LABEL, output)
+
+
 class NonInteractiveGuardTests(PromptCase):
     """interactive=False forbids prompting outright, for CI."""
 
