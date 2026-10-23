@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 CHECK_HISTORY_REWRITE = "history_rewrite"
 CHECK_REVIEW = "review"
+CHECK_UPDATE_RESTRICTION = "update_restriction"
 
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
@@ -59,6 +60,12 @@ _DANGERS = {
     "pull_request": (
         "an agent's change can land on the branch unreviewed: a push goes "
         "straight to the branch, with no review gate"
+    ),
+    "update": (
+        "anyone with push access can push straight to the branch, with no "
+        "gate: the update rule would restrict ref updates to users with "
+        "bypass permission, and without it ordinary pushes are all that "
+        "stands between a ref and a rewrite"
     ),
 }
 
@@ -302,6 +309,70 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "nothing to do - the 'pull_request' rule is active for this "
                 "branch, requiring {} approving review(s); see {}".format(
                     count, _RULES_DOC
+                )
+            ),
+        }
+    ]
+
+
+def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """One update finding: passed if ``update`` is active, warn if not.
+
+    ``rules`` is the parsed body of
+    ``GET /repos/{owner}/{repo}/rules/branches/{branch}``: a list, and only
+    ``type``, ``ruleset_source`` and ``parameters`` of an ``update`` element
+    are read. A rule present yields a ``passed`` finding under the
+    ``update_restriction`` check naming the rule's API type and its
+    ``ruleset_source``, with
+    ``parameters.update_allows_fetch_and_merge`` recorded on the finding -
+    ``False`` means fetches and merges are the only allowed updates, a
+    weaker restriction than the name suggests, and the report must show it
+    (the zero-approvals precedent). An unreadable ``parameters`` object
+    records ``None`` rather than guessing. A rule absent yields a ``warn``
+    finding naming the danger (anyone with push access can push straight to
+    the branch, with no gate) and a concrete fix.
+    """
+    rule = None
+    for candidate in rules:
+        if not isinstance(candidate, dict):
+            continue
+        if candidate.get("type") == "update":
+            rule = candidate
+            break
+
+    if rule is None:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_UPDATE_RESTRICTION,
+                "rule": "update",
+                "danger": _DANGERS["update"],
+                "source": None,
+                "remedy": (
+                    "add an 'update' rule to a ruleset covering this "
+                    "branch: rule semantics in {}, endpoint in {}".format(
+                        _RULES_DOC, _ENDPOINT_DOC
+                    )
+                ),
+            }
+        ]
+
+    parameters = rule.get("parameters")
+    if not isinstance(parameters, dict):
+        parameters = {}
+    allows_fetch_and_merge = parameters.get("update_allows_fetch_and_merge")
+    return [
+        {
+            "status": "passed",
+            "check": CHECK_UPDATE_RESTRICTION,
+            "rule": "update",
+            "danger": "",
+            "source": _or_unknown(rule.get("ruleset_source")),
+            "update_allows_fetch_and_merge": allows_fetch_and_merge,
+            "remedy": (
+                "nothing to do - the 'update' rule is active for this "
+                "branch, update_allows_fetch_and_merge: {}; see {}".format(
+                    allows_fetch_and_merge, _RULES_DOC
                 )
             ),
         }
