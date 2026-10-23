@@ -518,6 +518,21 @@ class ChooseWithoutCustomTests(PromptCase):
         )
         self.assertIn(prompts.CUSTOM_CHOICE_LABEL, output)
 
+    # Behaviour 8 (menu_without_custom_reprompts): with ``allow_custom=False``
+    # the IntRange is sized to the three options, so an out-of-range entry
+    # re-prompts instead of being accepted, and EOF still takes the default.
+
+    def test_choose_without_custom_out_of_range_reprompts_and_returns_the_second_id(
+        self,
+    ):
+        value, output = self._choose_without_custom("4\n2\n", default="high")
+        self.assertEqual(value, "mid")
+        self.assertEqual(output.count("Select ["), 2)
+
+    def test_choose_without_custom_eof_falls_back_to_the_supplied_default(self):
+        value, _ = self._choose_without_custom("", default="low")
+        self.assertEqual(value, "low")
+
 
 class NonInteractiveGuardTests(PromptCase):
     """interactive=False forbids prompting outright, for CI."""
