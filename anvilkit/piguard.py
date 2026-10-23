@@ -92,6 +92,18 @@ _SKIPPED_DANGERS = {
         "unmeasured: a push could go straight to the branch, and this "
         "report cannot rule it out"
     ),
+    CHECK_UPDATE_RESTRICTION: (
+        "whether updates to the branch are restricted to users with "
+        "bypass permission is unmeasured: without the 'update' rule, "
+        "anyone with push access can push straight to the branch, with "
+        "no gate, and this report cannot rule it out"
+    ),
+    CHECK_FILE_PATHS: (
+        "whether the restricted file paths - .github/workflows/**, what "
+        "CI runs - are protected from pushes is unmeasured: without the "
+        "'file_path_restriction' rule, a push can change them, with no "
+        "gate, and this report cannot rule it out"
+    ),
 }
 
 
@@ -189,7 +201,12 @@ def skipped_findings(reason: str) -> List[Dict[str, Any]]:
     field for skipped lines; the finding stands on its own either way.
     """
     findings = []
-    for check in (CHECK_HISTORY_REWRITE, CHECK_REVIEW):
+    for check in (
+        CHECK_HISTORY_REWRITE,
+        CHECK_REVIEW,
+        CHECK_UPDATE_RESTRICTION,
+        CHECK_FILE_PATHS,
+    ):
         findings.append(
             {
                 "status": "skipped",
