@@ -1262,6 +1262,89 @@ class TestBadTierFlagIsUsage(CliCase):
         )
 
 
+class TestLowTierReusesOneId(CliCase):
+    """Behaviour 14 (low_tier_reuses_one_id): the low tier has exactly one GPU
+    to name, so every device slot in ``.env`` carries that single id.
+
+    ``--tier low --yes`` takes the low tier's defaults, which are all one id,
+    so the four keys must agree. An explicit ``--gpu-generic`` names the host's
+    only GPU, so it must reach EVERY slot - not just the generic one - because
+    a single-GPU host must never name a device it does not have.
+    """
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def test_tier_low_yes_writes_the_single_default_id_into_every_device_key(self):
+        """``--tier low --yes``: the four device keys all hold the one low-tier id.
+
+        Pin (may already pass: the low tier's plan defaults are all ``0`` and
+        ``tiers.assign`` reuses the coder id across both coder slots). It locks
+        the clause "all four device keys hold the same single id" so a later
+        change that re-spreads the keys is caught.
+        """
+        self.invoke(["init", "--tier", "low", "--yes"])
+        values = self.env_values()
+        for key in (
+            "LLM_DEVICE_ID_0",
+            "LLM_DEVICE_ID_1",
+            "LLM_DEVICE_ID_2",
+            "INDEXER_STORAGE_DEVICE_ID",
+        ):
+            self.assertEqual(
+                "0",
+                values[key],
+                "the low tier names one GPU, so '{}' must hold the single "
+                "low-tier id; .env values: {}".format(
+                    key,
+                    {
+                        k: values[k]
+                        for k in (
+                            "LLM_DEVICE_ID_0",
+                            "LLM_DEVICE_ID_1",
+                            "LLM_DEVICE_ID_2",
+                            "INDEXER_STORAGE_DEVICE_ID",
+                        )
+                    },
+                ),
+            )
+
+    def test_tier_low_gpu_generic_flag_writes_the_flagged_id_into_every_slot(self):
+        """``--tier low --gpu-generic 3`` puts ``3`` in every slot.
+
+        The low tier has exactly one GPU to name, so the id the user supplies
+        for the generic slot must propagate to the coder and embedder slots
+        too - no slot may carry a different device id.
+        """
+        self.invoke(["init", "--tier", "low", "--yes", "--gpu-generic", "3"])
+        values = self.env_values()
+        for key in (
+            "LLM_DEVICE_ID_0",
+            "LLM_DEVICE_ID_1",
+            "LLM_DEVICE_ID_2",
+            "INDEXER_STORAGE_DEVICE_ID",
+        ):
+            self.assertEqual(
+                "3",
+                values[key],
+                "the low tier names one GPU, so '{}' must carry the flagged "
+                "id 3, not the tier default; .env values: {}".format(
+                    key,
+                    {
+                        k: values[k]
+                        for k in (
+                            "LLM_DEVICE_ID_0",
+                            "LLM_DEVICE_ID_1",
+                            "LLM_DEVICE_ID_2",
+                            "INDEXER_STORAGE_DEVICE_ID",
+                        )
+                    },
+                ),
+            )
+
+
 class TestImplicitEnvBootstrap(CliCase):
     """A missing .env is created on demand, exactly as anvil:27 did."""
 
