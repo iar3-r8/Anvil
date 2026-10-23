@@ -188,5 +188,107 @@ class TestCoderIdsRejectOverflow(TiersTestCase):
         self.assertEqual(("1", "2"), tuple(tiers.split_coder_ids(plan, "1,2")))
 
 
+class TestAssignSlots(TiersTestCase):
+    """Behaviour 6: assign_slots, with the behaviour 2 (tier_plan) slot
+    defaults folded in, since behaviour 2 has no dedicated cycle.
+
+    Attribute names the tests target where the plan leaves them open:
+
+    * ``tiers.assign(plan, generic, coder_ids, embedder)`` takes the tier
+      plan, the answered generic id, the *already-split* coder tuple (exactly
+      as returned by ``split_coder_ids``) and the answered embedder id;
+    * it returns four ``(key, value)`` pairs in the order
+      ``LLM_DEVICE_ID_0``, ``LLM_DEVICE_ID_1``, ``LLM_DEVICE_ID_2``,
+      ``INDEXER_STORAGE_DEVICE_ID``;
+    * the plan object exposes its slot defaults as ``default_generic``,
+      ``default_coder`` and ``default_embedder``, as raw strings - the coder
+      default feeds straight back into ``split_coder_ids``.
+    """
+
+    def _assign(self):
+        """The assign callable, failing clearly if unimplemented."""
+        tiers = self._tiers()
+        self.assertTrue(
+            hasattr(tiers, "assign"),
+            "anvilkit.tiers.assign has not been implemented yet "
+            "(behaviour 6: assign_slots in plans/vllm-tier-setups.md)",
+        )
+        return tiers.assign
+
+    def _assert_plan_has_slot_defaults(self, plan):
+        """Guard the plan's slot-default attributes with a clear failure."""
+        for attr in ("default_generic", "default_coder", "default_embedder"):
+            self.assertTrue(
+                hasattr(plan, attr),
+                "plan object is missing '{}' "
+                "(behaviour 2: tier_plan in plans/vllm-tier-setups.md)".format(attr),
+            )
+
+    def test_mid_plan_defaults_match_todays_env_values(self):
+        tiers = self._tiers()
+        plan = tiers.plan("mid")
+        self._assert_plan_has_slot_defaults(plan)
+        # Mid is today's shipped default, so its slot defaults must be
+        # identical to what init writes today: generic 0, coder 0,1,
+        # embedder 2.
+        self.assertEqual(plan.default_generic, "0")
+        self.assertEqual(plan.default_coder, "0,1")
+        self.assertEqual(plan.default_embedder, "2")
+
+    def test_assign_mid_tier_returns_four_pairs_in_env_key_order(self):
+        tiers = self._tiers()
+        assign = self._assign()
+        plan = tiers.plan("mid")
+        # The coder argument is the split tuple, not the raw string -
+        # split_coder_ids stays the single validation seam.
+        coder_ids = tiers.split_coder_ids(plan, "0,1")
+        pairs = assign(plan, "0", coder_ids, "2")
+        self.assertEqual(
+            [tuple(pair) for pair in pairs],
+            [
+                ("LLM_DEVICE_ID_0", "0"),
+                ("LLM_DEVICE_ID_1", "0"),
+                ("LLM_DEVICE_ID_2", "1"),
+                ("INDEXER_STORAGE_DEVICE_ID", "2"),
+            ],
+        )
+
+    def test_assign_high_tier_places_two_coder_ids_and_embedder(self):
+        tiers = self._tiers()
+        assign = self._assign()
+        plan = tiers.plan("high")
+        # High writes the four device keys as 0 / 1 / 2 / 3 (behaviour 16).
+        coder_ids = tiers.split_coder_ids(plan, "1,2")
+        pairs = assign(plan, "0", coder_ids, "3")
+        self.assertEqual(
+            [tuple(pair) for pair in pairs],
+            [
+                ("LLM_DEVICE_ID_0", "0"),
+                ("LLM_DEVICE_ID_1", "1"),
+                ("LLM_DEVICE_ID_2", "2"),
+                ("INDEXER_STORAGE_DEVICE_ID", "3"),
+            ],
+        )
+
+    def test_assign_low_tier_reuses_one_id_for_all_four_pairs(self):
+        tiers = self._tiers()
+        assign = self._assign()
+        plan = tiers.plan("low")
+        # The low tier has exactly one GPU to name, so a single id fills all
+        # four pairs - a single-GPU host never names a device it does not
+        # have.
+        coder_ids = tiers.split_coder_ids(plan, "3")
+        pairs = assign(plan, "3", coder_ids, "3")
+        self.assertEqual(
+            [tuple(pair) for pair in pairs],
+            [
+                ("LLM_DEVICE_ID_0", "3"),
+                ("LLM_DEVICE_ID_1", "3"),
+                ("LLM_DEVICE_ID_2", "3"),
+                ("INDEXER_STORAGE_DEVICE_ID", "3"),
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
