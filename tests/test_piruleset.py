@@ -2,10 +2,11 @@
 
 Written before the implementation (TDD, ``plans/ruleset-write.md``).
 This file currently pins behaviour 1 ("build_ruleset"), behaviour 2
-("render_ruleset_json") and the behaviour 8 golden-fixture boundary
-pin (batched with behaviour 2 per the plan's sequencing notes); the
-remaining behaviours land in later cycles as further tests in the
-same file.
+("render_ruleset_json"), the behaviour 8 golden-fixture boundary
+pin (batched with behaviour 2 per the plan's sequencing notes) and
+behaviours 3+4 ("default_output_path" folded into
+"write_ruleset" per the plan's sequencing note); the remaining
+behaviours land in later cycles as further tests in the same file.
 
 ``build_ruleset()`` must return the five-rule ruleset reproducing issue
 #50's main-branch guard, freshly built on every call so a caller that
@@ -37,6 +38,7 @@ Citations for the interface facts asserted here:
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict
@@ -220,6 +222,63 @@ class GoldenRulesetFixtureTests(unittest.TestCase):
         rendered = piruleset.render_ruleset_json(piruleset.build_ruleset())
 
         self.assertEqual(json.loads(rendered), fixture)
+
+
+class WriteRulesetTests(unittest.TestCase):
+    """Behaviours 3+4: default output path and writing the rendered text.
+
+    Behaviour 3 ("default_output_path") has no non-obvious input, output,
+    edge or error, so its assertion is folded into this class per the
+    plan's sequencing note. Behaviour 5's clobber/force edge is a later
+    cycle and is not tested here.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_default_output_path_is_the_target_slash_github_ruleset_json(
+        self,
+    ) -> None:
+        # Behaviour 3, folded in: pure path join, no filesystem touch.
+        self.assertEqual(
+            piruleset.default_output_path(self.tmpdir),
+            self.tmpdir / ".github-ruleset.json",
+        )
+
+    def test_write_ruleset_creates_the_file_verbatim_and_returns_the_path(
+        self,
+    ) -> None:
+        text = piruleset.render_ruleset_json(piruleset.build_ruleset())
+        output = self.tmpdir / ".github-ruleset.json"
+
+        written = piruleset.write_ruleset(output, text)
+
+        self.assertTrue(output.is_file())
+        self.assertEqual(
+            output.read_text(encoding="utf-8"),
+            text,
+            "the file must hold the text verbatim, UTF-8",
+        )
+        self.assertEqual(written, output)
+
+    def test_write_ruleset_raises_ruleset_error_when_the_parent_is_missing(
+        self,
+    ) -> None:
+        output = self.tmpdir / "nonexistent" / "sub" / "ruleset.json"
+
+        with self.assertRaises(piruleset.RulesetError) as ctx:
+            piruleset.write_ruleset(output, "{}\n")
+
+        # The error names the absent directory.
+        self.assertIn(str(output.parent), str(ctx.exception))
+        # Nothing partial is left behind: no file at any level, and the
+        # parent tree was never created.
+        self.assertFalse(output.exists())
+        self.assertFalse((self.tmpdir / "nonexistent").exists())
 
 
 if __name__ == "__main__":
