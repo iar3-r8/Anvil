@@ -15,6 +15,7 @@ Stdlib only. One exception type: ``RulesetError`` (used by the
 behaviours that touch the filesystem; the CLI maps it to ``EXIT_CONFIG``).
 """
 
+import json
 from typing import Any, Dict
 
 
@@ -66,3 +67,18 @@ def build_ruleset() -> Dict[str, Any]:
             },
         ],
     }
+
+
+def render_ruleset_json(ruleset: Dict[str, Any]) -> str:
+    """Render the ruleset dict to import-ready JSON.
+
+    Follows the project convention for structured output: the JSON text
+    is produced by ``json.dumps`` on a dict, never by string
+    substitution, so a value containing a quote or backslash yields
+    valid JSON by construction. The text ends with exactly one
+    trailing newline.
+
+    A round-trip through ``json.loads`` returns a dict equal to
+    ``ruleset``.
+    """
+    return json.dumps(ruleset, indent=2) + "\n"
