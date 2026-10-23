@@ -104,14 +104,33 @@ def write_ruleset(path: Path, text: str, force: bool = False) -> Path:
     the absent directory and nothing partial is created: no file at any
     level, and the parent tree is not created either.
 
-    The ``force`` flag reserves its meaning for the clobber-refusal
-    behaviour that lands in a later cycle; it carries no behaviour yet
-    in this one.
+    An existing path is never silently clobbered:
+
+    - ``force=False`` and a file at ``path`` raises a
+      :class:`RulesetError` naming the path and the ``--force`` flag,
+      leaving the file's bytes untouched;
+    - ``force=True`` and a file at ``path`` overwrites it and returns
+      ``path``;
+    - ``path`` is a directory — with or without ``force`` — raises a
+      :class:`RulesetError`: a write to a directory must never silently
+      succeed, and ``force`` cannot turn a directory into a write
+      target.
     """
     if not path.parent.is_dir():
         raise RulesetError(
             "cannot write ruleset to {path}: its parent directory "
             "{parent} does not exist".format(path=path, parent=path.parent)
+        )
+    if path.is_dir():
+        raise RulesetError(
+            "cannot write ruleset to {path}: it is a directory".format(
+                path=path
+            )
+        )
+    if path.exists() and not force:
+        raise RulesetError(
+            "refusing to overwrite {path}: an existing file is present; "
+            "pass --force to overwrite it".format(path=path)
         )
     path.write_text(text, encoding="utf-8")
     return path
