@@ -249,6 +249,234 @@ class CheckReviewGuardTests(unittest.TestCase):
         )
 
 
+def update_rule(
+    ruleset_source: str, parameters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """An ``update`` element; ``parameters=None`` omits the key entirely."""
+    element: Dict[str, Any] = {
+        "type": "update",
+        "ruleset_source_type": "repository",
+        "ruleset_source": ruleset_source,
+        "ruleset_id": 1,
+    }
+    if parameters is not None:
+        element["parameters"] = parameters
+    return element
+
+
+class CheckUpdateTests(unittest.TestCase):
+    """Behaviour 1 of plans/verify-guards-five-rules.md: the update-restriction
+    guard reported from a rules response.
+
+    ``check_update(rules)`` takes the parsed ``/rules/branches`` array and
+    reports one finding for the ``update`` rule: a rule present yields a
+    ``passed`` finding under the ``update_restriction`` check, naming the
+    rule's API type and its ``ruleset_source`` and recording
+    ``parameters.update_allows_fetch_and_merge`` on the finding (a weak value
+    passes but stays visible, the zero-approvals precedent); a rule absent
+    yields a ``warn`` finding naming the danger (anyone with push access can
+    push straight to the branch, with no gate) and a remedy citing both saved
+    docs (doc/external/github/rest-api-endpoints-for-rules.md:134,
+    doc/external/github/available-rules-for-rulesets.md:32).
+    """
+
+    def test_update_rule_present_yields_one_passed_finding_recording_parameter(self):
+        findings = piguard.check_update(
+            [
+                update_rule("main-protected", {"update_allows_fetch_and_merge": True}),
+                rule("non_fast_forward", "main-protected"),
+            ]
+        )
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "check_update reports one finding for the update rule",
+        )
+        finding = findings[0]
+        self.assertEqual(_field(finding, "status"), "passed")
+        self.assertEqual(
+            _field(finding, "check"),
+            "update_restriction",
+            "the update check runs under its own check constant",
+        )
+        self.assertEqual(
+            _field(finding, "rule"),
+            "update",
+            "finding must name the rule's API type",
+        )
+        self.assertEqual(
+            _field(finding, "source"),
+            "main-protected",
+            "finding must name the rule's ruleset_source",
+        )
+        self.assertEqual(
+            _field(finding, "update_allows_fetch_and_merge"),
+            True,
+            "finding must record parameters.update_allows_fetch_and_merge",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_update_absent_warns_naming_danger_and_both_saved_docs(self):
+        for label, rules in (
+            (
+                "only non_fast_forward active",
+                [rule("non_fast_forward", "main-protected")],
+            ),
+            ("empty array", []),
+            ("only non-dict elements", ["not a dict", 42, None]),
+        ):
+            with self.subTest(absent=label):
+                findings = piguard.check_update(rules)
+
+                warns = [f for f in findings if _field(f, "status") == "warn"]
+                self.assertEqual(
+                    len(warns),
+                    1,
+                    "one warn update finding expected when the update rule "
+                    "is absent",
+                )
+                warn = warns[0]
+                self.assertEqual(
+                    _field(warn, "check"),
+                    "update_restriction",
+                    "the warn must carry the update check constant",
+                )
+                self.assertEqual(_field(warn, "rule"), "update")
+                self.assertTrue(
+                    _field(warn, "danger"),
+                    "warn finding must name the danger: anyone with push "
+                    "access can push straight to the branch, with no gate",
+                )
+                remedy = _field(warn, "remedy") or ""
+                self.assertIn(
+                    "doc/external/github/available-rules-for-rulesets.md",
+                    remedy,
+                    "the warn remedy must cite the saved rules doc, so a "
+                    "reviewer can check the claim",
+                )
+                self.assertIn(
+                    "doc/external/github/rest-api-endpoints-for-rules.md",
+                    remedy,
+                    "the warn remedy must cite the saved endpoint doc, so a "
+                    "reviewer can check the claim",
+                )
+                self.assertEqual(
+                    [
+                        f
+                        for f in findings
+                        if _field(f, "status") == "passed"
+                    ],
+                    [],
+                    "no passed update finding when the update rule is absent",
+                )
+
+    def test_missing_or_non_dict_parameters_records_none_and_never_raises(self):
+        cases = (
+            ("parameters key absent", update_rule("main-protected")),
+            (
+                "parameters is None",
+                dict(update_rule("main-protected"), parameters=None),
+            ),
+            (
+                "parameters is not a dict",
+                dict(
+                    update_rule("main-protected"),
+                    parameters=["update_allows_fetch_and_merge"],
+                ),
+            ),
+        )
+        for label, element in cases:
+            with self.subTest(parameters=label):
+                findings = piguard.check_update([element])
+
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "an update rule whose parameters cannot be read still "
+                    "yields one finding - never an exception",
+                )
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "passed",
+                    "a present update rule passes even when its parameters "
+                    "are unreadable",
+                )
+                self.assertIsNone(
+                    _field(finding, "update_allows_fetch_and_merge"),
+                    "an unreadable parameters object must record None, not "
+                    "raise or guess a value",
+                )
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every finding carries a non-empty remedy",
+                )
+
+    def test_false_allows_fetch_and_merge_passes_but_records_false(self):
+        findings = piguard.check_update(
+            [
+                update_rule(
+                    "main-protected",
+                    {"update_allows_fetch_and_merge": False},
+                )
+            ]
+        )
+
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "a present update rule with a weak value still passes - the "
+            "weak value is recorded, not hidden (zero-approvals precedent)",
+        )
+        self.assertEqual(
+            _field(finding, "update_allows_fetch_and_merge"),
+            False,
+            "a False value must stay visible on the finding - it means "
+            "fetches and merges are the only allowed updates",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_source_is_unknown_when_ruleset_source_absent_or_blank(self):
+        for label, element in (
+            (
+                "ruleset_source absent",
+                dict(
+                    (k, v)
+                    for k, v in update_rule(
+                        "main-protected",
+                        {"update_allows_fetch_and_merge": True},
+                    ).items()
+                    if k != "ruleset_source"
+                ),
+            ),
+            (
+                "ruleset_source blank",
+                update_rule("", {"update_allows_fetch_and_merge": True}),
+            ),
+        ):
+            with self.subTest(source=label):
+                findings = piguard.check_update([element])
+
+                self.assertEqual(len(findings), 1)
+                finding = findings[0]
+                self.assertEqual(_field(finding, "status"), "passed")
+                self.assertEqual(
+                    _field(finding, "source"),
+                    "unknown",
+                    "an absent or blank ruleset_source must be named "
+                    "'unknown' on the finding",
+                )
+
+
 class RenderFindingTests(unittest.TestCase):
     """Behaviour 3: a rendered finding states the bypass-visibility caveat.
 
