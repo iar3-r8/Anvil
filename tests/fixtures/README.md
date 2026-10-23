@@ -13,6 +13,7 @@ The Python implementation is correct when it reproduces these outputs.
 | `golden_zoo_settings_anthropic.json` | `templates/zoo-code-settings.json.template` rendered through the original `sed` pipeline with the Anthropic frontier model **accepted**. |
 | `golden_zoo_settings_local.json` | Same template rendered with the frontier model **declined**, so architect falls back to the local llama-swap profile. |
 | `golden_mcp.json` | `templates/mcp.json.template` rendered with a GitHub token supplied. |
+| `golden_ruleset.json` | The expected five-rule ruleset JSON built by `anvilkit/piruleset.py` (the output of behaviours 1+2 in `plans/ruleset-write.md`). Unlike the files above it was authored from the plan's pinned shape at red time, not captured from an existing implementation; the recipes key set comes from `doc/external/github/ruleset-recipes-branch-sample.json`. |
 
 > `golden_mcp.json` was deliberately changed on 2026-08-19 to add the
 > `package-registry` server, because Anvil now owns that MCP entry

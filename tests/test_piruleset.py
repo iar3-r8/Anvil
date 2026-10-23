@@ -1,8 +1,11 @@
 """Tests for anvilkit.piruleset - the importable GitHub ruleset builder.
 
-Written before the implementation (TDD, ``plans/ruleset-write.md``,
-behaviour 1: "build_ruleset"). Behaviours 2-8 land in later cycles as
-further tests in the same file.
+Written before the implementation (TDD, ``plans/ruleset-write.md``).
+This file currently pins behaviour 1 ("build_ruleset"), behaviour 2
+("render_ruleset_json") and the behaviour 8 golden-fixture boundary
+pin (batched with behaviour 2 per the plan's sequencing notes); the
+remaining behaviours land in later cycles as further tests in the
+same file.
 
 ``build_ruleset()`` must return the five-rule ruleset reproducing issue
 #50's main-branch guard, freshly built on every call so a caller that
@@ -32,6 +35,7 @@ Citations for the interface facts asserted here:
   ``doc/external/github/creating-rulesets-for-a-repository.md``.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -141,6 +145,81 @@ class BuildRulesetFreshnessTests(unittest.TestCase):
         first["rules"][2]["parameters"]["update_allows_fetch_and_merge"] = False
 
         self.assertEqual(second, expected_ruleset())
+
+
+class RenderRulesetJsonTests(unittest.TestCase):
+    """Behaviour 2: render the ruleset dict to JSON."""
+
+    def test_render_ruleset_json_ends_with_exactly_one_newline(self) -> None:
+        rendered = piruleset.render_ruleset_json(piruleset.build_ruleset())
+
+        self.assertIsInstance(rendered, str)
+        self.assertTrue(
+            rendered.endswith("\n"),
+            "rendered JSON must end with exactly one trailing newline",
+        )
+        self.assertFalse(
+            rendered.endswith("\n\n"),
+            "rendered JSON must not end with two trailing newlines",
+        )
+
+    def test_render_ruleset_json_round_trips_to_the_input_dict(self) -> None:
+        ruleset = piruleset.build_ruleset()
+
+        rendered = piruleset.render_ruleset_json(ruleset)
+
+        self.assertEqual(json.loads(rendered), ruleset)
+
+    def test_render_ruleset_json_survives_quote_and_backslash_in_paths(
+        self,
+    ) -> None:
+        # A quote or backslash in the data must not produce invalid JSON:
+        # the renderer builds with json.dumps, never string substitution.
+        ruleset = piruleset.build_ruleset()
+        ruleset["rules"][4]["parameters"]["restricted_file_paths"] = [
+            '.github/work"flows/**',
+            "templates\\zoo\\settings/**",
+        ]
+
+        rendered = piruleset.render_ruleset_json(ruleset)
+
+        self.assertEqual(json.loads(rendered), ruleset)
+
+
+class GoldenRulesetFixtureTests(unittest.TestCase):
+    """Behaviour 8: the golden fixture is a no-production-change pin.
+
+    The comparison is on parsed structures, not raw bytes - key ordering
+    and indentation are not part of the contract
+    (``tests/fixtures/README.md``).
+    """
+
+    FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "golden_ruleset.json"
+
+    def test_golden_fixture_parses_as_json_with_the_recipes_key_set(
+        self,
+    ) -> None:
+        fixture = json.loads(self.FIXTURE_PATH.read_text(encoding="utf-8"))
+
+        self.assertIsInstance(fixture, dict)
+        self.assertEqual(
+            set(fixture),
+            {
+                "name",
+                "target",
+                "source_type",
+                "enforcement",
+                "conditions",
+                "rules",
+                "bypass_actors",
+            },
+        )
+
+    def test_golden_fixture_matches_the_rendered_output_structure(self) -> None:
+        fixture = json.loads(self.FIXTURE_PATH.read_text(encoding="utf-8"))
+        rendered = piruleset.render_ruleset_json(piruleset.build_ruleset())
+
+        self.assertEqual(json.loads(rendered), fixture)
 
 
 if __name__ == "__main__":
