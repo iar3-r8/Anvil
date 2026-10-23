@@ -252,6 +252,7 @@ class TestSubcommandsExist(CliCase):
         "init",
         "doctor",
         "stress",
+        "verify-guards",
         "ruleset-write",
     )
 
@@ -2466,6 +2467,44 @@ class TestDoctor(CliCase):
             for patcher in started:
                 patcher.stop()
 
+    def run_doctor_with_guards(self, resolve_value, fetch_value, **kwargs):
+        """``run_doctor`` with the piguard seams replaced, so the guard flow
+        runs offline. ``fetch_value`` is the ``(rules, reason)`` pair.
+
+        Returns ``(result, resolve_mock, fetch_mock)`` so a test can prove
+        whether the fetch was reached.
+        """
+        started = []
+        for patcher in self.probes(**kwargs):
+            patcher.start()
+            started.append(patcher)
+        resolve = mock.patch.object(
+            cli.piguard, "resolve_repository", return_value=resolve_value
+        )
+        fetch = mock.patch.object(
+            cli.piguard, "fetch_branch_rules", return_value=fetch_value
+        )
+        resolve_mock = resolve.start()
+        fetch_mock = fetch.start()
+        started.extend((resolve, fetch))
+        try:
+            result = self.invoke_allowing_exception(["doctor"])
+        finally:
+            for patcher in started:
+                patcher.stop()
+        return result, resolve_mock, fetch_mock
+
+    def guards_lines(self, result):
+        """The Guards section of a doctor report, or fail saying it is absent."""
+        lines = result.output.splitlines()
+        try:
+            start = lines.index("Guards")
+        except ValueError:
+            self.fail(
+                "doctor output has no 'Guards' section:\n{}".format(result.output)
+            )
+        return lines[start:]
+
     def test_works_with_no_env_file(self):
         self.assertFalse(self.env_path().exists())
         result = self.run_doctor()
@@ -2535,6 +2574,77 @@ class TestDoctor(CliCase):
         ) as docker:
             self.invoke(["doctor"])
         self.assertEqual(1, docker.call_count)
+
+    def test_doctor_reports_a_guards_section_with_broken_guards(self):
+        # An empty rules array: both history-rewrite rules and the review
+        # rule are absent, so every guard is broken (behaviour 8).
+        result, _, _ = self.run_doctor_with_guards(
+            ("iar3-r8", "Anvil"), ([], None)
+        )
+        self.assertEqual(0, result.exit_code)
+        for rule in ("non_fast_forward", "deletion", "pull_request"):
+            line = next(
+                (candidate for candidate in self.guards_lines(result)
+                 if rule in candidate),
+                None,
+            )
+            self.assertIsNotNone(
+                line,
+                "no Guards report line for the {!r} rule:\n{}".format(
+                    rule, result.output
+                ),
+            )
+            # _report_line renders two leading spaces; the broken guard must
+            # carry the failing marker _mark(False) returns.
+            self.assertTrue(
+                line.startswith("  "),
+                "guard line for {!r} is not a _report_line shape: {!r}".format(
+                    rule, line
+                ),
+            )
+            self.assertIn(
+                cli._mark(False),
+                line,
+                "guard line for {!r} does not carry the {!r} marker: "
+                "{!r}".format(rule, cli._mark(False), line),
+            )
+
+    def test_doctor_exit_unchanged_with_broken_guards(self):
+        # doctor never fails on what it diagnoses: broken guards still exit 0,
+        # and a broken and a healthy guards read differently.
+        broken, _, _ = self.run_doctor_with_guards(
+            ("iar3-r8", "Anvil"), ([], None)
+        )
+        self.assertEqual(0, broken.exit_code)
+
+        protected = [
+            {"type": "non_fast_forward", "ruleset_source": "repository"},
+            {"type": "deletion", "ruleset_source": "repository"},
+            {
+                "type": "pull_request",
+                "ruleset_source": "repository",
+                "parameters": {"required_approving_review_count": 1},
+            },
+        ]
+        healthy, _, _ = self.run_doctor_with_guards(
+            ("iar3-r8", "Anvil"), (protected, None)
+        )
+        self.assertEqual(0, healthy.exit_code)
+        self.assertNotEqual(broken.output, healthy.output)
+
+    def test_doctor_guards_skipped_when_repository_unresolvable(self):
+        result, _, fetch = self.run_doctor_with_guards(None, ([], None))
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(0, fetch.call_count)
+        guards = "\n".join(self.guards_lines(result))
+        self.assertIn(
+            "skipped",
+            guards.lower(),
+            "Guards section shows no skipped line:\n{}".format(guards),
+        )
+        # The reason the checks could not run - the origin remote is not a
+        # resolvable GitHub repository - must be visible, not hidden.
+        self.assertIn("origin", guards.lower())
 
 
 class TestBanner(CliCase):

@@ -22,12 +22,12 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import click
 import typer
 
-from . import compose, config, env, health, piruleset, prompts, provision, render
+from . import compose, config, env, health, piguard, piruleset, prompts, provision, render
 from .compose import Compose, ComposeError
 from .config import ConfigError
 from .piruleset import RulesetError
@@ -1470,8 +1470,58 @@ def doctor(ctx: typer.Context) -> None:
         )
 
     _report_config_health(shared)
+    _report_guards(shared)
 
     shared.echo(_SEPARATOR)
+
+
+def _report_guards(shared: Context) -> None:
+    """The Guards section: the piguard findings for the project's own repository.
+
+    Runs the same guard flow verify-guards uses, but always against this
+    project's directory, and reports rather than exits: doctor's exit status
+    is unchanged by any finding, and it still writes nothing.
+    """
+    shared.echo("")
+    shared.echo("Guards")
+
+    repository = piguard.resolve_repository(shared.root)
+    token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
+
+    findings: List[Dict[str, Any]]
+    if repository is None:
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the project has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(shared.root)
+        )
+        findings = piguard.skipped_findings(reason)
+    else:
+        owner, repo = repository
+        rules, fetch_reason = piguard.fetch_branch_rules(
+            owner, repo, "main", token
+        )
+        if rules is None:
+            findings = piguard.skipped_findings(fetch_reason)
+        else:
+            findings = (
+                piguard.check_history_rewrite(rules)
+                + piguard.check_review(rules)
+            )
+
+    for finding in findings:
+        label = finding.get("rule")
+        if not label:
+            label = "skipped: {}".format(finding.get("check"))
+        shared.echo(
+            _report_line(
+                label,
+                "{} {}".format(
+                    _mark(finding.get("status") == "passed"),
+                    piguard.render_finding(finding),
+                ),
+            )
+        )
 
 
 def _report_config_health(shared: Context) -> None:
@@ -1514,6 +1564,74 @@ def _report_config_health(shared: Context) -> None:
 
 
 # ---------------------------------------------------------------------------
+# verify-guards
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="verify-guards")
+def verify_guards(
+    ctx: typer.Context,
+    target: Path = typer.Argument(
+        Path("."),
+        metavar="TARGET",
+        help="Target repository directory; defaults to the current directory.",
+    ),
+    branch: str = typer.Option(
+        "main", "--branch", help="The branch whose rules are checked."
+    ),
+) -> None:
+    """Check the GitHub branch rules of the target repository and report the guards.
+
+    The target's owner/repo is resolved from its origin remote, and the rules
+    for ``--branch`` are fetched read-only from the GitHub API - a token is
+    used from .env when present, and a missing token is an unauthenticated
+    attempt, not a skip: the endpoint allows that on public repositories.
+    Anything that could not run is reported as a skipped finding, never a
+    pass. The report always prints, including on failure; the exit status is
+    the ``summarize`` of the findings, so only a ``fail`` finding - which this
+    slice emits none of - exits non-zero.
+    """
+    shared = _context(ctx)
+
+    repository = piguard.resolve_repository(target)
+    token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
+
+    if repository is None:
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the target has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(target)
+        )
+        findings = piguard.skipped_findings(reason)
+    else:
+        owner, repo = repository
+        rules, fetch_reason = piguard.fetch_branch_rules(
+            owner, repo, branch, token
+        )
+        if rules is None:
+            findings = piguard.skipped_findings(fetch_reason)
+        else:
+            findings = (
+                piguard.check_history_rewrite(rules)
+                + piguard.check_review(rules)
+            )
+
+    shared.echo("Guards report")
+    shared.echo(_SEPARATOR)
+    shared.echo(_report_line("target", str(target)))
+    shared.echo(_report_line("branch", branch))
+    if repository is not None:
+        shared.echo(
+            _report_line("repository", "{}/{}".format(repository[0], repository[1]))
+        )
+    else:
+        shared.echo(_report_line("repository", "not resolvable from origin"))
+    shared.echo("")
+    for line in piguard.render_report(findings):
+        shared.echo(line)
+    shared.echo(_SEPARATOR)
+
+    raise typer.Exit(piguard.summarize(findings))
 # ruleset-write
 # ---------------------------------------------------------------------------
 

@@ -25,6 +25,7 @@ Commands that inspect actual behaviour without starting or changing anything:
 
 ```bash
 ./anvil doctor                                   # what Anvil found on this host
+./anvil verify-guards .                          # the branch rules GitHub enforces on this repository's main
 ./anvil --dry-run up                             # the docker command that would run
 ./anvil --dry-run setup-repo /tmp/scratch --yes  # the files that would be written
 ./anvil --dry-run stress MODEL                   # the levels, port and log path that would be used
