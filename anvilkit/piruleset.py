@@ -3,9 +3,9 @@
 This module builds the dict for Anvil's importable main-branch guard
 ruleset: the five-rule shape reproducing issue #50 (``non_fast_forward``,
 ``deletion``, ``update``, ``pull_request``, ``file_path_restriction``),
-scoped to ``~DEFAULT_BRANCH``. Later behaviours render it to JSON,
-write it, and render the manual import steps; this behaviour only
-builds the dict.
+scoped to ``~DEFAULT_BRANCH``. It renders the dict to import-ready JSON
+and writes the rendered text to disk; a later behaviour renders the
+manual import steps.
 
 ``build_ruleset()`` returns a fresh dict on every call — no module-level
 dict is ever returned by reference — so a caller that mutates one result
@@ -16,6 +16,7 @@ behaviours that touch the filesystem; the CLI maps it to ``EXIT_CONFIG``).
 """
 
 import json
+from pathlib import Path
 from typing import Any, Dict
 
 
@@ -82,3 +83,35 @@ def render_ruleset_json(ruleset: Dict[str, Any]) -> str:
     ``ruleset``.
     """
     return json.dumps(ruleset, indent=2) + "\n"
+
+
+def default_output_path(target: Path) -> Path:
+    """Return the default output path for the written ruleset.
+
+    A pure path join: ``target / ".github-ruleset.json"``. Nothing
+    here touches the filesystem, so a ``target`` that is a file rather
+    than a directory is not rejected — the write is the only place the
+    filesystem is touched.
+    """
+    return target / ".github-ruleset.json"
+
+
+def write_ruleset(path: Path, text: str, force: bool = False) -> Path:
+    """Write the rendered ruleset text to ``path`` and return ``path``.
+
+    The file holds ``text`` verbatim, encoded UTF-8. If the parent
+    directory does not exist, a :class:`RulesetError` is raised naming
+    the absent directory and nothing partial is created: no file at any
+    level, and the parent tree is not created either.
+
+    The ``force`` flag reserves its meaning for the clobber-refusal
+    behaviour that lands in a later cycle; it carries no behaviour yet
+    in this one.
+    """
+    if not path.parent.is_dir():
+        raise RulesetError(
+            "cannot write ruleset to {path}: its parent directory "
+            "{parent} does not exist".format(path=path, parent=path.parent)
+        )
+    path.write_text(text, encoding="utf-8")
+    return path
