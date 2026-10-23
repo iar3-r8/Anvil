@@ -1221,28 +1221,29 @@ class _SkippedAssertions:
 
     Behaviour 4 of plans/pi-guard-verification.md: a check that cannot run
     yields a ``skipped`` finding carrying the reason - never ``passed``,
-    never an exception. One skipped finding per defined check, each with a
-    non-empty reason and a non-empty remedy (behaviour 5 invariant: a
-    finding that cannot say what the user can do to make the check runnable
-    is a programming error).
+    never an exception. One skipped finding per defined check - the four
+    check constants (history_rewrite, review, update_restriction,
+    file_paths) - each with a non-empty reason and a non-empty remedy
+    (behaviour 5 invariant: a finding that cannot say what the user can do
+    to make the check runnable is a programming error).
     """
 
     def _assert_skipped_findings(self, findings: Any, reason: str) -> None:
         self.assertIsInstance(findings, list)
-        checks = [_field(f, "check") for f in findings]
         self.assertEqual(
-            checks.count("history_rewrite"),
-            1,
-            "exactly one skipped finding expected for the history_rewrite check",
+            len(findings),
+            4,
+            "one skipped finding expected per defined check: "
+            "history_rewrite, review, update_restriction and file_paths",
         )
         self.assertEqual(
-            checks.count("review"),
-            1,
-            "exactly one skipped finding expected for the review check",
+            [_field(f, "check") for f in findings],
+            ["history_rewrite", "review", "update_restriction", "file_paths"],
+            "exactly one skipped finding per check constant, in report order",
         )
         self.assertEqual(
             [_field(f, "status") for f in findings],
-            ["skipped", "skipped"],
+            ["skipped", "skipped", "skipped", "skipped"],
             "every affected check must yield a skipped finding, in a "
             "visually distinct shape from a pass",
         )
@@ -1437,7 +1438,8 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
     """Behaviour 4 (rendering half): a skipped finding is visually distinct from a pass.
 
     ``skipped_findings(reason)`` yields one ``skipped`` finding per defined
-    check (history_rewrite, review), each carrying the reason and a remedy
+    check - the four check constants (history_rewrite, review,
+    update_restriction, file_paths) - each carrying the reason and a remedy
     naming what the user can do to make the check runnable.
     ``render_finding`` already carries the reason for a skipped finding; the
     rendered line must say the check could not run - never a passed-style
@@ -1493,6 +1495,47 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
                     passed_line,
                     "a skipped finding is visually distinct from a pass",
                 )
+
+    def test_skipped_finding_per_check_carries_check_specific_danger(self):
+        # A skipped finding must stand on its own rather than leaning on the
+        # renderer: the danger text names the unmeasured hole of its own
+        # check, so the four findings cannot all carry one shared danger -
+        # the history_rewrite one differs from the review one, and the
+        # update_restriction and file_paths findings name the update and
+        # file-path holes rather than copying the first two.
+        reason = "GitHub was unreachable: connection refused"
+
+        findings = self._skipped_findings()(reason)
+
+        self.assertEqual(
+            len(findings),
+            4,
+            "one skipped finding expected per defined check: "
+            "history_rewrite, review, update_restriction and file_paths",
+        )
+        texts: List[Tuple[str, str]] = []
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                text = (
+                    _field(finding, "danger")
+                    or _field(finding, "reason")
+                    or ""
+                )
+                self.assertTrue(
+                    text,
+                    "each skipped finding must carry a non-empty danger or "
+                    "reason naming the unmeasured hole of its own check",
+                )
+                texts.append((_field(finding, "check") or "", text))
+        distinct = {text for _check, text in texts}
+        self.assertGreaterEqual(
+            len(distinct),
+            3,
+            "the four skipped findings' danger texts must be specific to "
+            "their check, not one shared copy: the two original checks "
+            "already differ, so at least three distinct texts are expected "
+            "across four findings",
+        )
 
 
 class FindingInvariantsTests(unittest.TestCase):
