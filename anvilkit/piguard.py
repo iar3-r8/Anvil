@@ -467,8 +467,12 @@ def render_finding(finding: Dict[str, Any]) -> str:
     finding keeps its recorded ``update_allows_fetch_and_merge`` visible -
     a weak value stays on the line (the zero-approvals precedent) - while
     a finding whose parameters were unreadable claims no value at all. A
-    ``warn`` line names the danger and the remedy. A ``skipped`` line
-    carries the reason the check could not run.
+    passed file-path finding keeps its recorded ``restricted_file_paths``
+    visible, listing every recorded path verbatim with no elision; an
+    empty recorded list - explicit ``[]`` or an unreadable parameter -
+    renders the explicit "no restricted paths recorded" rather than a
+    bare "protected". A ``warn`` line names the danger and the remedy. A
+    ``skipped`` line carries the reason the check could not run.
     """
     rule = finding.get("rule")
     status = finding.get("status")
@@ -484,6 +488,14 @@ def render_finding(finding: Dict[str, Any]) -> str:
         allows = finding.get("update_allows_fetch_and_merge")
         if allows is not None:
             line += " (update_allows_fetch_and_merge: {})".format(allows)
+        paths = finding.get("restricted_file_paths")
+        if paths is not None:
+            if paths:
+                line += " (restricted_file_paths: {})".format(
+                    ", ".join(str(path) for path in paths)
+                )
+            else:
+                line += " (no restricted paths recorded)"
         return line
     if status == "warn":
         return "warn: {} - {}; fix: {}".format(
