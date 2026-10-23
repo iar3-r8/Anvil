@@ -772,10 +772,22 @@ class TestInit(CliCase):
         self.assertEqual("3", values["INDEXER_STORAGE_DEVICE_ID"])
 
     def test_a_single_coder_gpu_applies_to_both_slots(self):
-        self.invoke(["init", "--yes", "--gpu-coder", "5"])
-        values = self.env_values()
-        self.assertEqual("5", values["LLM_DEVICE_ID_1"])
-        self.assertEqual("5", values["LLM_DEVICE_ID_2"])
+        # The pin moved from the CLI's own broadcast to the tiers module: one
+        # supplied coder id fills every coder slot of the plan. The CLI wiring
+        # that routes --gpu-coder into tiers.split_coder_ids lands in a later
+        # ledger behaviour, so the single-id behaviour is pinned here through
+        # tiers, not through an init run.
+        from anvilkit import tiers
+
+        self.assertTrue(
+            hasattr(tiers, "split_coder_ids"),
+            "anvilkit.tiers.split_coder_ids has not been implemented yet "
+            "(behaviour 4: coder_ids_broadcast in plans/vllm-tier-setups.md)",
+        )
+        plan = tiers.plan("mid")
+        self.assertEqual(
+            ("5",) * plan.coder_slots, tuple(tiers.split_coder_ids(plan, "5"))
+        )
 
     def test_too_many_coder_gpus_is_a_usage_error(self):
         result = self.invoke_allowing_exception(

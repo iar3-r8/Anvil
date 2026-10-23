@@ -110,5 +110,49 @@ class TestPlanIsStrict(TiersTestCase):
         self.assertEqual(plan.coder_slots, 2)
 
 
+class TestCoderIdsBroadcast(TiersTestCase):
+    """Behaviour 4: one supplied coder id fills every coder slot of the plan."""
+
+    def _split_coder_ids(self):
+        """The split_coder_ids callable, failing clearly if unimplemented."""
+        tiers = self._tiers()
+        self.assertTrue(
+            hasattr(tiers, "split_coder_ids"),
+            "anvilkit.tiers.split_coder_ids has not been implemented yet "
+            "(behaviour 4: coder_ids_broadcast in plans/vllm-tier-setups.md)",
+        )
+        return tiers.split_coder_ids
+
+    def test_one_id_fills_every_coder_slot_of_every_tier(self):
+        tiers = self._tiers()
+        split_coder_ids = self._split_coder_ids()
+        for tier in tiers.TIERS:
+            with self.subTest(tier=tier.id):
+                plan = tiers.plan(tier.id)
+                ids = split_coder_ids(plan, "5")
+                self.assertIsInstance(ids, (tuple, list))
+                self.assertEqual(("5",) * plan.coder_slots, tuple(ids))
+
+    def test_one_id_fills_the_single_coder_slot_of_the_low_tier(self):
+        tiers = self._tiers()
+        split_coder_ids = self._split_coder_ids()
+        plan = tiers.plan("low")
+        self.assertEqual(("5",), tuple(split_coder_ids(plan, "5")))
+
+    def test_split_coder_ids_rejects_an_empty_string(self):
+        tiers = self._tiers()
+        split_coder_ids = self._split_coder_ids()
+        plan = tiers.plan("low")
+        with self.assertRaises(tiers.TierError):
+            split_coder_ids(plan, "")
+
+    def test_split_coder_ids_rejects_a_whitespace_only_string(self):
+        tiers = self._tiers()
+        split_coder_ids = self._split_coder_ids()
+        plan = tiers.plan("low")
+        with self.assertRaises(tiers.TierError):
+            split_coder_ids(plan, "   ")
+
+
 if __name__ == "__main__":
     unittest.main()
