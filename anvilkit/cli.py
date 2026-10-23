@@ -430,6 +430,22 @@ def _collect_env_values(
         interactive=interactive,
     )
 
+    # The low tier is a one-GPU host, so one id: the generic slot is the
+    # host's only GPU, and its resolved value (flag, prompt answer or the
+    # tier default) is written into every device key. A slot whose answered
+    # value differs from the tier's keeps its own value, so an explicit
+    # device id never loses to the convergence - on the low tier,
+    # --gpu-embedder 7 stays in INDEXER_STORAGE_DEVICE_ID while the unflagged
+    # slots keep the tier default (behaviour 17).
+    if tier.coder_slots == 1:
+        one_id = generic_gpu
+        if coder_0 == device_defaults["LLM_DEVICE_ID_1"]:
+            coder_0 = one_id
+        if coder_1 == device_defaults["LLM_DEVICE_ID_2"]:
+            coder_1 = one_id
+        if embedder_gpu == device_defaults["INDEXER_STORAGE_DEVICE_ID"]:
+            embedder_gpu = one_id
+
     return [
         ("HF_HOME", hf_home),
         ("DATA_DIR", data_dir),
