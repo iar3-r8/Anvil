@@ -229,8 +229,8 @@ class WriteRulesetTests(unittest.TestCase):
 
     Behaviour 3 ("default_output_path") has no non-obvious input, output,
     edge or error, so its assertion is folded into this class per the
-    plan's sequencing note. Behaviour 5's clobber/force edge is a later
-    cycle and is not tested here.
+    plan's sequencing note. Behaviour 5's clobber/force edge is tested in
+    :class:`WriteRulesetClobberTests` below.
     """
 
     def setUp(self) -> None:
@@ -279,6 +279,80 @@ class WriteRulesetTests(unittest.TestCase):
         # parent tree was never created.
         self.assertFalse(output.exists())
         self.assertFalse((self.tmpdir / "nonexistent").exists())
+
+
+class WriteRulesetClobberTests(unittest.TestCase):
+    """Behaviour 5: write_ruleset refuses to clobber an existing path.
+
+    The plan (behaviour 5) pins that with an existing file at the output
+    path and ``force=False`` the module's single error is raised naming
+    the path and the ``--force`` flag, and the file's original bytes
+    survive byte-identical; with ``force=True`` the same call
+    overwrites; a path that exists but is a directory raises rather
+    than silently succeeding.
+    """
+
+    SENTINEL = b"unrelated\n"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_write_ruleset_refuses_to_clobber_an_existing_file_when_force_is_false(
+        self,
+    ) -> None:
+        path = self.tmpdir / ".github-ruleset.json"
+        path.write_bytes(self.SENTINEL)
+        text = "{}\n"
+
+        with self.assertRaises(piruleset.RulesetError) as ctx:
+            piruleset.write_ruleset(path, text)
+
+        message = str(ctx.exception)
+        # The error names the existing path and the --force flag.
+        self.assertIn(str(path), message, "the error must name the existing path")
+        self.assertIn(
+            "force",
+            message.lower(),
+            "the error must mention the --force flag",
+        )
+        # The original bytes survive byte-identical.
+        self.assertEqual(
+            path.read_bytes(),
+            self.SENTINEL,
+            "the refused write must leave the original bytes untouched",
+        )
+
+    def test_write_ruleset_overwrites_the_existing_file_when_force_is_true(
+        self,
+    ) -> None:
+        path = self.tmpdir / ".github-ruleset.json"
+        path.write_bytes(self.SENTINEL)
+        text = "{}\n"
+
+        written = piruleset.write_ruleset(path, text, force=True)
+
+        self.assertEqual(written, path)
+        self.assertEqual(
+            path.read_bytes(),
+            text.encode("utf-8"),
+            "with force=True the file must hold the new text",
+        )
+
+    def test_write_ruleset_raises_ruleset_error_when_path_is_a_directory(
+        self,
+    ) -> None:
+        path = self.tmpdir / "ruleset-dir"
+        path.mkdir()
+
+        with self.assertRaises(piruleset.RulesetError):
+            # force=False is picked deliberately: a write to a directory
+            # must not silently succeed before the force flag is even in
+            # play.
+            piruleset.write_ruleset(path, "{}\n", force=False)
 
 
 if __name__ == "__main__":
