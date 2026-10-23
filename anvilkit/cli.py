@@ -367,6 +367,10 @@ def _collect_env_values(
         interactive=interactive,
     )
 
+    # The resolved tier is always ``mid`` on this ledger step: the tier
+    # question and ``--tier`` flag are later behaviours (plans/vllm-tier-setups.md
+    # 10-12). Pinning the id here proves the persistence seam without
+    # inventing a selection mechanism.
     return [
         ("HF_HOME", hf_home),
         ("DATA_DIR", data_dir),
@@ -375,6 +379,7 @@ def _collect_env_values(
         ("LLM_DEVICE_ID_1", coder_0),
         ("LLM_DEVICE_ID_2", coder_1),
         ("INDEXER_STORAGE_DEVICE_ID", embedder_gpu),
+        ("ANVIL_TIER", "mid"),
     ]
 
 
