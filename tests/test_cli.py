@@ -1018,6 +1018,152 @@ class TestInitTierQuestionFirst(CliCase):
         self.assertEqual("mid", self.env_values()["ANVIL_TIER"])
 
 
+class TestInitTierFlagBypassesQuestion(CliCase):
+    """Behaviour 11 (tier_flag_bypasses_the_question): ``--tier high``
+    resolves the tier before any prompt, so the tier menu is never rendered
+    and its question never reads stdin.
+
+    Booby-trap design. ``_read_line`` (``anvilkit/prompts.py:221``) is the
+    single seam through which every keystroke arrives, and the tier menu's
+    selection line is the only call in ``init`` that combines the menu
+    wording ``"   Select"`` with the default mid's index as a string
+    (``"2"`` - mid is the second of the three tiers and the default answer)
+    and an ``IntRange`` value type. The wrapper raises on exactly that
+    signature and passes every other read - the six port/device prompts -
+    through to the real ``_read_line``, which is answered from the scripted
+    stdin; the high tier's defaults are all defaults, so empty lines/EOF
+    take them.
+
+    What the trap precisely proves: no read of the tier question happens -
+    if ``init`` asked the tier menu, the run would fail with the
+    AssertionError instead of completing. What it does not prove: anything
+    about the six port/device reads, which pass through untouched (the
+    device-id flags are separate and behave as they do today), so the
+    primary assertion stays the tier menu's absence from the rendered
+    output, which the trap cannot miss even if the menu were rendered with
+    an unexpected default.
+    """
+
+    def _tier_trap(self):
+        """A ``_read_line`` wrapper that raises if called for the tier menu.
+
+        A read is a tier-question read only if its arguments are exactly
+        the tier menu selection line's: the menu prompt wording
+        ``"   Select"``, mid's index as a string (``"2"``), and the menu's
+        ``IntRange``. Every other call - all port and device-id prompts
+        carry different wording - passes through to the real
+        ``_read_line`` unchanged.
+        """
+        import click
+
+        from anvilkit import prompts
+
+        real = prompts._read_line
+
+        def trapped(prompt, default=None, hide_input=False, value_type=None):
+            if (
+                prompt == "   Select"
+                and default == "2"
+                and isinstance(value_type, click.IntRange)
+            ):
+                raise AssertionError(
+                    "--tier high must not ask the tier question; the "
+                    "tier menu's selection read was attempted"
+                )
+            return real(
+                prompt,
+                default=default,
+                hide_input=hide_input,
+                value_type=value_type,
+            )
+
+        return trapped
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def test_tier_high_flag_exits_without_reading_the_tier_question(self):
+        """``--tier high`` drives the device-id defaults, and the tier menu is
+        neither rendered nor read.
+        """
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "_read_line", self._tier_trap()),
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke_allowing_exception(["init", "--tier", "high"], input="")
+        self.assertIsNone(
+            result.exception,
+            "init --tier high raised an exception (a trap firing would mean "
+            "the tier question was asked):\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "init --tier high failed; output:\n" + result.output,
+        )
+        output = result.output
+        for rendered in ("Select the hardware tier", "1) low", "2) mid", "3) high"):
+            self.assertNotIn(
+                rendered,
+                output,
+                "the tier menu was rendered although --tier high supplied "
+                "the tier:\n" + output,
+            )
+        for rendered in (
+            "Enter Generic LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 1 [1]: ",
+            "Enter Coder LLM GPU Device ID 2 [2]: ",
+            "Enter Indexer GPU Device ID [3]: ",
+        ):
+            self.assertIn(
+                rendered,
+                output,
+                "the device-id prompt does not show the high tier's "
+                "defaults:\n" + output,
+            )
+        self.assertEqual(
+            "high",
+            self.env_values().get("ANVIL_TIER"),
+            "the tier the flag supplied is not what .env records",
+        )
+
+    def test_tier_flag_with_yes_is_not_a_conflict_and_flag_wins(self):
+        """``--tier high --yes`` is not a conflict: ``--yes`` skips the prompts,
+        and the flag - not ``--yes``' mid default - is the tier recorded.
+        """
+        boom = AssertionError("--yes must not read stdin")
+        patches = (
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_confirmation", side_effect=boom),
+            # Force the interactive decision to True, so the only reason a
+            # prompt is skipped is --yes itself.
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+        )
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke_allowing_exception(["init", "--tier", "high", "--yes"])
+        self.assertIsNone(
+            result.exception,
+            "init --tier high --yes raised an exception:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "init --tier high --yes is not a conflict; output:\n" + result.output,
+        )
+        self.assertEqual(
+            "high",
+            self.env_values().get("ANVIL_TIER"),
+            "--yes must not override the tier the flag supplied",
+        )
+
+
 class TestImplicitEnvBootstrap(CliCase):
     """A missing .env is created on demand, exactly as anvil:27 did."""
 
