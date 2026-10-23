@@ -43,6 +43,24 @@ TIERS: Tuple[Tier, ...] = (
 _BY_ID: Dict[str, Tier] = {tier.id: tier for tier in TIERS}
 
 
+def split_coder_ids(tier: Tier, coder_id: str) -> Tuple[str, ...]:
+    """Broadcast one supplied coder id across every coder slot of ``tier``.
+
+    A single GPU id applies to the whole coder model: the result is a tuple
+    of ``tier.coder_slots`` entries, each equal to ``coder_id``, ready to be
+    written one per device key by the caller.
+
+    Raises:
+        TierError: ``coder_id`` is empty or whitespace-only; a GPU id must
+            name an actual device.
+    """
+    if not coder_id.strip():
+        raise TierError(
+            "Coder id must be a non-empty device id, got: '{}'".format(coder_id)
+        )
+    return (coder_id,) * tier.coder_slots
+
+
 def plan(name: str) -> Tier:
     """Resolve ``name`` to its tier plan.
 
