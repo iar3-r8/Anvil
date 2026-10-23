@@ -44,21 +44,39 @@ _BY_ID: Dict[str, Tier] = {tier.id: tier for tier in TIERS}
 
 
 def split_coder_ids(tier: Tier, coder_id: str) -> Tuple[str, ...]:
-    """Broadcast one supplied coder id across every coder slot of ``tier``.
+    """Turn the supplied coder id(s) into one device id per coder slot.
 
-    A single GPU id applies to the whole coder model: the result is a tuple
-    of ``tier.coder_slots`` entries, each equal to ``coder_id``, ready to be
-    written one per device key by the caller.
+    ``coder_id`` is a comma-separated list of GPU ids. A single id applies to
+    the whole coder model and is broadcast across every coder slot of
+    ``tier``; a list of exactly ``tier.coder_slots`` ids is used as-is. The
+    result is a tuple ready to be written one per device key by the caller.
 
     Raises:
-        TierError: ``coder_id`` is empty or whitespace-only; a GPU id must
-            name an actual device.
+        TierError: ``coder_id`` is empty or whitespace-only, or any entry
+            between commas is empty or whitespace-only; a GPU id must name
+            an actual device. Also raised when more ids are given than the
+            tier has coder slots, naming the tier and its slot count so the
+            user sees what to change.
     """
     if not coder_id.strip():
         raise TierError(
             "Coder id must be a non-empty device id, got: '{}'".format(coder_id)
         )
-    return (coder_id,) * tier.coder_slots
+    ids = tuple(part.strip() for part in coder_id.split(","))
+    if any(not part for part in ids):
+        raise TierError(
+            "Every coder id must be a non-empty device id, got: '{}'".format(
+                coder_id
+            )
+        )
+    if len(ids) > tier.coder_slots:
+        raise TierError(
+            "Tier '{}' has {} coder slot(s), but {} device id(s) were given: "
+            "'{}'".format(tier.id, tier.coder_slots, len(ids), coder_id)
+        )
+    if len(ids) == 1:
+        return ids * tier.coder_slots
+    return ids
 
 
 def plan(name: str) -> Tier:
