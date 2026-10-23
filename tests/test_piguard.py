@@ -31,6 +31,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import piguard  # noqa: E402
+from anvilkit import piruleset  # noqa: E402
 
 
 def _field(finding: Any, name: str) -> Any:
@@ -1543,10 +1544,12 @@ class FindingInvariantsTests(unittest.TestCase):
 
     A finding with an empty remedy is a programming error, so this class
     sweeps EVERY finding the module can emit as of today - every documented
-    rules-array shape through both check functions, and the skipped findings
-    for every fetch failure mode - and pins the invariants: a known status, a
-    non-empty string remedy on every finding, a non-empty danger on every
-    non-passing finding, and a renderable non-empty line. The sweep exercises
+    rules-array shape through all four check functions
+    (``check_history_rewrite``, ``check_review``, ``check_update`` and
+    ``check_file_paths``), and the skipped findings for every fetch failure
+    mode - and pins the invariants: a known status, a non-empty string
+    remedy on every finding, a non-empty danger on every non-passing
+    finding, and a renderable non-empty line. The sweep exercises
     the module as it is and may already pass; its job is to break on future
     drift, so a finding that later drops its remedy or its danger must fail
     these tests, and the assertions must never be weakened to get back to
@@ -1586,6 +1589,56 @@ class FindingInvariantsTests(unittest.TestCase):
                     rule("non_fast_forward", "main-guard"),
                     rule("deletion", "main-guard"),
                     pull_request_rule("main-guard", 1),
+                ],
+            ),
+            (
+                "update alone",
+                [
+                    update_rule(
+                        "main-guard",
+                        {"update_allows_fetch_and_merge": True},
+                    )
+                ],
+            ),
+            (
+                "file_path_restriction alone",
+                [
+                    file_path_rule(
+                        "main-guard",
+                        {"restricted_file_paths": [".github/workflows/**"]},
+                    )
+                ],
+            ),
+            (
+                "all five rules",
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                    pull_request_rule("main-guard", 1),
+                    update_rule(
+                        "main-guard",
+                        {"update_allows_fetch_and_merge": True},
+                    ),
+                    file_path_rule(
+                        "main-guard",
+                        {"restricted_file_paths": [".github/workflows/**"]},
+                    ),
+                ],
+            ),
+            (
+                "all five rules, weak parameters",
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                    pull_request_rule("main-guard", 0),
+                    update_rule(
+                        "main-guard",
+                        {"update_allows_fetch_and_merge": False},
+                    ),
+                    file_path_rule(
+                        "main-guard",
+                        {"restricted_file_paths": []},
+                    ),
                 ],
             ),
         ]
@@ -1632,7 +1685,12 @@ class FindingInvariantsTests(unittest.TestCase):
         """
         findings: List[Tuple[str, Dict[str, Any]]] = []
         for label, rules in self._rule_shapes():
-            for check in (piguard.check_history_rewrite, piguard.check_review):
+            for check in (
+                piguard.check_history_rewrite,
+                piguard.check_review,
+                piguard.check_update,
+                piguard.check_file_paths,
+            ):
                 for finding in check(rules):
                     findings.append(
                         (
@@ -2202,6 +2260,135 @@ class RenderReportTests(unittest.TestCase):
             render([]),
             [],
             "no findings means no report lines",
+        )
+
+
+class RulesetWriteLockstepTests(unittest.TestCase):
+    """Behaviour 9 of plans/verify-guards-five-rules.md: the ruleset-write /
+    verify-guards lockstep - a boundary pin.
+
+    ``build_ruleset()`` (anvilkit/piruleset.py) is the writer side: the five
+    rules Anvil provisions. ``check_all`` (anvilkit/piguard.py) is the reader
+    side: what verify-guards measures. A rule added to ``build_ruleset``
+    without a matching check fails this test - which is its purpose. The
+    fixture translates ``build_ruleset()["rules"]`` into the
+    ``/rules/branches`` element shape (each element gains
+    ``ruleset_source_type``, ``ruleset_source`` and ``ruleset_id``; the
+    element's ``type`` and ``parameters`` are copied through unchanged into
+    fresh dicts, so the ``build_ruleset()`` result is never mutated) and runs
+    ``check_all`` over it with no live import: the live GitHub import stays a
+    reader's step, never a suite step.
+    """
+
+    EXPECTED_REPORT_ORDER = (
+        "non_fast_forward",
+        "deletion",
+        "pull_request",
+        "update",
+        "file_path_restriction",
+    )
+
+    def _check_all(self) -> Any:
+        check_all = getattr(piguard, "check_all", None)
+        self.assertTrue(
+            callable(check_all),
+            "anvilkit.piguard.check_all is not callable; the check_all "
+            "seam has not been implemented yet",
+        )
+        return check_all
+
+    def _fixture(self) -> List[Dict[str, Any]]:
+        """build_ruleset() rules translated into the /rules/branches shape.
+
+        Fresh dicts throughout: the build_ruleset() result is copied, never
+        mutated, so a check that misbehaves cannot poison the writer side.
+        """
+        fixture: List[Dict[str, Any]] = []
+        for element in piruleset.build_ruleset()["rules"]:
+            fresh: Dict[str, Any] = {
+                "type": element["type"],
+                "ruleset_source_type": "repository",
+                "ruleset_source": "main-protected",
+                "ruleset_id": 1,
+            }
+            if "parameters" in element:
+                fresh["parameters"] = dict(element["parameters"])
+            fixture.append(fresh)
+        return fixture
+
+    def test_check_all_over_build_ruleset_fixture_yields_five_passed_findings_one_per_rule(self):
+        check_all = self._check_all()
+        fixture = self._fixture()
+
+        findings = check_all(fixture)
+
+        self.assertEqual(
+            len(findings),
+            5,
+            "one finding per rule build_ruleset writes - exactly five",
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["passed"] * 5,
+            "every rule build_ruleset writes must measure as passed - a "
+            "rule the writer side provisions that the reader side cannot "
+            "pass is a hole in the guard",
+        )
+        self.assertEqual(
+            [_field(f, "rule") for f in findings],
+            list(self.EXPECTED_REPORT_ORDER),
+            "findings must report one per rule type, in the planned report "
+            "order: non_fast_forward, deletion, pull_request, update, "
+            "file_path_restriction",
+        )
+        by_rule = {_field(f, "rule"): f for f in findings}
+        self.assertEqual(
+            _field(by_rule["pull_request"], "required_approving_review_count"),
+            1,
+            "the review finding must record the count build_ruleset writes "
+            "(required_approving_review_count: 1)",
+        )
+        self.assertIs(
+            _field(by_rule["update"], "update_allows_fetch_and_merge"),
+            True,
+            "the update finding must record the value build_ruleset writes "
+            "(update_allows_fetch_and_merge: True)",
+        )
+        self.assertEqual(
+            _field(by_rule["file_path_restriction"], "restricted_file_paths"),
+            [".github/workflows/**"],
+            "the file-path finding must record the paths build_ruleset "
+            "writes (restricted_file_paths: ['.github/workflows/**'])",
+        )
+
+    def test_check_all_covers_every_rule_build_ruleset_writes(self):
+        """Lockstep: the rule types check_all reports must equal the rule
+        types build_ruleset writes, and the count must stay exactly five.
+
+        A rule added to build_ruleset without a matching check breaks the
+        set equality and the count assertion - which is this test's purpose.
+        The live GitHub import stays a reader's step, never a suite step.
+        """
+        check_all = self._check_all()
+        fixture = self._fixture()
+
+        findings = check_all(fixture)
+
+        self.assertEqual(
+            len(findings),
+            5,
+            "exactly five findings: build_ruleset writes five rules, so a "
+            "sixth rule type on either side must break this test",
+        )
+        fixture_types = {element["type"] for element in fixture}
+        finding_types = {_field(f, "rule") for f in findings}
+        self.assertEqual(
+            fixture_types,
+            finding_types,
+            "check_all must report exactly the rule types build_ruleset "
+            "writes - a rule added to the writer side without a matching "
+            "check (or a finding for a rule it does not write) is the hole "
+            "this test exists to catch",
         )
 
 
