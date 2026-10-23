@@ -129,11 +129,13 @@ def choose(
     assume_yes: bool = False,
     interactive: bool = True,
     stream: Optional[TextIO] = None,
+    allow_custom: bool = True,
 ) -> str:
     """Present a numbered menu and return the chosen id.
 
     The options are data, read from ``anvil.yaml``. A final "custom" entry
-    preserves the escape hatch that a hardcoded menu once provided.
+    preserves the escape hatch that a hardcoded menu once provided; set
+    ``allow_custom=False`` for menus where free-form ids make no sense.
 
     ``supplied`` is returned unvalidated, because ``--anthropic-model`` must
     accept any id.
@@ -146,17 +148,17 @@ def choose(
     if assume_yes or not interactive:
         return default
 
-    _render_menu(prompt, options, ids, default, stream)
+    _render_menu(prompt, options, ids, default, stream, allow_custom)
 
-    custom_index = len(ids) + 1
-    default_index = ids.index(default) + 1 if default in ids else custom_index
+    last_index = len(ids) + (1 if allow_custom else 0)
+    default_index = ids.index(default) + 1 if default in ids else last_index
 
     try:
         selection = int(
             _read_line(
                 "   Select",
                 default=str(default_index),
-                value_type=click.IntRange(1, custom_index),
+                value_type=click.IntRange(1, last_index),
             )
         )
     except click.Abort:
@@ -193,6 +195,7 @@ def _render_menu(
     ids: Sequence[str],
     default: str,
     stream: Optional[TextIO],
+    allow_custom: bool = True,
 ) -> None:
     width = max(len(option_id) for option_id in ids)
 
@@ -206,7 +209,8 @@ def _render_menu(
             line += "  ({})".format(label)
         _emit(line, stream)
 
-    _emit("     {}) {}".format(len(ids) + 1, CUSTOM_CHOICE_LABEL), stream)
+    if allow_custom:
+        _emit("     {}) {}".format(len(ids) + 1, CUSTOM_CHOICE_LABEL), stream)
     _emit("", stream)
 
 
