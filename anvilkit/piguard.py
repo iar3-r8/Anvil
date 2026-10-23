@@ -472,6 +472,31 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """The concatenation of every defined check, in fixed report order.
+
+    Runs :func:`check_history_rewrite`, :func:`check_review`,
+    :func:`check_update` and :func:`check_file_paths` in that order and
+    returns their findings concatenated, so a five-rule array yields
+    exactly five findings - one per rule - with the two history-rewrite
+    rules first. This is the single seam both CLI call sites
+    (verify-guards and doctor's Guards section) report through: a check
+    added here reaches both without edits to either (behaviour 7 of
+    plans/verify-guards-five-rules.md). The function fetches nothing and
+    never calls ``sys.exit``: an empty array yields five ``warn``
+    findings and raises nothing.
+    """
+    findings: List[Dict[str, Any]] = []
+    for check in (
+        check_history_rewrite,
+        check_review,
+        check_update,
+        check_file_paths,
+    ):
+        findings.extend(check(rules))
+    return findings
+
+
 def render_finding(finding: Dict[str, Any]) -> str:
     """One human-readable line per finding; no network, no exit.
 
