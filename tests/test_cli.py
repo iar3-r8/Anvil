@@ -253,6 +253,7 @@ class TestSubcommandsExist(CliCase):
         "doctor",
         "stress",
         "verify-guards",
+        "ruleset-write",
     )
 
     def registered_names(self):
@@ -4616,3 +4617,97 @@ class TestNoGithubRunNeverBlanksStoredRepoToken(CliCase):
                 "GITHUB_PERSONAL_ACCESS_TOKEN"
             ],
         )
+
+
+# ---------------------------------------------------------------------------
+# ruleset-write  (plans/ruleset-write.md behaviour 7 — the command and its
+# registration)
+# ---------------------------------------------------------------------------
+
+
+class TestRulesetWrite(CliCase):
+    """``ruleset-write`` builds and writes the importable GitHub ruleset.
+
+    The target is a plain temporary directory: no git repository, no
+    ``GITHUB_TOKEN`` in the environment, and both the subprocess and the
+    network seams are booby-trapped, so a run that tried to read git or
+    reach the network would fail — success proves the command needs
+    neither.
+    """
+
+    SENTINEL = b"\x00 not ruleset JSON \xff\n"
+    RULE_TYPES = (
+        "non_fast_forward",
+        "deletion",
+        "update",
+        "pull_request",
+        "file_path_restriction",
+    )
+
+    def setUp(self):
+        super().setUp()
+        self._target = tempfile.TemporaryDirectory()
+        self.target = Path(self._target.name)
+        self.addCleanup(self._target.cleanup)
+
+        env = dict(os.environ)
+        env.pop("GITHUB_TOKEN", None)
+        self._env_patcher = mock.patch.dict(os.environ, env)
+        self._env_patcher.start()
+        self.addCleanup(self._env_patcher.stop)
+        self._subprocess_patcher = mock.patch(
+            "subprocess.run",
+            side_effect=AssertionError("ruleset-write must not run subprocesses"),
+        )
+        self._subprocess_patcher.start()
+        self.addCleanup(self._subprocess_patcher.stop)
+        self._urllib_patcher = mock.patch(
+            "urllib.request.urlopen",
+            side_effect=AssertionError("ruleset-write must not use the network"),
+        )
+        self._urllib_patcher.start()
+        self.addCleanup(self._urllib_patcher.stop)
+
+    def default_output(self):
+        return self.target / ".github-ruleset.json"
+
+    def test_ruleset_write_creates_the_default_file(self):
+        result = self.invoke(["ruleset-write", str(self.target)])
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertTrue(self.default_output().is_file())
+
+    def test_ruleset_write_output_names_file_and_import_steps_without_github_url(self):
+        result = self.invoke(["ruleset-write", str(self.target)])
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertIn(".github-ruleset.json", result.output)
+        self.assertIn("import a ruleset", result.output.lower())
+        # No GitHub origin, so no guessed URL.
+        self.assertNotIn("github.com", result.output)
+
+    def test_ruleset_write_output_flag_honours_a_custom_path(self):
+        custom = self.target / "my-ruleset.json"
+        result = self.invoke(
+            ["ruleset-write", str(self.target), "--output", str(custom)]
+        )
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertTrue(custom.is_file())
+        self.assertFalse(self.default_output().exists())
+
+    def test_ruleset_write_refuses_to_overwrite_without_force(self):
+        existing = self.default_output()
+        existing.write_bytes(self.SENTINEL)
+        result = self.invoke_allowing_exception(
+            ["ruleset-write", str(self.target)]
+        )
+        self.assertEqual(cli.EXIT_CONFIG, result.exit_code, result.output)
+        self.assertIn(str(existing), result.output)
+        self.assertIn("--force", result.output)
+        self.assertEqual(self.SENTINEL, existing.read_bytes())
+
+    def test_ruleset_write_force_overwrites_with_the_generated_ruleset(self):
+        existing = self.default_output()
+        existing.write_bytes(self.SENTINEL)
+        result = self.invoke(["ruleset-write", str(self.target), "--force"])
+        self.assertEqual(0, result.exit_code, result.output)
+        data = json.loads(existing.read_text(encoding="utf-8"))
+        self.assertEqual(list(self.RULE_TYPES), [rule["type"] for rule in data["rules"]])
