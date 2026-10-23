@@ -463,9 +463,12 @@ def render_finding(finding: Dict[str, Any]) -> str:
     to users with write access to the ruleset, so on a read-only token the
     branch must never be called simply "protected": an unseen bypass entry
     is an unmeasured hole. A passed review finding also keeps its recorded
-    ``required_approving_review_count`` visible. A ``warn`` line names the
-    danger and the remedy. A ``skipped`` line carries the reason the check
-    could not run.
+    ``required_approving_review_count`` visible, and a passed update
+    finding keeps its recorded ``update_allows_fetch_and_merge`` visible -
+    a weak value stays on the line (the zero-approvals precedent) - while
+    a finding whose parameters were unreadable claims no value at all. A
+    ``warn`` line names the danger and the remedy. A ``skipped`` line
+    carries the reason the check could not run.
     """
     rule = finding.get("rule")
     status = finding.get("status")
@@ -478,6 +481,9 @@ def render_finding(finding: Dict[str, Any]) -> str:
         count = finding.get("required_approving_review_count")
         if count is not None:
             line += " ({} required approvals)".format(count)
+        allows = finding.get("update_allows_fetch_and_merge")
+        if allows is not None:
+            line += " (update_allows_fetch_and_merge: {})".format(allows)
         return line
     if status == "warn":
         return "warn: {} - {}; fix: {}".format(
