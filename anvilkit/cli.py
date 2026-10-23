@@ -27,9 +27,10 @@ from typing import Callable, List, Optional, Tuple
 import click
 import typer
 
-from . import compose, config, env, health, prompts, provision, render
+from . import compose, config, env, health, piruleset, prompts, provision, render
 from .compose import Compose, ComposeError
 from .config import ConfigError
+from .piruleset import RulesetError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
 from .render import RenderError
@@ -1510,6 +1511,60 @@ def _report_config_health(shared: Context) -> None:
                     MODELS_FILENAME + " parse", "{} {}".format(_mark(False), exc)
                 )
             )
+
+
+# ---------------------------------------------------------------------------
+# ruleset-write
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="ruleset-write")
+def ruleset_write(
+    ctx: typer.Context,
+    target: str = typer.Argument(
+        ".", metavar="TARGET", help="Target directory for the written ruleset."
+    ),
+    output: Optional[Path] = typer.Option(
+        None, "--output", help="Write the ruleset file here instead of the default path."
+    ),
+    force: bool = typer.Option(
+        False, "--force", help="Overwrite the file at the output path if it exists."
+    ),
+) -> None:
+    """Write the importable GitHub main-branch guard ruleset to a file.
+
+    Builds the five-rule ruleset (non_fast_forward, deletion, update,
+    pull_request, file_path_restriction), renders it to JSON, writes it to
+    ``TARGET/.github-ruleset.json`` (or ``--output``), then echoes the
+    written path and the manual import steps.
+
+    Reads no token and makes no network call: importing a ruleset is a
+    UI-only step. ``import_steps`` is always called with
+    ``repository=None``, so the direct ``/settings/rules`` URL branch is
+    deliberately not reached from the CLI - resolving the target's git
+    origin is out of scope for this command, not dead code.
+    """
+    shared = _context(ctx)
+    _banner(shared)
+
+    output_path = (
+        output
+        if output is not None
+        else piruleset.default_output_path(Path(target))
+    )
+
+    try:
+        written = piruleset.write_ruleset(
+            output_path,
+            piruleset.render_ruleset_json(piruleset.build_ruleset()),
+            force=force,
+        )
+    except RulesetError as exc:
+        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+
+    shared.echo("Wrote the ruleset to {}:".format(written))
+    for line in piruleset.import_steps(None, written):
+        shared.echo("  - {}".format(line))
 
 
 # ---------------------------------------------------------------------------
