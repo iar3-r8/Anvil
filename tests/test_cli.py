@@ -908,6 +908,111 @@ class TestInit(CliCase):
         self.assertEqual(cli.EXIT_USAGE, result.exit_code)
 
 
+class TestInitTierQuestionFirst(CliCase):
+    """Behaviour 10 (tier_question_comes_first): the interactive ``init`` asks a
+    hardware-tier question before any device-id question, and the device-id
+    defaults shown are the chosen tier's.
+
+    The prompts are driven from a scripted stdin: ``_is_interactive`` is patched
+    True (CliRunner's stdin is not a tty) and the input lines answer the prompts
+    in order. The tier question is the very first question of init, so the first
+    line selects the tier; every remaining prompt is answered by EOF, which
+    takes each prompt's default - the tier-driven ones.
+    """
+
+    def run_interactive_init(self, stdin):
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            return self.invoke(["init"], input=stdin)
+
+    def test_tier_question_is_asked_before_any_device_id_question(self):
+        """The rendered output must carry the tier menu before the first prompt.
+
+        The menu is the three tier ids from the tiers table, numbered; the tier
+        question is the first question of init, so it precedes even the Hugging
+        Face cache prompt and, a fortiori, every device-id prompt.
+        """
+        result = self.run_interactive_init("3\n")
+        self.assertEqual(0, result.exit_code)
+        output = result.output
+        for entry in ("1) low", "2) mid", "3) high"):
+            self.assertIn(
+                entry,
+                output,
+                "the rendered init output has no tier menu; the tier question "
+                "was never asked:\n" + output,
+            )
+        menu = output.index("1) low")
+        for prompt in (
+            "Enter Hugging Face cache directory",
+            "Enter Generic LLM GPU Device ID 1",
+        ):
+            self.assertLess(
+                menu,
+                output.index(prompt),
+                "the tier question must be asked before '{}'".format(prompt),
+            )
+
+    def test_high_tier_selection_drives_the_shown_device_id_defaults(self):
+        """Choosing ``high`` (line 3 of the menu) shows the high tier's spread."""
+        result = self.run_interactive_init("3\n")
+        self.assertEqual(0, result.exit_code)
+        output = result.output
+        for rendered in (
+            "Enter Generic LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 1 [1]: ",
+            "Enter Coder LLM GPU Device ID 2 [2]: ",
+            "Enter Indexer GPU Device ID [3]: ",
+        ):
+            self.assertIn(
+                rendered,
+                output,
+                "the high tier's default is not shown; the device-id prompts "
+                "do not reflect the chosen tier:\n" + output,
+            )
+
+    def test_low_tier_selection_drives_the_shown_device_id_defaults(self):
+        """Choosing ``low`` (line 1) shows one id - the host's only GPU - in every slot."""
+        result = self.run_interactive_init("1\n")
+        self.assertEqual(0, result.exit_code)
+        output = result.output
+        for rendered in (
+            "Enter Generic LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 2 [0]: ",
+            "Enter Indexer GPU Device ID [0]: ",
+        ):
+            self.assertIn(
+                rendered,
+                output,
+                "the low tier's default is not shown; the device-id prompts "
+                "do not reflect the chosen tier:\n" + output,
+            )
+
+    def test_eof_on_the_tier_question_falls_back_to_mid(self):
+        """An exhausted stdin at the tier question takes the default, like every other prompt."""
+        result = self.run_interactive_init("")
+        self.assertEqual(0, result.exit_code)
+        output = result.output
+        self.assertIn(
+            "1) low",
+            output,
+            "the rendered init output has no tier menu; the tier question "
+            "was never asked:\n" + output,
+        )
+        for rendered in (
+            "Enter Coder LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 2 [1]: ",
+            "Enter Indexer GPU Device ID [2]: ",
+        ):
+            self.assertIn(
+                rendered,
+                output,
+                "the mid tier's default is not shown after the EOF fallback:\n"
+                + output,
+            )
+        self.assertEqual("mid", self.env_values()["ANVIL_TIER"])
+
+
 class TestImplicitEnvBootstrap(CliCase):
     """A missing .env is created on demand, exactly as anvil:27 did."""
 
