@@ -843,6 +843,124 @@ class RenderFindingTests(unittest.TestCase):
                     "not be hidden by the caveat".format(count),
                 )
 
+    def test_passed_update_finding_states_caveat_and_keeps_allows_fetch_and_merge_visible(self):
+        render = self._render_finding()
+        for value in (True, False):
+            with self.subTest(value=value):
+                findings = piguard.check_update(
+                    [
+                        update_rule(
+                            "main-guard",
+                            {"update_allows_fetch_and_merge": value},
+                        )
+                    ]
+                )
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: update rule active means one passed finding",
+                )
+                self.assertEqual(
+                    _field(findings[0], "update_allows_fetch_and_merge"),
+                    value,
+                    "fixture sanity: the check records the parameter value",
+                )
+                line = render(findings[0])
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "a passed finding must render a non-empty line",
+                )
+                self.assertIn(
+                    "update",
+                    line,
+                    "the rendered line must name the update rule's API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive on a passed update finding - "
+                    "bypass_actors is only returned to users with write "
+                    "access, so the line must never claim the branch is "
+                    "simply 'protected'",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                self.assertIn(
+                    "True" if value else "False",
+                    line,
+                    "the recorded update_allows_fetch_and_merge value of {} "
+                    "must stay visible in the rendered line - a weak value "
+                    "must not be hidden by the caveat".format(value),
+                )
+
+    def test_passed_update_finding_with_unreadable_parameters_renders_without_claiming_a_value(self):
+        render = self._render_finding()
+        for label, element in (
+            ("parameters key absent", update_rule("main-guard")),
+            (
+                "parameters is None",
+                dict(update_rule("main-guard"), parameters=None),
+            ),
+            (
+                "parameters is not a dict",
+                dict(
+                    update_rule("main-guard"),
+                    parameters=["update_allows_fetch_and_merge"],
+                ),
+            ),
+        ):
+            with self.subTest(parameters=label):
+                findings = piguard.check_update([element])
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: a present update rule passes even when "
+                    "its parameters are unreadable",
+                )
+                self.assertIsNone(
+                    _field(findings[0], "update_allows_fetch_and_merge"),
+                    "fixture sanity: an unreadable parameters object records "
+                    "None, not a guess",
+                )
+
+                line = render(findings[0])
+
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "a passed finding must render a non-empty line",
+                )
+                self.assertIn(
+                    "update",
+                    line,
+                    "the rendered line must still name the update rule's "
+                    "API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive when no value was returned",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                self.assertNotIn(
+                    "True",
+                    line,
+                    "no value was returned, so the line must not claim True",
+                )
+                self.assertNotIn(
+                    "False",
+                    line,
+                    "no value was returned, so the line must not claim False",
+                )
+
     def test_warn_finding_lines_name_danger_and_remedy(self):
         render = self._render_finding()
         for label, findings in (
