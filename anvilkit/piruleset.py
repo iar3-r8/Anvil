@@ -4,8 +4,8 @@ This module builds the dict for Anvil's importable main-branch guard
 ruleset: the five-rule shape reproducing issue #50 (``non_fast_forward``,
 ``deletion``, ``update``, ``pull_request``, ``file_path_restriction``),
 scoped to ``~DEFAULT_BRANCH``. It renders the dict to import-ready JSON
-and writes the rendered text to disk; a later behaviour renders the
-manual import steps.
+and writes the rendered text to disk, and renders the manual import
+steps.
 
 ``build_ruleset()`` returns a fresh dict on every call — no module-level
 dict is ever returned by reference — so a caller that mutates one result
@@ -17,7 +17,7 @@ behaviours that touch the filesystem; the CLI maps it to ``EXIT_CONFIG``).
 
 import json
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class RulesetError(Exception):
@@ -134,3 +134,58 @@ def write_ruleset(path: Path, text: str, force: bool = False) -> Path:
         )
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def import_steps(
+    repository: Optional[Tuple[str, str]],
+    output_path: Path,
+) -> List[str]:
+    """Return the documented manual import sequence as readable lines.
+
+    Follows the "Importing a ruleset" sequence in
+    ``doc/external/github/managing-rulesets-for-a-repository.md``:
+    Settings, the Rulesets settings page, the "New ruleset" dropdown,
+    "Import a ruleset", open the exported JSON file, then review and
+    Create. Every line is an actual step from that sequence — none are
+    invented.
+
+    When ``repository`` is an ``(owner, name)`` pair, the first line is
+    the direct ``https://github.com/{owner}/{repo}/settings/rules``
+    URL — the documented shortcut of adding ``/rules`` to the
+    repository's URL. When ``repository`` is ``None`` (a target with
+    no GitHub origin), the navigation steps are given instead and no
+    line contains a guessed GitHub URL.
+
+    ``output_path`` is rendered into the text and its name is stated in
+    the open step; this function never opens the file and never touches
+    git or GitHub.
+    """
+    file_name = output_path.name
+    if repository is not None:
+        owner, repo = repository
+        steps: List[str] = [
+            "Open the repository's Rulesets settings page: "
+            "https://github.com/{owner}/{repo}/settings/rules".format(
+                owner=owner, repo=repo
+            ),
+        ]
+    else:
+        steps = [
+            "On GitHub, navigate to the main page of the repository.",
+            "Under the repository name, click Settings. If you cannot "
+            "see the 'Settings' tab, select the dropdown menu, then "
+            "click Settings.",
+            "In the left sidebar, under 'Code, planning, and "
+            "automation', click Rulesets, then click Rulesets.",
+        ]
+    steps.extend(
+        [
+            "Select the New ruleset dropdown, then click Import a "
+            "ruleset.",
+            "Open the exported JSON file {path} ({name}).".format(
+                path=output_path, name=file_name
+            ),
+            "Review the imported ruleset and click Create.",
+        ]
+    )
+    return steps
