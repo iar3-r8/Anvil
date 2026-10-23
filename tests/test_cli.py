@@ -179,6 +179,42 @@ def failing_test(port=8000, model="Qwen/Qwen3.6-35B-A3B-FP8", **kwargs):
     return health.ModelTestResult(**defaults)
 
 
+# The five rule types build_ruleset writes, in the check_all report order
+# (plans/verify-guards-five-rules.md, behaviour 8).
+FIVE_RULE_NAMES = (
+    "non_fast_forward",
+    "deletion",
+    "pull_request",
+    "update",
+    "file_path_restriction",
+)
+
+
+def five_rule_branch_rules():
+    """The five rules build_ruleset writes, in the /rules/branches shape.
+
+    The same translation as
+    ``tests/test_piguard.RulesetWriteLockstepTests._fixture``: each element
+    gains ``ruleset_source_type``, ``ruleset_source`` and ``ruleset_id``; the
+    element's ``type`` and ``parameters`` are copied through unchanged into
+    fresh dicts, so the ``build_ruleset()`` result is never mutated.
+    """
+    from anvilkit import piruleset
+
+    rules = []
+    for element in piruleset.build_ruleset()["rules"]:
+        fresh = {
+            "type": element["type"],
+            "ruleset_source_type": "repository",
+            "ruleset_source": "main-protected",
+            "ruleset_id": 1,
+        }
+        if "parameters" in element:
+            fresh["parameters"] = dict(element["parameters"])
+        rules.append(fresh)
+    return rules
+
+
 class CliCase(unittest.TestCase):
     """Base class: an isolated repository root and a patched Compose."""
 
@@ -2645,6 +2681,120 @@ class TestDoctor(CliCase):
         # The reason the checks could not run - the origin remote is not a
         # resolvable GitHub repository - must be visible, not hidden.
         self.assertIn("origin", guards.lower())
+
+    def test_doctor_guards_report_all_five_rules_through_check_all(self):
+        # Behaviour 8: doctor's Guards section reports through the single
+        # check_all seam, so a five-rule target reports all five rules - and
+        # a sixth check added to check_all reaches doctor without an edit.
+        from anvilkit import piguard
+
+        findings = piguard.check_all(five_rule_branch_rules())
+        with mock.patch.object(
+            cli.piguard, "check_all", return_value=findings
+        ) as check_all_mock:
+            result, _, _ = self.run_doctor_with_guards(
+                ("iar3-r8", "Anvil"), (five_rule_branch_rules(), None)
+            )
+        # doctor never fails on what it diagnoses.
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(
+            1,
+            check_all_mock.call_count,
+            "doctor's Guards section must report through the single "
+            "check_all seam, so a check added there reaches doctor "
+            "without an edit",
+        )
+        for rule in FIVE_RULE_NAMES:
+            line = next(
+                (candidate for candidate in self.guards_lines(result)
+                 if rule in candidate),
+                None,
+            )
+            self.assertIsNotNone(
+                line,
+                "no Guards report line for the {!r} rule:\n{}".format(
+                    rule, result.output
+                ),
+            )
+
+
+class TestVerifyGuards(CliCase):
+    """``verify-guards`` reports through the single check_all seam."""
+
+    def run_verify_guards_with_check_all(self, check_all_return_value):
+        """verify-guards with the piguard seams replaced, so the guard flow
+        runs offline. Returns ``(result, check_all_mock)``.
+        """
+        resolve = mock.patch.object(
+            cli.piguard,
+            "resolve_repository",
+            return_value=("iar3-r8", "Anvil"),
+        )
+        fetch = mock.patch.object(
+            cli.piguard,
+            "fetch_branch_rules",
+            return_value=(five_rule_branch_rules(), None),
+        )
+        check_all = mock.patch.object(
+            cli.piguard,
+            "check_all",
+            return_value=check_all_return_value,
+        )
+        resolve_mock = resolve.start()
+        fetch_mock = fetch.start()
+        check_all_mock = check_all.start()
+        try:
+            result = self.invoke_allowing_exception(
+                ["verify-guards", str(self.project), "--branch", "main"]
+            )
+        finally:
+            resolve_mock.stop()
+            fetch_mock.stop()
+            check_all_mock.stop()
+        return result, check_all_mock
+
+    def test_reports_all_five_rules_through_check_all(self):
+        # Behaviour 8: verify-guards reports through the single check_all
+        # seam, so a five-rule target reports all five rules - and a sixth
+        # check added to check_all reaches verify-guards without an edit.
+        from anvilkit import piguard
+
+        findings = piguard.check_all(five_rule_branch_rules())
+        result, check_all_mock = self.run_verify_guards_with_check_all(
+            findings
+        )
+
+        self.assertEqual(
+            1,
+            check_all_mock.call_count,
+            "verify-guards must report through the single check_all seam, "
+            "so a check added there reaches verify-guards without an edit",
+        )
+        for rule in FIVE_RULE_NAMES:
+            line = next(
+                (candidate for candidate in result.output.splitlines()
+                 if rule in candidate),
+                None,
+            )
+            self.assertIsNotNone(
+                line,
+                "no report line for the {!r} rule:\n{}".format(
+                    rule, result.output
+                ),
+            )
+        # The report always prints one line per finding, via render_report.
+        report_lines = result.output.splitlines()
+        self.assertEqual(
+            len(findings),
+            sum(
+                1
+                for candidate in report_lines
+                if candidate.startswith(("ok:", "warn:", "skipped:", "fail:"))
+            ),
+            "the report must print one line per check_all finding",
+        )
+        # No fail finding among the five passed rules: exit status unchanged.
+        self.assertEqual(0, result.exit_code)
 
 
 class TestBanner(CliCase):
