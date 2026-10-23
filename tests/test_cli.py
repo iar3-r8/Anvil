@@ -2725,6 +2725,7 @@ class TestVerifyGuards(CliCase):
         """verify-guards with the piguard seams replaced, so the guard flow
         runs offline. Returns ``(result, check_all_mock)``.
         """
+        started = []
         resolve = mock.patch.object(
             cli.piguard,
             "resolve_repository",
@@ -2740,17 +2741,17 @@ class TestVerifyGuards(CliCase):
             "check_all",
             return_value=check_all_return_value,
         )
-        resolve_mock = resolve.start()
-        fetch_mock = fetch.start()
+        resolve.start()
+        fetch.start()
         check_all_mock = check_all.start()
+        started.extend((resolve, fetch, check_all))
         try:
             result = self.invoke_allowing_exception(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
         finally:
-            resolve_mock.stop()
-            fetch_mock.stop()
-            check_all_mock.stop()
+            for patcher in started:
+                patcher.stop()
         return result, check_all_mock
 
     def test_reports_all_five_rules_through_check_all(self):
