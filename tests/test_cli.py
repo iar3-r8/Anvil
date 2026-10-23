@@ -50,7 +50,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from anvilkit import cli  # noqa: E402
 
-# The keys the bash heredoc at anvil:64 wrote, in that order.
+# The keys ``init`` writes to ``.env``, in the order they must appear. The
+# first seven are the keys the bash heredoc at anvil:64 wrote; ``ANVIL_TIER``
+# is recorded by init itself (plans/vllm-tier-setups.md, behaviour 9:
+# env_records_the_tier).
 ENV_KEYS = (
     "HF_HOME",
     "DATA_DIR",
@@ -59,6 +62,7 @@ ENV_KEYS = (
     "LLM_DEVICE_ID_1",
     "LLM_DEVICE_ID_2",
     "INDEXER_STORAGE_DEVICE_ID",
+    "ANVIL_TIER",
 )
 
 
@@ -722,6 +726,72 @@ class TestInit(CliCase):
         text = self.env_text()
         positions = [text.index(key + "=") for key in ENV_KEYS]
         self.assertEqual(sorted(positions), positions)
+
+    # -- env_records_the_tier (plans/vllm-tier-setups.md, behaviour 9) -------
+
+    def test_env_records_the_resolved_tier_id(self):
+        """``init`` must persist the resolved tier id as ``ANVIL_TIER``.
+
+        No tier question or ``--tier`` flag exists on this branch yet, so the
+        resolved id is ``mid`` — the recorded default. The question and flag
+        land in later ledger behaviours, so pinning ``mid`` here proves the
+        persistence seam without inventing a selection mechanism.
+        """
+        self.invoke(["init", "--yes"])
+        values = self.env_values()
+        self.assertIn(
+            "ANVIL_TIER",
+            values,
+            "init did not write ANVIL_TIER to .env; the written keys are: {}".format(
+                sorted(values)
+            ),
+        )
+        self.assertEqual("mid", values["ANVIL_TIER"])
+
+    def test_closed_stdin_init_records_the_resolved_tier_id(self):
+        """Genuine EOF (non-interactive stdin) resolves the tier the same way."""
+        self.invoke(["init"], input="")
+        values = self.env_values()
+        self.assertIn(
+            "ANVIL_TIER",
+            values,
+            "init did not write ANVIL_TIER to .env; the written keys are: {}".format(
+                sorted(values)
+            ),
+        )
+        self.assertEqual("mid", values["ANVIL_TIER"])
+
+    def test_anvil_tier_sits_under_the_gpu_device_allocation_heading(self):
+        """``ANVIL_TIER`` belongs to the GPU section, not the storage or port one."""
+        self.invoke(["init", "--yes"])
+        lines = self.env_text().splitlines()
+        heading = "# --- GPU Device Allocation ---"
+        tier_lines = [i for i, line in enumerate(lines) if line.startswith("ANVIL_TIER=")]
+        self.assertEqual(
+            1,
+            len(tier_lines),
+            "ANVIL_TIER must be written exactly once, under the GPU Device "
+            "Allocation heading; .env is:\n" + self.env_text(),
+        )
+        self.assertIn(
+            heading,
+            lines,
+            "the GPU Device Allocation heading is missing; .env is:\n"
+            + self.env_text(),
+        )
+        gpu = lines.index(heading)
+        tier = tier_lines[0]
+        self.assertGreater(
+            tier,
+            gpu,
+            "ANVIL_TIER must sit after the GPU Device Allocation heading; "
+            ".env is:\n" + self.env_text(),
+        )
+        self.assertFalse(
+            any(line.startswith("# ---") for line in lines[gpu + 1 : tier]),
+            "no other section heading may open between the GPU Device "
+            "Allocation heading and ANVIL_TIER; .env is:\n" + self.env_text(),
+        )
 
     def test_defaults_match_the_bash_script(self):
         with mock.patch.dict(os.environ, {"HOME": "/home/tester"}):
