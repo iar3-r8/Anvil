@@ -961,6 +961,181 @@ class RenderFindingTests(unittest.TestCase):
                     "no value was returned, so the line must not claim False",
                 )
 
+    def test_passed_file_path_finding_states_caveat_and_keeps_restricted_paths_visible(self):
+        render = self._render_finding()
+        for paths in (
+            [".github/workflows/**"],
+            [".github/workflows/**", "config.yaml"],
+        ):
+            with self.subTest(paths=paths):
+                findings = piguard.check_file_paths(
+                    [
+                        file_path_rule(
+                            "main-guard",
+                            {"restricted_file_paths": list(paths)},
+                        )
+                    ]
+                )
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: file_path_restriction active means one "
+                    "passed finding",
+                )
+                self.assertEqual(
+                    _field(findings[0], "restricted_file_paths"),
+                    list(paths),
+                    "fixture sanity: the check records the "
+                    "restricted_file_paths list",
+                )
+                line = render(findings[0])
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "a passed finding must render a non-empty line",
+                )
+                self.assertIn(
+                    "file_path_restriction",
+                    line,
+                    "the rendered line must name the rule's API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive on a passed file-path finding - "
+                    "bypass_actors is only returned to users with write "
+                    "access, so the line must never claim the branch is "
+                    "simply 'protected'",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                for path in paths:
+                    self.assertIn(
+                        path,
+                        line,
+                        "every recorded restricted path ({}) must stay "
+                        "visible in the rendered line - no path may be "
+                        "elided or truncated, so a reader sees exactly what "
+                        "is restricted".format(path),
+                    )
+
+    def test_passed_file_path_finding_with_empty_restricted_paths_renders_explicit_no_paths(self):
+        render = self._render_finding()
+        findings = piguard.check_file_paths(
+            [file_path_rule("main-guard", {"restricted_file_paths": []})]
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["passed"],
+            "fixture sanity: a present rule with an empty restriction list "
+            "still passes",
+        )
+        self.assertEqual(
+            _field(findings[0], "restricted_file_paths"),
+            [],
+            "fixture sanity: an empty restriction list is recorded",
+        )
+        line = render(findings[0])
+        self.assertIsInstance(line, str)
+        self.assertTrue(
+            line,
+            "a passed finding must render a non-empty line",
+        )
+        self.assertIn(
+            "file_path_restriction",
+            line,
+            "the rendered line must name the rule's API type",
+        )
+        self.assertIn(
+            "bypass",
+            line.lower(),
+            "the caveat must survive on a passed file-path finding",
+        )
+        self.assertNotIn(
+            "protected",
+            line.lower(),
+            "an empty restriction list must render an explicit 'no restricted "
+            "paths recorded' rather than a bare 'protected'",
+        )
+        self.assertIn(
+            "no restricted paths recorded",
+            line,
+            "an empty restriction list must render the explicit phrase 'no "
+            "restricted paths recorded' (case-sensitive) - a weak value is "
+            "recorded, not hidden (zero-approvals precedent)",
+        )
+
+    def test_passed_file_path_finding_with_unreadable_parameters_renders_without_claiming_a_path(self):
+        render = self._render_finding()
+        for label, element in (
+            ("parameters key absent", file_path_rule("main-guard")),
+            (
+                "parameters is None",
+                dict(file_path_rule("main-guard"), parameters=None),
+            ),
+            (
+                "parameters is not a dict",
+                dict(
+                    file_path_rule("main-guard"),
+                    parameters=["restricted_file_paths"],
+                ),
+            ),
+            (
+                "restricted_file_paths is not a list",
+                file_path_rule(
+                    "main-guard",
+                    {"restricted_file_paths": ".github/workflows/**"},
+                ),
+            ),
+        ):
+            with self.subTest(parameters=label):
+                findings = piguard.check_file_paths([element])
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["passed"],
+                    "fixture sanity: a present rule passes even when its "
+                    "parameters are unreadable",
+                )
+                self.assertEqual(
+                    _field(findings[0], "restricted_file_paths"),
+                    [],
+                    "fixture sanity: an unreadable parameters object records "
+                    "an empty list, not a guess",
+                )
+
+                line = render(findings[0])
+
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "a passed finding must render a non-empty line",
+                )
+                self.assertIn(
+                    "file_path_restriction",
+                    line,
+                    "the rendered line must still name the rule's API type",
+                )
+                self.assertIn(
+                    "bypass",
+                    line.lower(),
+                    "the caveat must survive when no paths were returned",
+                )
+                self.assertNotIn(
+                    "protected",
+                    line.lower(),
+                    "no bare 'protected' claim on a read-only token",
+                )
+                self.assertIn(
+                    "no restricted paths recorded",
+                    line,
+                    "no paths were returned, so the line must read 'no "
+                    "restricted paths recorded' - it must not claim a path "
+                    "that was not returned",
+                )
+
     def test_warn_finding_lines_name_danger_and_remedy(self):
         render = self._render_finding()
         for label, findings in (
