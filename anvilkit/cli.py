@@ -61,6 +61,7 @@ from .stress import (
     warm_up,
     write_log,
 )
+from .tiers import TierError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -1809,6 +1810,12 @@ def run() -> int:
     except RenderError as exc:
         typer.echo("❌ {}".format(exc), err=True)
         return EXIT_CONFIG
+    except TierError as exc:
+        # A bad --tier value sails past flag parsing into tiers.plan(), which
+        # is strict: the value is the user's, so the failure is a usage error,
+        # and the message already lists every valid id.
+        typer.echo("❌ {}".format(exc), err=True)
+        return EXIT_USAGE
     except KeyboardInterrupt:
         typer.echo("")
         return EXIT_ERROR
