@@ -1164,6 +1164,73 @@ class TestInitTierFlagBypassesQuestion(CliCase):
         )
 
 
+class TestBadTierFlagIsUsage(CliCase):
+    """Behaviour 12 (bad_tier_flag_is_usage): ``--tier bogus`` is a usage error.
+
+    ``--tier`` is a plain ``str`` option, so a bad value sails past flag
+    parsing and reaches ``tiers.plan()``, which is strict and raises
+    ``TierError`` naming every valid id. That resolution happens before any
+    prompt and before the ``.env`` write, so a rejected value must end the
+    run with the usage code and the id list, never with a config code,
+    never with a partial ``.env``.
+
+    The exit-code mapping lives in ``run()`` (``standalone_mode=False``),
+    which ``CliRunner`` cannot see, so these tests drive the real entrypoint
+    through the same ``run_cli`` helper ``TestRunEntryPoint`` uses.
+    """
+
+    def run_cli(self, argv):
+        """Invoke ``run()`` exactly as ``python -m anvilkit.cli`` does.
+
+        Mirrors ``TestRunEntryPoint.run_cli``: the TierError-to-exit-code
+        mapping is claimed in ``run()``'s except clauses, which standalone
+        mode (CliRunner) never exercises.
+        """
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "argv", ["anvil"] + argv):
+            with contextlib.redirect_stderr(stderr):
+                with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    code = cli.run()
+        return code, stdout.getvalue() + stderr.getvalue()
+
+    def test_a_bad_tier_flag_exits_with_the_usage_code(self):
+        code, _ = self.run_cli(["init", "--tier", "bogus"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            code,
+            "a bad --tier value is a usage error, not a config error and "
+            "not an unhandled failure",
+        )
+
+    def test_a_bad_tier_flag_does_not_print_a_traceback(self):
+        _, output = self.run_cli(["init", "--tier", "bogus"])
+        self.assertNotIn(
+            "Traceback",
+            output,
+            "the TierError from tiers.plan escaped init unhandled and "
+            "printed a traceback instead of a clean usage message:\n" + output,
+        )
+
+    def test_a_bad_tier_flag_lists_the_available_tier_ids(self):
+        _, output = self.run_cli(["init", "--tier", "bogus"])
+        for tier_id in ("low", "mid", "high"):
+            self.assertIn(
+                tier_id,
+                output,
+                "the usage message must list the available tier ids so the "
+                "user sees what to type:\n" + output,
+            )
+
+    def test_a_bad_tier_flag_does_not_create_the_env_file(self):
+        self.assertFalse(self.env_path().exists())
+        self.run_cli(["init", "--tier", "bogus"])
+        self.assertFalse(
+            self.env_path().exists(),
+            "a rejected --tier value must not leave a .env behind; the "
+            "resolution happens before the .env write",
+        )
+
+
 class TestImplicitEnvBootstrap(CliCase):
     """A missing .env is created on demand, exactly as anvil:27 did."""
 
