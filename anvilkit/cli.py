@@ -260,6 +260,7 @@ class EnvAnswers:
         gpu_generic: Optional[str] = None,
         gpu_coder: Optional[str] = None,
         gpu_embedder: Optional[str] = None,
+        tier: Optional[str] = None,
     ) -> None:
         self.llm_port = llm_port
         self.hf_home = hf_home
@@ -267,6 +268,7 @@ class EnvAnswers:
         self.gpu_generic = gpu_generic
         self.gpu_coder = gpu_coder
         self.gpu_embedder = gpu_embedder
+        self.tier = tier
 
     def fully_supplied(self) -> bool:
         """True when no question remains, so prompting can be skipped entirely."""
@@ -357,10 +359,15 @@ def _collect_env_values(
 
     # The tier question comes before any device-id question: it decides the
     # defaults the device-id prompts show, and its resolved id is what
-    # ANVIL_TIER persists. When every value is already flag-supplied no
-    # default is left for it to decide, so the question is bypassed - a
-    # fully flag-supplied run is as good as --yes, which takes the default.
-    if answers.fully_supplied():
+    # ANVIL_TIER persists. A --tier flag resolves it before any prompt, so the
+    # menu is never rendered and its question never reads stdin; it also wins
+    # over --yes, which would otherwise take the default. When every value is
+    # already flag-supplied no default is left for it to decide, so the
+    # question is bypassed - a fully flag-supplied run is as good as --yes,
+    # which takes the default.
+    if answers.tier is not None:
+        tier = tiers.plan(answers.tier)
+    elif answers.fully_supplied():
         tier = tiers.plan(_DEFAULT_TIER_ID)
     else:
         tier = tiers.plan(_ask_tier_id(shared))
@@ -1082,6 +1089,11 @@ def init(
         None, "--gpu-coder", help="One or two comma-separated device ids."
     ),
     gpu_embedder: Optional[str] = typer.Option(None, "--gpu-embedder"),
+    tier: Optional[str] = typer.Option(
+        None,
+        "--tier",
+        help="Hardware tier (low, mid, high); skips the tier question.",
+    ),
     assume_yes: bool = typer.Option(
         False, "--yes", "-y", help="Accept every default without prompting."
     ),
@@ -1108,6 +1120,7 @@ def init(
         gpu_generic=gpu_generic,
         gpu_coder=gpu_coder,
         gpu_embedder=gpu_embedder,
+        tier=tier,
     )
 
     try:
