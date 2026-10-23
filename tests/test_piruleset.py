@@ -3,10 +3,13 @@
 Written before the implementation (TDD, ``plans/ruleset-write.md``).
 This file currently pins behaviour 1 ("build_ruleset"), behaviour 2
 ("render_ruleset_json"), the behaviour 8 golden-fixture boundary
-pin (batched with behaviour 2 per the plan's sequencing notes) and
+pin (batched with behaviour 2 per the plan's sequencing notes),
 behaviours 3+4 ("default_output_path" folded into
-"write_ruleset" per the plan's sequencing note); the remaining
-behaviours land in later cycles as further tests in the same file.
+"write_ruleset" per the plan's sequencing note) and behaviour 5
+("write_ruleset" refuses to clobber); behaviour 6 ("import_steps")
+lands in this cycle as :class:`ImportStepsTests` and
+:class:`ImportStepsNoRepositoryTests`; the remaining behaviours
+land in later cycles as further tests in the same file.
 
 ``build_ruleset()`` must return the five-rule ruleset reproducing issue
 #50's main-branch guard, freshly built on every call so a caller that
@@ -34,6 +37,11 @@ Citations for the interface facts asserted here:
 - ``fnmatch``'s ``*`` does not cross ``/``, so the ``**`` in
   ``".github/workflows/**"`` is load-bearing -
   ``doc/external/github/creating-rulesets-for-a-repository.md``.
+- The documented import sequence is Settings, then the Rulesets
+  settings page, the "New ruleset" dropdown, "Import a ruleset",
+  opening the JSON file, and Create -
+  ``doc/external/github/managing-rulesets-for-a-repository.md``
+  ("Importing a ruleset").
 """
 
 import json
@@ -353,6 +361,183 @@ class WriteRulesetClobberTests(unittest.TestCase):
             # must not silently succeed before the force flag is even in
             # play.
             piruleset.write_ruleset(path, "{}\n", force=False)
+
+
+class ImportStepsTests(unittest.TestCase):
+    """Behaviour 6: import_steps returns the documented import sequence.
+
+    Given a known GitHub origin and the written file's path, the steps
+    must name the file, carry the direct
+    ``https://github.com/{owner}/{repo}/settings/rules`` URL, and
+    follow the documented sequence. The exact wording is the green
+    step's to settle from the docs, but the sequence markers are
+    pinned: the Rulesets settings page, the "New ruleset" dropdown,
+    "Import a ruleset", and the step that opens the JSON file -
+    ``doc/external/github/managing-rulesets-for-a-repository.md``
+    ("Importing a ruleset").
+    """
+
+    REPOSITORY = ("iar3-r8", "Anvil")
+    OUTPUT_PATH = Path("/tmp/repo/.github-ruleset.json")
+    RULES_URL = "https://github.com/iar3-r8/Anvil/settings/rules"
+
+    def test_import_steps_with_repository_returns_a_non_empty_list_of_str(
+        self,
+    ) -> None:
+        steps = piruleset.import_steps(self.REPOSITORY, self.OUTPUT_PATH)
+
+        self.assertIsInstance(steps, list)
+        self.assertTrue(
+            steps,
+            "import_steps must return a non-empty list of lines",
+        )
+        for step in steps:
+            self.assertIsInstance(step, str, "each import step must be a str")
+
+    def test_import_steps_with_repository_pins_the_documented_sequence_markers(
+        self,
+    ) -> None:
+        steps = piruleset.import_steps(self.REPOSITORY, self.OUTPUT_PATH)
+        joined = "\n".join(steps).lower()
+
+        i_settings = joined.find("rulesets")
+        i_new_ruleset = joined.find("new ruleset")
+        i_import = joined.find("import a ruleset")
+        i_open = joined.find("open")
+
+        self.assertNotEqual(
+            i_settings,
+            -1,
+            "a step must reference the Rulesets settings page",
+        )
+        self.assertNotEqual(
+            i_new_ruleset,
+            -1,
+            "a step must reference the 'New ruleset' dropdown",
+        )
+        self.assertNotEqual(
+            i_import,
+            -1,
+            "a step must reference 'Import a ruleset'",
+        )
+        self.assertNotEqual(
+            i_open,
+            -1,
+            "a step must name the JSON file being opened",
+        )
+        # The first three markers are pinned in documented order; the
+        # "open" marker is presence-only because the wording of the
+        # opening step is the green step's to settle.
+        self.assertTrue(
+            i_settings < i_new_ruleset < i_import,
+            "the steps must follow the documented order: the Rulesets "
+            "settings page, then the 'New ruleset' dropdown, then "
+            "'Import a ruleset'",
+        )
+
+    def test_import_steps_with_repository_contains_the_direct_rules_url(
+        self,
+    ) -> None:
+        steps = piruleset.import_steps(self.REPOSITORY, self.OUTPUT_PATH)
+
+        self.assertIn(
+            self.RULES_URL,
+            "\n".join(steps),
+            "the steps must contain the direct "
+            "https://github.com/{owner}/{repo}/settings/rules URL",
+        )
+
+    def test_import_steps_with_repository_names_the_written_file_path(
+        self,
+    ) -> None:
+        steps = piruleset.import_steps(self.REPOSITORY, self.OUTPUT_PATH)
+
+        self.assertIn(
+            str(self.OUTPUT_PATH),
+            "\n".join(steps),
+            "the steps must name the written file's path",
+        )
+
+    def test_import_steps_names_the_written_file_name_with_and_without_a_repository(
+        self,
+    ) -> None:
+        with_repo = piruleset.import_steps(self.REPOSITORY, self.OUTPUT_PATH)
+        without_repo = piruleset.import_steps(None, self.OUTPUT_PATH)
+
+        for steps in (with_repo, without_repo):
+            self.assertIn(
+                ".github-ruleset.json",
+                "\n".join(steps),
+                "the steps must name the written file",
+            )
+
+
+class ImportStepsNoRepositoryTests(unittest.TestCase):
+    """Behaviour 6, error path: no GitHub origin means no guessed URL.
+
+    With ``repository=None`` the same steps print without the URL line:
+    a non-GitHub or remote-less target still gets usable instructions
+    rather than a guessed URL. The sequence markers are the same
+    documented ones as in :class:`ImportStepsTests` -
+    ``doc/external/github/managing-rulesets-for-a-repository.md``
+    ("Importing a ruleset").
+    """
+
+    OUTPUT_PATH = Path("/tmp/repo/.github-ruleset.json")
+
+    def test_import_steps_without_repository_never_guesses_a_github_url(
+        self,
+    ) -> None:
+        steps = piruleset.import_steps(None, self.OUTPUT_PATH)
+
+        self.assertTrue(
+            steps,
+            "a repository-less target must still get usable instructions",
+        )
+        for step in steps:
+            self.assertNotIn(
+                "github.com",
+                step.lower(),
+                "a repository-less target must not get a guessed URL",
+            )
+
+    def test_import_steps_without_repository_keeps_the_documented_sequence_markers(
+        self,
+    ) -> None:
+        steps = piruleset.import_steps(None, self.OUTPUT_PATH)
+        joined = "\n".join(steps).lower()
+
+        self.assertIn(
+            "rulesets",
+            joined,
+            "a step must reference the Rulesets settings page",
+        )
+        self.assertIn(
+            "new ruleset",
+            joined,
+            "a step must reference the 'New ruleset' dropdown",
+        )
+        self.assertIn(
+            "import a ruleset",
+            joined,
+            "a step must reference 'Import a ruleset'",
+        )
+        self.assertIn(
+            "open",
+            joined,
+            "a step must name the JSON file being opened",
+        )
+
+    def test_import_steps_without_repository_still_names_the_written_file_path(
+        self,
+    ) -> None:
+        steps = piruleset.import_steps(None, self.OUTPUT_PATH)
+
+        self.assertIn(
+            str(self.OUTPUT_PATH),
+            "\n".join(steps),
+            "the steps must still name the written file's path",
+        )
 
 
 if __name__ == "__main__":
