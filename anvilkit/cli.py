@@ -27,7 +27,18 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import click
 import typer
 
-from . import compose, config, env, health, piguard, piruleset, prompts, provision, render
+from . import (
+    compose,
+    config,
+    env,
+    health,
+    piguard,
+    piruleset,
+    prompts,
+    provision,
+    render,
+    tiers,
+)
 from .compose import Compose, ComposeError
 from .config import ConfigError
 from .piruleset import RulesetError
@@ -91,9 +102,9 @@ _ENV_SECTIONS = {
 }
 
 _DEFAULT_DATA_DIR = "./"
-_DEFAULT_GPU_GENERIC = "0"
-_DEFAULT_GPU_CODER = "0,1"
-_DEFAULT_GPU_EMBEDDER = "2"
+# The tier every non-choosing path resolves to: --yes, non-interactive stdin,
+# EOF on the tier question, and a fully flag-supplied run all take this.
+_DEFAULT_TIER_ID = "mid"
 
 _UNSET_API_KEY = "to set"
 
@@ -302,12 +313,58 @@ def _split_coder_gpus(supplied: Optional[str]) -> Tuple[Optional[str], Optional[
     )
 
 
+def _tier_device_defaults(tier: tiers.Tier) -> Dict[str, str]:
+    """The device-slot defaults a tier's plan carries, keyed by ``.env`` key.
+
+    Runs the plan's own coder default through :func:`tiers.split_coder_ids` and
+    pairs every slot with its key via :func:`tiers.assign`, so a single-slot
+    tier (low) reuses its one id for the second coder key exactly as ``.env``
+    expects.
+    """
+    coder_ids = tiers.split_coder_ids(tier, tier.default_coder)
+    pairs = tiers.assign(
+        tier, tier.default_generic, coder_ids, tier.default_embedder
+    )
+    return dict(pairs)
+
+
+def _ask_tier_id(shared: Context) -> str:
+    """Ask which hardware tier the host runs; the default answer is ``mid``.
+
+    This is the very first question of ``init``: every device-id prompt that
+    follows takes its default from the chosen tier's plan. Bypassed exactly
+    like every other prompt - a supplied value never prompts (later
+    behaviour), ``--yes`` and non-interactive stdin take the default without
+    consuming input, and an exhausted interactive stdin falls back to it.
+    """
+    return prompts.choose(
+        "Select the hardware tier",
+        options=[{"id": tier.id, "label": tier.label} for tier in tiers.TIERS],
+        default=_DEFAULT_TIER_ID,
+        supplied=None,
+        assume_yes=shared.assume_yes,
+        interactive=shared.interactive(),
+        allow_custom=False,
+    )
+
+
 def _collect_env_values(
     shared: Context, answers: EnvAnswers, default_port: int
 ) -> List[Tuple[str, str]]:
     """Ask for (or derive) every .env value in the expected order."""
     interactive = shared.interactive()
     coder_gpu_0, coder_gpu_1 = _split_coder_gpus(answers.gpu_coder)
+
+    # The tier question comes before any device-id question: it decides the
+    # defaults the device-id prompts show, and its resolved id is what
+    # ANVIL_TIER persists. When every value is already flag-supplied no
+    # default is left for it to decide, so the question is bypassed - a
+    # fully flag-supplied run is as good as --yes, which takes the default.
+    if answers.fully_supplied():
+        tier = tiers.plan(_DEFAULT_TIER_ID)
+    else:
+        tier = tiers.plan(_ask_tier_id(shared))
+    device_defaults = _tier_device_defaults(tier)
 
     hf_home = prompts.ask(
         "Enter Hugging Face cache directory",
@@ -335,17 +392,15 @@ def _collect_env_values(
 
     generic_gpu = prompts.ask(
         "Enter Generic LLM GPU Device ID 1",
-        default=_DEFAULT_GPU_GENERIC,
+        default=device_defaults["LLM_DEVICE_ID_0"],
         supplied=answers.gpu_generic,
         assume_yes=shared.assume_yes,
         interactive=interactive,
     )
 
-    default_coder_0, default_coder_1 = _DEFAULT_GPU_CODER.split(",")
-
     coder_0 = prompts.ask(
         "Enter Coder LLM GPU Device ID 1",
-        default=default_coder_0,
+        default=device_defaults["LLM_DEVICE_ID_1"],
         supplied=coder_gpu_0,
         assume_yes=shared.assume_yes,
         interactive=interactive,
@@ -353,7 +408,7 @@ def _collect_env_values(
 
     coder_1 = prompts.ask(
         "Enter Coder LLM GPU Device ID 2",
-        default=default_coder_1,
+        default=device_defaults["LLM_DEVICE_ID_2"],
         supplied=coder_gpu_1,
         assume_yes=shared.assume_yes,
         interactive=interactive,
@@ -361,16 +416,12 @@ def _collect_env_values(
 
     embedder_gpu = prompts.ask(
         "Enter Indexer GPU Device ID",
-        default=_DEFAULT_GPU_EMBEDDER,
+        default=device_defaults["INDEXER_STORAGE_DEVICE_ID"],
         supplied=answers.gpu_embedder,
         assume_yes=shared.assume_yes,
         interactive=interactive,
     )
 
-    # The resolved tier is always ``mid`` on this ledger step: the tier
-    # question and ``--tier`` flag are later behaviours (plans/vllm-tier-setups.md
-    # 10-12). Pinning the id here proves the persistence seam without
-    # inventing a selection mechanism.
     return [
         ("HF_HOME", hf_home),
         ("DATA_DIR", data_dir),
@@ -379,7 +430,7 @@ def _collect_env_values(
         ("LLM_DEVICE_ID_1", coder_0),
         ("LLM_DEVICE_ID_2", coder_1),
         ("INDEXER_STORAGE_DEVICE_ID", embedder_gpu),
-        ("ANVIL_TIER", "mid"),
+        ("ANVIL_TIER", tier.id),
     ]
 
 
