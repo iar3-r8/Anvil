@@ -1,0 +1,133 @@
+# node:24-bookworm-slim — the official Dockerfile
+
+Source URL: https://raw.githubusercontent.com/nodejs/docker-node/main/24/bookworm-slim/Dockerfile
+Fetched: 2026-10-26 (raw Dockerfile from the `main` branch of github.com/nodejs/docker-node)
+
+Why this page is saved: the Pi sandbox image (issue #51) is built `FROM
+node:24-bookworm-slim`, and two of its requirements turn on what this base image
+does and does not contain.
+
+1. **`git` is not installed.** The apt sets are
+   `ca-certificates curl wget gnupg dirmngr xz-utils libatomic1` (first RUN) and
+   `ca-certificates curl wget gnupg dirmngr` (yarn RUN), and both end with
+   `apt-get purge -y --auto-remove`. No `git` anywhere. So "git deliberately
+   absent" costs nothing but *not* adding it to our own apt line — there is no
+   base-image git to remove.
+2. **`curl` and `wget` ARE installed and survive.** They are re-installed by the
+   yarn RUN and the `apt-mark manual` dance keeps runtime-linked packages, so a
+   `curl … | sh` is reachable inside the container by default. Dropping the
+   network, not dropping the binary, is the control that bounds it — and `node`
+   itself can open a socket regardless.
+3. **`ENTRYPOINT ["docker-entrypoint.sh"]` + `CMD ["node"]`.** The entrypoint
+   prepends `node` to any command whose first token is not a resolvable system
+   command — the cause of the `Cannot find module '/workspace/python'` failure
+   recorded in `plans/pi-phase1b-docker.md`.
+4. **uid/gid 1000 is already taken by the `node` user** (`groupadd --gid 1000
+   node && useradd --uid 1000 --gid node …`), which is why
+   `docker/Dockerfile.bakeoff`'s `bakeoff` user landed on uid 1001.
+
+---
+
+```dockerfile
+FROM debian:bookworm-slim
+
+RUN groupadd --gid 1000 node \
+  && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
+
+ENV NODE_VERSION=24.22.1
+
+RUN ARCH= OPENSSL_ARCH= && dpkgArch="$(dpkg --print-architecture)" \
+    && case "${dpkgArch##*-}" in \
+      amd64) ARCH='x64' OPENSSL_ARCH='linux-x86_64';; \
+      ppc64el) ARCH='ppc64le' OPENSSL_ARCH='linux-ppc64le';; \
+      arm64) ARCH='arm64' OPENSSL_ARCH='linux-aarch64';; \
+      *) echo "unsupported architecture"; exit 1 ;; \
+    esac \
+    && set -ex \
+    && apt-get update && apt-get install -y ca-certificates curl wget gnupg dirmngr xz-utils libatomic1 --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/* \
+    # use pre-existing gpg directory, see https://github.com/nodejs/docker-node/pull/1895#issuecomment-1550389150
+    && export GNUPGHOME="$(mktemp -d)" \
+    # gpg keys listed at https://github.com/nodejs/node#release-keys
+    && for key in \
+      5BE8A3F6C8A5C01D106C0AD820B1A390B168D356 \
+      DD792F5973C6DE52C432CBDAC77ABFA00DDBF2B7 \
+      CC68F5A3106FF448322E48ED27F5E38D5B0A215F \
+      890C08DB8579162FEE0DF9DB8BEAB4DFCF555EF4 \
+      C82FA3AE1CBEDC6BE46B9360C43CEC45C17AB93C \
+      108F52B48DB57BB0CC439B2997B01419BD92F80A \
+      655F3B5C1FB3FA8D1A0CA6BDE4A7D232B936D2FD \
+      A363A499291CBBC940DD62E41F10027AF002F8B0 \
+    ; do \
+        { gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys "$key" && gpg --batch --fingerprint "$key"; } || \
+        { gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "$key" && gpg --batch --fingerprint "$key"; } ; \
+      done \
+    && curl -fsSLO --compressed "https://nodejs.org/dist/v$NODE_VERSION/node-v$NODE_VERSION-linux-$ARCH.tar.xz" \
+    && curl -fsSLO --compressed "https://nodejs.org/dist/v$NODE_VERSION/SHASUMS256.txt.asc" \
+    && gpg --batch --decrypt --output SHASUMS256.txt SHASUMS256.txt.asc \
+    && gpgconf --kill all \
+    && rm -rf "$GNUPGHOME" \
+    && grep " node-v$NODE_VERSION-linux-$ARCH.tar.xz\$" SHASUMS256.txt | sha256sum -c - \
+    && tar -xJf "node-v$NODE_VERSION-linux-$ARCH.tar.xz" -C /usr/local --strip-components=1 --no-same-owner \
+    && rm "node-v$NODE_VERSION-linux-$ARCH.tar.xz" SHASUMS256.txt.asc SHASUMS256.txt \
+    # Remove unused OpenSSL headers to save ~34MB. See this NodeJS issue: https://github.com/nodejs/node/issues/46451
+    && find /usr/local/include/node/openssl/archs -mindepth 1 -maxdepth 1 ! -name "$OPENSSL_ARCH" -exec rm -rf {} \; \
+    && apt-mark auto '.*' > /dev/null \
+    && find /usr/local -type f -executable -exec ldd '{}' ';' \
+      | awk '/=>/ { so = $(NF-1); if (index(so, "/usr/local/") == 1) { next }; gsub("^/(usr/)?", "", so); print so }' \
+      | sort -u \
+      | xargs -r dpkg-query --search \
+      | cut -d: -f1 \
+      | sort -u \
+      | xargs -r apt-mark manual \
+    && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false \
+    && ln -s /usr/local/bin/node /usr/local/bin/nodejs \
+    # smoke tests
+    && node --version \
+    && npm --version \
+    && rm -rf /tmp/*
+
+ENV YARN_VERSION=1.22.22
+
+RUN set -ex \
+  && savedAptMark="$(apt-mark showmanual)" \
+  && apt-get update && apt-get install -y ca-certificates curl wget gnupg dirmngr --no-install-recommends \
+  && rm -rf /var/lib/apt/lists/* \
+  # use pre-existing gpg directory, see https://github.com/nodejs/docker-node/pull/1895#issuecomment-1550389150
+  && export GNUPGHOME="$(mktemp -d)" \
+  && for key in \
+    6A010C5166006599AA17F08146C2130DFD2497F5 \
+  ; do \
+      { gpg --batch --keyserver hkps://keys.openpgp.org --recv-keys "$key" && gpg --batch --fingerprint "$key"; } || \
+      { gpg --batch --keyserver keyserver.ubuntu.com --recv-keys "$key" && gpg --batch --fingerprint "$key"; } ; \
+    done \
+  && curl -fsSLO --compressed "https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz" \
+  && curl -fsSLO --compressed "https://yarnpkg.com/downloads/$YARN_VERSION/yarn-v$YARN_VERSION.tar.gz.asc" \
+  && gpg --batch --verify yarn-v$YARN_VERSION.tar.gz.asc yarn-v$YARN_VERSION.tar.gz \
+  && gpgconf --kill all \
+  && rm -rf "$GNUPGHOME" \
+  && mkdir -p /opt \
+  && tar -xzf yarn-v$YARN_VERSION.tar.gz -C /opt/ \
+  && ln -s /opt/yarn-v$YARN_VERSION/bin/yarn /usr/local/bin/yarn \
+  && ln -s /opt/yarn-v$YARN_VERSION/bin/yarnpkg /usr/local/bin/yarnpkg \
+  && rm yarn-v$YARN_VERSION.tar.gz.asc yarn-v$YARN_VERSION.tar.gz \
+  && apt-mark auto '.*' > /dev/null \
+  && { [ -z "$savedAptMark" ] || apt-mark manual $savedAptMark > /dev/null; } \
+  && find /usr/local -type f -executable -exec ldd '{}' ';' \
+    | awk '/=>/ { so = $(NF-1); if (index(so, "/usr/local/") == 1) { next }; gsub("^/(usr/)?", "", so); print so }' \
+    | sort -u \
+    | xargs -r dpkg-query --search \
+    | cut -d: -f1 \
+    | sort -u \
+    | xargs -r apt-mark manual \
+  && apt-get purge -y --auto-remove -o APT::AutoRemove::RecommendsImportant=false \
+  # smoke test
+  && yarn --version \
+  && rm -rf /tmp/*
+
+COPY docker-entrypoint.sh /usr/local/bin/
+
+ENTRYPOINT ["docker-entrypoint.sh"]
+
+CMD [ "node" ]
+```

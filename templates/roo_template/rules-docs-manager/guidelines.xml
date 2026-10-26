@@ -45,6 +45,7 @@
     <rule>A page describes the system as it is now, not the work that produced it. Slice letters, milestone identifiers, behaviour numbers, pull request numbers, commit hashes, and "shipped / planned" sequencing are delivery vocabulary.</rule>
     <rule>A capability limit is useful; a schedule is not. "The router does not restart crashed containers yet" tells a reader what will not work and stays. "This is slice C of M2b, and slice D adds the manager" is a delivery schedule and is cut. One limits a reader's expectations, the other narrates your delivery.</rule>
     <rule>Internal design pages may be technical — seams, protocols, and developer audiences are fine — but the delivery-vocabulary ban applies to them equally.</rule>
+    <rule>Documentation, code comments, and docstrings must stand alone for a new reader of the repository: no phase or milestone identifiers, no plan-file references, no issue or pull request numbers. That development history belongs in the VCS log and the pull request.</rule>
   </best_practices>
 
   <documentation_finalisation>
