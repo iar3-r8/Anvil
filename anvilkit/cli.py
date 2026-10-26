@@ -1093,7 +1093,10 @@ def init(
     data_dir: Optional[str] = typer.Option(None, "--data-dir"),
     gpu_generic: Optional[str] = typer.Option(None, "--gpu-generic"),
     gpu_coder: Optional[str] = typer.Option(
-        None, "--gpu-coder", help="One or two comma-separated device ids."
+        None,
+        "--gpu-coder",
+        help="Comma-separated coder device ids, at most the resolved "
+        "tier's coder slots; a single id is broadcast across the slots.",
     ),
     gpu_embedder: Optional[str] = typer.Option(None, "--gpu-embedder"),
     tier: Optional[str] = typer.Option(

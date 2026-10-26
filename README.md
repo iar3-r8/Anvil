@@ -16,7 +16,7 @@ Anvil does two things: it runs local model inference behind the [llama-swap](htt
 * **Docker with Compose v2**, and the **NVIDIA Container Toolkit** on Linux hosts.
 
 ```bash
-./anvil init                 # create .env (storage paths, gateway port, GPUs)
+./anvil init                 # create .env (hardware tier, storage paths, gateway port, GPUs)
 ./anvil up                   # start the llama-swap gateway and Qdrant
 ./anvil status               # gateway health and model state
 ./anvil stress MODEL         # measure latency and failures at increasing concurrency

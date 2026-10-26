@@ -57,7 +57,7 @@ chmod +x anvil
 
 | Command | Action | Description |
 | :--- | :--- | :--- |
-| `./anvil init` | Configure | Creates the `.env` file interactively (storage paths, gateway port, GPU device ids). Runs automatically the first time you use a command that needs it. Refuses to overwrite an existing `.env` unless you pass `--force`. |
+| `./anvil init` | Configure | Creates the `.env` file interactively. The first question is the hardware tier (`low`, `mid`, `high`); the storage paths, gateway port and GPU device ids that follow default from the chosen tier's plan. Runs automatically the first time you use a command that needs it. Refuses to overwrite an existing `.env` unless you pass `--force`. |
 | `./anvil doctor` | Diagnose | Reports the Python interpreter and venv, Docker, Compose v2, NVIDIA tooling, whether your configuration files parse, and the GitHub branch rules on this repository's `main` branch (the Guards section). Writes nothing and never fails on what it is diagnosing. |
 | `./anvil up` | Start Stack | Starts the llama-swap gateway and Qdrant vector database in the background. |
 | `./anvil build` | Rebuild | Force rebuild of custom Docker configurations. |
@@ -85,12 +85,12 @@ rather than hanging.
 | Flag | Applies to | Purpose |
 | :--- | :--- | :--- |
 | `--yes`, `-y` | all | Accept every default; never prompt. |
-| `--tier NAME` | `init` | Hardware tier (`low`, `mid`, `high`); skips the tier question. |
+| `--tier NAME` | `init` | Hardware tier (`low`, `mid`, `high`); skips the tier question. An unrecognised id is a usage error (exit `2`) listing the available ids, and nothing is written. `mid` is the default a non-interactive or `--yes` run records. |
 | `--llm-port N` | `init`, `status`, `test-model`, `stress`, `setup-repo` | Gateway port. |
 | `--hf-home PATH` | `init` | Hugging Face cache directory. |
 | `--data-dir PATH` | `init` | Local data storage directory. |
 | `--gpu-generic ID` | `init` | Generic LLM GPU device id. |
-| `--gpu-coder ID[,ID]` | `init` | Coder GPU device ids; a single id is used for both slots. |
+| `--gpu-coder ID[,ID]` | `init` | Coder GPU device ids, validated against the resolved tier's plan: a single id is broadcast across the tier's coder slots, and more ids than the tier has slots is a usage error. |
 | `--gpu-embedder ID` | `init` | Indexer GPU device id. |
 | `--force` | `init`, `ruleset-write` | Regenerate `.env` / overwrite the ruleset file even though it already exists. |
 | `--github-token TOKEN` / `--no-github` | `setup-repo` | Supply or explicitly skip the GitHub token. |
