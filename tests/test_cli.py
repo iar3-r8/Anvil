@@ -1526,6 +1526,110 @@ class TestHighTierDefaults(CliCase):
         )
 
 
+class TestExplicitFlagsBeatTierDefaults(CliCase):
+    """Behaviour 17 (explicit_flags_beat_tier_defaults): a tier is a default
+    source and never an override.
+
+    A device slot the user explicitly flagged must keep the flagged value
+    while every unflagged slot keeps the tier default, on all three tiers.
+    The low tier is the subtle case: its convergence (behaviour 14) overwrites
+    unflagged slots with the resolved generic-slot value, but it must NOT
+    touch a slot the user explicitly flagged, so
+    ``--tier low --gpu-embedder 7`` must leave ``INDEXER_STORAGE_DEVICE_ID=7``
+    while the three LLM slots keep the low-tier default ``0``.
+    """
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def device_values(self):
+        """The four device keys plus the tier id, for assertion and messages."""
+        values = self.env_values()
+        return {
+            key: values[key]
+            for key in (
+                "ANVIL_TIER",
+                "LLM_DEVICE_ID_0",
+                "LLM_DEVICE_ID_1",
+                "LLM_DEVICE_ID_2",
+                "INDEXER_STORAGE_DEVICE_ID",
+            )
+        }
+
+    def assert_device_spread(self, argv, expected):
+        """Run ``init argv`` and assert the four device keys plus the tier id."""
+        self.invoke(argv)
+        self.assertEqual(
+            expected,
+            self.device_values(),
+            "explicit device flags must beat tier defaults while unflagged "
+            "slots keep the tier default; .env values: {}".format(
+                self.device_values()
+            ),
+        )
+
+    def test_tier_low_gpu_embedder_flag_beats_tier_default(self):
+        """``--tier low --gpu-embedder 7``: the embedder slot keeps ``7``.
+
+        The low tier's convergence writes the resolved generic-slot value into
+        every slot that still carries its own tier default, so a naive
+        implementation would overwrite the flagged embedder slot with ``0``.
+        The flagged slot must survive with ``7``; the unflagged slots keep
+        the low-tier default ``0``.
+        """
+        self.assert_device_spread(
+            ["init", "--tier", "low", "--yes", "--gpu-embedder", "7"],
+            {
+                "ANVIL_TIER": "low",
+                "LLM_DEVICE_ID_0": "0",
+                "LLM_DEVICE_ID_1": "0",
+                "LLM_DEVICE_ID_2": "0",
+                "INDEXER_STORAGE_DEVICE_ID": "7",
+            },
+        )
+
+    def test_tier_mid_gpu_embedder_flag_beats_tier_default(self):
+        """``--tier mid --gpu-embedder 7``: the embedder slot keeps ``7``.
+
+        The mid tier's plan carries generic ``0``, coder ``0,1`` and embedder
+        ``2`` (behaviour 13 pins the unflagged spread ``0`` / ``0`` / ``1`` /
+        ``2``), so an implementation that treats the tier as an override would
+        clobber the flag with ``2``. The flagged embedder slot must stay
+        ``7``; the unflagged slots keep the mid-tier default ``0`` / ``0`` / ``1``.
+        """
+        self.assert_device_spread(
+            ["init", "--tier", "mid", "--yes", "--gpu-embedder", "7"],
+            {
+                "ANVIL_TIER": "mid",
+                "LLM_DEVICE_ID_0": "0",
+                "LLM_DEVICE_ID_1": "0",
+                "LLM_DEVICE_ID_2": "1",
+                "INDEXER_STORAGE_DEVICE_ID": "7",
+            },
+        )
+
+    def test_tier_high_gpu_generic_flag_beats_tier_default(self):
+        """``--tier high --gpu-generic 5``: the generic slot keeps ``5``.
+
+        The high tier's generic default is ``0``, so an implementation that
+        treats the tier as an override would clobber the flag with ``0``.
+        The flagged generic slot must stay ``5``; the unflagged slots keep
+        the high-tier default ``1`` / ``2`` / ``3``.
+        """
+        self.assert_device_spread(
+            ["init", "--tier", "high", "--yes", "--gpu-generic", "5"],
+            {
+                "ANVIL_TIER": "high",
+                "LLM_DEVICE_ID_0": "5",
+                "LLM_DEVICE_ID_1": "1",
+                "LLM_DEVICE_ID_2": "2",
+                "INDEXER_STORAGE_DEVICE_ID": "3",
+            },
+        )
+
+
 class TestImplicitEnvBootstrap(CliCase):
     """A missing .env is created on demand, exactly as anvil:27 did."""
 
