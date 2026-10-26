@@ -30,7 +30,7 @@ records do not exist yet. When they are produced per
 
 - any record with `completed` `true` (exit code 0 **and** the fixture
   assertion passing — the closed rule in
-  [`anvilkit/pirecord.py`](../../anvilkit/pirecord.py) `build`) is GO
+  [`anvilkit/pi/pirecord.py`](../../anvilkit/pi/pirecord.py) `build`) is GO
   evidence for the configuration it came from;
 - **if no configuration completes, this is a recorded NO-GO** — the
   verdict line `render_table` emits, the failure mode and the model named
@@ -74,8 +74,8 @@ for the layer on small tasks, recorded verbatim, not a failure to retry.
 - [`plans/pi-phase1-bakeoff.md`](../../plans/pi-phase1-bakeoff.md) — the plan: scope, interface facts, behaviours 13–18
 - [`doc/pi-ultrawork-review.md`](../pi-ultrawork-review.md) — behaviour 16: the source-review verdict on pi-ultrawork 1.2.0
 - [`doc/pi-bakeoff/README.md`](README.md) — behaviour 18: the host run recipe producing the three run records
-- [`anvilkit/pirecord.py`](../../anvilkit/pirecord.py) — `build` (closed thirteen-key record; `completed` = exit 0 and assertion passed), `render_table` (GO / PARTIAL / NO-GO verdict line)
-- [`anvilkit/piargv.py`](../../anvilkit/piargv.py) — the three invocation argvs and the models document
-- [`anvilkit/pifixture.py`](../../anvilkit/pifixture.py) — the generated trivial red task
+- [`anvilkit/pi/pirecord.py`](../../anvilkit/pi/pirecord.py) — `build` (closed thirteen-key record; `completed` = exit 0 and assertion passed), `render_table` (GO / PARTIAL / NO-GO verdict line)
+- [`anvilkit/pi/piargv.py`](../../anvilkit/pi/piargv.py) — the three invocation argvs and the models document
+- [`anvilkit/pi/pifixture.py`](../../anvilkit/pi/pifixture.py) — the generated trivial red task
 - [`doc/external/pi-dev/packages/pi-ultrawork.md`](../external/pi-dev/packages/pi-ultrawork.md) — pi-ultrawork package page (saved in full)
 - [`doc/pi-code-spike-recommendation.md`](../pi-code-spike-recommendation.md) — the prior spike: bare Pi has no per-mode model routing, unchanged by this phase

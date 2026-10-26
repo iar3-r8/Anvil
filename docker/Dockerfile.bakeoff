@@ -2,7 +2,7 @@
 # harness, in one container.
 # The host needs only Docker — no sudo, no global installs, nothing on host
 # system paths. Runs on the Compose llm-network and reaches the llama-swap
-# gateway by service name (see anvilkit/piargv.py models_document).
+# gateway by service name (see anvilkit/pi/piargv.py models_document).
 FROM node:24-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive

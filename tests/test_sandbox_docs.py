@@ -110,7 +110,7 @@ class TestSandboxOperatorDocs(SandboxDocsCase):
         self.assertTrue(
             builder_named or command_named,
             "the build recipe must carry a tag with the -f %s path, or name "
-            "the builder anvilkit/pisandbox.py build_argv" % DOCKERFILE_PATH,
+            "the builder anvilkit/pi/pisandbox.py build_argv" % DOCKERFILE_PATH,
         )
 
     def test_run_recipe_binds_workspace_and_the_sandbox_agent_volume(self):
@@ -125,7 +125,7 @@ class TestSandboxOperatorDocs(SandboxDocsCase):
             NAMED_VOLUME,
             text,
             "the run recipe must mount the agent home as the named volume "
-            "'%s' (the name anvilkit/pisandbox.py uses, never a host bind)"
+            "'%s' (the name anvilkit/pi/pisandbox.py uses, never a host bind)"
             % NAMED_VOLUME,
         )
 
