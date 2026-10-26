@@ -50,7 +50,10 @@ if str(REPO_ROOT) not in sys.path:
 
 from anvilkit import cli  # noqa: E402
 
-# The keys the bash heredoc at anvil:64 wrote, in that order.
+# The keys ``init`` writes to ``.env``, in the order they must appear. The
+# first seven are the keys the bash heredoc at anvil:64 wrote; ``ANVIL_TIER``
+# is recorded by init itself (plans/vllm-tier-setups.md, behaviour 9:
+# env_records_the_tier).
 ENV_KEYS = (
     "HF_HOME",
     "DATA_DIR",
@@ -59,6 +62,7 @@ ENV_KEYS = (
     "LLM_DEVICE_ID_1",
     "LLM_DEVICE_ID_2",
     "INDEXER_STORAGE_DEVICE_ID",
+    "ANVIL_TIER",
 )
 
 
@@ -723,6 +727,72 @@ class TestInit(CliCase):
         positions = [text.index(key + "=") for key in ENV_KEYS]
         self.assertEqual(sorted(positions), positions)
 
+    # -- env_records_the_tier (plans/vllm-tier-setups.md, behaviour 9) -------
+
+    def test_env_records_the_resolved_tier_id(self):
+        """``init`` must persist the resolved tier id as ``ANVIL_TIER``.
+
+        No tier question or ``--tier`` flag exists on this branch yet, so the
+        resolved id is ``mid`` — the recorded default. The question and flag
+        land in later ledger behaviours, so pinning ``mid`` here proves the
+        persistence seam without inventing a selection mechanism.
+        """
+        self.invoke(["init", "--yes"])
+        values = self.env_values()
+        self.assertIn(
+            "ANVIL_TIER",
+            values,
+            "init did not write ANVIL_TIER to .env; the written keys are: {}".format(
+                sorted(values)
+            ),
+        )
+        self.assertEqual("mid", values["ANVIL_TIER"])
+
+    def test_closed_stdin_init_records_the_resolved_tier_id(self):
+        """Genuine EOF (non-interactive stdin) resolves the tier the same way."""
+        self.invoke(["init"], input="")
+        values = self.env_values()
+        self.assertIn(
+            "ANVIL_TIER",
+            values,
+            "init did not write ANVIL_TIER to .env; the written keys are: {}".format(
+                sorted(values)
+            ),
+        )
+        self.assertEqual("mid", values["ANVIL_TIER"])
+
+    def test_anvil_tier_sits_under_the_gpu_device_allocation_heading(self):
+        """``ANVIL_TIER`` belongs to the GPU section, not the storage or port one."""
+        self.invoke(["init", "--yes"])
+        lines = self.env_text().splitlines()
+        heading = "# --- GPU Device Allocation ---"
+        tier_lines = [i for i, line in enumerate(lines) if line.startswith("ANVIL_TIER=")]
+        self.assertEqual(
+            1,
+            len(tier_lines),
+            "ANVIL_TIER must be written exactly once, under the GPU Device "
+            "Allocation heading; .env is:\n" + self.env_text(),
+        )
+        self.assertIn(
+            heading,
+            lines,
+            "the GPU Device Allocation heading is missing; .env is:\n"
+            + self.env_text(),
+        )
+        gpu = lines.index(heading)
+        tier = tier_lines[0]
+        self.assertGreater(
+            tier,
+            gpu,
+            "ANVIL_TIER must sit after the GPU Device Allocation heading; "
+            ".env is:\n" + self.env_text(),
+        )
+        self.assertFalse(
+            any(line.startswith("# ---") for line in lines[gpu + 1 : tier]),
+            "no other section heading may open between the GPU Device "
+            "Allocation heading and ANVIL_TIER; .env is:\n" + self.env_text(),
+        )
+
     def test_defaults_match_the_bash_script(self):
         with mock.patch.dict(os.environ, {"HOME": "/home/tester"}):
             self.invoke(["init", "--yes"])
@@ -734,6 +804,37 @@ class TestInit(CliCase):
         self.assertEqual("0", values["LLM_DEVICE_ID_1"])
         self.assertEqual("1", values["LLM_DEVICE_ID_2"])
         self.assertEqual("2", values["INDEXER_STORAGE_DEVICE_ID"])
+
+    def test_yes_without_tier_records_mid_and_todays_device_spread(self):
+        """``init --yes`` with no ``--tier`` is byte-for-byte today's default.
+
+        Boundary pin (plans/vllm-tier-setups.md, behaviour 13:
+        mid_is_the_non_interactive_default): the tier work must not have
+        moved an existing default. ``--yes`` resolves ``mid`` — not the
+        first entry of the tier table — and the four device values must
+        stay ``0`` / ``0`` / ``1`` / ``2``. ``test_defaults_match_the_bash_script``
+        pins the device spread without the tier key and
+        ``test_env_records_the_resolved_tier_id`` pins the tier key without
+        the device spread; this test asserts the five together, in one run.
+        """
+        self.invoke(["init", "--yes"])
+        values = self.env_values()
+        self.assertEqual(
+            {
+                "ANVIL_TIER": "mid",
+                "LLM_DEVICE_ID_0": "0",
+                "LLM_DEVICE_ID_1": "0",
+                "LLM_DEVICE_ID_2": "1",
+                "INDEXER_STORAGE_DEVICE_ID": "2",
+            },
+            {key: values[key] for key in (
+                "ANVIL_TIER",
+                "LLM_DEVICE_ID_0",
+                "LLM_DEVICE_ID_1",
+                "LLM_DEVICE_ID_2",
+                "INDEXER_STORAGE_DEVICE_ID",
+            )},
+        )
 
     def test_default_port_comes_from_anvil_yaml(self):
         from anvilkit import config
@@ -772,16 +873,44 @@ class TestInit(CliCase):
         self.assertEqual("3", values["INDEXER_STORAGE_DEVICE_ID"])
 
     def test_a_single_coder_gpu_applies_to_both_slots(self):
-        self.invoke(["init", "--yes", "--gpu-coder", "5"])
-        values = self.env_values()
-        self.assertEqual("5", values["LLM_DEVICE_ID_1"])
-        self.assertEqual("5", values["LLM_DEVICE_ID_2"])
+        # The pin moved from the CLI's own broadcast to the tiers module: one
+        # supplied coder id fills every coder slot of the plan. The CLI wiring
+        # that routes --gpu-coder into tiers.split_coder_ids lands in a later
+        # ledger behaviour, so the single-id behaviour is pinned here through
+        # tiers, not through an init run.
+        from anvilkit import tiers
+
+        self.assertTrue(
+            hasattr(tiers, "split_coder_ids"),
+            "anvilkit.tiers.split_coder_ids has not been implemented yet "
+            "(behaviour 4: coder_ids_broadcast in plans/vllm-tier-setups.md)",
+        )
+        plan = tiers.plan("mid")
+        self.assertEqual(
+            ("5",) * plan.coder_slots, tuple(tiers.split_coder_ids(plan, "5"))
+        )
 
     def test_too_many_coder_gpus_is_a_usage_error(self):
-        result = self.invoke_allowing_exception(
-            ["init", "--yes", "--gpu-coder", "1,2,3"]
+        # The pin moved from the CLI's exit-2 to the tiers module: more coder
+        # ids than the tier has slots is rejected by tiers.split_coder_ids,
+        # which names the tier and its coder-slot count. The CLI-level wiring
+        # that maps that rejection to exit 2 lands in a later ledger behaviour
+        # (15: low_tier_rejects_two_coder_ids), so the overflow rejection is
+        # pinned here through tiers, not through an init run.
+        from anvilkit import tiers
+
+        self.assertTrue(
+            hasattr(tiers, "split_coder_ids"),
+            "anvilkit.tiers.split_coder_ids has not been implemented yet "
+            "(behaviour 5: coder_ids_reject_overflow in plans/vllm-tier-setups.md)",
         )
-        self.assertEqual(cli.EXIT_USAGE, result.exit_code)
+        plan = tiers.plan("mid")
+        with self.assertRaises(tiers.TierError) as ctx:
+            tiers.split_coder_ids(plan, "1,2,3")
+        # The rejection names the tier and its coder-slot count.
+        message = str(ctx.exception)
+        self.assertIn(plan.id, message)
+        self.assertIn(str(plan.coder_slots), message)
 
     def test_refuses_to_clobber_an_existing_env_file(self):
         self.write_env(LLM_PORT="9999", KEEP="me")
@@ -808,6 +937,697 @@ class TestInit(CliCase):
     def test_invalid_port_flag_is_rejected(self):
         result = self.invoke_allowing_exception(["init", "--yes", "--llm-port", "0"])
         self.assertEqual(cli.EXIT_USAGE, result.exit_code)
+
+
+class TestInitTierQuestionFirst(CliCase):
+    """Behaviour 10 (tier_question_comes_first): the interactive ``init`` asks a
+    hardware-tier question before any device-id question, and the device-id
+    defaults shown are the chosen tier's.
+
+    The prompts are driven from a scripted stdin: ``_is_interactive`` is patched
+    True (CliRunner's stdin is not a tty) and the input lines answer the prompts
+    in order. The tier question is the very first question of init, so the first
+    line selects the tier; every remaining prompt is answered by EOF, which
+    takes each prompt's default - the tier-driven ones.
+    """
+
+    def run_interactive_init(self, stdin):
+        with mock.patch.object(cli, "_is_interactive", return_value=True):
+            return self.invoke(["init"], input=stdin)
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def test_tier_question_is_asked_before_any_device_id_question(self):
+        """The rendered output must carry the tier menu before the first prompt.
+
+        The menu is the three tier ids from the tiers table, numbered; the tier
+        question is the first question of init, so it precedes even the Hugging
+        Face cache prompt and, a fortiori, every device-id prompt.
+        """
+        result = self.run_interactive_init("3\n")
+        self.assertEqual(0, result.exit_code)
+        output = result.output
+        for entry in ("1) low", "2) mid", "3) high"):
+            self.assertIn(
+                entry,
+                output,
+                "the rendered init output has no tier menu; the tier question "
+                "was never asked:\n" + output,
+            )
+        menu = output.index("1) low")
+        for prompt in (
+            "Enter Hugging Face cache directory",
+            "Enter Generic LLM GPU Device ID 1",
+        ):
+            self.assertLess(
+                menu,
+                output.index(prompt),
+                "the tier question must be asked before '{}'".format(prompt),
+            )
+
+    def test_high_tier_selection_drives_the_shown_device_id_defaults(self):
+        """Choosing ``high`` (line 3 of the menu) shows the high tier's spread."""
+        result = self.run_interactive_init("3\n")
+        self.assertEqual(0, result.exit_code)
+        output = result.output
+        for rendered in (
+            "Enter Generic LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 1 [1]: ",
+            "Enter Coder LLM GPU Device ID 2 [2]: ",
+            "Enter Indexer GPU Device ID [3]: ",
+        ):
+            self.assertIn(
+                rendered,
+                output,
+                "the high tier's default is not shown; the device-id prompts "
+                "do not reflect the chosen tier:\n" + output,
+            )
+
+    def test_low_tier_selection_drives_the_shown_device_id_defaults(self):
+        """Choosing ``low`` (line 1) shows one id - the host's only GPU - in every slot."""
+        result = self.run_interactive_init("1\n")
+        self.assertEqual(0, result.exit_code)
+        output = result.output
+        for rendered in (
+            "Enter Generic LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 2 [0]: ",
+            "Enter Indexer GPU Device ID [0]: ",
+        ):
+            self.assertIn(
+                rendered,
+                output,
+                "the low tier's default is not shown; the device-id prompts "
+                "do not reflect the chosen tier:\n" + output,
+            )
+
+    def test_eof_on_the_tier_question_falls_back_to_mid(self):
+        """An exhausted stdin at the tier question takes the default, like every other prompt."""
+        result = self.run_interactive_init("")
+        self.assertEqual(0, result.exit_code)
+        output = result.output
+        self.assertIn(
+            "1) low",
+            output,
+            "the rendered init output has no tier menu; the tier question "
+            "was never asked:\n" + output,
+        )
+        for rendered in (
+            "Enter Coder LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 2 [1]: ",
+            "Enter Indexer GPU Device ID [2]: ",
+        ):
+            self.assertIn(
+                rendered,
+                output,
+                "the mid tier's default is not shown after the EOF fallback:\n"
+                + output,
+            )
+        self.assertEqual("mid", self.env_values()["ANVIL_TIER"])
+
+
+class TestInitTierFlagBypassesQuestion(CliCase):
+    """Behaviour 11 (tier_flag_bypasses_the_question): ``--tier high``
+    resolves the tier before any prompt, so the tier menu is never rendered
+    and its question never reads stdin.
+
+    Booby-trap design. ``_read_line`` (``anvilkit/prompts.py:221``) is the
+    single seam through which every keystroke arrives, and the tier menu's
+    selection line is the only call in ``init`` that combines the menu
+    wording ``"   Select"`` with the default mid's index as a string
+    (``"2"`` - mid is the second of the three tiers and the default answer)
+    and an ``IntRange`` value type. The wrapper raises on exactly that
+    signature and passes every other read - the six port/device prompts -
+    through to the real ``_read_line``, which is answered from the scripted
+    stdin; the high tier's defaults are all defaults, so empty lines/EOF
+    take them.
+
+    What the trap precisely proves: no read of the tier question happens -
+    if ``init`` asked the tier menu, the run would fail with the
+    AssertionError instead of completing. What it does not prove: anything
+    about the six port/device reads, which pass through untouched (the
+    device-id flags are separate and behave as they do today), so the
+    primary assertion stays the tier menu's absence from the rendered
+    output, which the trap cannot miss even if the menu were rendered with
+    an unexpected default.
+    """
+
+    def _tier_trap(self):
+        """A ``_read_line`` wrapper that raises if called for the tier menu.
+
+        A read is a tier-question read only if its arguments are exactly
+        the tier menu selection line's: the menu prompt wording
+        ``"   Select"``, mid's index as a string (``"2"``), and the menu's
+        ``IntRange``. Every other call - all port and device-id prompts
+        carry different wording - passes through to the real
+        ``_read_line`` unchanged.
+        """
+        import click
+
+        from anvilkit import prompts
+
+        real = prompts._read_line
+
+        def trapped(prompt, default=None, hide_input=False, value_type=None):
+            if (
+                prompt == "   Select"
+                and default == "2"
+                and isinstance(value_type, click.IntRange)
+            ):
+                raise AssertionError(
+                    "--tier high must not ask the tier question; the "
+                    "tier menu's selection read was attempted"
+                )
+            return real(
+                prompt,
+                default=default,
+                hide_input=hide_input,
+                value_type=value_type,
+            )
+
+        return trapped
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def test_tier_high_flag_exits_without_reading_the_tier_question(self):
+        """``--tier high`` drives the device-id defaults, and the tier menu is
+        neither rendered nor read.
+        """
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "_read_line", self._tier_trap()),
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke_allowing_exception(["init", "--tier", "high"], input="")
+        self.assertIsNone(
+            result.exception,
+            "init --tier high raised an exception (a trap firing would mean "
+            "the tier question was asked):\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "init --tier high failed; output:\n" + result.output,
+        )
+        output = result.output
+        for rendered in ("Select the hardware tier", "1) low", "2) mid", "3) high"):
+            self.assertNotIn(
+                rendered,
+                output,
+                "the tier menu was rendered although --tier high supplied "
+                "the tier:\n" + output,
+            )
+        for rendered in (
+            "Enter Generic LLM GPU Device ID 1 [0]: ",
+            "Enter Coder LLM GPU Device ID 1 [1]: ",
+            "Enter Coder LLM GPU Device ID 2 [2]: ",
+            "Enter Indexer GPU Device ID [3]: ",
+        ):
+            self.assertIn(
+                rendered,
+                output,
+                "the device-id prompt does not show the high tier's "
+                "defaults:\n" + output,
+            )
+        self.assertEqual(
+            "high",
+            self.env_values().get("ANVIL_TIER"),
+            "the tier the flag supplied is not what .env records",
+        )
+
+    def test_tier_flag_with_yes_is_not_a_conflict_and_flag_wins(self):
+        """``--tier high --yes`` is not a conflict: ``--yes`` skips the prompts,
+        and the flag - not ``--yes``' mid default - is the tier recorded.
+        """
+        boom = AssertionError("--yes must not read stdin")
+        patches = (
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_confirmation", side_effect=boom),
+            # Force the interactive decision to True, so the only reason a
+            # prompt is skipped is --yes itself.
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+        )
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke_allowing_exception(["init", "--tier", "high", "--yes"])
+        self.assertIsNone(
+            result.exception,
+            "init --tier high --yes raised an exception:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "init --tier high --yes is not a conflict; output:\n" + result.output,
+        )
+        self.assertEqual(
+            "high",
+            self.env_values().get("ANVIL_TIER"),
+            "--yes must not override the tier the flag supplied",
+        )
+
+
+class TestBadTierFlagIsUsage(CliCase):
+    """Behaviour 12 (bad_tier_flag_is_usage): ``--tier bogus`` is a usage error.
+
+    ``--tier`` is a plain ``str`` option, so a bad value sails past flag
+    parsing and reaches ``tiers.plan()``, which is strict and raises
+    ``TierError`` naming every valid id. That resolution happens before any
+    prompt and before the ``.env`` write, so a rejected value must end the
+    run with the usage code and the id list, never with a config code,
+    never with a partial ``.env``.
+
+    The exit-code mapping lives in ``run()`` (``standalone_mode=False``),
+    which ``CliRunner`` cannot see, so these tests drive the real entrypoint
+    through the same ``run_cli`` helper ``TestRunEntryPoint`` uses.
+    """
+
+    def run_cli(self, argv):
+        """Invoke ``run()`` exactly as ``python -m anvilkit.cli`` does.
+
+        Mirrors ``TestRunEntryPoint.run_cli``: the TierError-to-exit-code
+        mapping is claimed in ``run()``'s except clauses, which standalone
+        mode (CliRunner) never exercises.
+        """
+        stderr = io.StringIO()
+        with mock.patch.object(sys, "argv", ["anvil"] + argv):
+            with contextlib.redirect_stderr(stderr):
+                with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    code = cli.run()
+        return code, stdout.getvalue() + stderr.getvalue()
+
+    def test_a_bad_tier_flag_exits_with_the_usage_code(self):
+        code, _ = self.run_cli(["init", "--tier", "bogus"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            code,
+            "a bad --tier value is a usage error, not a config error and "
+            "not an unhandled failure",
+        )
+
+    def test_a_bad_tier_flag_does_not_print_a_traceback(self):
+        _, output = self.run_cli(["init", "--tier", "bogus"])
+        self.assertNotIn(
+            "Traceback",
+            output,
+            "the TierError from tiers.plan escaped init unhandled and "
+            "printed a traceback instead of a clean usage message:\n" + output,
+        )
+
+    def test_a_bad_tier_flag_lists_the_available_tier_ids(self):
+        _, output = self.run_cli(["init", "--tier", "bogus"])
+        for tier_id in ("low", "mid", "high"):
+            self.assertIn(
+                tier_id,
+                output,
+                "the usage message must list the available tier ids so the "
+                "user sees what to type:\n" + output,
+            )
+
+    def test_a_bad_tier_flag_does_not_create_the_env_file(self):
+        self.assertFalse(self.env_path().exists())
+        self.run_cli(["init", "--tier", "bogus"])
+        self.assertFalse(
+            self.env_path().exists(),
+            "a rejected --tier value must not leave a .env behind; the "
+            "resolution happens before the .env write",
+        )
+
+
+class TestLowTierReusesOneId(CliCase):
+    """Behaviour 14 (low_tier_reuses_one_id): the low tier has exactly one GPU
+    to name, so every device slot in ``.env`` carries that single id.
+
+    ``--tier low --yes`` takes the low tier's defaults, which are all one id,
+    so the four keys must agree. An explicit ``--gpu-generic`` names the host's
+    only GPU, so it must reach EVERY slot - not just the generic one - because
+    a single-GPU host must never name a device it does not have.
+    """
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def test_tier_low_yes_writes_the_single_default_id_into_every_device_key(self):
+        """``--tier low --yes``: the four device keys all hold the one low-tier id.
+
+        Pin (may already pass: the low tier's plan defaults are all ``0`` and
+        ``tiers.assign`` reuses the coder id across both coder slots). It locks
+        the clause "all four device keys hold the same single id" so a later
+        change that re-spreads the keys is caught.
+        """
+        self.invoke(["init", "--tier", "low", "--yes"])
+        values = self.env_values()
+        for key in (
+            "LLM_DEVICE_ID_0",
+            "LLM_DEVICE_ID_1",
+            "LLM_DEVICE_ID_2",
+            "INDEXER_STORAGE_DEVICE_ID",
+        ):
+            self.assertEqual(
+                "0",
+                values[key],
+                "the low tier names one GPU, so '{}' must hold the single "
+                "low-tier id; .env values: {}".format(
+                    key,
+                    {
+                        k: values[k]
+                        for k in (
+                            "LLM_DEVICE_ID_0",
+                            "LLM_DEVICE_ID_1",
+                            "LLM_DEVICE_ID_2",
+                            "INDEXER_STORAGE_DEVICE_ID",
+                        )
+                    },
+                ),
+            )
+
+    def test_tier_low_gpu_generic_flag_writes_the_flagged_id_into_every_slot(self):
+        """``--tier low --gpu-generic 3`` puts ``3`` in every slot.
+
+        The low tier has exactly one GPU to name, so the id the user supplies
+        for the generic slot must propagate to the coder and embedder slots
+        too - no slot may carry a different device id.
+        """
+        self.invoke(["init", "--tier", "low", "--yes", "--gpu-generic", "3"])
+        values = self.env_values()
+        for key in (
+            "LLM_DEVICE_ID_0",
+            "LLM_DEVICE_ID_1",
+            "LLM_DEVICE_ID_2",
+            "INDEXER_STORAGE_DEVICE_ID",
+        ):
+            self.assertEqual(
+                "3",
+                values[key],
+                "the low tier names one GPU, so '{}' must carry the flagged "
+                "id 3, not the tier default; .env values: {}".format(
+                    key,
+                    {
+                        k: values[k]
+                        for k in (
+                            "LLM_DEVICE_ID_0",
+                            "LLM_DEVICE_ID_1",
+                            "LLM_DEVICE_ID_2",
+                            "INDEXER_STORAGE_DEVICE_ID",
+                        )
+                    },
+                ),
+            )
+
+
+class TestLowTierRejectsTwoCoderIds(CliCase):
+    """Behaviour 15 (low_tier_rejects_two_coder_ids): an overflow of coder ids
+    is a usage error that names the resolved tier's plan, not a generic cap.
+
+    ``tiers.split_coder_ids`` already rejects more ids than the tier's coder
+    slots, naming the tier and its slot count (behaviour 5, green). The open
+    question this class pins is the CLI's routing: ``--gpu-coder`` must reach
+    ``init`` through ``tiers.split_coder_ids`` with the resolved tier's plan,
+    not through a flat "at most two" check that cannot know which tier is in
+    effect. ``--tier low --gpu-coder 1,2`` must fail the same way
+    ``--tier mid --gpu-coder 1,2,3`` does: exit ``2`` with the tier and its
+    coder-slot count in the message.
+
+    The exit-code mapping lives in ``run()`` (``standalone_mode=False``), which
+    ``CliRunner`` cannot see, so these tests drive the real entrypoint through
+    the same ``run_cli`` helper ``TestBadTierFlagIsUsage`` uses.
+    ``_is_interactive`` is forced False so the prompts that follow the coder-id
+    seam take their defaults and no test can block on stdin.
+    """
+
+    def run_cli(self, argv):
+        """Invoke ``run()`` exactly as ``python -m anvilkit.cli`` does."""
+        stderr = io.StringIO()
+        with mock.patch.object(cli, "_is_interactive", return_value=False):
+            with mock.patch.object(sys, "argv", ["anvil"] + argv):
+                with contextlib.redirect_stderr(stderr):
+                    with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                        code = cli.run()
+        return code, stdout.getvalue() + stderr.getvalue()
+
+    def test_low_tier_rejects_two_coder_ids_naming_the_tier_and_slot(self):
+        """``--tier low --gpu-coder 1,2`` exits 2, naming the low tier's one slot.
+
+        The low tier has exactly one coder slot, so two ids are overflow even
+        though a flat "at most two" cap would accept them. The message must
+        name the low tier and its single coder slot, and the run must end
+        before the ``.env`` write.
+        """
+        self.assertFalse(self.env_path().exists())
+        code, output = self.run_cli(["init", "--tier", "low", "--gpu-coder", "1,2"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            code,
+            "the low tier has one coder slot, so two ids are a usage error "
+            "rejected before any .env write; output:\n" + output,
+        )
+        self.assertIn(
+            "low",
+            output,
+            "the rejection must name the low tier so the user sees which "
+            "plan set the cap; output:\n" + output,
+        )
+        self.assertIn(
+            "1 coder slot",
+            output,
+            "the rejection must state the tier's coder-slot count, not a "
+            "generic two-id cap; output:\n" + output,
+        )
+        self.assertFalse(
+            self.env_path().exists(),
+            "a rejected --gpu-coder value must not leave a .env behind; the "
+            "rejection happens before the .env write",
+        )
+
+    def test_mid_tier_rejects_three_coder_ids_naming_the_tier_and_slot(self):
+        """``--tier mid --gpu-coder 1,2,3`` exits 2, naming the mid tier's two slots.
+
+        The mid tier has two coder slots, so three ids are overflow. The
+        message must name the mid tier and its two coder slots; a generic
+        "at most two" message that does not name the tier is not the
+        behaviour 15 contract.
+        """
+        self.assertFalse(self.env_path().exists())
+        code, output = self.run_cli(["init", "--tier", "mid", "--gpu-coder", "1,2,3"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            code,
+            "three coder ids overflow the mid tier's two slots, so this is "
+            "a usage error rejected before any .env write; output:\n" + output,
+        )
+        self.assertIn(
+            "mid",
+            output,
+            "the rejection must name the mid tier so the user sees which "
+            "plan set the cap; output:\n" + output,
+        )
+        self.assertIn(
+            "2 coder slot",
+            output,
+            "the rejection must state the tier's coder-slot count, not a "
+            "generic two-id cap; output:\n" + output,
+        )
+        self.assertFalse(
+            self.env_path().exists(),
+            "a rejected --gpu-coder value must not leave a .env behind; the "
+            "rejection happens before the .env write",
+        )
+
+
+class TestHighTierDefaults(CliCase):
+    """Behaviour 16 (high_tier_defaults): the high tier's eight-GPU spread
+    names four device slots on every ``--tier high --yes`` run.
+
+    The high plan carries ``0`` for the generic slot, ``1,2`` for the two
+    coder slots and ``3`` for the embedder, so the four keys must read
+    ``0`` / ``1`` / ``2`` / ``3`` and ``ANVIL_TIER`` must read ``high``.
+    The remaining four GPUs are the user's to wire up in
+    ``config.yaml`` — Anvil must not name them in ``.env``.
+    """
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def test_tier_high_yes_records_tier_and_the_four_device_spread(self):
+        """``--tier high --yes``: ``ANVIL_TIER=high`` plus ``0`` / ``1`` / ``2`` / ``3``.
+
+        Asserts the tier id and the four device values together, in one run,
+        so a later change that moves any single slot or forgets the tier key
+        is caught. The high tier has eight GPUs, but Anvil names only these
+        four slots; the other four must not appear in ``.env``.
+        """
+        self.invoke(["init", "--tier", "high", "--yes"])
+        values = self.env_values()
+        self.assertEqual(
+            {
+                "ANVIL_TIER": "high",
+                "LLM_DEVICE_ID_0": "0",
+                "LLM_DEVICE_ID_1": "1",
+                "LLM_DEVICE_ID_2": "2",
+                "INDEXER_STORAGE_DEVICE_ID": "3",
+            },
+            {key: values[key] for key in (
+                "ANVIL_TIER",
+                "LLM_DEVICE_ID_0",
+                "LLM_DEVICE_ID_1",
+                "LLM_DEVICE_ID_2",
+                "INDEXER_STORAGE_DEVICE_ID",
+            )},
+            "the high tier must record ANVIL_TIER=high and the device spread "
+            "0 / 1 / 2 / 3; .env values: {}".format(
+                {
+                    key: values[key]
+                    for key in (
+                        "ANVIL_TIER",
+                        "LLM_DEVICE_ID_0",
+                        "LLM_DEVICE_ID_1",
+                        "LLM_DEVICE_ID_2",
+                        "INDEXER_STORAGE_DEVICE_ID",
+                    )
+                }
+            ),
+        )
+
+    def test_tier_high_names_exactly_the_four_device_slots(self):
+        """``--tier high --yes`` must not leak device keys beyond the four slots.
+
+        The remaining four GPUs of an eight-GPU host are named in
+        ``config.yaml`` by the user, not in ``.env`` by Anvil, so no
+        additional ``*DEVICE*`` keys may appear in the written file.
+        """
+        self.invoke(["init", "--tier", "high", "--yes"])
+        device_keys = sorted(
+            key for key in self.env_values() if "DEVICE" in key
+        )
+        self.assertEqual(
+            [
+                "INDEXER_STORAGE_DEVICE_ID",
+                "LLM_DEVICE_ID_0",
+                "LLM_DEVICE_ID_1",
+                "LLM_DEVICE_ID_2",
+            ],
+            device_keys,
+            "the high tier names exactly the four device slots in .env; "
+            "the remaining GPUs belong to config.yaml; device keys: {}".format(
+                device_keys
+            ),
+        )
+
+
+class TestExplicitFlagsBeatTierDefaults(CliCase):
+    """Behaviour 17 (explicit_flags_beat_tier_defaults): a tier is a default
+    source and never an override.
+
+    A device slot the user explicitly flagged must keep the flagged value
+    while every unflagged slot keeps the tier default, on all three tiers.
+    The low tier is the subtle case: its convergence (behaviour 14) overwrites
+    unflagged slots with the resolved generic-slot value, but it must NOT
+    touch a slot the user explicitly flagged, so
+    ``--tier low --gpu-embedder 7`` must leave ``INDEXER_STORAGE_DEVICE_ID=7``
+    while the three LLM slots keep the low-tier default ``0``.
+    """
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def device_values(self):
+        """The four device keys plus the tier id, for assertion and messages."""
+        values = self.env_values()
+        return {
+            key: values[key]
+            for key in (
+                "ANVIL_TIER",
+                "LLM_DEVICE_ID_0",
+                "LLM_DEVICE_ID_1",
+                "LLM_DEVICE_ID_2",
+                "INDEXER_STORAGE_DEVICE_ID",
+            )
+        }
+
+    def assert_device_spread(self, argv, expected):
+        """Run ``init argv`` and assert the four device keys plus the tier id."""
+        self.invoke(argv)
+        self.assertEqual(
+            expected,
+            self.device_values(),
+            "explicit device flags must beat tier defaults while unflagged "
+            "slots keep the tier default; .env values: {}".format(
+                self.device_values()
+            ),
+        )
+
+    def test_tier_low_gpu_embedder_flag_beats_tier_default(self):
+        """``--tier low --gpu-embedder 7``: the embedder slot keeps ``7``.
+
+        The low tier's convergence writes the resolved generic-slot value into
+        every slot that still carries its own tier default, so a naive
+        implementation would overwrite the flagged embedder slot with ``0``.
+        The flagged slot must survive with ``7``; the unflagged slots keep
+        the low-tier default ``0``.
+        """
+        self.assert_device_spread(
+            ["init", "--tier", "low", "--yes", "--gpu-embedder", "7"],
+            {
+                "ANVIL_TIER": "low",
+                "LLM_DEVICE_ID_0": "0",
+                "LLM_DEVICE_ID_1": "0",
+                "LLM_DEVICE_ID_2": "0",
+                "INDEXER_STORAGE_DEVICE_ID": "7",
+            },
+        )
+
+    def test_tier_mid_gpu_embedder_flag_beats_tier_default(self):
+        """``--tier mid --gpu-embedder 7``: the embedder slot keeps ``7``.
+
+        The mid tier's plan carries generic ``0``, coder ``0,1`` and embedder
+        ``2`` (behaviour 13 pins the unflagged spread ``0`` / ``0`` / ``1`` /
+        ``2``), so an implementation that treats the tier as an override would
+        clobber the flag with ``2``. The flagged embedder slot must stay
+        ``7``; the unflagged slots keep the mid-tier default ``0`` / ``0`` / ``1``.
+        """
+        self.assert_device_spread(
+            ["init", "--tier", "mid", "--yes", "--gpu-embedder", "7"],
+            {
+                "ANVIL_TIER": "mid",
+                "LLM_DEVICE_ID_0": "0",
+                "LLM_DEVICE_ID_1": "0",
+                "LLM_DEVICE_ID_2": "1",
+                "INDEXER_STORAGE_DEVICE_ID": "7",
+            },
+        )
+
+    def test_tier_high_gpu_generic_flag_beats_tier_default(self):
+        """``--tier high --gpu-generic 5``: the generic slot keeps ``5``.
+
+        The high tier's generic default is ``0``, so an implementation that
+        treats the tier as an override would clobber the flag with ``0``.
+        The flagged generic slot must stay ``5``; the unflagged slots keep
+        the high-tier default ``1`` / ``2`` / ``3``.
+        """
+        self.assert_device_spread(
+            ["init", "--tier", "high", "--yes", "--gpu-generic", "5"],
+            {
+                "ANVIL_TIER": "high",
+                "LLM_DEVICE_ID_0": "5",
+                "LLM_DEVICE_ID_1": "1",
+                "LLM_DEVICE_ID_2": "2",
+                "INDEXER_STORAGE_DEVICE_ID": "3",
+            },
+        )
 
 
 class TestImplicitEnvBootstrap(CliCase):

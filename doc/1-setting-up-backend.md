@@ -27,11 +27,21 @@ Run `./anvil doctor` to verify all of the above at once.
 
 ### Hardware Prerequisites
 
+#### Low Tier (Single GPU)
+* **GPU:** $1 \times 40\text{GB}$ GPU (e.g., A100 or H100). The single card serves both the coder and the embedding indexer.
+* **`config.yaml` change:** set `--tensor-parallel-size 1` in the coder model's `cmd`. `config.yaml` is yours to edit — Anvil reads it but never writes it.
+* **Untested fit:** whether the 27B FP8 coder fits one 40 GB GPU at the current context window (`--max-model-len 262144`) is untested; the context window may need lowering.
+
 #### Mid Tier (Default Configuration)
 * **GPU for Main LLM (`Qwen/Qwen3.8-27B-FP8`):** Minimum $2 \times 24\text{GB}$ GPUs (e.g., $2 \times \text{RTX 3090/4090}$ or enterprise equivalents like A10/A100) to run the 27B model with `--tensor-parallel-size 2`.
 * **GPU for Embedding Indexer (`nomic-ai/nomic-embed-text-v1.5`):** Minimum $1 \times$ dedicated GPU with at least $1\text{GB}$ available VRAM (can be a low-end card or integrated GPU).
 * **Storage:** $\sim 50\text{GB}$ of (ideally) fast SSD storage allocated to the Hugging Face cache directory (`HF_HOME`) to store model weights for all configured models.
 * **RAM:** $64\text{GB}$ system RAM recommended when running with speculative decoding.
+
+#### High Tier (8 GPUs)
+* **GPU:** $8 \times 40\text{GB}$ GPUs ($320\text{GB}$ total).
+* **`config.yaml` change:** set `--tensor-parallel-size 8` in the coder model's `cmd`.
+* Anvil's `.env` names only four device slots on every tier (`LLM_DEVICE_ID_0`, `LLM_DEVICE_ID_1`, `LLM_DEVICE_ID_2`, `INDEXER_STORAGE_DEVICE_ID`); the remaining four GPUs are yours to wire up in `config.yaml`.
 
 ---
 
@@ -47,7 +57,7 @@ chmod +x anvil
 
 | Command | Action | Description |
 | :--- | :--- | :--- |
-| `./anvil init` | Configure | Creates the `.env` file interactively (storage paths, gateway port, GPU device ids). Runs automatically the first time you use a command that needs it. Refuses to overwrite an existing `.env` unless you pass `--force`. |
+| `./anvil init` | Configure | Creates the `.env` file interactively. The first question is the hardware tier (`low`, `mid`, `high`); the storage paths, gateway port and GPU device ids that follow default from the chosen tier's plan. Runs automatically the first time you use a command that needs it. Refuses to overwrite an existing `.env` unless you pass `--force`. |
 | `./anvil doctor` | Diagnose | Reports the Python interpreter and venv, Docker, Compose v2, NVIDIA tooling, whether your configuration files parse, and the GitHub branch rules on this repository's `main` branch (the Guards section). Writes nothing and never fails on what it is diagnosing. |
 | `./anvil up` | Start Stack | Starts the llama-swap gateway and Qdrant vector database in the background. |
 | `./anvil build` | Rebuild | Force rebuild of custom Docker configurations. |
@@ -75,11 +85,12 @@ rather than hanging.
 | Flag | Applies to | Purpose |
 | :--- | :--- | :--- |
 | `--yes`, `-y` | all | Accept every default; never prompt. |
+| `--tier NAME` | `init` | Hardware tier (`low`, `mid`, `high`); skips the tier question. An unrecognised id is a usage error (exit `2`) listing the available ids, and nothing is written. `mid` is the default a non-interactive or `--yes` run records. |
 | `--llm-port N` | `init`, `status`, `test-model`, `stress`, `setup-repo` | Gateway port. |
 | `--hf-home PATH` | `init` | Hugging Face cache directory. |
 | `--data-dir PATH` | `init` | Local data storage directory. |
 | `--gpu-generic ID` | `init` | Generic LLM GPU device id. |
-| `--gpu-coder ID[,ID]` | `init` | Coder GPU device ids; a single id is used for both slots. |
+| `--gpu-coder ID[,ID]` | `init` | Coder GPU device ids, validated against the resolved tier's plan: a single id is broadcast across the tier's coder slots, and more ids than the tier has slots is a usage error. |
 | `--gpu-embedder ID` | `init` | Indexer GPU device id. |
 | `--force` | `init`, `ruleset-write` | Regenerate `.env` / overwrite the ruleset file even though it already exists. |
 | `--github-token TOKEN` / `--no-github` | `setup-repo` | Supply or explicitly skip the GitHub token. |

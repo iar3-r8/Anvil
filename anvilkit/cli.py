@@ -27,7 +27,18 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import click
 import typer
 
-from . import compose, config, env, health, piguard, piruleset, prompts, provision, render
+from . import (
+    compose,
+    config,
+    env,
+    health,
+    piguard,
+    piruleset,
+    prompts,
+    provision,
+    render,
+    tiers,
+)
 from .compose import Compose, ComposeError
 from .config import ConfigError
 from .piruleset import RulesetError
@@ -50,6 +61,7 @@ from .stress import (
     warm_up,
     write_log,
 )
+from .tiers import TierError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -91,9 +103,9 @@ _ENV_SECTIONS = {
 }
 
 _DEFAULT_DATA_DIR = "./"
-_DEFAULT_GPU_GENERIC = "0"
-_DEFAULT_GPU_CODER = "0,1"
-_DEFAULT_GPU_EMBEDDER = "2"
+# The tier every non-choosing path resolves to: --yes, non-interactive stdin,
+# EOF on the tier question, and a fully flag-supplied run all take this.
+_DEFAULT_TIER_ID = "mid"
 
 _UNSET_API_KEY = "to set"
 
@@ -249,6 +261,7 @@ class EnvAnswers:
         gpu_generic: Optional[str] = None,
         gpu_coder: Optional[str] = None,
         gpu_embedder: Optional[str] = None,
+        tier: Optional[str] = None,
     ) -> None:
         self.llm_port = llm_port
         self.hf_home = hf_home
@@ -256,6 +269,7 @@ class EnvAnswers:
         self.gpu_generic = gpu_generic
         self.gpu_coder = gpu_coder
         self.gpu_embedder = gpu_embedder
+        self.tier = tier
 
     def fully_supplied(self) -> bool:
         """True when no question remains, so prompting can be skipped entirely."""
@@ -277,28 +291,38 @@ def _default_hf_home() -> str:
     return str(Path(os.path.expanduser("~")) / ".cache" / "huggingface")
 
 
-def _split_coder_gpus(supplied: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """Split ``--gpu-coder`` into the two device slots the compose file expects.
+def _tier_device_defaults(tier: tiers.Tier) -> Dict[str, str]:
+    """The device-slot defaults a tier's plan carries, keyed by ``.env`` key.
 
-    A single id is applied to both slots, which is the natural reading of
-    "--gpu-coder 5" and matches what a single-GPU host needs.
+    Runs the plan's own coder default through :func:`tiers.split_coder_ids` and
+    pairs every slot with its key via :func:`tiers.assign`, so a single-slot
+    tier (low) reuses its one id for the second coder key exactly as ``.env``
+    expects.
     """
-    if supplied is None:
-        return None, None
+    coder_ids = tiers.split_coder_ids(tier, tier.default_coder)
+    pairs = tiers.assign(
+        tier, tier.default_generic, coder_ids, tier.default_embedder
+    )
+    return dict(pairs)
 
-    parts = [part.strip() for part in str(supplied).split(",") if part.strip()]
 
-    if not parts:
-        raise typer.BadParameter("--gpu-coder needs at least one device id")
+def _ask_tier_id(shared: Context) -> str:
+    """Ask which hardware tier the host runs; the default answer is ``mid``.
 
-    if len(parts) == 1:
-        return parts[0], parts[0]
-
-    if len(parts) == 2:
-        return parts[0], parts[1]
-
-    raise typer.BadParameter(
-        "--gpu-coder takes at most two device ids, got {}".format(len(parts))
+    This is the very first question of ``init``: every device-id prompt that
+    follows takes its default from the chosen tier's plan. Bypassed exactly
+    like every other prompt - a supplied value never prompts (later
+    behaviour), ``--yes`` and non-interactive stdin take the default without
+    consuming input, and an exhausted interactive stdin falls back to it.
+    """
+    return prompts.choose(
+        "Select the hardware tier",
+        options=[{"id": tier.id, "label": tier.label} for tier in tiers.TIERS],
+        default=_DEFAULT_TIER_ID,
+        supplied=None,
+        assume_yes=shared.assume_yes,
+        interactive=shared.interactive(),
+        allow_custom=False,
     )
 
 
@@ -307,7 +331,38 @@ def _collect_env_values(
 ) -> List[Tuple[str, str]]:
     """Ask for (or derive) every .env value in the expected order."""
     interactive = shared.interactive()
-    coder_gpu_0, coder_gpu_1 = _split_coder_gpus(answers.gpu_coder)
+
+    # The tier question comes before any device-id question: it decides the
+    # defaults the device-id prompts show, and its resolved id is what
+    # ANVIL_TIER persists. A --tier flag resolves it before any prompt, so the
+    # menu is never rendered and its question never reads stdin; it also wins
+    # over --yes, which would otherwise take the default. When every value is
+    # already flag-supplied no default is left for it to decide, so the
+    # question is bypassed - a fully flag-supplied run is as good as --yes,
+    # which takes the default.
+    if answers.tier is not None:
+        tier = tiers.plan(answers.tier)
+    elif answers.fully_supplied():
+        tier = tiers.plan(_DEFAULT_TIER_ID)
+    else:
+        tier = tiers.plan(_ask_tier_id(shared))
+    device_defaults = _tier_device_defaults(tier)
+
+    # The user's --gpu-coder value is split against the resolved plan, not a
+    # flat cap: a single id is broadcast across the plan's coder slots, and an
+    # overflow raises TierError naming the tier and its slot count, which
+    # run() maps to a usage exit before any .env write (behaviour 15). On the
+    # low tier the one split id also feeds the second coder key, mirroring
+    # tiers.assign.
+    if answers.gpu_coder is not None:
+        supplied_coder = tiers.split_coder_ids(tier, answers.gpu_coder)
+        coder_gpu_0 = supplied_coder[0]
+        coder_gpu_1 = (
+            supplied_coder[0] if tier.coder_slots == 1 else supplied_coder[1]
+        )
+    else:
+        coder_gpu_0 = None
+        coder_gpu_1 = None
 
     hf_home = prompts.ask(
         "Enter Hugging Face cache directory",
@@ -335,17 +390,15 @@ def _collect_env_values(
 
     generic_gpu = prompts.ask(
         "Enter Generic LLM GPU Device ID 1",
-        default=_DEFAULT_GPU_GENERIC,
+        default=device_defaults["LLM_DEVICE_ID_0"],
         supplied=answers.gpu_generic,
         assume_yes=shared.assume_yes,
         interactive=interactive,
     )
 
-    default_coder_0, default_coder_1 = _DEFAULT_GPU_CODER.split(",")
-
     coder_0 = prompts.ask(
         "Enter Coder LLM GPU Device ID 1",
-        default=default_coder_0,
+        default=device_defaults["LLM_DEVICE_ID_1"],
         supplied=coder_gpu_0,
         assume_yes=shared.assume_yes,
         interactive=interactive,
@@ -353,7 +406,7 @@ def _collect_env_values(
 
     coder_1 = prompts.ask(
         "Enter Coder LLM GPU Device ID 2",
-        default=default_coder_1,
+        default=device_defaults["LLM_DEVICE_ID_2"],
         supplied=coder_gpu_1,
         assume_yes=shared.assume_yes,
         interactive=interactive,
@@ -361,11 +414,27 @@ def _collect_env_values(
 
     embedder_gpu = prompts.ask(
         "Enter Indexer GPU Device ID",
-        default=_DEFAULT_GPU_EMBEDDER,
+        default=device_defaults["INDEXER_STORAGE_DEVICE_ID"],
         supplied=answers.gpu_embedder,
         assume_yes=shared.assume_yes,
         interactive=interactive,
     )
+
+    # The low tier is a one-GPU host, so one id: the generic slot is the
+    # host's only GPU, and its resolved value (flag, prompt answer or the
+    # tier default) is written into every device key. A slot whose answered
+    # value differs from the tier's keeps its own value, so an explicit
+    # device id never loses to the convergence - on the low tier,
+    # --gpu-embedder 7 stays in INDEXER_STORAGE_DEVICE_ID while the unflagged
+    # slots keep the tier default (behaviour 17).
+    if tier.coder_slots == 1:
+        one_id = generic_gpu
+        if coder_0 == device_defaults["LLM_DEVICE_ID_1"]:
+            coder_0 = one_id
+        if coder_1 == device_defaults["LLM_DEVICE_ID_2"]:
+            coder_1 = one_id
+        if embedder_gpu == device_defaults["INDEXER_STORAGE_DEVICE_ID"]:
+            embedder_gpu = one_id
 
     return [
         ("HF_HOME", hf_home),
@@ -375,6 +444,7 @@ def _collect_env_values(
         ("LLM_DEVICE_ID_1", coder_0),
         ("LLM_DEVICE_ID_2", coder_1),
         ("INDEXER_STORAGE_DEVICE_ID", embedder_gpu),
+        ("ANVIL_TIER", tier.id),
     ]
 
 
@@ -1023,9 +1093,17 @@ def init(
     data_dir: Optional[str] = typer.Option(None, "--data-dir"),
     gpu_generic: Optional[str] = typer.Option(None, "--gpu-generic"),
     gpu_coder: Optional[str] = typer.Option(
-        None, "--gpu-coder", help="One or two comma-separated device ids."
+        None,
+        "--gpu-coder",
+        help="Comma-separated coder device ids, at most the resolved "
+        "tier's coder slots; a single id is broadcast across the slots.",
     ),
     gpu_embedder: Optional[str] = typer.Option(None, "--gpu-embedder"),
+    tier: Optional[str] = typer.Option(
+        None,
+        "--tier",
+        help="Hardware tier (low, mid, high); skips the tier question.",
+    ),
     assume_yes: bool = typer.Option(
         False, "--yes", "-y", help="Accept every default without prompting."
     ),
@@ -1052,6 +1130,7 @@ def init(
         gpu_generic=gpu_generic,
         gpu_coder=gpu_coder,
         gpu_embedder=gpu_embedder,
+        tier=tier,
     )
 
     try:
@@ -1740,6 +1819,12 @@ def run() -> int:
     except RenderError as exc:
         typer.echo("❌ {}".format(exc), err=True)
         return EXIT_CONFIG
+    except TierError as exc:
+        # A bad --tier value sails past flag parsing into tiers.plan(), which
+        # is strict: the value is the user's, so the failure is a usage error,
+        # and the message already lists every valid id.
+        typer.echo("❌ {}".format(exc), err=True)
+        return EXIT_USAGE
     except KeyboardInterrupt:
         typer.echo("")
         return EXIT_ERROR
