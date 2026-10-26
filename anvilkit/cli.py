@@ -291,31 +291,6 @@ def _default_hf_home() -> str:
     return str(Path(os.path.expanduser("~")) / ".cache" / "huggingface")
 
 
-def _split_coder_gpus(supplied: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """Split ``--gpu-coder`` into the two device slots the compose file expects.
-
-    A single id is applied to both slots, which is the natural reading of
-    "--gpu-coder 5" and matches what a single-GPU host needs.
-    """
-    if supplied is None:
-        return None, None
-
-    parts = [part.strip() for part in str(supplied).split(",") if part.strip()]
-
-    if not parts:
-        raise typer.BadParameter("--gpu-coder needs at least one device id")
-
-    if len(parts) == 1:
-        return parts[0], parts[0]
-
-    if len(parts) == 2:
-        return parts[0], parts[1]
-
-    raise typer.BadParameter(
-        "--gpu-coder takes at most two device ids, got {}".format(len(parts))
-    )
-
-
 def _tier_device_defaults(tier: tiers.Tier) -> Dict[str, str]:
     """The device-slot defaults a tier's plan carries, keyed by ``.env`` key.
 
@@ -356,7 +331,6 @@ def _collect_env_values(
 ) -> List[Tuple[str, str]]:
     """Ask for (or derive) every .env value in the expected order."""
     interactive = shared.interactive()
-    coder_gpu_0, coder_gpu_1 = _split_coder_gpus(answers.gpu_coder)
 
     # The tier question comes before any device-id question: it decides the
     # defaults the device-id prompts show, and its resolved id is what
@@ -373,6 +347,22 @@ def _collect_env_values(
     else:
         tier = tiers.plan(_ask_tier_id(shared))
     device_defaults = _tier_device_defaults(tier)
+
+    # The user's --gpu-coder value is split against the resolved plan, not a
+    # flat cap: a single id is broadcast across the plan's coder slots, and an
+    # overflow raises TierError naming the tier and its slot count, which
+    # run() maps to a usage exit before any .env write (behaviour 15). On the
+    # low tier the one split id also feeds the second coder key, mirroring
+    # tiers.assign.
+    if answers.gpu_coder is not None:
+        supplied_coder = tiers.split_coder_ids(tier, answers.gpu_coder)
+        coder_gpu_0 = supplied_coder[0]
+        coder_gpu_1 = (
+            supplied_coder[0] if tier.coder_slots == 1 else supplied_coder[1]
+        )
+    else:
+        coder_gpu_0 = None
+        coder_gpu_1 = None
 
     hf_home = prompts.ask(
         "Enter Hugging Face cache directory",
