@@ -1345,6 +1345,105 @@ class TestLowTierReusesOneId(CliCase):
             )
 
 
+class TestLowTierRejectsTwoCoderIds(CliCase):
+    """Behaviour 15 (low_tier_rejects_two_coder_ids): an overflow of coder ids
+    is a usage error that names the resolved tier's plan, not a generic cap.
+
+    ``tiers.split_coder_ids`` already rejects more ids than the tier's coder
+    slots, naming the tier and its slot count (behaviour 5, green). The open
+    question this class pins is the CLI's routing: ``--gpu-coder`` must reach
+    ``init`` through ``tiers.split_coder_ids`` with the resolved tier's plan,
+    not through a flat "at most two" check that cannot know which tier is in
+    effect. ``--tier low --gpu-coder 1,2`` must fail the same way
+    ``--tier mid --gpu-coder 1,2,3`` does: exit ``2`` with the tier and its
+    coder-slot count in the message.
+
+    The exit-code mapping lives in ``run()`` (``standalone_mode=False``), which
+    ``CliRunner`` cannot see, so these tests drive the real entrypoint through
+    the same ``run_cli`` helper ``TestBadTierFlagIsUsage`` uses.
+    ``_is_interactive`` is forced False so the prompts that follow the coder-id
+    seam take their defaults and no test can block on stdin.
+    """
+
+    def run_cli(self, argv):
+        """Invoke ``run()`` exactly as ``python -m anvilkit.cli`` does."""
+        stderr = io.StringIO()
+        with mock.patch.object(cli, "_is_interactive", return_value=False):
+            with mock.patch.object(sys, "argv", ["anvil"] + argv):
+                with contextlib.redirect_stderr(stderr):
+                    with contextlib.redirect_stdout(io.StringIO()) as stdout:
+                        code = cli.run()
+        return code, stdout.getvalue() + stderr.getvalue()
+
+    def test_low_tier_rejects_two_coder_ids_naming_the_tier_and_slot(self):
+        """``--tier low --gpu-coder 1,2`` exits 2, naming the low tier's one slot.
+
+        The low tier has exactly one coder slot, so two ids are overflow even
+        though a flat "at most two" cap would accept them. The message must
+        name the low tier and its single coder slot, and the run must end
+        before the ``.env`` write.
+        """
+        self.assertFalse(self.env_path().exists())
+        code, output = self.run_cli(["init", "--tier", "low", "--gpu-coder", "1,2"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            code,
+            "the low tier has one coder slot, so two ids are a usage error "
+            "rejected before any .env write; output:\n" + output,
+        )
+        self.assertIn(
+            "low",
+            output,
+            "the rejection must name the low tier so the user sees which "
+            "plan set the cap; output:\n" + output,
+        )
+        self.assertIn(
+            "1 coder slot",
+            output,
+            "the rejection must state the tier's coder-slot count, not a "
+            "generic two-id cap; output:\n" + output,
+        )
+        self.assertFalse(
+            self.env_path().exists(),
+            "a rejected --gpu-coder value must not leave a .env behind; the "
+            "rejection happens before the .env write",
+        )
+
+    def test_mid_tier_rejects_three_coder_ids_naming_the_tier_and_slot(self):
+        """``--tier mid --gpu-coder 1,2,3`` exits 2, naming the mid tier's two slots.
+
+        The mid tier has two coder slots, so three ids are overflow. The
+        message must name the mid tier and its two coder slots; a generic
+        "at most two" message that does not name the tier is not the
+        behaviour 15 contract.
+        """
+        self.assertFalse(self.env_path().exists())
+        code, output = self.run_cli(["init", "--tier", "mid", "--gpu-coder", "1,2,3"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            code,
+            "three coder ids overflow the mid tier's two slots, so this is "
+            "a usage error rejected before any .env write; output:\n" + output,
+        )
+        self.assertIn(
+            "mid",
+            output,
+            "the rejection must name the mid tier so the user sees which "
+            "plan set the cap; output:\n" + output,
+        )
+        self.assertIn(
+            "2 coder slot",
+            output,
+            "the rejection must state the tier's coder-slot count, not a "
+            "generic two-id cap; output:\n" + output,
+        )
+        self.assertFalse(
+            self.env_path().exists(),
+            "a rejected --gpu-coder value must not leave a .env behind; the "
+            "rejection happens before the .env write",
+        )
+
+
 class TestImplicitEnvBootstrap(CliCase):
     """A missing .env is created on demand, exactly as anvil:27 did."""
 
