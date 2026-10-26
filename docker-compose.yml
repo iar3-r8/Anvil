@@ -39,6 +39,7 @@ services:
               capabilities: [gpu]
     networks:
       - llm-network
+      - sandbox-internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
     command: --config /app/config.yaml --listen 0.0.0.0:8080
@@ -69,6 +70,9 @@ services:
 networks:
   llm-network:
     name: llm-network
+  sandbox-internal:
+    name: sandbox-internal
+    internal: true
 
 volumes:
   pi-bakeoff-agent:
