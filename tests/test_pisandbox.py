@@ -1,10 +1,10 @@
-"""Tests for anvilkit.pisandbox - the sandbox build/run argv builders.
+"""Tests for anvilkit.pi.pisandbox - the sandbox build/run argv builders.
 
 Written before the implementation (TDD, ``plans/pi-sandbox-image.md``:
 behaviour 6 "build argv", behaviour 7 "run argv", behaviour 8 "environment
 allowlist").
 
-The production module ``anvilkit.pisandbox`` does not exist yet, so every
+The production module ``anvilkit.pi.pisandbox`` does not exist yet, so every
 test loads it through :meth:`PisandboxTestCase._pisandbox`, which fails
 with a clear assertion instead of letting a collection-time ImportError
 mask the reason the suite is red.
@@ -52,14 +52,14 @@ class PisandboxTestCase(unittest.TestCase):
     """Shared module access and argv-shape helpers."""
 
     def _pisandbox(self):
-        """Import anvilkit.pisandbox, failing clearly if the module is absent."""
-        spec = importlib.util.find_spec("anvilkit.pisandbox")
+        """Import anvilkit.pi.pisandbox, failing clearly if the module is absent."""
+        spec = importlib.util.find_spec("anvilkit.pi.pisandbox")
         self.assertIsNotNone(
             spec,
-            "anvilkit.pisandbox cannot be imported; the sandbox argv "
+            "anvilkit.pi.pisandbox cannot be imported; the sandbox argv "
             "builders have not been implemented yet",
         )
-        return importlib.import_module("anvilkit.pisandbox")
+        return importlib.import_module("anvilkit.pi.pisandbox")
 
     def _assert_token_discipline(self, argv):
         """The no-shell-reparse rule: a list of str, no space in any token."""
@@ -99,7 +99,7 @@ class TestSandboxError(PisandboxTestCase):
         self.assertTrue(
             isinstance(pisandbox.SandboxError, type)
             and issubclass(pisandbox.SandboxError, BaseException),
-            "anvilkit.pisandbox must expose SandboxError as an exception "
+            "anvilkit.pi.pisandbox must expose SandboxError as an exception "
             "type (the module's one exception type, per repo convention)",
         )
 

@@ -7,6 +7,11 @@
 !.roo/commands/
 .roo/commands/*
 !.roo/commands/harvest-roo-templates.md
+# Architect-only module ownership table: re-include the one file so it is
+# tracked and available on clone, while everything else under .roo/ stays ignored.
+!.roo/rules-architect/
+.roo/rules-architect/*
+!.roo/rules-architect/project-structure.md
 zoo-code-settings.json
 plans/*
 # bake-off run artifacts, one subtree per configuration (doc/pi-bakeoff)

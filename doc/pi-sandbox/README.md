@@ -35,7 +35,7 @@ docker build -t pi-sandbox -f docker/Dockerfile.sandbox .
 
 The context is the repo root (the `.`), never the Dockerfile's directory.
 This command — and the run command in section 3 — is exactly the argv the
-builders emit: [`anvilkit/pisandbox.py`](../../anvilkit/pisandbox.py)
+builders emit: [`anvilkit/pi/pisandbox.py`](../../anvilkit/pi/pisandbox.py)
 `build_argv` and `run_argv`. That module is the single place the token order
 is decided; the driver `subprocess`es those same vectors rather than
 re-deriving them.
@@ -84,7 +84,7 @@ docker run --rm \
   capabilities, and no process may gain them.
 
 The three env vars are the only ones the run accepts —
-[`anvilkit/pisandbox.py`](../../anvilkit/pisandbox.py) allowlists exactly
+[`anvilkit/pi/pisandbox.py`](../../anvilkit/pi/pisandbox.py) allowlists exactly
 these names and refuses anything that looks like a credential, because a
 value passed in is readable by every process inside:
 

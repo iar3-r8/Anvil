@@ -1,4 +1,4 @@
-"""Tests for anvilkit.piguard - GitHub ruleset guard checks (behaviours 1-7).
+"""Tests for anvilkit.pi.piguard - GitHub ruleset guard checks (behaviours 1-7).
 
 Written before the implementation (TDD RED step for behaviour 1 of
 plans/pi-guard-verification.md: the history-rewrite guard).
@@ -30,8 +30,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from anvilkit import piguard  # noqa: E402
-from anvilkit import piruleset  # noqa: E402
+from anvilkit.pi import piguard  # noqa: E402
+from anvilkit.pi import piruleset  # noqa: E402
 
 
 def _field(finding: Any, name: str) -> Any:
@@ -767,11 +767,11 @@ class RenderFindingTests(unittest.TestCase):
     """
 
     def _render_finding(self):
-        """Fetch ``anvilkit.piguard.render_finding``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.piguard.render_finding``, failing clearly if absent."""
         renderer = getattr(piguard, "render_finding", None)
         self.assertTrue(
             callable(renderer),
-            "anvilkit.piguard.render_finding is not callable; the finding "
+            "anvilkit.pi.piguard.render_finding is not callable; the finding "
             "renderer has not been implemented yet",
         )
         return renderer
@@ -1291,7 +1291,7 @@ class FetchBranchRulesTests(unittest.TestCase, _SkippedAssertions):
         fetcher = getattr(piguard, "fetch_branch_rules", None)
         self.assertTrue(
             callable(fetcher),
-            "anvilkit.piguard.fetch_branch_rules is not callable; the rules "
+            "anvilkit.pi.piguard.fetch_branch_rules is not callable; the rules "
             "endpoint fetch has not been implemented yet",
         )
         return fetcher
@@ -1451,7 +1451,7 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
         producer = getattr(piguard, "skipped_findings", None)
         self.assertTrue(
             callable(producer),
-            "anvilkit.piguard.skipped_findings is not callable; the "
+            "anvilkit.pi.piguard.skipped_findings is not callable; the "
             "skipped-finding producer has not been implemented yet",
         )
         return producer
@@ -1820,7 +1820,7 @@ class ParseGithubRemoteTests(unittest.TestCase):
         parser = getattr(piguard, "parse_github_remote", None)
         self.assertTrue(
             callable(parser),
-            "anvilkit.piguard.parse_github_remote is not callable; the "
+            "anvilkit.pi.piguard.parse_github_remote is not callable; the "
             "GitHub remote parser has not been implemented yet",
         )
         return parser
@@ -1968,7 +1968,7 @@ class ResolveRepositoryTests(unittest.TestCase):
         resolver = getattr(piguard, "resolve_repository", None)
         self.assertTrue(
             callable(resolver),
-            "anvilkit.piguard.resolve_repository is not callable; the "
+            "anvilkit.pi.piguard.resolve_repository is not callable; the "
             "repository-identity resolver has not been implemented yet",
         )
         return resolver
@@ -2104,7 +2104,7 @@ class SummarizeTests(unittest.TestCase):
         summarizer = getattr(piguard, "summarize", None)
         self.assertTrue(
             callable(summarizer),
-            "anvilkit.piguard.summarize is not callable; the exit-status "
+            "anvilkit.pi.piguard.summarize is not callable; the exit-status "
             "seam has not been implemented yet",
         )
         return summarizer
@@ -2204,7 +2204,7 @@ class RenderReportTests(unittest.TestCase):
         renderer = getattr(piguard, "render_report", None)
         self.assertTrue(
             callable(renderer),
-            "anvilkit.piguard.render_report is not callable; the report "
+            "anvilkit.pi.piguard.render_report is not callable; the report "
             "renderer has not been implemented yet",
         )
         return renderer
@@ -2267,8 +2267,8 @@ class RulesetWriteLockstepTests(unittest.TestCase):
     """Behaviour 9 of plans/verify-guards-five-rules.md: the ruleset-write /
     verify-guards lockstep - a boundary pin.
 
-    ``build_ruleset()`` (anvilkit/piruleset.py) is the writer side: the five
-    rules Anvil provisions. ``check_all`` (anvilkit/piguard.py) is the reader
+    ``build_ruleset()`` (anvilkit/pi/piruleset.py) is the writer side: the five
+    rules Anvil provisions. ``check_all`` (anvilkit/pi/piguard.py) is the reader
     side: what verify-guards measures. A rule added to ``build_ruleset``
     without a matching check fails this test - which is its purpose. The
     fixture translates ``build_ruleset()["rules"]`` into the
@@ -2292,7 +2292,7 @@ class RulesetWriteLockstepTests(unittest.TestCase):
         check_all = getattr(piguard, "check_all", None)
         self.assertTrue(
             callable(check_all),
-            "anvilkit.piguard.check_all is not callable; the check_all "
+            "anvilkit.pi.piguard.check_all is not callable; the check_all "
             "seam has not been implemented yet",
         )
         return check_all

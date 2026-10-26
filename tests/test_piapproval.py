@@ -1,14 +1,14 @@
-"""Tests for anvilkit.piapproval - the phase-2 approval run driver.
+"""Tests for anvilkit.pi.piapproval - the phase-2 approval run driver.
 
 Written before the implementation (TDD, ``plans/pi-phase2-approval.md``,
 behaviour 6: "run one approval configuration"). The production module
-``anvilkit.piapproval`` does not exist yet, so every test loads it through
+``anvilkit.pi.piapproval`` does not exist yet, so every test loads it through
 ``_piapproval``, which fails with a clear assertion instead of letting a
 collection-time ImportError mask the reason the suite is red.
 
 Design constraint pinned here: no test spawns ``pi``. ``run_one`` takes
 process execution as an **injected runner callable** following the
-``anvilkit.pibakeoff`` contract, and every test supplies a recorder fake
+``anvilkit.pi.pibakeoff`` contract, and every test supplies a recorder fake
 that captures the invocation dict and returns a canned result.
 
 Pinned signature::
@@ -43,7 +43,7 @@ Pinned per-config budgets (passed to the runner as ``timeout_s``):
 - ``approve`` / ``no-approve`` (the two ``--mode json`` configs): 300.0
 - ``mcp-list-approve`` / ``mcp-list-no-approve``: 60.0
 
-Pinned runner contract (the ``anvilkit.pibakeoff`` seam, plus the
+Pinned runner contract (the ``anvilkit.pi.pibakeoff`` seam, plus the
 behaviour-4 env overlay)::
 
     invocation: {"argv": List[str], "cwd": str, "stdin": "/dev/null",
@@ -139,7 +139,7 @@ unknown ``config``, before the runner is invoked.
   passed to ``run_all`` as a ``Path``;
 - an injected ``runner`` is handed to ``run_all`` verbatim; when
   ``runner`` is ``None`` the default is the module's own
-  ``subprocess_runner`` seam (``anvilkit.pibakeoff.subprocess_runner``,
+  ``subprocess_runner`` seam (``anvilkit.pi.pibakeoff.subprocess_runner``,
   imported - not re-implemented);
 - ``main`` supplies its own ``timestamp`` (ISO-8601 UTC,
   ``YYYY-MM-DDTHH:MM:SSZ``);
@@ -167,10 +167,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import anvilkit.config as piconfig
-import anvilkit.pibakeoff as pibakeoff
-import anvilkit.piargv as piargv
-import anvilkit.pievents as pievents
-import anvilkit.pirecord as pirecord
+from anvilkit.pi import pibakeoff as pibakeoff
+from anvilkit.pi import piargv as piargv
+from anvilkit.pi import pievents as pievents
+from anvilkit.pi import pirecord as pirecord
 
 MODEL_ID = "matrix.vars.coder"
 GATEWAY_HOST = "llama-swap"
@@ -278,7 +278,7 @@ MCP_LIST_WITH_SERVER = json.dumps(
 MCP_LIST_WITHOUT_SERVER = json.dumps({"servers": []}, indent=2) + "\n"
 assert SERVER_NAME not in MCP_LIST_WITHOUT_SERVER
 
-# The closed thirteen-key record shape, pinned by anvilkit.pirecord.build.
+# The closed thirteen-key record shape, pinned by anvilkit.pi.pirecord.build.
 RECORD_KEYS = {
     "config",
     "completed",
@@ -307,34 +307,34 @@ class PiapprovalTestCase(unittest.TestCase):
     """Shared guard + fake-runner machinery for the red module."""
 
     def _piapproval(self):
-        """Import anvilkit.piapproval, failing clearly if the module is absent."""
-        spec = importlib.util.find_spec("anvilkit.piapproval")
+        """Import anvilkit.pi.piapproval, failing clearly if the module is absent."""
+        spec = importlib.util.find_spec("anvilkit.pi.piapproval")
         self.assertIsNotNone(
             spec,
-            "anvilkit.piapproval cannot be imported; the phase-2 approval "
+            "anvilkit.pi.piapproval cannot be imported; the phase-2 approval "
             "run driver (behaviour 6) has not been implemented yet",
         )
-        return importlib.import_module("anvilkit.piapproval")
+        return importlib.import_module("anvilkit.pi.piapproval")
 
     def _get_run_one(self) -> Callable:
-        """Fetch ``anvilkit.piapproval.run_one``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.piapproval.run_one``, failing clearly if absent."""
         piapproval = self._piapproval()
         run_one = getattr(piapproval, "run_one", None)
         self.assertTrue(
             callable(run_one),
-            "anvilkit.piapproval.run_one is not callable; the run-one "
+            "anvilkit.pi.piapproval.run_one is not callable; the run-one "
             "driver (behaviour 6) has not been implemented yet",
         )
         return run_one
 
     def _get_approval_error(self):
-        """Fetch ``anvilkit.piapproval.ApprovalError``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.piapproval.ApprovalError``, failing clearly if absent."""
         piapproval = self._piapproval()
         approval_error = getattr(piapproval, "ApprovalError", None)
         self.assertTrue(
             isinstance(approval_error, type)
             and issubclass(approval_error, Exception),
-            "anvilkit.piapproval.ApprovalError is not an exception type; "
+            "anvilkit.pi.piapproval.ApprovalError is not an exception type; "
             "the unknown-config guard (behaviour 6) has not been "
             "implemented yet",
         )
@@ -1281,12 +1281,12 @@ class TestRunAll(PiapprovalTestCase):
     """
 
     def _get_run_all(self) -> Callable:
-        """Fetch ``anvilkit.piapproval.run_all``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.piapproval.run_all``, failing clearly if absent."""
         piapproval = self._piapproval()
         run_all = getattr(piapproval, "run_all", None)
         self.assertTrue(
             callable(run_all),
-            "anvilkit.piapproval.run_all is not callable; the run-all "
+            "anvilkit.pi.piapproval.run_all is not callable; the run-all "
             "driver (behaviour 7) has not been implemented yet",
         )
         return run_all
@@ -1614,7 +1614,7 @@ class TestRunAll(PiapprovalTestCase):
 
 
 # ---------------------------------------------------------------------------
-# Behaviour 8: "entrypoint" (``python3 -m anvilkit.piapproval``)
+# Behaviour 8: "entrypoint" (``python3 -m anvilkit.pi.piapproval``)
 #
 # The ``run_all`` seam is monkeypatched with a signature-bound recorder,
 # so no test touches pi, the gateway or the real config.yaml; the
@@ -1650,12 +1650,12 @@ class TestMain(PiapprovalTestCase):
     """main - the devcontainer entrypoint (behaviour 8)."""
 
     def _get_main(self) -> Callable:
-        """Fetch ``anvilkit.piapproval.main``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.piapproval.main``, failing clearly if absent."""
         piapproval = self._piapproval()
         main = getattr(piapproval, "main", None)
         self.assertTrue(
             callable(main),
-            "anvilkit.piapproval.main is not callable; the devcontainer "
+            "anvilkit.pi.piapproval.main is not callable; the devcontainer "
             "entrypoint (behaviour 8) has not been implemented yet",
         )
         return main
@@ -1666,7 +1666,7 @@ class TestMain(PiapprovalTestCase):
         value = getattr(piapproval, name, None)
         self.assertIsNotNone(
             value,
-            "anvilkit.piapproval.{} is missing; the entrypoint constants "
+            "anvilkit.pi.piapproval.{} is missing; the entrypoint constants "
             "(behaviour 8) have not been implemented yet".format(name),
         )
         return value

@@ -7,11 +7,11 @@ the bake-off pipeline produces:
 - the **run outcome** - exit code, wall time, the waited-for-input flag and
   the artifact paths, measured by the host recipe;
 - **the model's work** - the tool-call counters shaped by
-  ``anvilkit.pievents.tool_calls`` and the outcome dict shaped by
-  ``anvilkit.pievents.outcome``;
+  ``anvilkit.pi.pievents.tool_calls`` and the outcome dict shaped by
+  ``anvilkit.pi.pievents.outcome``;
 - **the fixture state** - the assertion result from
-  ``anvilkit.pifixture.assertion_passes`` and the changed-files list from
-  ``anvilkit.pifixture.changed_files``.
+  ``anvilkit.pi.pifixture.assertion_passes`` and the changed-files list from
+  ``anvilkit.pi.pifixture.changed_files``.
 
 ``build`` validates that every dimension arrived (a missing one raises
 ``RecordError`` naming the field, so a half-recorded run cannot become a

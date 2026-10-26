@@ -54,7 +54,7 @@ PATH="/tmp/pi-prefix/node_modules/.bin:$PATH" \
   PI_GATEWAY_HOST=host.docker.internal \
   PI_GATEWAY_PORT=8080 \
   PI_RESULTS_DIR=./results/phase2-pass4 \
-  .venv/bin/python -m anvilkit.piapproval
+  .venv/bin/python -m anvilkit.pi.piapproval
 ```
 
 - **`PATH=…`** puts the prefix install's `pi` binary first; nothing else
@@ -62,7 +62,7 @@ PATH="/tmp/pi-prefix/node_modules/.bin:$PATH" \
 - **`PI_GATEWAY_HOST` / `PI_GATEWAY_PORT`** — both required; a missing,
   empty or non-numeric value is an `ApprovalError` naming the variable,
   before any run happens
-  ([`anvilkit/piapproval.py`](../../anvilkit/piapproval.py) `main`).
+  ([`anvilkit/pi/piapproval.py`](../../anvilkit/pi/piapproval.py) `main`).
 - **`PI_RESULTS_DIR`** — where the four run subtrees and `table.md` land
   (default `./results`).
 - **Model id and context window are not hand-supplied**: the entry point
@@ -79,9 +79,9 @@ PATH="/tmp/pi-prefix/node_modules/.bin:$PATH" \
 ## 3. The four configurations
 
 Each configuration is one `pi` invocation, built by
-[`anvilkit/piargv.py`](../../anvilkit/piargv.py), driven against a **fresh
+[`anvilkit/pi/piargv.py`](../../anvilkit/pi/piargv.py), driven against a **fresh
 project directory** carrying the generated `.pi/` fixture
-([`anvilkit/pitrust.py`](../../anvilkit/pitrust.py)) and a **fresh, isolated
+([`anvilkit/pi/pitrust.py`](../../anvilkit/pi/pitrust.py)) and a **fresh, isolated
 agent directory** (section 5). The model runs use `-nt` (all tools
 disabled), so the model cannot reach the marker file with the `read` tool —
 the trust-gated `APPEND_SYSTEM.md` append is the only path to the marker.
@@ -130,7 +130,7 @@ results/phase2-pass4/
 ```
 
 - `record.json` is the closed thirteen-key record
-  ([`anvilkit/pirecord.py`](../../anvilkit/pirecord.py) `build`);
+  ([`anvilkit/pi/pirecord.py`](../../anvilkit/pi/pirecord.py) `build`);
   `completed` is exit code 0 **and** the assertion passing. For the
   mcp-list runs that is a stricter bar than the finding: `mcp-list-approve`
   exits 1 because pi exits 1 when an enabled server is not connected
@@ -190,7 +190,7 @@ Answers to the definition of done:
   ([`mcp.md`](../external/pi-dev/mcp.md)), so an exhausted budget means a
   real wait, not a slow connect.
 - **A timed-out run is recorded, not raised.** The runner
-  ([`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py)
+  ([`anvilkit/pi/pibakeoff.py`](../../anvilkit/pi/pibakeoff.py)
   `subprocess_runner`) drains both pipes continuously, kills the whole
   process group at the deadline, and reports `timed_out`; the run is
   recorded with `waited_for_input: true`, the partial stream still in the
@@ -214,7 +214,7 @@ saved vendor pages under
    is `~/.pi/agent`), and the agent directory's files sit directly under it
    ([`configuration.md`](../external/pi-dev/configuration.md)). The driver
    writes it flat accordingly
-   ([`anvilkit/piapproval.py`](../../anvilkit/piapproval.py) `run_one`).
+   ([`anvilkit/pi/piapproval.py`](../../anvilkit/pi/piapproval.py) `run_one`).
 2. **`pi mcp list` accepts no trust flag.** Its usage is
    `pi mcp list [--json]` only; passing `-a` or `-na` exits 1 with a usage
    error. The subcommand works outside a session and resolves project trust
@@ -223,8 +223,8 @@ saved vendor pages under
    entry; `defaultProjectTrust` in settings does not affect it. That is why
    the mcp-list pair's difference is materialised by seeding (or not
    seeding) that file, not by a flag
-   ([`anvilkit/pitrust.py`](../../anvilkit/pitrust.py) — fixture side;
-   [`anvilkit/piapproval.py`](../../anvilkit/piapproval.py) `run_one` —
+   ([`anvilkit/pi/pitrust.py`](../../anvilkit/pi/pitrust.py) — fixture side;
+   [`anvilkit/pi/piapproval.py`](../../anvilkit/pi/piapproval.py) `run_one` —
    trust-store side; the vendor docs only say project `mcp.json` "is only
    read for projects that are already trusted" without stating how a shell
    command decides that, [`cli.md`](../external/pi-dev/cli.md)).
@@ -234,7 +234,7 @@ saved vendor pages under
    the wrong, empty agent directory — with the models document and the
    seeded trust file both correctly on disk. The driver passes
    `str(agent_dir.resolve())`
-   ([`anvilkit/piapproval.py`](../../anvilkit/piapproval.py) `run_one`);
+   ([`anvilkit/pi/piapproval.py`](../../anvilkit/pi/piapproval.py) `run_one`);
    the failure mode this prevents — flat `models.json` and seeded
    `trust.json` present, yet every model run "Model not found" and every
    mcp-list run reporting the project untrusted — is recorded in the plan's

@@ -1,8 +1,8 @@
-"""Tests for anvilkit.pibakeoff - the bake-off run driver (``run_one``).
+"""Tests for anvilkit.pi.pibakeoff - the bake-off run driver (``run_one``).
 
 Written before the implementation (TDD, ``plans/pi-phase1b-docker.md``,
 behaviour 4: "run one configuration"). The production module
-``anvilkit.pibakeoff`` does not exist yet, so every test loads it through
+``anvilkit.pi.pibakeoff`` does not exist yet, so every test loads it through
 ``_pibakeoff``, which fails with a clear assertion instead of letting a
 collection-time ImportError mask the reason the suite is red.
 
@@ -30,7 +30,7 @@ invocation (a single dict, one call per ``run_one``)::
 
     {"argv": List[str], "cwd": str, "stdin": str, "timeout_s": float}
 
-- ``argv``: exactly the ``anvilkit.piargv`` output for that configuration
+- ``argv``: exactly the ``anvilkit.pi.piargv`` output for that configuration
   (``print_argv`` / ``json_argv`` / ``ultrawork_argv(model_id, prompt,
   extension_path)``);
 - ``cwd``: ``str(fixture_dir)`` - the fixture directory, verbatim;
@@ -202,9 +202,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import anvilkit.config as piconfig
-import anvilkit.pievents as pievents
-import anvilkit.pirecord as pirecord
-import anvilkit.piargv as piargv
+from anvilkit.pi import pievents as pievents
+from anvilkit.pi import pirecord as pirecord
+from anvilkit.pi import piargv as piargv
 
 MODEL_ID = "matrix.vars.coder"
 PROMPT = "Fix the adder"
@@ -216,7 +216,7 @@ MAX_TOKENS = 4096
 TIMEOUT_S = 900.0
 TIMESTAMP = "2026-10-21T00:00:00Z"
 
-# The closed thirteen-key record shape, pinned by anvilkit.pirecord.build.
+# The closed thirteen-key record shape, pinned by anvilkit.pi.pirecord.build.
 RECORD_KEYS = {
     "config",
     "completed",
@@ -260,33 +260,33 @@ JSONL_STREAM = "\n".join(
 
 class PibakeoffTestCase(unittest.TestCase):
     def _pibakeoff(self):
-        """Import anvilkit.pibakeoff, failing clearly if the module is absent."""
-        spec = importlib.util.find_spec("anvilkit.pibakeoff")
+        """Import anvilkit.pi.pibakeoff, failing clearly if the module is absent."""
+        spec = importlib.util.find_spec("anvilkit.pi.pibakeoff")
         self.assertIsNotNone(
             spec,
-            "anvilkit.pibakeoff cannot be imported; the bake-off run "
+            "anvilkit.pi.pibakeoff cannot be imported; the bake-off run "
             "driver (behaviour 4) has not been implemented yet",
         )
-        return importlib.import_module("anvilkit.pibakeoff")
+        return importlib.import_module("anvilkit.pi.pibakeoff")
 
     def _get_run_one(self) -> Callable:
-        """Fetch ``anvilkit.pibakeoff.run_one``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pibakeoff.run_one``, failing clearly if absent."""
         pibakeoff = self._pibakeoff()
         run_one = getattr(pibakeoff, "run_one", None)
         self.assertTrue(
             callable(run_one),
-            "anvilkit.pibakeoff.run_one is not callable; the run-one "
+            "anvilkit.pi.pibakeoff.run_one is not callable; the run-one "
             "driver (behaviour 4) has not been implemented yet",
         )
         return run_one
 
     def _get_bakeoff_error(self):
-        """Fetch ``anvilkit.pibakeoff.BakeoffError``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pibakeoff.BakeoffError``, failing clearly if absent."""
         pibakeoff = self._pibakeoff()
         bakeoff_error = getattr(pibakeoff, "BakeoffError", None)
         self.assertTrue(
             isinstance(bakeoff_error, type) and issubclass(bakeoff_error, Exception),
-            "anvilkit.pibakeoff.BakeoffError is not an exception type; the "
+            "anvilkit.pi.pibakeoff.BakeoffError is not an exception type; the "
             "unknown-config guard (behaviour 4) has not been implemented yet",
         )
         return bakeoff_error
@@ -766,12 +766,12 @@ class TestRunAll(PibakeoffTestCase):
     (behaviour 5: "run all and report")."""
 
     def _get_run_all(self) -> Callable:
-        """Fetch ``anvilkit.pibakeoff.run_all``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pibakeoff.run_all``, failing clearly if absent."""
         pibakeoff = self._pibakeoff()
         run_all = getattr(pibakeoff, "run_all", None)
         self.assertTrue(
             callable(run_all),
-            "anvilkit.pibakeoff.run_all is not callable; the run-all "
+            "anvilkit.pi.pibakeoff.run_all is not callable; the run-all "
             "driver (behaviour 5) has not been implemented yet",
         )
         return run_all
@@ -1103,12 +1103,12 @@ class TestSubprocessRunner(PibakeoffTestCase):
     contract (behaviour 7). Real system binaries, no pi, no mocks."""
 
     def _get_subprocess_runner(self) -> Callable:
-        """Fetch ``anvilkit.pibakeoff.subprocess_runner``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pibakeoff.subprocess_runner``, failing clearly if absent."""
         pibakeoff = self._pibakeoff()
         subprocess_runner = getattr(pibakeoff, "subprocess_runner", None)
         self.assertTrue(
             callable(subprocess_runner),
-            "anvilkit.pibakeoff.subprocess_runner is not callable; the real "
+            "anvilkit.pi.pibakeoff.subprocess_runner is not callable; the real "
             "subprocess runner (behaviour 7) has not been implemented yet",
         )
         return subprocess_runner
@@ -1332,11 +1332,11 @@ class TestSubprocessRunner(PibakeoffTestCase):
 
 
 # ---------------------------------------------------------------------------
-# anvilkit.pibakeoff.main - the in-container entrypoint
+# anvilkit.pi.pibakeoff.main - the in-container entrypoint
 # (plans/pi-phase1b-docker.md, behaviour 8: "entrypoint and compose
 # wiring"). Written before the implementation; the module has no ``main``
 # yet, so every test below fails with the explicit message
-# "anvilkit.pibakeoff.main is not callable" - never a bare AttributeError.
+# "anvilkit.pi.pibakeoff.main is not callable" - never a bare AttributeError.
 #
 # The ``run_all`` seam is monkeypatched with a signature-bound recorder,
 # so no test touches pi, npm or the gateway; the environment is patched
@@ -1381,12 +1381,12 @@ class TestMain(PibakeoffTestCase):
     """main - the in-container entrypoint (behaviour 8)."""
 
     def _get_main(self) -> Callable:
-        """Fetch ``anvilkit.pibakeoff.main``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pibakeoff.main``, failing clearly if absent."""
         pibakeoff = self._pibakeoff()
         main = getattr(pibakeoff, "main", None)
         self.assertTrue(
             callable(main),
-            "anvilkit.pibakeoff.main is not callable; the in-container "
+            "anvilkit.pi.pibakeoff.main is not callable; the in-container "
             "entrypoint (behaviour 8) has not been implemented yet",
         )
         return main
@@ -1397,7 +1397,7 @@ class TestMain(PibakeoffTestCase):
         value = getattr(pibakeoff, name, None)
         self.assertIsNotNone(
             value,
-            "anvilkit.pibakeoff.{} is missing; the entrypoint constants "
+            "anvilkit.pi.pibakeoff.{} is missing; the entrypoint constants "
             "(behaviour 8) have not been implemented yet".format(name),
         )
         return value
@@ -1629,7 +1629,7 @@ class TestMain(PibakeoffTestCase):
         with patcher, mock.patch.dict(os.environ, env):
             self.assertEqual(0, main())
         # main() adds no second validation: the whitespace-only value
-        # reaches run_all as-is; ultrawork_argv (anvilkit/piargv.py) is the
+        # reaches run_all as-is; ultrawork_argv (anvilkit/pi/piargv.py) is the
         # layer that rejects it.
         self.assertEqual("   ", recorder.calls[0]["extension_path"])
 

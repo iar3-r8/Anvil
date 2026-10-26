@@ -71,7 +71,7 @@ In the bake-off container the agent home is `/home/bakeoff`, and the
 driver writes the document to
 `/home/bakeoff/.pi/agent/models.json` on every run, into the named volume
 `pi-bakeoff-agent` (section 7). It builds it with
-[`anvilkit/piargv.py`](../../anvilkit/piargv.py)
+[`anvilkit/pi/piargv.py`](../../anvilkit/pi/piargv.py)
 `models_document(model_id, port, context_window, max_tokens, host=...)`;
 the `host` parameter carries the in-network address (`"llama-swap"`) — its
 default `"127.0.0.1"` leaves every host-side caller unchanged. The shape
@@ -114,8 +114,8 @@ that mode gives no permission, and the run dies on its first write to
 this is about the run itself being able to write.)
 
 The service carries the command — `command: ["python3", "-m",
-"anvilkit.pibakeoff"]` — so the operator passes nothing after the service
-name. The entry point ([`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py)
+"anvilkit.pi.pibakeoff"]` — so the operator passes nothing after the service
+name. The entry point ([`anvilkit/pi/pibakeoff.py`](../../anvilkit/pi/pibakeoff.py)
 `main`) reads the gateway host and port from the service env (a missing,
 empty or non-numeric value is a `BakeoffError` naming the variable), the
 model id and context window from the read-only mounted `config.yaml`
@@ -135,13 +135,13 @@ ultrawork extension pinned `pi-ultrawork@1.2.0`, both via
 (`PYTHONPATH=/app`); a non-root user `bakeoff`; `WORKDIR /workspace`.
 
 The remaining run parameters are module constants in
-[`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py) — no operator
+[`anvilkit/pi/pibakeoff.py`](../../anvilkit/pi/pibakeoff.py) — no operator
 input: `BAKEOFF_MAX_TOKENS = 4096` (sized to the task, not to the
 window), `BAKEOFF_TIMEOUT_S = 600.0` (the per-run wall-clock budget) and
 `BAKEOFF_PROMPT` (the phase-1 trivial task, verbatim below); the
 ultrawork extension path resolves from the pinned global npm root.
 
-The driver ([`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py))
+The driver ([`anvilkit/pi/pibakeoff.py`](../../anvilkit/pi/pibakeoff.py))
 composes the rest, unchanged in composition from phase 1. In the container
 its process-execution seam is the production `subprocess_runner` (the
 `runner` injection remains the test seam): it drains stdout and stderr
@@ -154,9 +154,9 @@ reported, never raised.
   `pifixture.write_fixture` into `results/<config>/fixture` — so every run
   starts known-red;
 - each invocation runs with **cwd = the fixture directory** (never an argv
-  token — [`anvilkit/piargv.py`](../../anvilkit/piargv.py)), **stdin from
+  token — [`anvilkit/pi/piargv.py`](../../anvilkit/pi/piargv.py)), **stdin from
   `/dev/null`** so a hung run cannot be mistaken for a working one, and a
-  list argv built by `anvilkit.piargv` — no shell, no string;
+  list argv built by `anvilkit.pi.piargv` — no shell, no string;
 - **stdout**, **stderr**, the **exit code** and **wall time** are captured
   per run, and stdout is drained to `events.jsonl` for the json
   configuration so Pi cannot stall on a full pipe buffer — stdout carries
@@ -201,7 +201,7 @@ export PI_GATEWAY_PORT=8080   # LLM_PORT from .env
 export PI_CONFIG_PATH=./config.yaml
 export PI_RESULTS_DIR=./results
 export PI_EXTENSION_PATH=$(npm root -g)/pi-ultrawork/src/index.ts
-.venv/bin/python -m anvilkit.pibakeoff
+.venv/bin/python -m anvilkit.pi.pibakeoff
 ```
 
 - **`PI_GATEWAY_HOST=host.docker.internal`** — the devcontainer carries
@@ -219,7 +219,7 @@ export PI_EXTENSION_PATH=$(npm root -g)/pi-ultrawork/src/index.ts
   [`config.yaml`](../../config.yaml), read-only to Anvil; the entry
   point's default is the Compose image's `/app/config.yaml`, which does
   not exist here
-  ([`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py)
+  ([`anvilkit/pi/pibakeoff.py`](../../anvilkit/pi/pibakeoff.py)
   `PI_CONFIG_PATH` read, `or`-fallback).
 - **`PI_RESULTS_DIR=./results`** — the repo-root `./results/`, the same
   shape as the Compose recipe's (section 6): one subtree per
@@ -233,7 +233,7 @@ export PI_EXTENSION_PATH=$(npm root -g)/pi-ultrawork/src/index.ts
   with `npm` at run time keeps the command working if the nodesource
   prefix ever changes. `main` reads the variable with the same
   `or`-fallback
-  ([`anvilkit/pibakeoff.py`](../../anvilkit/pibakeoff.py) `main`).
+  ([`anvilkit/pi/pibakeoff.py`](../../anvilkit/pi/pibakeoff.py) `main`).
 
 The run is not verified end to end in this section: the image rebuild
 and the run are yours — this documents the command, not a result. A run
@@ -259,7 +259,7 @@ results/
 ```
 
 - `record.json` per configuration is the closed thirteen-key record
-  ([`anvilkit/pirecord.py`](../../anvilkit/pirecord.py) `build`);
+  ([`anvilkit/pi/pirecord.py`](../../anvilkit/pi/pirecord.py) `build`);
   `completed` is exit code 0 **and** the fixture assertion passing — a
   green exit on an un-fixed fixture is not a completed run. The fields
   come from real runs: a blocked run (the 600 s budget exhausted) is
@@ -302,7 +302,7 @@ advisory **GHSA-mqxh-6gq7-558m**, non-interactive modes ignore
 project-local inputs **unless** `-a` is passed — so with the flag, a run
 loads the working directory's project-local `.pi` inputs. Here the working
 directory is the **freshly generated fixture**, which Anvil itself writes
-([`anvilkit/pifixture.py`](../../anvilkit/pifixture.py), fixed byte
+([`anvilkit/pi/pifixture.py`](../../anvilkit/pi/pifixture.py), fixed byte
 strings) — the trusted surface is therefore Anvil's own bytes and nothing
 operator-supplied. The advisory's own recommendation for unattended
 automation is a container carrying only the needed files
@@ -322,7 +322,7 @@ them:
 | `npm install -g @earendil-works/pi-coding-agent` | pinned `@earendil-works/pi-coding-agent@1.3.0` in the image, `--ignore-scripts` |
 | local `pi-ultrawork` checkout, path by hand | pinned `pi-ultrawork@1.2.0` in the image; the entry path is the pinned global npm root |
 | the repo virtualenv for the harness | `anvilkit/` copied into the image, `PYTHONPATH=/app` |
-| the operator assembles and runs the three argvs by hand | one command — the service's `command` is `python3 -m anvilkit.pibakeoff`; the model id comes from the mounted `config.yaml` |
+| the operator assembles and runs the three argvs by hand | one command — the service's `command` is `python3 -m anvilkit.pi.pibakeoff`; the model id comes from the mounted `config.yaml` |
 | gateway at `127.0.0.1:<published port>` | gateway at `llama-swap:8080` in-network, from the service env |
 | artifacts scattered under `run-<config>/` | everything under the `./results` bind mount |
 

@@ -2,7 +2,7 @@
 
 ``plans/pi-sandbox-image.md``, the Pi sandbox image: the compose file must
 declare the internal network the sandbox container rides on, and the
-``docker run --network`` token ``anvilkit.pisandbox.run_argv`` emits must be
+``docker run --network`` token ``anvilkit.pi.pisandbox.run_argv`` emits must be
 that same declared name. Asserting both sides in one cycle is what stops the
 run side and the compose side drifting apart.
 
@@ -26,7 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from anvilkit import pisandbox  # noqa: E402
+from anvilkit.pi import pisandbox  # noqa: E402
 from anvilkit import yamlio  # noqa: E402
 
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"

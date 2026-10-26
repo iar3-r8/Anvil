@@ -1,4 +1,4 @@
-"""Tests for anvilkit.pifixture - the bake-off fixture generator.
+"""Tests for anvilkit.pi.pifixture - the bake-off fixture generator.
 
 Written before the implementation (TDD, ``plans/pi-phase1-bakeoff.md``,
 behaviours 1-3: "fixture written", "fixture starts red and turns
@@ -7,7 +7,7 @@ green", and "fixture change detection").
 The fixture is GENERATED at runtime - every bake-off run must start
 known-red - so nothing is committed under ``tests/fixtures`` for it.
 
-The production module ``anvilkit.pifixture`` does not exist yet, so every
+The production module ``anvilkit.pi.pifixture`` does not exist yet, so every
 test loads it through ``_pifixture``, which fails with a clear assertion
 instead of letting a collection-time ImportError mask the reason the
 suite is red.
@@ -38,14 +38,14 @@ EXPECTED_FILES = [
 
 class PifixtureTestCase(unittest.TestCase):
     def _pifixture(self):
-        """Import anvilkit.pifixture, failing clearly if the module is absent."""
-        spec = importlib.util.find_spec("anvilkit.pifixture")
+        """Import anvilkit.pi.pifixture, failing clearly if the module is absent."""
+        spec = importlib.util.find_spec("anvilkit.pi.pifixture")
         self.assertIsNotNone(
             spec,
-            "anvilkit.pifixture cannot be imported; the fixture generator "
+            "anvilkit.pi.pifixture cannot be imported; the fixture generator "
             "has not been implemented yet",
         )
-        return importlib.import_module("anvilkit.pifixture")
+        return importlib.import_module("anvilkit.pi.pifixture")
 
     def _fresh_dest(self):
         tmp_dir = tempfile.TemporaryDirectory()
@@ -223,7 +223,7 @@ class TestAssertionPasses(PifixtureTestCase):
         pifixture = self._pifixture()
         self.assertTrue(
             callable(getattr(pifixture, "assertion_passes", None)),
-            "anvilkit.pifixture.assertion_passes is not callable; the "
+            "anvilkit.pi.pifixture.assertion_passes is not callable; the "
             "red/green check has not been implemented yet",
         )
         return pifixture
@@ -321,7 +321,7 @@ class TestChangedFiles(PifixtureTestCase):
         for name in ("digest_fixture", "changed_files"):
             self.assertTrue(
                 callable(getattr(pifixture, name, None)),
-                "anvilkit.pifixture.%s is not callable; fixture change "
+                "anvilkit.pi.pifixture.%s is not callable; fixture change "
                 "detection has not been implemented yet" % name,
             )
         return pifixture

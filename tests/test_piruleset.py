@@ -1,4 +1,4 @@
-"""Tests for anvilkit.piruleset - the importable GitHub ruleset builder.
+"""Tests for anvilkit.pi.piruleset - the importable GitHub ruleset builder.
 
 Written before the implementation (TDD, ``plans/ruleset-write.md``).
 This file currently pins behaviour 1 ("build_ruleset"), behaviour 2
@@ -19,7 +19,7 @@ exported-ruleset key set pinned by the golden shape reference
 ``name``, ``target``, ``source_type``, ``enforcement``, ``conditions``,
 ``rules``, ``bypass_actors``.
 
-The production module ``anvilkit.piruleset`` does not exist yet, so this
+The production module ``anvilkit.pi.piruleset`` does not exist yet, so this
 file imports it at module level and the suite fails with an ImportError
 until the green step adds it.
 
@@ -55,7 +55,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from anvilkit import piruleset  # noqa: E402
+from anvilkit.pi import piruleset  # noqa: E402
 
 
 def expected_ruleset() -> Dict[str, Any]:

@@ -1,4 +1,4 @@
-"""Tests for anvilkit.pirecord - the bake-off run record builder.
+"""Tests for anvilkit.pi.pirecord - the bake-off run record builder.
 
 Written before the implementation (TDD, ``plans/pi-phase1-bakeoff.md``,
 behaviour 11: "run record"). Behaviour 12 (``render_table``) lands in a
@@ -10,15 +10,15 @@ The three dimension sources the record assembles are:
   evidence flag and the artifact paths, measured by the host recipe
   (behaviours 13-15);
 - **the model's work** - the tool-call counters shaped exactly as
-  ``anvilkit.pievents.tool_calls`` returns them (behaviour 9) and the
-  outcome/usage dict shaped exactly as ``anvilkit.pievents.outcome``
+  ``anvilkit.pi.pievents.tool_calls`` returns them (behaviour 9) and the
+  outcome/usage dict shaped exactly as ``anvilkit.pi.pievents.outcome``
   returns them (behaviour 10);
 - **the fixture state** - the assertion result shaped exactly as
-  ``anvilkit.pifixture.assertion_passes`` returns it (behaviour 2) and
+  ``anvilkit.pi.pifixture.assertion_passes`` returns it (behaviour 2) and
   the changed-files list shaped exactly as
-  ``anvilkit.pifixture.changed_files`` returns it (behaviour 3).
+  ``anvilkit.pi.pifixture.changed_files`` returns it (behaviour 3).
 
-The production module ``anvilkit.pirecord`` does not exist yet, so every
+The production module ``anvilkit.pi.pirecord`` does not exist yet, so every
 test loads it through ``_pirecord``, which fails with a clear assertion
 instead of letting a collection-time ImportError mask the reason the
 suite is red.
@@ -140,33 +140,33 @@ TIMESTAMP = "2026-10-20T21:00:00Z"
 
 class PirecordTestCase(unittest.TestCase):
     def _pirecord(self):
-        """Import anvilkit.pirecord, failing clearly if the module is absent."""
-        spec = importlib.util.find_spec("anvilkit.pirecord")
+        """Import anvilkit.pi.pirecord, failing clearly if the module is absent."""
+        spec = importlib.util.find_spec("anvilkit.pi.pirecord")
         self.assertIsNotNone(
             spec,
-            "anvilkit.pirecord cannot be imported; the run-record "
+            "anvilkit.pi.pirecord cannot be imported; the run-record "
             "builder (behaviour 11) has not been implemented yet",
         )
-        return importlib.import_module("anvilkit.pirecord")
+        return importlib.import_module("anvilkit.pi.pirecord")
 
     def _get_build(self) -> Callable:
-        """Fetch ``anvilkit.pirecord.build``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pirecord.build``, failing clearly if absent."""
         pirecord = self._pirecord()
         build = getattr(pirecord, "build", None)
         self.assertTrue(
             callable(build),
-            "anvilkit.pirecord.build is not callable; the run-record "
+            "anvilkit.pi.pirecord.build is not callable; the run-record "
             "builder (behaviour 11) has not been implemented yet",
         )
         return build
 
     def _get_record_error(self):
-        """Fetch ``anvilkit.pirecord.RecordError``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pirecord.RecordError``, failing clearly if absent."""
         pirecord = self._pirecord()
         record_error = getattr(pirecord, "RecordError", None)
         self.assertTrue(
             isinstance(record_error, type) and issubclass(record_error, Exception),
-            "anvilkit.pirecord.RecordError is not an exception type; the "
+            "anvilkit.pi.pirecord.RecordError is not an exception type; the "
             "half-record guard (behaviour 11) has not been implemented yet",
         )
         return record_error
@@ -701,12 +701,12 @@ class RenderTableTestCase(PirecordTestCase):
     )
 
     def _get_render_table(self) -> Callable:
-        """Fetch ``anvilkit.pirecord.render_table``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pirecord.render_table``, failing clearly if absent."""
         pirecord = self._pirecord()
         render_table = getattr(pirecord, "render_table", None)
         self.assertTrue(
             callable(render_table),
-            "anvilkit.pirecord.render_table is not callable; the "
+            "anvilkit.pi.pirecord.render_table is not callable; the "
             "go/no-go table renderer (behaviour 12) has not been "
             "implemented yet",
         )
