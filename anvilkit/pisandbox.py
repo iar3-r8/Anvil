@@ -1,11 +1,10 @@
 """Sandbox image argv builders - one job: turn inputs into ``docker`` command lines.
 
-Phase 4 of the Pi dev harness (``plans/pi-sandbox-image.md``) ships a
-sandbox image the coding agent runs inside. This module is the single
-place that decides what the ``docker build`` and ``docker run`` argument
-vectors look like, so the later execution phase (#53) can ``subprocess``
-them without re-deriving token order. It builds and does not execute: no
-``subprocess`` call lives here.
+The sandbox image is the container the coding agent runs inside. This
+module is the single place that decides what the ``docker build`` and
+``docker run`` argument vectors for it look like, so the driver that
+executes them can ``subprocess`` without re-deriving token order. It
+builds and does not execute: no ``subprocess`` call lives here.
 
 Builders return a ``List[str]``, never a string: the list goes straight
 to ``subprocess`` with no shell, so no token can be re-parsed and no
@@ -14,7 +13,7 @@ quoting rules need to be obeyed.
 ``build_argv`` builds the image build, with the context at the repo root
 never the Dockerfile's directory. ``run_argv`` builds the container run
 and ends at the image tag - the ``pi`` invocation itself (model, prompt,
-tools) is a later capability and not part of the argv yet. The optional
+tools) is the driver's job, not part of this argv. The optional
 env mapping is an allowlist: exactly three names may be passed in, and a
 name that looks like a credential is refused before it reaches the
 container, where every process inside can read any variable passed in.
@@ -45,9 +44,9 @@ _INTERNAL_NETWORK = "sandbox-internal"
 _IMAGE_UID = "1001"
 _DOCKERFILE = "docker/Dockerfile.sandbox"
 
-# Behaviour 8: exactly these names may be passed into the container, each
-# for a stated reason - the gateway pair the in-network sandbox needs to
-# reach llama-swap, and the agent directory that points Pi at the
+# Exactly these names may be passed into the container, each for a stated
+# reason - the gateway pair the in-network sandbox needs to reach
+# llama-swap, and the agent directory that points Pi at the
 # container-local home.
 _ALLOWED_ENV_NAMES = (
     "PI_GATEWAY_HOST",
@@ -122,7 +121,7 @@ def _env_tokens(env: Dict[str, str]) -> List[str]:
 
 
 def build_argv(tag: str) -> List[str]:
-    """Build the argv for the sandbox image build (behaviour 6).
+    """Build the argv for the sandbox image build.
 
     The context is the repo root (``.``), never the Dockerfile's
     directory, so the build sees the same tree an operator would.
@@ -139,7 +138,7 @@ def run_argv(
     tag: str,
     env: Optional[Dict[str, str]] = None,
 ) -> List[str]:
-    """Build the argv for the sandbox container run (behaviours 7 and 8).
+    """Build the argv for the sandbox container run.
 
     The host repo is bound at ``/workspace``; the container-local agent
     home is the named volume ``sandbox-agent``, never a host bind, so
@@ -147,7 +146,7 @@ def run_argv(
     only the internal network, runs as the image's non-root uid, drops
     all capabilities, and may not gain privileges. An env mapping adds
     one ``-e`` pair per allowlisted name. The argv ends at the image tag;
-    the ``pi`` invocation itself is not part of it yet.
+    the ``pi`` invocation itself is the driver's job, not part of this argv.
 
     Raises:
         SandboxError: ``repo_path`` is empty, not absolute, or has a

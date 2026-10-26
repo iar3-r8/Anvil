@@ -1,7 +1,7 @@
-# Pi phase 4 — sandbox image build and run recipe
+# Pi sandbox image build and run recipe
 
 A container image and run recipe such that a misbehaving agent loses a
-container, not a home directory (issue #51). The image carries the Pi CLI
+container, not a home directory. The image carries the Pi CLI
 alone — no harness, no ultrawork extension, no VCS client
 ([`docker/Dockerfile.sandbox`](../../docker/Dockerfile.sandbox)) — and the
 container rides only an internal network, so a run that goes rogue dies with
@@ -37,8 +37,8 @@ The context is the repo root (the `.`), never the Dockerfile's directory.
 This command — and the run command in section 3 — is exactly the argv the
 builders emit: [`anvilkit/pisandbox.py`](../../anvilkit/pisandbox.py)
 `build_argv` and `run_argv`. That module is the single place the token order
-is decided; the later execution phase (issue #53) `subprocess`es those same
-vectors rather than re-deriving them.
+is decided; the driver `subprocess`es those same vectors rather than
+re-deriving them.
 
 What the image carries: `node:24-bookworm-slim` plus `bash`,
 `ca-certificates` and `ripgrep`; Pi pinned exactly
@@ -98,10 +98,9 @@ value passed in is readable by every process inside:
   instead of in the default `~/.pi/agent`.
 
 The argv **ends at the image tag**. The `pi` invocation itself (model,
-prompt, tools) is not part of this recipe — it is the later execution phase
-(issue #53). Until then, a bare run just starts the image's default command
-and exits; section 4 appends a command to the same run to inspect the
-container's state.
+prompt, tools) is added by the driver, which is separate from this recipe.
+A bare run just starts the image's default command and exits; section 4
+appends a command to the same run to inspect the container's state.
 
 ## 4. Verify the host `~/.pi` is unreachable
 

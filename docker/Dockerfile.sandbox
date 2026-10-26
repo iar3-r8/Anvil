@@ -1,6 +1,6 @@
 # Sandbox image: the Pi CLI alone — no harness, no ultrawork, no VCS client.
 # The missing VCS client means a nested push inside a script finds no binary;
-# the network boundary (behaviours 7 and 10 of the plan) is what stops egress.
+# the network boundary is what stops egress.
 FROM node:24-bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
