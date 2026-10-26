@@ -1,4 +1,4 @@
-"""Tests for anvilkit.pievents - the JSONL event-stream reader.
+"""Tests for anvilkit.pi.pievents - the JSONL event-stream reader.
 
 Written before the implementation (TDD, ``plans/pi-phase1-bakeoff.md``,
 behaviour 8: "JSONL framing"). Behaviours 9-10 (tool accounting,
@@ -10,7 +10,7 @@ preceding carriage return, and treat Unicode line and paragraph
 separators (U+2028/U+2029) as ordinary string content, never as record
 boundaries.
 
-The production module ``anvilkit.pievents`` does not exist yet, so every
+The production module ``anvilkit.pi.pievents`` does not exist yet, so every
 test loads it through ``_pievents``, which fails with a clear assertion
 instead of letting a collection-time ImportError mask the reason the
 suite is red.
@@ -49,14 +49,14 @@ U2029 = "\u2029"
 
 class PieventsTestCase(unittest.TestCase):
     def _pievents(self):
-        """Import anvilkit.pievents, failing clearly if the module is absent."""
-        spec = importlib.util.find_spec("anvilkit.pievents")
+        """Import anvilkit.pi.pievents, failing clearly if the module is absent."""
+        spec = importlib.util.find_spec("anvilkit.pi.pievents")
         self.assertIsNotNone(
             spec,
-            "anvilkit.pievents cannot be imported; the JSONL event-stream "
+            "anvilkit.pi.pievents cannot be imported; the JSONL event-stream "
             "reader has not been implemented yet",
         )
-        return importlib.import_module("anvilkit.pievents")
+        return importlib.import_module("anvilkit.pi.pievents")
 
 
 class TestReturnShape(PieventsTestCase):
@@ -400,12 +400,12 @@ class ToolCallsTestCase(PieventsTestCase):
     the real stream shape through ``parse``."""
 
     def _tool_calls(self):
-        """Fetch ``anvilkit.pievents.tool_calls``, failing clearly if absent."""
+        """Fetch ``anvilkit.pi.pievents.tool_calls``, failing clearly if absent."""
         pievents = self._pievents()
         tool_calls = getattr(pievents, "tool_calls", None)
         self.assertTrue(
             callable(tool_calls),
-            "anvilkit.pievents.tool_calls is not callable; the "
+            "anvilkit.pi.pievents.tool_calls is not callable; the "
             "tool-call accounting (behaviour 9) has not been "
             "implemented yet",
         )
@@ -818,7 +818,7 @@ class OutcomeTestCase(PieventsTestCase):
     builders, so the tests see the real stream shape through ``parse``."""
 
     def _get_outcome(self):
-        """Fetch ``anvilkit.pievents.outcome``, failing clearly if absent.
+        """Fetch ``anvilkit.pi.pievents.outcome``, failing clearly if absent.
 
         Named ``_get_outcome`` on purpose: ``unittest.TestCase`` owns an
         instance attribute called ``_outcome`` (set by ``TestCase.__call__``
@@ -830,7 +830,7 @@ class OutcomeTestCase(PieventsTestCase):
         outcome = getattr(pievents, "outcome", None)
         self.assertTrue(
             callable(outcome),
-            "anvilkit.pievents.outcome is not callable; the "
+            "anvilkit.pi.pievents.outcome is not callable; the "
             "outcome/usage extraction (behaviour 10) has not been "
             "implemented yet",
         )

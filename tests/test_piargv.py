@@ -1,11 +1,11 @@
-"""Tests for anvilkit.piargv - the bake-off invocation argv builder.
+"""Tests for anvilkit.pi.piargv - the bake-off invocation argv builder.
 
 Written before the implementation (TDD, ``plans/pi-phase1-bakeoff.md``,
 behaviour 4: "print invocation argv" and behaviour 5: "json invocation
 argv"). Behaviours 6 (ultrawork argv) and 7 (models document) will
 land in later cycles as further classes in the same file.
 
-The production module ``anvilkit.piargv`` does not exist yet, so every
+The production module ``anvilkit.pi.piargv`` does not exist yet, so every
 test loads it through ``_piargv``, which fails with a clear assertion
 instead of letting a collection-time ImportError mask the reason the
 suite is red.
@@ -25,14 +25,14 @@ if str(REPO_ROOT) not in sys.path:
 
 class PiargvTestCase(unittest.TestCase):
     def _piargv(self):
-        """Import anvilkit.piargv, failing clearly if the module is absent."""
-        spec = importlib.util.find_spec("anvilkit.piargv")
+        """Import anvilkit.pi.piargv, failing clearly if the module is absent."""
+        spec = importlib.util.find_spec("anvilkit.pi.piargv")
         self.assertIsNotNone(
             spec,
-            "anvilkit.piargv cannot be imported; the bake-off argv "
+            "anvilkit.pi.piargv cannot be imported; the bake-off argv "
             "builder has not been implemented yet",
         )
-        return importlib.import_module("anvilkit.piargv")
+        return importlib.import_module("anvilkit.pi.piargv")
 
 
 class TestPrintArgv(PiargvTestCase):

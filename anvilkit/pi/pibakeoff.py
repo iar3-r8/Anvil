@@ -3,16 +3,16 @@
 Phase 1b (``plans/pi-phase1b-docker.md``) drives the three bake-off
 configurations - print, json, ultrawork. Behaviour 4 (``run_one``) runs one
 of them against a fresh fixture directory and returns the
-``anvilkit.pirecord.build`` record for it; behaviour 5 (``run_all``) is a
+``anvilkit.pi.pirecord.build`` record for it; behaviour 5 (``run_all``) is a
 thin orchestrator over it - the three configurations in the fixed order, a
 ``record.json`` per configuration, one ``table.md`` for the lot, and a
 no-measurement fallback record when one configuration's runner raises, so a
 single failure never aborts the other two.
 
 This module decides nothing about tokens: the argv comes verbatim from
-``anvilkit.piargv``, the fixture and digests from ``anvilkit.pifixture``, the
-stream accounting from ``anvilkit.pievents`` and the record shape from
-``anvilkit.pirecord`` - it only composes them in order. Process execution is
+``anvilkit.pi.piargv``, the fixture and digests from ``anvilkit.pi.pifixture``, the
+stream accounting from ``anvilkit.pi.pievents`` and the record shape from
+``anvilkit.pi.pirecord`` - it only composes them in order. Process execution is
 the seam: the caller injects a ``runner`` callable that takes one invocation
 dict (``argv``, ``cwd``, ``stdin``, ``timeout_s``) and returns one result dict
 (``exit_code``, ``stdout``, ``stderr``, ``wall_time_s``, ``timed_out``,
@@ -37,11 +37,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-import anvilkit.config as piconfig
-import anvilkit.piargv as piargv
-import anvilkit.pievents as pievents
-import anvilkit.pifixture as pifixture
-import anvilkit.pirecord as pirecord
+from .. import config as piconfig
+from . import piargv
+from . import pievents
+from . import pifixture
+from . import pirecord
 
 
 # The in-container entrypoint's pinned defaults (behaviour 8). ``config.yaml``

@@ -671,7 +671,7 @@ class BakeoffServiceDefinitionTests(BakeoffServiceCase):
 # pi-bakeoff entrypoint and compose wiring (behaviour 8 of
 # plans/pi-phase1b-docker.md).
 #
-# The in-container entrypoint is `python3 -m anvilkit.pibakeoff` (behaviour 8
+# The in-container entrypoint is `python3 -m anvilkit.pi.pibakeoff` (behaviour 8
 # of the plan: "it reads PI_GATEWAY_HOST/PI_GATEWAY_PORT from the
 # environment ... the model id and context window from the read-only mounted
 # config.yaml via anvilkit.config.read_models ... it runs run_all against
@@ -690,7 +690,7 @@ class BakeoffServiceDefinitionTests(BakeoffServiceCase):
 # message naming the missing key - never a bare KeyError.
 # ---------------------------------------------------------------------------
 
-BAKEOFF_COMMAND = ["python3", "-m", "anvilkit.pibakeoff"]
+BAKEOFF_COMMAND = ["python3", "-m", "anvilkit.pi.pibakeoff"]
 CONFIG_BIND_TARGET = "/app/config.yaml"
 CONFIG_BIND_SOURCE = "./config.yaml"
 

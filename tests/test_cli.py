@@ -199,7 +199,7 @@ def five_rule_branch_rules():
     element's ``type`` and ``parameters`` are copied through unchanged into
     fresh dicts, so the ``build_ruleset()`` result is never mutated.
     """
-    from anvilkit import piruleset
+    from anvilkit.pi import piruleset
 
     rules = []
     for element in piruleset.build_ruleset()["rules"]:
@@ -2686,7 +2686,7 @@ class TestDoctor(CliCase):
         # Behaviour 8: doctor's Guards section reports through the single
         # check_all seam, so a five-rule target reports all five rules - and
         # a sixth check added to check_all reaches doctor without an edit.
-        from anvilkit import piguard
+        from anvilkit.pi import piguard
 
         findings = piguard.check_all(five_rule_branch_rules())
         with mock.patch.object(
@@ -2758,7 +2758,7 @@ class TestVerifyGuards(CliCase):
         # Behaviour 8: verify-guards reports through the single check_all
         # seam, so a five-rule target reports all five rules - and a sixth
         # check added to check_all reaches verify-guards without an edit.
-        from anvilkit import piguard
+        from anvilkit.pi import piguard
 
         findings = piguard.check_all(five_rule_branch_rules())
         result, check_all_mock = self.run_verify_guards_with_check_all(

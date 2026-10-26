@@ -27,10 +27,11 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import click
 import typer
 
-from . import compose, config, env, health, piguard, piruleset, prompts, provision, render
+from . import compose, config, env, health, prompts, provision, render
 from .compose import Compose, ComposeError
 from .config import ConfigError
-from .piruleset import RulesetError
+from .pi import piguard, piruleset
+from .pi.piruleset import RulesetError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
 from .render import RenderError

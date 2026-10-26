@@ -4,25 +4,25 @@
 configuration" and behaviour 7: "run all four and report". ``run_one``
 drives one of the four phase-2 configurations -
 ``approve``, ``no-approve``, ``mcp-list-approve``, ``mcp-list-no-approve`` -
-end to end: it writes the project fixture (``anvilkit.pitrust``) into the
+end to end: it writes the project fixture (``anvilkit.pi.pitrust``) into the
 project directory, writes the models document into the ISOLATED per-run
 agent directory (never the invoking user's ``~/.pi``), materialises the
 before/after project digests (``before.sha256`` / ``after.sha256``, the
-``anvilkit.pifixture.digest_fixture`` manifest of the project directory
+``anvilkit.pi.pifixture.digest_fixture`` manifest of the project directory
 taken before the runner is invoked and after it returns), invokes the
 injected runner exactly once with the configuration's argv, captures the
 artifacts (stdout, stderr, and events.jsonl for the two ``--mode json``
 configs; evidence.txt for a timed-out run) and returns the
-``anvilkit.pirecord.build`` record for the run.
+``anvilkit.pi.pirecord.build`` record for the run.
 
 This module decides nothing about tokens: the argv comes verbatim from
-``anvilkit.piargv`` (``approval_argv`` / ``mcp_list_argv``), the project
-fixture from ``anvilkit.pitrust`` and the record shape from
-``anvilkit.pirecord`` - it only composes them in order. The stream
+``anvilkit.pi.piargv`` (``approval_argv`` / ``mcp_list_argv``), the project
+fixture from ``anvilkit.pi.pitrust`` and the record shape from
+``anvilkit.pi.pirecord`` - it only composes them in order. The stream
 accounting runs on the captured stdout for the two ``--mode json`` configs
 and on the empty event list for the mcp-list configs (whose stdout is a
 ``pi mcp list --json`` document, not a stream), mirroring
-``anvilkit.pibakeoff``. Process execution is the seam: the caller injects a
+``anvilkit.pi.pibakeoff``. Process execution is the seam: the caller injects a
 ``runner`` callable that takes one invocation dict (``argv``, ``cwd``,
 ``stdin``, ``timeout_s``, ``env``) and returns one result dict (``exit_code``,
 ``stdout``, ``stderr``, ``wall_time_s``, ``timed_out``, ``evidence``), so the
@@ -38,7 +38,7 @@ stdout artifact and the runner's evidence in evidence.txt - never an
 exception.
 
 Behaviour 8: "entrypoint" - ``main`` is the devcontainer entrypoint
-(``python3 -m anvilkit.piapproval``): it reads the gateway host and port
+(``python3 -m anvilkit.pi.piapproval``): it reads the gateway host and port
 from the environment (``PI_GATEWAY_HOST`` / ``PI_GATEWAY_PORT``, both
 required and named on failure), the model id and context window from the
 read-only ``config.yaml`` (``PI_CONFIG_PATH``, defaulting to
@@ -48,7 +48,7 @@ read-only ``config.yaml`` (``PI_CONFIG_PATH``, defaulting to
 to :func:`run_all` with the pinned constants ``MAX_TOKENS``, ``PROMPT``,
 ``MARKER`` and ``UNREACHABLE_COMMAND``, its own ISO-8601 UTC timestamp,
 and either the injected ``runner`` or
-``anvilkit.pibakeoff.subprocess_runner`` when none is given. It returns
+``anvilkit.pi.pibakeoff.subprocess_runner`` when none is given. It returns
 the exit code - 0 whenever the four runs were measured, since a negative
 finding is a successful measurement - and the module's final line exits
 the interpreter with that code under the ``__main__`` guard, the only
@@ -67,13 +67,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
-import anvilkit.config as piconfig
-import anvilkit.piargv as piargv
-import anvilkit.pibakeoff as pibakeoff
-import anvilkit.pievents as pievents
-import anvilkit.pifixture as pifixture
-import anvilkit.pirecord as pirecord
-import anvilkit.pitrust as pitrust
+from .. import config as piconfig
+from . import piargv
+from . import pibakeoff
+from . import pievents
+from . import pifixture
+from . import pirecord
+from . import pitrust
 
 
 #: The four pinned phase-2 configurations (behaviour 6).
@@ -119,7 +119,9 @@ UNREACHABLE_COMMAND = "anvil-nonexistent-mcp-server"
 #: The read-only llama-swap config.yaml at the repo root; the
 #: ``PI_CONFIG_PATH`` default (behaviour 8) - the same file the Compose
 #: service binds read-only at ``/app/config.yaml``.
-_DEFAULT_CONFIG_PATH = str(Path(__file__).resolve().parent.parent / "config.yaml")
+_DEFAULT_CONFIG_PATH = str(
+    Path(__file__).resolve().parent.parent.parent / "config.yaml"
+)
 
 #: The results directory; the ``PI_RESULTS_DIR`` default, the
 #: devcontainer recipe's ``PI_RESULTS_DIR=./results`` shape (behaviour 8).
@@ -382,7 +384,7 @@ def _fallback_record(
 ) -> Dict[str, Any]:
     """The no-measurement record for a configuration whose runner raised.
 
-    Mirrors ``anvilkit.pibakeoff._fallback_record``: the exception's message
+    Mirrors ``anvilkit.pi.pibakeoff._fallback_record``: the exception's message
     lands as the assertion's stderr (the closed thirteen-key record shape has
     no free-form evidence field); everything else is the baseline: a non-zero
     sentinel exit code, zero wall time, no changed files, the empty-stream
@@ -440,7 +442,7 @@ def run_all(
     ``pirecord.render_table(records)`` (records in run order), and that same
     string is returned.
 
-    Failure isolation (mirroring ``anvilkit.pibakeoff.run_all``): if
+    Failure isolation (mirroring ``anvilkit.pi.pibakeoff.run_all``): if
     ``run_one`` raises for one configuration (any exception from the runner
     or the run), the exception is caught and a no-measurement fallback record
     is built for that configuration - the exception's message becomes the
@@ -526,7 +528,7 @@ def _env_value(name: str) -> str:
 def main(runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None) -> int:
     """The devcontainer entrypoint (behaviour 8: "entrypoint").
 
-    ``plans/pi-phase2-approval.md``: ``python3 -m anvilkit.piapproval`` in
+    ``plans/pi-phase2-approval.md``: ``python3 -m anvilkit.pi.piapproval`` in
     the devcontainer environment. Reads the gateway host and port from
     the environment (``PI_GATEWAY_HOST`` / ``PI_GATEWAY_PORT``, both
     required; a missing, empty or non-numeric value raises
@@ -539,7 +541,7 @@ def main(runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None) ->
     :func:`run_all` with the pinned constants :data:`MAX_TOKENS`,
     :data:`PROMPT`, :data:`MARKER` and :data:`UNREACHABLE_COMMAND`, its
     own ISO-8601 UTC timestamp, and either the injected ``runner`` or
-    ``anvilkit.pibakeoff.subprocess_runner`` when none is given.
+    ``anvilkit.pi.pibakeoff.subprocess_runner`` when none is given.
 
     A table in which all four assertions failed is a successful run: the
     exit code is 0 either way - a negative finding is a successful
@@ -549,7 +551,7 @@ def main(runner: Optional[Callable[[Dict[str, Any]], Dict[str, Any]]] = None) ->
     Args:
         runner: The process-execution seam, handed to ``run_all``
             verbatim; when ``None`` the default is
-            ``anvilkit.pibakeoff.subprocess_runner`` (imported, not
+            ``anvilkit.pi.pibakeoff.subprocess_runner`` (imported, not
             re-implemented).
 
     Returns:

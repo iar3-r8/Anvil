@@ -1,9 +1,9 @@
-"""Tests for anvilkit.pitrust - the project ``.pi/`` fixture writer.
+"""Tests for anvilkit.pi.pitrust - the project ``.pi/`` fixture writer.
 
 Written before the implementation (TDD, ``plans/pi-phase2-approval.md``,
 behaviour 5: "project ``.pi/`` fixture").
 
-The production module ``anvilkit.pitrust`` does not exist yet, so every
+The production module ``anvilkit.pi.pitrust`` does not exist yet, so every
 test loads it through ``_pitrust``, which fails with a clear assertion
 instead of letting a collection-time ImportError mask the reason the
 suite is red.
@@ -36,14 +36,14 @@ UNREACHABLE_COMMAND = "anvil-nonexistent-mcp-server"
 
 class PitrustTestCase(unittest.TestCase):
     def _pitrust(self):
-        """Import anvilkit.pitrust, failing clearly if the module is absent."""
-        spec = importlib.util.find_spec("anvilkit.pitrust")
+        """Import anvilkit.pi.pitrust, failing clearly if the module is absent."""
+        spec = importlib.util.find_spec("anvilkit.pi.pitrust")
         self.assertIsNotNone(
             spec,
-            "anvilkit.pitrust cannot be imported; the project .pi/ fixture "
+            "anvilkit.pi.pitrust cannot be imported; the project .pi/ fixture "
             "writer has not been implemented yet",
         )
-        return importlib.import_module("anvilkit.pitrust")
+        return importlib.import_module("anvilkit.pi.pitrust")
 
     def _fresh_dest(self):
         """A fresh, existing destination directory in a temp tree."""
@@ -239,11 +239,11 @@ class TestPitrustModuleShape(PitrustTestCase):
         pitrust = self._pitrust()
         self.assertTrue(
             issubclass(getattr(pitrust, "TrustError", None), Exception),
-            "anvilkit.pitrust must define TrustError, the single refusal",
+            "anvilkit.pi.pitrust must define TrustError, the single refusal",
         )
         self.assertTrue(
             callable(getattr(pitrust, "write_project", None)),
-            "anvilkit.pitrust.write_project is not callable; the project "
+            "anvilkit.pi.pitrust.write_project is not callable; the project "
             ".pi/ fixture writer has not been implemented yet",
         )
 
