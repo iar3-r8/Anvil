@@ -1444,6 +1444,88 @@ class TestLowTierRejectsTwoCoderIds(CliCase):
         )
 
 
+class TestHighTierDefaults(CliCase):
+    """Behaviour 16 (high_tier_defaults): the high tier's eight-GPU spread
+    names four device slots on every ``--tier high --yes`` run.
+
+    The high plan carries ``0`` for the generic slot, ``1,2`` for the two
+    coder slots and ``3`` for the embedder, so the four keys must read
+    ``0`` / ``1`` / ``2`` / ``3`` and ``ANVIL_TIER`` must read ``high``.
+    The remaining four GPUs are the user's to wire up in
+    ``config.yaml`` — Anvil must not name them in ``.env``.
+    """
+
+    def env_values(self):
+        from anvilkit import env
+
+        return env.read(self.env_path())
+
+    def test_tier_high_yes_records_tier_and_the_four_device_spread(self):
+        """``--tier high --yes``: ``ANVIL_TIER=high`` plus ``0`` / ``1`` / ``2`` / ``3``.
+
+        Asserts the tier id and the four device values together, in one run,
+        so a later change that moves any single slot or forgets the tier key
+        is caught. The high tier has eight GPUs, but Anvil names only these
+        four slots; the other four must not appear in ``.env``.
+        """
+        self.invoke(["init", "--tier", "high", "--yes"])
+        values = self.env_values()
+        self.assertEqual(
+            {
+                "ANVIL_TIER": "high",
+                "LLM_DEVICE_ID_0": "0",
+                "LLM_DEVICE_ID_1": "1",
+                "LLM_DEVICE_ID_2": "2",
+                "INDEXER_STORAGE_DEVICE_ID": "3",
+            },
+            {key: values[key] for key in (
+                "ANVIL_TIER",
+                "LLM_DEVICE_ID_0",
+                "LLM_DEVICE_ID_1",
+                "LLM_DEVICE_ID_2",
+                "INDEXER_STORAGE_DEVICE_ID",
+            )},
+            "the high tier must record ANVIL_TIER=high and the device spread "
+            "0 / 1 / 2 / 3; .env values: {}".format(
+                {
+                    key: values[key]
+                    for key in (
+                        "ANVIL_TIER",
+                        "LLM_DEVICE_ID_0",
+                        "LLM_DEVICE_ID_1",
+                        "LLM_DEVICE_ID_2",
+                        "INDEXER_STORAGE_DEVICE_ID",
+                    )
+                }
+            ),
+        )
+
+    def test_tier_high_names_exactly_the_four_device_slots(self):
+        """``--tier high --yes`` must not leak device keys beyond the four slots.
+
+        The remaining four GPUs of an eight-GPU host are named in
+        ``config.yaml`` by the user, not in ``.env`` by Anvil, so no
+        additional ``*DEVICE*`` keys may appear in the written file.
+        """
+        self.invoke(["init", "--tier", "high", "--yes"])
+        device_keys = sorted(
+            key for key in self.env_values() if "DEVICE" in key
+        )
+        self.assertEqual(
+            [
+                "INDEXER_STORAGE_DEVICE_ID",
+                "LLM_DEVICE_ID_0",
+                "LLM_DEVICE_ID_1",
+                "LLM_DEVICE_ID_2",
+            ],
+            device_keys,
+            "the high tier names exactly the four device slots in .env; "
+            "the remaining GPUs belong to config.yaml; device keys: {}".format(
+                device_keys
+            ),
+        )
+
+
 class TestImplicitEnvBootstrap(CliCase):
     """A missing .env is created on demand, exactly as anvil:27 did."""
 
