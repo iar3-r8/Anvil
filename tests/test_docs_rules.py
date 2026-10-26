@@ -11,8 +11,9 @@ The two files under test are data:
 
 Each file holds root ``<guidelines>``: a ``<workflow>`` of four
 ``name``-keyed steps (``start``, ``code_comments``, ``usage_docs``,
-``structure``), a ``<best_practices>`` block of 12 ``<rule>`` elements
-(9 original + 3 new; the link-to-the-plan rule is gone: the plan is not
+``structure``), a ``<best_practices>`` block of 13 ``<rule>`` elements
+(9 original + 3 new + 1 history-reference rule; the link-to-the-plan
+rule is gone: the plan is not
 part of the documentation, so no rule may tell the writer to link to
 it), a ``<documentation_finalisation>`` block of 2 ``<rule>`` elements,
 a ``<constraints>`` block and a ``<communication>`` block. R4 withdrew
@@ -123,8 +124,8 @@ def _overview_scopes_rules_to_new_pages_and_refactors(text):
     text mentions new pages and a refactor.
 
     R4 withdrew the ``page_prose`` step as too specific; the scoping
-    clause lives in the overview rather than a step or a rule, so the
-    ``<best_practices>`` count R3 pins stays 12.
+    clause lives in the overview rather than a step or a rule, so it
+    adds nothing to the ``<best_practices>`` count.
     """
     mentions_new = "new" in text
     mentions_refactor = "refactor" in text
@@ -202,6 +203,43 @@ def _rule_says_readme_doc_accurate_clear_and_simple(text):
     clear = "clear" in text
     simple = "simple" in text
     return names_targets and accurate and clear and simple
+
+
+def _rule_says_docs_and_comments_stand_alone_for_a_new_reader_without_history(text):
+    """True when a rule says documentation and comments — docstrings, code
+    comments, and doc pages — must stand alone for a first-time reader of
+    the repository and carry no development-history references: no phase
+    or milestone identifiers, no plan-file references, no issue or pull
+    request numbers. That history belongs in the VCS log and the pull
+    request."""
+    names_targets = (
+        "documentation" in text
+        and "comment" in text
+        and "docstring" in text
+    )
+    stands_alone = (
+        "stand alone" in text
+        or "stand-alone" in text
+        or "stand on its own" in text
+        or "new reader" in text
+        or "novice" in text
+        or "first-time" in text
+    )
+    bans_history = "history" in text or "historical" in text
+    names_history_kinds = (
+        ("phase" in text or "milestone" in text)
+        and "plan" in text
+        and "issue" in text
+        and "pull request" in text
+    )
+    names_homes = "vcs log" in text and "pull request" in text
+    return (
+        names_targets
+        and stands_alone
+        and bans_history
+        and names_history_kinds
+        and names_homes
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -357,14 +395,14 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
     def _rule_texts(self):
         return [_element_text(r) for r in self._best_practice_rules()]
 
-    def test_best_practices_grows_from_nine_to_exactly_twelve_rules(self):
-        # R3 removed the link-to-the-plan rule: 9 originals + 3 new = 12.
+    def test_best_practices_holds_exactly_thirteen_rules(self):
+        # 9 original + 3 new + 1 history-reference rule = 13.
         rules = self._best_practice_rules()
         self.assertEqual(
             len(rules),
-            12,
-            "expected <best_practices> to hold exactly 12 <rule> elements "
-            "(9 original + 3 new), found %d. Rule texts: %r"
+            13,
+            "expected <best_practices> to hold exactly 13 <rule> elements "
+            "(12 + 1 history-reference rule), found %d. Rule texts: %r"
             % (len(rules), self._rule_texts()),
         )
 
@@ -413,6 +451,27 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
             "be technical but the ban applies equally (looked for "
             "'internal'/'design page' + 'technical' + 'equally'/'still "
             "applies'/'just as'). Rule texts: %r" % self._rule_texts(),
+        )
+
+    def test_new_rule_says_docs_and_comments_stand_alone_for_a_new_reader(self):
+        # (d) Documentation and comments — docstrings, code comments, and
+        # doc pages — must stand alone for a first-time reader of the
+        # repository and carry no development-history references: no phase
+        # or milestone identifiers, no plan-file references, no issue or
+        # pull request numbers. That history belongs in the VCS log and
+        # the pull request.
+        matching = self._rules_matching(
+            _rule_says_docs_and_comments_stand_alone_for_a_new_reader_without_history
+        )
+        self.assertTrue(
+            matching,
+            "no <rule> in <best_practices> says documentation and comments "
+            "(docstrings, code comments, doc pages) must stand alone for a "
+            "first-time reader and carry no development-history references "
+            "(looked for 'documentation' + 'comment' + 'docstring' + a "
+            "self-sufficiency phrase + 'history' + 'phase'/'milestone' + "
+            "'plan' + 'issue' + 'pull request' + 'vcs log'). Rule texts: "
+            "%r" % self._rule_texts(),
         )
 
     def test_no_rule_tells_the_writer_to_link_to_the_plan(self):
