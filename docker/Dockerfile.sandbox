@@ -1,0 +1,26 @@
+# Sandbox image: the Pi CLI alone — no harness, no ultrawork, no VCS client.
+# The missing VCS client means a nested push inside a script finds no binary;
+# the network boundary (behaviours 7 and 10 of the plan) is what stops egress.
+FROM node:24-bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# The documented sandbox apt set minus the VCS client: the base installs
+# none either, so absence costs only not adding it.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bash ca-certificates ripgrep \
+    && rm -rf /var/lib/apt/lists/*
+
+# Exact pin: reproducible builds; bumps are deliberate. 1.3.0 is clear of
+# the four 2026 pi-coding-agent advisories (worst patched in 0.79.0).
+RUN npm install -g --ignore-scripts @earendil-works/pi-coding-agent@1.3.0
+
+# Non-root: the base already carries uid 1000 (node), so this lands on 1001.
+# The agent home is created in the image, not just at the volume mountpoint:
+# Docker's first-mount copy-up only transfers content that exists there, so
+# without it the named volume lands root-owned and the container user cannot
+# write into it.
+# One line: tests read only each RUN instruction's first physical line.
+RUN useradd --create-home --shell /bin/bash sandbox && mkdir -p /workspace /home/sandbox/.pi/agent && chown -R sandbox:sandbox /workspace /home/sandbox/.pi/agent
+USER sandbox
+WORKDIR /workspace
