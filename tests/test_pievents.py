@@ -46,6 +46,22 @@ if str(REPO_ROOT) not in sys.path:
 U2028 = "\u2028"
 U2029 = "\u2029"
 
+# Behaviour 10 (plans/pi-phase7-events.md): the recorded fixture
+# stream. The file itself is written by the green step of that
+# behaviour; the TestFixture* classes at the bottom of this module pin
+# the shape it must have, so the green has exactly one file to build.
+FIXTURE_PATH = Path(__file__).resolve().parent / "fixtures" / "pi_events_sample.jsonl"
+
+# Pinned fixture values, so the values travel with the fixture into the
+# later behaviour reds that read it:
+# - FIXTURE_SESSION_ID: the session header id; behaviour 1's red asserts
+#   the header extraction returns exactly this value.
+FIXTURE_SESSION_ID = "9f1c7a42-6e3d-4b8a-9c2f-7d5e8a1b3c4d"
+# - FIXTURE_FINAL_ERROR: the one finalError string on the failed retry
+#   end; behaviour 5's red asserts the final-error list holds exactly
+#   this one string, never None.
+FIXTURE_FINAL_ERROR = "529 overloaded: all retries exhausted"
+
 
 class PieventsTestCase(unittest.TestCase):
     def _pievents(self):
@@ -1197,3 +1213,387 @@ class TestOutcomeMessageUpdateWithoutUsage(OutcomeTestCase):
             "resets: the numbers must still be those of the last "
             "usage-bearing record (12/20/32, cost.total 0.0002)",
         )
+
+
+class FixtureStreamTestCase(PieventsTestCase):
+    """Behaviour 10 (plans/pi-phase7-events.md): the recorded fixture
+    stream ``tests/fixtures/pi_events_sample.jsonl``.
+
+    The file does not exist yet: the green step of that behaviour
+    writes it, hand-written to
+    ``doc/external/pi-dev/json-event-stream.md`` (no ``pi`` binary
+    runs in CI): LF-only, every line valid JSON, a trailing newline
+    present, and the U+2028 record written with
+    ``ensure_ascii=False`` so the separator is a literal character
+    in the file, never an escape.
+
+    These tests pin the fixture's shape at the parse level only.
+    The five phase-7 functions do not exist yet and are not
+    referenced here; their value assertions are written by the
+    1-9 reds, which read this same fixture. The pinned values - the
+    constants at the top of this module plus the literals in the
+    assertions below - are chosen so the green has exactly one
+    file to build.
+    """
+
+    def _fixture_text(self):
+        # No existence check: when the file is missing, the
+        # FileNotFoundError carries its path and is the red for
+        # this behaviour - the red must fail for exactly one
+        # reason.
+        return FIXTURE_PATH.read_text(encoding="utf-8")
+
+    def _parsed_fixture(self):
+        pievents = self._pievents()
+        return pievents.parse(self._fixture_text())
+
+
+class TestFixturePresence(FixtureStreamTestCase):
+    """The fixture file must exist and be readable text."""
+
+    def test_fixture_file_exists_and_is_readable_text(self):
+        text = self._fixture_text()
+        self.assertIsInstance(text, str)
+        self.assertTrue(text, "the fixture must not be empty")
+
+
+class TestFixtureFraming(FixtureStreamTestCase):
+    """The file is LF-only JSONL: no CR anywhere, a trailing
+    newline present, no blank lines, so ``parse`` counts zero
+    malformed lines and each line yields exactly one event."""
+
+    def test_fixture_is_lf_only_with_trailing_newline_and_zero_malformed(self):
+        text = self._fixture_text()
+        parsed = self._parsed_fixture()
+        self.assertNotIn(
+            "\r",
+            text,
+            "the fixture is LF-only; a CR would muddy the CRLF framing pin",
+        )
+        self.assertTrue(
+            text.endswith("\n"),
+            "the fixture must end with a trailing newline",
+        )
+        self.assertEqual(
+            parsed["malformed_lines"],
+            0,
+            "every fixture line must be valid JSON",
+        )
+        lines = text.split("\n")[:-1]
+        self.assertTrue(all(line.strip() for line in lines), "no blank lines in the fixture")
+        self.assertEqual(
+            len(parsed["events"]),
+            len(lines),
+            "each fixture line is exactly one event",
+        )
+
+
+class TestFixtureRecordCounts(FixtureStreamTestCase):
+    """The exact per-type record counts the 1-9 reds rely on when
+    they read the same fixture. Twenty records in total."""
+
+    EXPECTED_TYPE_COUNTS = {
+        "session": 1,
+        "agent_start": 1,
+        "message_update": 5,
+        "tool_execution_start": 2,
+        "tool_execution_update": 1,
+        "tool_execution_end": 2,
+        "auto_retry_start": 2,
+        "auto_retry_end": 2,
+        "compaction_start": 1,
+        "compaction_end": 1,
+        "agent_end": 1,
+        "agent_settled": 1,
+    }
+
+    def test_fixture_record_counts_match_the_pinned_shape(self):
+        events = self._parsed_fixture()["events"]
+        counts = {}
+        for event in events:
+            counts[event["type"]] = counts.get(event["type"], 0) + 1
+        self.assertEqual(
+            counts,
+            self.EXPECTED_TYPE_COUNTS,
+            "the per-type record counts must match the pinned fixture shape "
+            "exactly: no other event types, no missing records",
+        )
+        self.assertEqual(len(events), 20)
+
+
+class TestFixtureSessionHeader(FixtureStreamTestCase):
+    """The first record is the JSON-mode session header
+    (doc/external/pi-dev/json-event-stream.md:41)."""
+
+    def test_fixture_first_record_is_the_session_header(self):
+        events = self._parsed_fixture()["events"]
+        header = events[0]
+        self.assertEqual(
+            header["type"],
+            "session",
+            "the first record must be the session header",
+        )
+        self.assertEqual(header["version"], 3)
+        # Pinned for behaviour 1's red: the header extraction
+        # returns exactly this id.
+        self.assertEqual(header["id"], FIXTURE_SESSION_ID)
+        self.assertEqual(header["cwd"], "/workspace")
+        self.assertIsInstance(
+            header.get("timestamp"),
+            str,
+            "the session header carries a timestamp string",
+        )
+        self.assertTrue(header.get("timestamp"))
+
+
+class TestFixtureU2028Record(FixtureStreamTestCase):
+    """Exactly one record carries a literal U+2028 inside a
+    string. It must survive as ONE event with the separator
+    intact - U+2028 is string content, never a record boundary
+    (doc/external/pi-dev/json-event-stream.md:30)."""
+
+    def test_fixture_u2028_record_survives_as_one_event_with_separator_intact(self):
+        events = self._parsed_fixture()["events"]
+        carrying = [
+            event for event in events if U2028 in json.dumps(event, ensure_ascii=False)
+        ]
+        self.assertEqual(len(carrying), 1, "exactly one record carries U+2028")
+        record = carrying[0]
+        self.assertEqual(record["type"], "message_update")
+        self.assertNotIn(
+            "usage",
+            record,
+            "the U+2028 record is one of the usage-less delta records",
+        )
+        nested = record["assistantMessageEvent"]
+        self.assertEqual(nested["type"], "text_delta")
+        self.assertEqual(nested["contentIndex"], 0)
+        delta = nested["delta"]
+        self.assertIn(
+            U2028,
+            delta,
+            "the separator must be a literal character inside the delta string",
+        )
+        prefix, _, suffix = delta.partition(U2028)
+        self.assertTrue(
+            prefix and suffix,
+            "non-empty text on both sides of the separator",
+        )
+
+
+class TestFixtureToolRecords(FixtureStreamTestCase):
+    """Two tool lifecycles pin the two duration cases behaviour
+    3's red relies on: ``durationMs`` present and 0, and
+    ``durationMs`` absent. A single ``tool_execution_update``
+    pins that only ``end`` records carry a duration (behaviour
+    4)."""
+
+    def test_fixture_tool_ends_pin_duration_zero_and_absent(self):
+        events = self._parsed_fixture()["events"]
+        starts = [e for e in events if e["type"] == "tool_execution_start"]
+        ends = [e for e in events if e["type"] == "tool_execution_end"]
+        updates = [e for e in events if e["type"] == "tool_execution_update"]
+        self.assertEqual([s["toolCallId"] for s in starts], ["call_a", "call_b"])
+        self.assertEqual([s["toolName"] for s in starts], ["bash", "bash"])
+        self.assertEqual([e["toolCallId"] for e in ends], ["call_a", "call_b"])
+        self.assertEqual([e["toolName"] for e in ends], ["bash", "bash"])
+        self.assertTrue(
+            all(e["isError"] is False for e in ends),
+            "both tool ends complete without error",
+        )
+        self.assertEqual(
+            ends[0].get("durationMs"),
+            0,
+            "first end: durationMs present and 0",
+        )
+        self.assertNotIn(
+            "durationMs",
+            ends[1],
+            "second end: durationMs absent - the tool did not run",
+        )
+        start_positions = {
+            e["toolCallId"]: i for i, e in enumerate(events) if e["type"] == "tool_execution_start"
+        }
+        end_positions = {
+            e["toolCallId"]: i for i, e in enumerate(events) if e["type"] == "tool_execution_end"
+        }
+        for tool_call_id in start_positions:
+            self.assertLess(
+                start_positions[tool_call_id],
+                end_positions[tool_call_id],
+                "each tool_execution_start precedes its own end",
+            )
+        self.assertEqual(
+            updates[0]["toolCallId"],
+            "call_a",
+            "the single update rides the first lifecycle",
+        )
+
+
+class TestFixtureRetryRecords(FixtureStreamTestCase):
+    """The retry pair in the documented interleaving - start,
+    end, start, end - one successful end, one final-failure
+    end. The finalError string is pinned for behaviour 5's red,
+    which asserts the error list holds exactly this one string,
+    never None."""
+
+    def test_fixture_retry_pairs_pin_attempts_and_outcomes(self):
+        events = self._parsed_fixture()["events"]
+        retry_order = [
+            e["type"]
+            for e in events
+            if e["type"] in ("auto_retry_start", "auto_retry_end")
+        ]
+        self.assertEqual(
+            retry_order,
+            ["auto_retry_start", "auto_retry_end", "auto_retry_start", "auto_retry_end"],
+        )
+        starts = [e for e in events if e["type"] == "auto_retry_start"]
+        ends = [e for e in events if e["type"] == "auto_retry_end"]
+        self.assertEqual(starts[0].get("attempt"), 1)
+        self.assertEqual(starts[1]["attempt"], 2)
+        # doc/external/pi-dev/json-event-stream.md:181
+        self.assertEqual(starts[1]["maxAttempts"], 3)
+        self.assertEqual(starts[1]["delayMs"], 2000)
+        self.assertEqual(starts[1]["errorMessage"], "529 overloaded")
+        self.assertIs(ends[0]["success"], True)
+        self.assertNotIn("finalError", ends[0])
+        self.assertIs(ends[1]["success"], False)
+        self.assertEqual(ends[1]["finalError"], FIXTURE_FINAL_ERROR)
+
+
+class TestFixtureCompactionRecords(FixtureStreamTestCase):
+    """One successful threshold compaction. The result values
+    are pinned for behaviour 7's red (paired pressure) -
+    behaviour 8's no-``result`` case is built inline in that
+    red, not in the fixture."""
+
+    def test_fixture_compaction_pins_pressure_values(self):
+        events = self._parsed_fixture()["events"]
+        starts = [e for e in events if e["type"] == "compaction_start"]
+        ends = [e for e in events if e["type"] == "compaction_end"]
+        self.assertEqual(starts[0]["reason"], "threshold")
+        self.assertIs(ends[0]["aborted"], False)
+        self.assertIn("result", ends[0], "a successful compaction carries its result")
+        # Pinned for behaviour 7's red: the paired pressure values.
+        self.assertEqual(ends[0]["result"]["tokensBefore"], 150000)
+        self.assertEqual(ends[0]["result"]["estimatedTokensAfter"], 32000)
+        self.assertLess(
+            events.index(starts[0]),
+            events.index(ends[0]),
+            "compaction_start precedes its end",
+        )
+
+
+class TestFixtureUsageRecords(FixtureStreamTestCase):
+    """Two cumulative usage records - the second >= the first on
+    every token field; usage is cumulative, never summed
+    (doc/external/pi-dev/json-event-stream.md:110) - plus three
+    usage-less delta records that behaviour 9 must not treat as
+    usage. The values are pinned for behaviour 9's red: the last
+    usage holds cacheRead 400, cacheWrite 50 and a full cost
+    block."""
+
+    def test_fixture_usage_records_are_cumulative_with_pinned_values(self):
+        events = self._parsed_fixture()["events"]
+        usage_events = [
+            e
+            for e in events
+            if e["type"] == "message_update" and isinstance(e.get("usage"), dict)
+        ]
+        usageless = [e for e in events if e["type"] == "message_update" and "usage" not in e]
+        self.assertEqual(len(usage_events), 2)
+        self.assertEqual(len(usageless), 3)
+        first, last = usage_events
+        self.assertEqual(
+            first,
+            {
+                "input": 100,
+                "output": 1,
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "totalTokens": 101,
+                "cost": {
+                    "input": 0.0001,
+                    "output": 0.0001,
+                    "cacheRead": 0.0,
+                    "cacheWrite": 0.0,
+                    "total": 0.0002,
+                },
+            },
+        )
+        self.assertEqual(
+            last,
+            {
+                "input": 120,
+                "output": 20,
+                "cacheRead": 400,
+                "cacheWrite": 50,
+                "totalTokens": 590,
+                "cost": {
+                    "input": 0.0002,
+                    "output": 0.001,
+                    "cacheRead": 0.0002,
+                    "cacheWrite": 0.0001,
+                    "total": 0.0015,
+                },
+            },
+        )
+        for field in ("input", "output", "cacheRead", "cacheWrite", "totalTokens"):
+            self.assertGreaterEqual(
+                last[field],
+                first[field],
+                "usage is cumulative: the second record must be >= the first "
+                "on every token field",
+            )
+        self.assertLess(
+            events.index(first),
+            events.index(last),
+            "the first usage record precedes the last",
+        )
+
+
+class TestFixtureRunEnding(FixtureStreamTestCase):
+    """The run closes with agent_end then agent_settled,
+    aborted False - the existing outcome pins consume it."""
+
+    def test_fixture_closes_with_agent_end_then_settled_not_aborted(self):
+        events = self._parsed_fixture()["events"]
+        self.assertEqual(
+            events[-1]["type"],
+            "agent_settled",
+            "the last record must be agent_settled",
+        )
+        self.assertIs(events[-1]["aborted"], False)
+        agent_end_positions = [i for i, e in enumerate(events) if e["type"] == "agent_end"]
+        self.assertEqual(len(agent_end_positions), 1)
+        self.assertEqual(events[agent_end_positions[0]].get("willRetry"), False)
+        self.assertLess(
+            agent_end_positions[0],
+            len(events) - 1,
+            "agent_end precedes agent_settled",
+        )
+
+
+class TestInlineMalformedInputs(PieventsTestCase):
+    """Behaviour 10's Error line: the truncated-line and
+    non-JSON-line cases are built inline here, never written
+    into the fixture - a recorded stream is not hand-corrupted.
+    Parse-level only: the five phase-7 functions do not exist
+    yet, and their totality is asserted by the 1-9 reds."""
+
+    def test_inline_truncated_and_non_json_lines_count_two_malformed(self):
+        pievents = self._pievents()
+        first = {"type": "agent_start"}
+        last = {"type": "agent_settled", "aborted": False}
+        stream = "\n".join(
+            [
+                json.dumps(first),
+                '{"type": "agent_s',  # truncated line
+                "not json at all",  # non-JSON line
+                json.dumps(last),
+            ]
+        ) + "\n"
+        parsed = pievents.parse(stream)
+        self.assertEqual(parsed["malformed_lines"], 2)
+        self.assertEqual(parsed["events"], [first, last])
