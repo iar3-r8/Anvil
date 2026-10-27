@@ -784,10 +784,22 @@ class TestPiModelsArgvErrorBecomesRenderError(unittest.TestCase):
         )
 
     def test_port_zero_raises_render_error(self):
-        self._assert_render_error({"port": 0}, "port")
+        with self.assertRaises(render.RenderError) as ctx:
+            render.pi_models_settings(GOLDEN_PI_MODEL_ID, 0, GOLDEN_CONTEXT_WINDOW)
+        self.assertIn(
+            "port",
+            str(ctx.exception),
+            "the error must name the offending field",
+        )
 
     def test_port_above_range_raises_render_error(self):
-        self._assert_render_error({"port": 65536}, "port")
+        with self.assertRaises(render.RenderError) as ctx:
+            render.pi_models_settings(GOLDEN_PI_MODEL_ID, 65536, GOLDEN_CONTEXT_WINDOW)
+        self.assertIn(
+            "port",
+            str(ctx.exception),
+            "the error must name the offending field",
+        )
 
     def test_empty_model_id_raises_render_error(self):
         with self.assertRaises(render.RenderError) as ctx:
