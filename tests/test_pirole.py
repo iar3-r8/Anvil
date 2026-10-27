@@ -631,5 +631,84 @@ class TestRoleArgvSessionIdValidated(RoleResolveTestCase):
                 )
 
 
+# Pi rejects these six session flags alongside --session-id
+# (doc/external/pi-dev/cli.md, Sessions constraints): the role argv must
+# therefore never emit one, since a role invocation is always --session-id.
+CONFLICTING_SESSION_FLAGS = (
+   "--session",
+   "--continue",
+   "-c",
+   "--resume",
+   "-r",
+   "--no-session",
+)
+
+
+class TestRoleArgvOmitsConflictingSessionFlags(RoleResolveTestCase):
+   """No role argv carries a flag that conflicts with --session-id.
+
+   Pi rejects --session, --continue, -c, --resume, -r and --no-session
+   alongside --session-id (doc/external/pi-dev/cli.md, Sessions
+   constraints), so the builder can never emit one. This pins that absence
+   on the token vector for every role and for a hostile task. The anti-
+   vacuity guard is that each inspected argv is asserted to still carry the
+   legitimate --session-id flag, so the absence assertions run against a
+   real, complete vector rather than an empty one.
+   """
+
+   def test_role_argv_for_all_roles_omits_the_conflicting_session_flags(self):
+       # Arrange: every role's resolved definition, a valid session id and
+       # the standard task.
+       pirole = self._import_pirole()
+       for role in ROLES:
+           with self.subTest(role=role):
+               definition = pirole.resolve(role, CODER_MODEL_ID, FRONTIER_MODEL_ID)
+               # Act.
+               argv = pirole.role_argv(definition, SESSION_ID, TASK)
+               # Assert: the vector is a real, complete one carrying the
+               # legitimate --session-id flag, and none of the six
+               # conflicting flags appears anywhere in it.
+               self.assertIn(
+                   "--session-id",
+                   argv,
+                   "the role argv must carry the legitimate --session-id "
+                   "flag; got: %r" % (argv,),
+               )
+               for flag in CONFLICTING_SESSION_FLAGS:
+                   self.assertNotIn(
+                       flag,
+                       argv,
+                       "the role argv must never emit %r, Pi rejects it "
+                       "alongside --session-id; got: %r" % (flag, argv),
+                   )
+
+   def test_role_argv_with_hostile_task_omits_the_conflicting_session_flags(self):
+       # Arrange: a resolved coder definition, a valid session id and the
+       # hostile task (dash-leading, carrying shell metacharacters), so the
+       # absence check holds for an adversarial final token as well.
+       pirole = self._import_pirole()
+       definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+       # Act.
+       argv = pirole.role_argv(definition, SESSION_ID, HOSTILE_TASK)
+       # Assert: same as above, but the inspected vector ends in the hostile
+       # task, proving the check scans the whole token list.
+       self.assertIn(
+           "--session-id",
+           argv,
+           "the role argv must carry the legitimate --session-id flag; "
+           "got: %r" % (argv,),
+       )
+       for flag in CONFLICTING_SESSION_FLAGS:
+           self.assertNotIn(
+               flag,
+               argv,
+               "the role argv must never emit %r, Pi rejects it alongside "
+               "--session-id; got: %r" % (flag, argv),
+           )
+       # The inspected vector is the complete one, hostile task last after
+       # the terminator - not a truncated or empty vector.
+       self.assertEqual(HOSTILE_TASK, argv[-1])
+
+
 if __name__ == "__main__":
     unittest.main()
