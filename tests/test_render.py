@@ -13,11 +13,13 @@ the output. That was the bug ``escape_sed_replacement()`` at ``anvil:95`` existe
 to work around.
 """
 
+import inspect
 import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -44,6 +46,14 @@ GOLDEN_GITHUB_TOKEN = "ghp_goldentesttoken"
 # GOLDEN_PI_MODEL_ID, GOLDEN_PORT, GOLDEN_CONTEXT_WINDOW,
 # max_tokens=GOLDEN_CONTEXT_WINDOW), indent=4); host is the delegate default.
 GOLDEN_PI_MODEL_ID = "qwen3-coder"
+# Golden workspace folder for tests/fixtures/golden_pi_mcp.json (plans/
+# pi-phase5-render.md behaviour 11): the ${workspaceFolder} in the git server's
+# --repository argument is replaced by exactly this path in the fixture.
+GOLDEN_PI_WORKSPACE = "/workspace/anvil"
+# Hostile workspace path for behaviour 12: contains a space, a double quote
+# and a backslash. The Python source string is '/tmp/ws "quote" \\ back'; its
+# value is /tmp/ws "quote" \ back.
+HOSTILE_PI_WORKSPACE = '/tmp/ws "quote" \\ back'
 
 
 def load_fixture(name):
@@ -842,6 +852,183 @@ class TestPiModelsArgvErrorBecomesRenderError(unittest.TestCase):
         for call in cases:
             with self.assertRaises(render.RenderError):
                 call()
+
+
+class TestPiMcpGoldenParity(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 11 (pi-mcp-golden-parity)."""
+
+    def test_rendered_document_matches_golden_fixture(self):
+        rendered = json.loads(
+            render.pi_mcp_settings(GOLDEN_PI_WORKSPACE)
+        )
+
+        self.assertEqual(
+            rendered,
+            load_fixture("golden_pi_mcp.json"),
+            "rendered document must equal tests/fixtures/golden_pi_mcp.json",
+        )
+
+    def test_mcp_servers_holds_exactly_the_four_servers(self):
+        rendered = json.loads(render.pi_mcp_settings(GOLDEN_PI_WORKSPACE))
+
+        self.assertEqual(
+            set(rendered["mcpServers"]),
+            {"github", "git", "oxylabs", "package-registry"},
+        )
+
+    def test_missing_template_raises_render_error(self):
+        """Error clause: a missing templates/mcp.json.template raises RenderError.
+
+        render.MCP_TEMPLATE is a module-level constant read at call time by
+        _load_json_template (the same seam mcp_settings goes through), so
+        pointing it at a missing path is the established way to fake template
+        problems in this module.
+        """
+        with mock.patch.object(render, "MCP_TEMPLATE", Path("/does/not/exist.json")):
+            with self.assertRaises(render.RenderError):
+                render.pi_mcp_settings(GOLDEN_PI_WORKSPACE)
+
+    def test_malformed_template_raises_render_error(self):
+        """Error clause: a template that is not valid JSON raises RenderError."""
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        bad_template = Path(tmp_dir.name) / "mcp.json.template"
+        bad_template.write_text("{ not valid json", encoding="utf-8")
+
+        with mock.patch.object(render, "MCP_TEMPLATE", bad_template):
+            with self.assertRaises(render.RenderError):
+                render.pi_mcp_settings(GOLDEN_PI_WORKSPACE)
+
+
+class TestPiMcpSubstitutesWorkspaceFolder(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 12 (pi-mcp-substitutes-workspace-folder).
+
+    ${workspaceFolder} is an editor token, not an env var — Pi cannot resolve
+    it, so the renderer substitutes it with the given path. The git server's
+    --repository argument must carry the path verbatim, and the output must
+    stay parseable JSON (valid by construction via json.dumps, never string
+    substitution).
+    """
+
+    def test_golden_path_is_substituted_verbatim_into_git_args(self):
+        rendered = json.loads(render.pi_mcp_settings(GOLDEN_PI_WORKSPACE))
+
+        args = rendered["mcpServers"]["git"]["args"]
+        self.assertEqual(
+            args,
+            ["mcp-server-git", "--repository", GOLDEN_PI_WORKSPACE],
+        )
+
+    def test_hostile_path_is_substituted_verbatim_and_still_parses(self):
+        payload = render.pi_mcp_settings(HOSTILE_PI_WORKSPACE)
+
+        rendered = json.loads(payload)
+        args = rendered["mcpServers"]["git"]["args"]
+        self.assertEqual(
+            args,
+            ["mcp-server-git", "--repository", HOSTILE_PI_WORKSPACE],
+            "a workspace path with a space, a quote and a backslash must "
+            "parse back to the exact same value",
+        )
+
+
+class TestPiMcpWritesNoCredential(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 13 (pi-mcp-writes-no-credential).
+
+    Pi interpolates ${NAME} env/header values at request time, so the
+    credential tokens stay verbatim in the output. The function therefore
+    takes no credential parameter: no secret can ever reach a committed file.
+    """
+
+    def test_github_env_token_is_verbatim(self):
+        rendered = json.loads(render.pi_mcp_settings(GOLDEN_PI_WORKSPACE))
+
+        self.assertEqual(
+            rendered["mcpServers"]["github"]["env"]["GITHUB_PERSONAL_ACCESS_TOKEN"],
+            "${GITHUB_TOKEN}",
+        )
+
+    def test_oxylabs_header_tokens_are_verbatim(self):
+        rendered = json.loads(render.pi_mcp_settings(GOLDEN_PI_WORKSPACE))
+
+        headers = rendered["mcpServers"]["oxylabs"]["headers"]
+        self.assertEqual(headers["X-Oxylabs-Username"], "${OXYLABS_USERNAME}")
+        self.assertEqual(headers["X-Oxylabs-Password"], "${OXYLABS_PASSWORD}")
+
+    def test_function_takes_no_credential_parameter(self):
+        params = list(inspect.signature(render.pi_mcp_settings).parameters)
+
+        self.assertEqual(
+            params,
+            ["workspace_folder"],
+            "pi_mcp_settings must take only workspace_folder, so no secret "
+            "can reach the rendered output",
+        )
+
+
+class TestPiMcpEmitsPiKnownKeysOnly(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 14 (pi-mcp-emits-pi-known-keys-only).
+
+    Roo-vocabulary keys alwaysAllow, disabledTools and disabled are dropped
+    from every server; everything else (command, args, env, type, url,
+    headers) is preserved. An unauthenticated oxylabs server carries no
+    flag — it simply fails to connect and Pi reports it.
+    """
+
+    def setUp(self):
+        self.rendered = json.loads(render.pi_mcp_settings(GOLDEN_PI_WORKSPACE))
+
+    def test_roo_vocabulary_keys_are_absent_from_every_server(self):
+        for name, server in self.rendered["mcpServers"].items():
+            for key in ("alwaysAllow", "disabledTools", "disabled"):
+                self.assertNotIn(
+                    key,
+                    server,
+                    "{}: the Roo-vocabulary key '{}' must not reach Pi".format(name, key),
+                )
+
+    def test_oxylabs_keeps_type_and_url(self):
+        entry = self.rendered["mcpServers"]["oxylabs"]
+
+        self.assertEqual(entry["type"], "streamable-http")
+        self.assertEqual(entry["url"], "https://mcp.oxylabs.io/mcp")
+        self.assertIn("headers", entry)
+
+    def test_stdio_servers_keep_command_and_args(self):
+        for name in ("github", "git", "package-registry"):
+            entry = self.rendered["mcpServers"][name]
+            self.assertIn(
+                "command", entry, "{}: the stdio command must be preserved".format(name)
+            )
+            self.assertIn(
+                "args", entry, "{}: the stdio args must be preserved".format(name)
+            )
+
+    def test_github_keeps_env(self):
+        entry = self.rendered["mcpServers"]["github"]
+
+        self.assertIn("env", entry)
+        self.assertIn("GITHUB_PERSONAL_ACCESS_TOKEN", entry["env"])
+
+
+class TestPiMcpTemplateDriftGuard(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 15 (pi-mcp-template-drift-guard).
+
+    Adding a server to the template without the renderer carrying it over —
+    or vice versa — fails this test.
+    """
+
+    def test_rendered_server_names_equal_template_server_names(self):
+        template = json.loads(
+            (TEMPLATES / "mcp.json.template").read_text(encoding="utf-8")
+        )
+        rendered = json.loads(render.pi_mcp_settings(GOLDEN_PI_WORKSPACE))
+
+        self.assertEqual(
+            set(rendered["mcpServers"]),
+            set(template["mcpServers"]),
+            "the rendered mcpServers must carry exactly the template's servers",
+        )
 
 
 if __name__ == "__main__":

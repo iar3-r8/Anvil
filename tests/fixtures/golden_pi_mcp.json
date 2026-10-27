@@ -1,0 +1,36 @@
+{
+    "mcpServers": {
+        "github": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-github"
+            ],
+            "env": {
+                "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}"
+            }
+        },
+        "git": {
+            "command": "uvx",
+            "args": [
+                "mcp-server-git",
+                "--repository",
+                "/workspace/anvil"
+            ]
+        },
+        "oxylabs": {
+            "type": "streamable-http",
+            "url": "https://mcp.oxylabs.io/mcp",
+            "headers": {
+                "X-Oxylabs-Username": "${OXYLABS_USERNAME}",
+                "X-Oxylabs-Password": "${OXYLABS_PASSWORD}"
+            }
+        },
+        "package-registry": {
+            "command": "npx",
+            "args": [
+                "package-registry-mcp"
+            ]
+        }
+    }
+}
