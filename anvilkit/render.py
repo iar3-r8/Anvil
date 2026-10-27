@@ -15,6 +15,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
+from anvilkit.pi import piargv
+
 PathLike = Union[str, Path]
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent / "templates"
@@ -129,6 +131,31 @@ def mcp_settings(
 
 def extensions_settings() -> str:
     return _to_json(_load_json_template(EXTENSIONS_TEMPLATE))
+
+
+def pi_models_settings(
+    model_id: str,
+    port: int,
+    context_window: int,
+    host: str = "127.0.0.1",
+) -> str:
+    """Render the Pi agent-directory ``models.json`` as a JSON string.
+
+    Delegates the document to :func:`anvilkit.pi.piargv.models_document`,
+    which owns the field names and validation; ``maxTokens`` is set equal to
+    ``context_window`` so Pi never falls back to its 16384 default and
+    truncates a long-context model. The delegate's ``ArgvError`` is
+    translated to ``RenderError`` at this seam so one exception type per
+    module holds for callers.
+    """
+    try:
+        document = piargv.models_document(
+            model_id, port, context_window, context_window, host=host
+        )
+    except piargv.ArgvError as exc:
+        raise RenderError("models document: {}".format(exc)) from exc
+
+    return _to_json(document)
 
 
 def write_text(path: PathLike, content: str) -> None:
