@@ -22,9 +22,11 @@ Pinned signature::
   verbatim (``env`` optional, mirroring ``run_argv``'s ``Optional``);
 - ``session_id`` / ``task``: handed to ``pirole.role_argv`` verbatim;
 - ``runner``: the injected process-execution seam, invoked exactly once;
-- ``timeout_s``: the wall-clock budget handed to the runner; the driver
-  owns the default, the tests never pin a specific value - only that the
-  recorded invocation carries a positive float;
+- ``timeout_s``: the wall-clock budget handed to the runner; tier-aware
+  since behaviour 16 (review comment 2) - an explicit caller budget
+  always wins, a local-tier default is unbounded (``None``) and a
+  frontier-tier default is a finite cost kill-switch; see
+  ``_check_invocation_seam``;
 - the invocation's ``cwd`` value is not pinned by the plan (``docker run``
   does not depend on it); the tests pin its presence and string type only.
 
@@ -39,6 +41,7 @@ whole-stream stdout capture is asserted here as well.
 """
 
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -98,6 +101,11 @@ def _coder_definition() -> Dict[str, str]:
     return pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
 
 
+def _architect_definition() -> Dict[str, str]:
+    """The frontier-tier role definition the tier-timeout tests build on."""
+    return pirole.resolve("architect", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+
+
 class RunRoleTestCase(unittest.TestCase):
     """Shared deferred import of the not-yet-existing ``pidriver`` module.
 
@@ -112,13 +120,29 @@ class RunRoleTestCase(unittest.TestCase):
 
         return pidriver
 
-    def _check_invocation_seam(self, invocation: Dict[str, Any]) -> None:
+    def _check_invocation_seam(
+        self,
+        invocation: Dict[str, Any],
+        definition: Dict[str, str],
+        caller_timeout_s: Optional[float] = None,
+    ) -> None:
         """Assert the invocation carries the documented runner-seam keys.
 
         ``argv`` is asserted by the caller; this pins the rest of the
         invocation dict: ``cwd`` present as a string (its value is not
         pinned by the plan), ``stdin`` the seam's ``/dev/null``, and
-        ``timeout_s`` a positive float.
+        ``timeout_s`` tier-aware - behaviour 16 supersedes the single
+        positive-float pin that assumed one 900.0 default:
+
+        - an explicit caller budget always wins: the invocation carries
+          that exact positive float, whichever tier the definition is;
+        - a local-tier definition (coder/tester/docs) with no caller
+          budget runs unbounded: the ``timeout_s`` key is present with
+          the value ``None`` - the key must still be present, because
+          the runner treats an absent key as a misuse and raises before
+          spawn, so ``None`` is distinguishable from absence;
+        - a frontier-tier definition (architect) with no caller budget
+          gets a finite cost kill-switch: a positive finite float.
         """
         self.assertIsInstance(invocation, dict)
         for key in ("argv", "cwd", "stdin", "timeout_s"):
@@ -147,18 +171,43 @@ class RunRoleTestCase(unittest.TestCase):
             "the runner seam reads stdin from /dev/null; got: %r"
             % (invocation["stdin"],),
         )
-        self.assertIsInstance(
-            invocation["timeout_s"],
-            float,
-            "timeout_s must be a float wall-clock budget; got: %r"
-            % (invocation["timeout_s"],),
-        )
-        self.assertGreater(
-            invocation["timeout_s"],
-            0.0,
-            "timeout_s must be a positive budget; got: %r"
-            % (invocation["timeout_s"],),
-        )
+        if caller_timeout_s is not None:
+            self.assertEqual(
+                float(caller_timeout_s),
+                invocation["timeout_s"],
+                "an explicit caller budget always overrides the tier "
+                "default; got: %r" % (invocation["timeout_s"],),
+            )
+            return
+        if definition["tier"] == "local":
+            self.assertIs(
+                None,
+                invocation["timeout_s"],
+                "a local-tier run with no caller budget is unbounded - "
+                "timeout_s must be present with value None (a long "
+                "local-model turn must never be killed for thinking); "
+                "got: %r" % (invocation["timeout_s"],),
+            )
+        else:
+            self.assertIsInstance(
+                invocation["timeout_s"],
+                float,
+                "a frontier-tier run with no caller budget must carry a "
+                "finite cost kill-switch (a positive float); got: %r"
+                % (invocation["timeout_s"],),
+            )
+            self.assertGreater(
+                invocation["timeout_s"],
+                0.0,
+                "the frontier kill-switch must be a positive budget; got: "
+                "%r" % (invocation["timeout_s"],),
+            )
+            self.assertTrue(
+                math.isfinite(invocation["timeout_s"]),
+                "the frontier kill-switch must be finite - a frontier run "
+                "must be cut off when it loops; got: %r"
+                % (invocation["timeout_s"],),
+            )
 
 
 class TestRunRoleWithEnv(RunRoleTestCase):
@@ -210,7 +259,9 @@ class TestRunRoleWithEnv(RunRoleTestCase):
             env=dict(ENV),
         )
         # Assert: the recorded argv is exactly the container argv
-        # followed by the role argv, token for token.
+        # followed by the role argv, token for token. The definition is
+        # local-tier and no caller budget is passed, so the seam pin
+        # expects the unbounded (None) timeout.
         self.assertEqual(1, len(fake.calls))
         invocation = fake.calls[0]
         expected = (
@@ -223,7 +274,7 @@ class TestRunRoleWithEnv(RunRoleTestCase):
             "argv must be the run_argv container command followed by the "
             "role_argv pi invocation; got: %r" % (invocation["argv"],),
         )
-        self._check_invocation_seam(invocation)
+        self._check_invocation_seam(invocation, definition)
 
     def test_run_role_composed_argv_carries_tag_at_junction_before_pi(self):
         # Arrange.
@@ -310,7 +361,8 @@ class TestRunRoleWithoutEnv(RunRoleTestCase):
             task=TASK,
             runner=fake,
         )
-        # Assert.
+        # Assert: local-tier definition, no caller budget, so the seam
+        # pin expects the unbounded (None) timeout.
         self.assertEqual(1, len(fake.calls))
         invocation = fake.calls[0]
         expected = (
@@ -324,7 +376,7 @@ class TestRunRoleWithoutEnv(RunRoleTestCase):
             "when no env is passed) followed by the role_argv pi "
             "invocation; got: %r" % (invocation["argv"],),
         )
-        self._check_invocation_seam(invocation)
+        self._check_invocation_seam(invocation, definition)
         for token in invocation["argv"]:
             self.assertNotEqual(
                 "-e",
@@ -1175,3 +1227,186 @@ class TestRunRoleMissingPromptFile(RunRoleTestCase):
                 "result dict, never an error; got: %r"
                 % type(result).__name__,
             )
+
+
+# The tier-aware default timeout: behaviour 16 supersedes the single
+# 900.0 default. With no caller budget, a local-tier definition
+# (coder/tester/docs) must run unbounded - the invocation carries
+# ``timeout_s`` present with value ``None`` (the runner supports it since
+# behaviour 15, and treats an *absent* key as a misuse that raises before
+# spawn, so ``None`` is distinguishable from absence) - while a
+# frontier-tier definition (architect) must carry a finite cost
+# kill-switch, the driver's ``_FRONTIER_KILL_SWITCH_S`` (3600.0). An
+# explicit caller budget always overrides the tier default, whichever
+# tier it is.
+class TestRunRoleTimeoutTierAware(RunRoleTestCase):
+    """The driver's default timeout is tier-aware.
+
+    plans/pi-phase6-single-role.md, behaviour 16 (review comment 2,
+    user-confirmed design): a long local-model turn must never be killed
+    for thinking, a frontier run must be cut off when it loops, and an
+    explicit caller ``timeout_s`` always wins over the tier default.
+    """
+
+    def _invoke_and_return_invocation(
+        self,
+        definition: Dict[str, str],
+        caller_timeout_s: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Arrange a fake runner, act with or without a caller budget,
+        and return the single recorded invocation dict."""
+        pidriver = self._import_pidriver()
+        fake = FakeRunner()
+        kwargs: Dict[str, Any] = {}
+        if caller_timeout_s is not None:
+            kwargs["timeout_s"] = caller_timeout_s
+        pidriver.run_role(
+            definition=definition,
+            repo_path=REPO_PATH,
+            tag=TAG,
+            session_id=SESSION_ID,
+            task=TASK,
+            runner=fake,
+            **kwargs,
+        )
+        self.assertEqual(
+            1,
+            len(fake.calls),
+            "the driver must invoke the runner exactly once; got %d calls"
+            % len(fake.calls),
+        )
+        return fake.calls[0]
+
+    def test_run_role_local_tier_without_caller_budget_carries_unbounded_timeout_s(self):
+        # Arrange: the local-tier definition, no caller budget.
+        definition = _coder_definition()
+        self.assertEqual(
+            "local",
+            definition["tier"],
+            "the scenario must be a local-tier definition, or the "
+            "local-tier unbounded rule would be untested; got: %r"
+            % definition.get("tier"),
+        )
+        # Act.
+        invocation = self._invoke_and_return_invocation(definition)
+        # Assert: the ``timeout_s`` key is present in the invocation -
+        # the runner requires the key and raises before spawn on an
+        # absent one (the absent-key misuse pin in
+        # tests/test_pibakeoff.py stays green) - and its value is
+        # ``None``, so the local run is unbounded and the None is
+        # distinguishable from absence.
+        self.assertIn(
+            "timeout_s",
+            invocation,
+            "the invocation dict must carry timeout_s per the runner "
+            "seam - an absent key is the misuse the runner rejects "
+            "before spawn; got keys: %r" % sorted(invocation),
+        )
+        self.assertIs(
+            None,
+            invocation["timeout_s"],
+            "a local-tier run with no caller budget must be unbounded - "
+            "timeout_s must be present with value None, so a long "
+            "local-model turn is never killed for thinking; got: %r"
+            % (invocation["timeout_s"],),
+        )
+
+    def test_run_role_frontier_tier_without_caller_budget_carries_finite_kill_switch(self):
+        # Arrange: the frontier-tier definition, no caller budget.
+        definition = _architect_definition()
+        self.assertEqual(
+            "frontier",
+            definition["tier"],
+            "the scenario must be a frontier-tier definition, or the "
+            "frontier kill-switch rule would be untested; got: %r"
+            % definition.get("tier"),
+        )
+        pidriver = self._import_pidriver()
+        # The driver's frontier cost kill-switch (3600.0, behaviour 16),
+        # imported from the module rather than hardcoded so the test
+        # names the driver's own constant. The getattr with a 3600.0
+        # fallback keeps this RED step honest: the driver still holds
+        # the single 900.0 default and no such constant, so the failure
+        # must be the budget assertion (900.0 != 3600.0), not an
+        # AttributeError at the import step - and the explicit 3600.0
+        # pin below means the fallback can never mask a wrong or
+        # renamed constant once the green lands it.
+        expected = getattr(pidriver, "_FRONTIER_KILL_SWITCH_S", 3600.0)
+        self.assertEqual(
+            3600.0,
+            expected,
+            "the driver's frontier kill-switch must be 3600.0 (plans/"
+            "pi-phase6-single-role.md, behaviour 16); got: %r" % (expected,),
+        )
+        # Act.
+        invocation = self._invoke_and_return_invocation(definition)
+        # Assert: a positive finite float equal to the driver constant -
+        # a frontier run must be cut off when it loops, and the budget
+        # must be finite, never unbounded like the local tier.
+        self.assertIsInstance(
+            invocation["timeout_s"],
+            float,
+            "a frontier-tier run with no caller budget must carry the "
+            "finite cost kill-switch as a float; got: %r"
+            % (invocation["timeout_s"],),
+        )
+        self.assertGreater(
+            invocation["timeout_s"],
+            0.0,
+            "the frontier kill-switch must be a positive budget; got: %r"
+            % (invocation["timeout_s"],),
+        )
+        self.assertTrue(
+            math.isfinite(invocation["timeout_s"]),
+            "the frontier kill-switch must be finite - a frontier run "
+            "must be cut off when it loops; got: %r"
+            % (invocation["timeout_s"],),
+        )
+        self.assertEqual(
+            expected,
+            invocation["timeout_s"],
+            "the frontier tier's default must be the driver's "
+            "_FRONTIER_KILL_SWITCH_S; got: %r" % (invocation["timeout_s"],),
+        )
+
+    def test_run_role_local_tier_with_explicit_budget_overrides_tier_default(self):
+        # Arrange: the local-tier definition, an explicit caller budget.
+        definition = _coder_definition()
+        self.assertEqual(
+            "local",
+            definition["tier"],
+            "the scenario must be a local-tier definition, or the "
+            "caller-budget-override rule would be untested for the local "
+            "tier; got: %r" % definition.get("tier"),
+        )
+        # Act: the explicit budget must reach the runner verbatim, not
+        # the unbounded local default.
+        invocation = self._invoke_and_return_invocation(definition, 123.5)
+        # Assert: the exact caller value wins.
+        self.assertEqual(
+            123.5,
+            invocation["timeout_s"],
+            "an explicit caller budget must override the tier default "
+            "for the local tier; got: %r" % (invocation["timeout_s"],),
+        )
+
+    def test_run_role_frontier_tier_with_explicit_budget_overrides_tier_default(self):
+        # Arrange: the frontier-tier definition, an explicit caller budget.
+        definition = _architect_definition()
+        self.assertEqual(
+            "frontier",
+            definition["tier"],
+            "the scenario must be a frontier-tier definition, or the "
+            "caller-budget-override rule would be untested for the "
+            "frontier tier; got: %r" % definition.get("tier"),
+        )
+        # Act: the explicit budget must reach the runner verbatim, not
+        # the kill-switch default.
+        invocation = self._invoke_and_return_invocation(definition, 123.5)
+        # Assert: the exact caller value wins.
+        self.assertEqual(
+            123.5,
+            invocation["timeout_s"],
+            "an explicit caller budget must override the tier default "
+            "for the frontier tier; got: %r" % (invocation["timeout_s"],),
+        )
