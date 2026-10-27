@@ -1870,3 +1870,383 @@ class TestSessionFixtureHeaderExtractedByFunction(FixtureStreamTestCase):
             "the recorded stream's header must be extracted by session() "
             "itself, not only pinned at the parse level",
         )
+
+
+# --- Tool durations, per end record -----------------------------------------
+#
+# Pinned return shape: ``tool_durations(events: List[dict])`` returns a
+# ``List[dict]`` in stream order, one entry per ``tool_execution_end``
+# record. ``tool_execution_start`` and ``tool_execution_update`` contribute
+# no entry - only ``end`` carries a duration - and empty input yields
+# ``[]``.
+#
+# Each entry has exactly four keys, JSON-native throughout:
+#
+# - ``"toolCallId"``: verbatim from the record;
+# - ``"toolName"``: verbatim from the record;
+# - ``"durationMs"``: verbatim from the record; ``None`` when the field is
+#   absent - absent means the tool did not run (
+#   ``doc/external/pi-dev/json-event-stream.md:122``), and must never read
+#   as a 0 ms run; a non-numeric value passes through uncoerced;
+# - ``"isError"``: a ``bool``; absent on the record means ``False``, never
+#   ``None``.
+#
+# Each test pins the complete key set by value
+# (``set(entry) == TOOL_DURATION_KEYS``), so the coder has no room for
+# undocumented keys.
+#
+# This red fails on the missing function itself: ``pievents.tool_durations``
+# does not exist yet, so calling it raises AttributeError. No sentinel guard
+# is used on purpose, so the suite fails for exactly one reason - the
+# function is absent - and nothing else.
+TOOL_DURATION_KEYS = {"toolCallId", "toolName", "durationMs", "isError"}
+
+
+class ToolDurationsTestCase(PieventsTestCase):
+    """Base for the tool-duration reds: guarded access to
+    ``tool_durations``, failing clearly if the function is absent."""
+
+    def _tool_durations(self):
+        """Fetch ``anvilkit.pi.pievents.tool_durations``, failing clearly if absent."""
+        pievents = self._pievents()
+        return pievents.tool_durations
+
+
+class TestToolDurationsAbsentDistinctFromZero(ToolDurationsTestCase):
+    """Three ends carrying durationMs 0, 12, and absent: the values are
+    reported in stream order, and the absent field is None - a tool that
+    did not run must never read as a 0 ms run."""
+
+    def test_tool_durations_absent_duration_is_none_not_zero_in_stream_order(self):
+        # Arrange: three ends, durationMs present-zero, present-12, absent
+        events = [
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_0",
+                "toolName": "bash",
+                "isError": False,
+                "durationMs": 0,
+            },
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_12",
+                "toolName": "bash",
+                "isError": False,
+                "durationMs": 12,
+            },
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_absent",
+                "toolName": "bash",
+                "isError": False,
+            },
+        ]
+        tool_durations = self._tool_durations()
+        # Act
+        result = tool_durations(events)
+        # Assert
+        self.assertIsInstance(
+            result,
+            list,
+            "tool_durations must return a List[dict], one entry per end",
+        )
+        self.assertEqual(
+            len(result),
+            3,
+            "one entry per tool_execution_end record",
+        )
+        self.assertIsNot(
+            result[0]["durationMs"],
+            None,
+            "durationMs 0 is a real measurement: it must not be None",
+        )
+        self.assertEqual(
+            result[0]["durationMs"],
+            0,
+            "the first end ran for 0 ms: report 0 verbatim",
+        )
+        self.assertEqual(
+            result[1]["durationMs"],
+            12,
+            "the second end ran for 12 ms: report 12 verbatim",
+        )
+        self.assertIs(
+            result[2]["durationMs"],
+            None,
+            "an absent durationMs means the tool did not run: None, never "
+            "0 - a 0 would read as a 0 ms run",
+        )
+        self.assertEqual(
+            [entry["toolCallId"] for entry in result],
+            ["call_0", "call_12", "call_absent"],
+            "entries keep stream order",
+        )
+
+
+class TestToolDurationsEntryShape(ToolDurationsTestCase):
+    """One end carrying every field: the entry has exactly the four
+    pinned keys, ids verbatim, and isError is a bool - present True stays
+    True, absent becomes False."""
+
+    def test_tool_durations_entry_has_exactly_four_keys_and_bool_iserror(self):
+        # Arrange: one end with toolCallId, toolName, isError, durationMs
+        events = [
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_shape",
+                "toolName": "read_file",
+                "isError": True,
+                "durationMs": 12,
+            }
+        ]
+        tool_durations = self._tool_durations()
+        # Act
+        result = tool_durations(events)
+        # Assert
+        self.assertEqual(len(result), 1, "one end yields exactly one entry")
+        entry = result[0]
+        self.assertEqual(
+            set(entry),
+            TOOL_DURATION_KEYS,
+            "each entry must have exactly the keys 'toolCallId', "
+            "'toolName', 'durationMs', 'isError': no extra keys, no "
+            "missing keys",
+        )
+        self.assertEqual(entry["toolCallId"], "call_shape", "id verbatim")
+        self.assertEqual(entry["toolName"], "read_file", "name verbatim")
+        self.assertEqual(entry["durationMs"], 12)
+        self.assertIsInstance(
+            entry["isError"],
+            bool,
+            "isError must be a bool, never a raw truthy value",
+        )
+        self.assertIs(entry["isError"], True, "isError true stays True")
+        self.assertEqual(
+            entry,
+            {
+                "toolCallId": "call_shape",
+                "toolName": "read_file",
+                "durationMs": 12,
+                "isError": True,
+            },
+            "the complete entry is pinned by value",
+        )
+
+    def test_tool_durations_entry_iserror_absent_defaults_to_false_bool(self):
+        # Arrange: an end with no isError field
+        events = [
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_no_error_flag",
+                "toolName": "bash",
+                "durationMs": 5,
+            }
+        ]
+        tool_durations = self._tool_durations()
+        # Act
+        result = tool_durations(events)
+        # Assert
+        self.assertEqual(len(result), 1, "one end yields exactly one entry")
+        entry = result[0]
+        self.assertEqual(set(entry), TOOL_DURATION_KEYS, "the four pinned keys")
+        self.assertIsInstance(
+            entry["isError"],
+            bool,
+            "isError must be a bool even when the field is absent on "
+            "the record",
+        )
+        self.assertIs(
+            entry["isError"],
+            False,
+            "an absent isError means the tool completed without an error: "
+            "False, never None",
+        )
+
+
+class TestToolDurationsIgnoresStartAndUpdate(ToolDurationsTestCase):
+    """Only tool_execution_end carries a duration: interleaved
+    tool_execution_start and tool_execution_update records contribute no
+    entry, in any position."""
+
+    def test_tool_durations_start_and_update_records_contribute_no_entries(self):
+        # Arrange: starts, updates, and ends interleaved around the two
+        # ends - the lifecycle shape of a real stream
+        events = [
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "call_x",
+                "toolName": "bash",
+                "args": {"command": "true"},
+            },
+            {
+                "type": "tool_execution_update",
+                "toolCallId": "call_x",
+                "toolName": "bash",
+                "partialResult": {},
+            },
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_x",
+                "toolName": "bash",
+                "isError": False,
+                "durationMs": 7,
+            },
+            {
+                "type": "tool_execution_start",
+                "toolCallId": "call_y",
+                "toolName": "bash",
+                "args": {"command": "exit 1"},
+            },
+            {
+                "type": "tool_execution_update",
+                "toolCallId": "call_y",
+                "toolName": "bash",
+                "partialResult": {},
+            },
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_y",
+                "toolName": "bash",
+                "isError": True,
+            },
+        ]
+        tool_durations = self._tool_durations()
+        # Act
+        result = tool_durations(events)
+        # Assert
+        self.assertEqual(
+            len(result),
+            2,
+            "starts and updates contribute no entry: only the two ends "
+            "yield entries",
+        )
+        self.assertEqual(
+            [entry["toolCallId"] for entry in result],
+            ["call_x", "call_y"],
+            "the end-only entries keep stream order",
+        )
+
+
+class TestToolDurationsEmptyList(ToolDurationsTestCase):
+    """Empty input yields an empty list - no records, no entries, no
+    error."""
+
+    def test_tool_durations_empty_list_yields_empty_list(self):
+        tool_durations = self._tool_durations()
+        # Act
+        result = tool_durations([])
+        # Assert
+        self.assertEqual(
+            result,
+            [],
+            "no end records means no entries",
+        )
+
+
+class TestToolDurationsNonNumericDurationPassesThrough(ToolDurationsTestCase):
+    """A non-numeric durationMs passes through verbatim, never coerced:
+    a malformed recording is data, not a conversion error."""
+
+    def test_tool_durations_non_numeric_duration_passes_through_uncoerced(self):
+        # Arrange: an end whose durationMs is a string, plus a stray key
+        # the entry must not absorb
+        events = [
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "call_str",
+                "toolName": "bash",
+                "isError": False,
+                "durationMs": "not-a-number",
+                "extraField": 1,
+            }
+        ]
+        tool_durations = self._tool_durations()
+        # Act
+        result = tool_durations(events)
+        # Assert
+        self.assertEqual(len(result), 1, "one end yields exactly one entry")
+        entry = result[0]
+        self.assertEqual(
+            set(entry),
+            TOOL_DURATION_KEYS,
+            "the entry holds exactly the four pinned keys, never a "
+            "stray field from the record",
+        )
+        self.assertIs(
+            entry["durationMs"],
+            "not-a-number",
+            "a non-numeric durationMs passes through verbatim: never "
+            "coerced to a number, never dropped to None",
+        )
+        self.assertIsInstance(entry["durationMs"], str)
+
+
+class TestToolDurationsParsedFixture(FixtureStreamTestCase):
+    """The recorded fixture stream, routed through parse and then
+    tool_durations: the two recorded ends yield exactly two entries in
+    stream order - call_a with durationMs 0 (a real 0 ms run) and call_b
+    with durationMs absent, reported as None. The fixture's tool-record
+    pin names this exact case at the parse level; this test connects the
+    recorded stream to the function itself."""
+
+    def test_tool_durations_on_parsed_fixture_returns_call_a_zero_and_call_b_none(self):
+        # Arrange: the recorded stream, through the real entry path
+        pievents = self._pievents()
+        events = self._parsed_fixture()["events"]
+        # Act
+        result = pievents.tool_durations(events)
+        # Assert
+        self.assertEqual(
+            len(result),
+            2,
+            "the fixture records exactly two tool_execution_end events: "
+            "one entry each, and nothing from its start or update records",
+        )
+        self.assertEqual(
+            set(result[0]),
+            TOOL_DURATION_KEYS,
+            "the first entry has exactly the four pinned keys",
+        )
+        self.assertEqual(
+            set(result[1]),
+            TOOL_DURATION_KEYS,
+            "the second entry has exactly the four pinned keys",
+        )
+        self.assertEqual(
+            [entry["toolCallId"] for entry in result],
+            ["call_a", "call_b"],
+            "the recorded ends keep stream order",
+        )
+        self.assertEqual(
+            [entry["toolName"] for entry in result],
+            ["bash", "bash"],
+            "toolName verbatim from the record",
+        )
+        self.assertIs(
+            result[0]["durationMs"],
+            0,
+            "call_a's end records durationMs 0: a real 0 ms run, not "
+            "None",
+        )
+        self.assertIs(
+            result[1]["durationMs"],
+            None,
+            "call_b's end has no durationMs: the tool did not run, "
+            "reported None, never 0",
+        )
+        self.assertIs(
+            result[0]["isError"],
+            False,
+            "the fixture's ends both complete without error",
+        )
+        self.assertIs(result[1]["isError"], False)
+        self.assertEqual(
+            result[0],
+            {"toolCallId": "call_a", "toolName": "bash", "durationMs": 0, "isError": False},
+            "the complete call_a entry is pinned by value",
+        )
+        self.assertEqual(
+            result[1],
+            {"toolCallId": "call_b", "toolName": "bash", "durationMs": None, "isError": False},
+            "the complete call_b entry is pinned by value",
+        )
