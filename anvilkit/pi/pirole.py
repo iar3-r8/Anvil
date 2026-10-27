@@ -29,7 +29,8 @@ _DEFAULT_TOOLS = "read,bash,edit,write"
 
 
 class RoleError(Exception):
-    """A role name is unknown or a role definition is missing its fields.
+    """A role name is unknown, a role definition is missing its fields, or a
+    session id violates Pi's rule.
 
     A single exception type covers every role-table failure, so callers need
     only one ``except`` clause. Every message names the offending value, so
@@ -67,6 +68,38 @@ def resolve(name: str, coder_model_id: str, frontier_model_id: str) -> Dict[str,
     }
 
 
+# Pi's session-id rule (doc/external/pi-dev/cli.md, Sessions constraints):
+# ids accept letters, numbers, ".", "_" and "-", and must start and end with
+# a letter or number.
+_SESSION_ID_BODY_CHARS = frozenset(
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789"
+    "._-"
+)
+
+
+def _validate_session_id(session_id: str) -> None:
+    """Enforce Pi's session-id rule on the ``role_argv`` input (behaviour 7).
+
+    An id that is empty, carries a character outside letters, numbers,
+    ``.``, ``_`` and ``-``, or starts or ends with anything but a letter or
+    number raises ``RoleError`` quoting the id and stating the rule. The id
+    is never rewritten or repaired: a valid id passes through verbatim.
+    """
+    if (
+        not session_id
+        or any(ch not in _SESSION_ID_BODY_CHARS for ch in session_id)
+        or not session_id[0].isalnum()
+        or not session_id[-1].isalnum()
+    ):
+        raise RoleError(
+            "invalid session_id '{}': Pi session ids accept letters, "
+            "numbers, '.', '_' and '-' and must start and end with a "
+            "letter or number".format(session_id)
+        )
+
+
 def role_argv(definition: Dict[str, str], session_id: str, task: str) -> List[str]:
     """Build the pi invocation for one role as a list of argv tokens.
 
@@ -77,10 +110,14 @@ def role_argv(definition: Dict[str, str], session_id: str, task: str) -> List[st
     to the input, so it reaches ``subprocess`` with no shell and no quoting
     (doc/external/pi-dev/cli.md, Invocation and output). An empty
     ``model_id``, ``prompt_path`` or ``task`` raises ``RoleError`` naming the
-    field. No conflicting session flags (``--session``, ``--continue``,
-    ``-c``, ``--resume``, ``-r``, ``--no-session``) are ever emitted, since
-    Pi rejects them alongside ``--session-id``.
+    field. A ``session_id`` that violates Pi's rule (letters, numbers, ``.``,
+    ``_`` and ``-``; must start and end with a letter or number) raises
+    ``RoleError`` quoting the id; a valid id crosses in byte-identical and is
+    never rewritten. No conflicting session flags (``--session``,
+    ``--continue``, ``-c``, ``--resume``, ``-r``, ``--no-session``) are ever
+    emitted, since Pi rejects them alongside ``--session-id``.
     """
+    _validate_session_id(session_id)
     model_id = definition["model_id"]
     if not model_id:
         raise RoleError("role argv requires a non-empty model_id field")
