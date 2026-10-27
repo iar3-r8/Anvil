@@ -1,6 +1,6 @@
-"""Tests for anvilkit.render - generating the Zoo Code artifacts.
+"""Tests for anvilkit.render - the Zoo Code and Pi agent artifacts.
 
-Written before the implementation (TDD step 5). This is the correctness gate:
+Written before the implementation. This is the correctness gate:
 the rendered output must match the golden fixtures captured from the bash
 implementation in tests/fixtures/, so the rewrite is provably behaviour-preserving.
 

@@ -1,4 +1,6 @@
-"""Generating the Zoo Code artifacts: ``zoo-code-settings.json`` and ``mcp.json``.
+"""Generating the agent artifacts: Zoo Code's ``zoo-code-settings.json`` and
+``.roo/mcp.json``, and Pi's agent-directory ``models.json`` and project
+``mcp.json``. This is the only module that writes agent artifacts.
 
 Templates are parsed as JSON, values are substituted into the resulting data
 structures, and the output is produced with ``json.dumps``.
