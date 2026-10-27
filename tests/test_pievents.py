@@ -2250,3 +2250,263 @@ class TestToolDurationsParsedFixture(FixtureStreamTestCase):
             {"toolCallId": "call_b", "toolName": "bash", "durationMs": None, "isError": False},
             "the complete call_b entry is pinned by value",
         )
+
+
+# --- Retry counting, by outcome ----------------------------------------------
+#
+# Pinned return shape: ``retries(events: List[dict])`` returns a plain dict
+# with exactly five keys, JSON-native throughout:
+#
+# - ``"attempted"``: ``int`` - number of ``auto_retry_start`` records;
+# - ``"succeeded"``: ``int`` - ``auto_retry_end`` records with ``success``
+#   truthy;
+# - ``"failed"``: ``int`` - ``auto_retry_end`` records with ``success``
+#   falsy;
+# - ``"unfinished"``: ``int`` - ``auto_retry_start`` records with no end;
+# - ``"final_errors"``: ``List[str]`` - the ``finalError`` string of each
+#   failed end that carries one, in stream order. An absent ``finalError``
+#   adds no entry, so the list never holds ``None``.
+#
+# Event shapes (``doc/external/pi-dev/json-event-stream.md``, "Retry
+# events"): ``auto_retry_start`` carries ``attempt``, ``maxAttempts``,
+# ``delayMs`` and ``errorMessage`` (line 181); ``auto_retry_end`` carries
+# ``success`` and ``attempt``, and a final failure adds a ``finalError``
+# string (line 185).
+#
+# Each test pins the complete key set by value
+# (``set(result) == RETRY_KEYS``), so the coder has no room for
+# undocumented keys.
+#
+# This red fails on the missing function itself: ``pievents.retries``
+# does not exist yet, so calling it raises AttributeError. No sentinel
+# guard is used on purpose, so the suite fails for exactly one reason -
+# the function is absent - and nothing else.
+RETRY_KEYS = {"attempted", "succeeded", "failed", "unfinished", "final_errors"}
+
+
+class TestRetriesCountedByOutcome(PieventsTestCase):
+    """The given condition in one stream: two starts, one end with
+    ``success: true``, one end with ``success: false`` and a
+    ``finalError`` - all five fields pinned by value, the error list
+    holding exactly that one string and nothing else."""
+
+    def test_retries_two_starts_one_success_one_final_failure_returns_pinned_counts(self):
+        # Arrange
+        events = [
+            {
+                "type": "auto_retry_start",
+                "attempt": 1,
+                "maxAttempts": 3,
+                "delayMs": 2000,
+                "errorMessage": "529 overloaded",
+            },
+            {"type": "auto_retry_end", "success": True, "attempt": 2},
+            {
+                "type": "auto_retry_start",
+                "attempt": 1,
+                "maxAttempts": 3,
+                "delayMs": 2000,
+                "errorMessage": "529 overloaded",
+            },
+            {
+                "type": "auto_retry_end",
+                "success": False,
+                "attempt": 3,
+                "finalError": "529 overloaded: all retries exhausted",
+            },
+        ]
+        pievents = self._pievents()
+        # Act
+        result = pievents.retries(events)
+        # Assert
+        self.assertIsInstance(
+            result,
+            dict,
+            "retries must return a plain dict, so the bake-off record can "
+            "embed it and json.dumps it directly",
+        )
+        self.assertEqual(
+            set(result),
+            RETRY_KEYS,
+            "retries must return exactly the five pinned keys: no extra "
+            "keys, no missing keys",
+        )
+        self.assertEqual(
+            result,
+            {
+                "attempted": 2,
+                "succeeded": 1,
+                "failed": 1,
+                "unfinished": 0,
+                "final_errors": ["529 overloaded: all retries exhausted"],
+            },
+            "two auto_retry_start records -> attempted 2; the success end "
+            "-> succeeded 1; the failed end -> failed 1; every start got "
+            "an end -> unfinished 0; final_errors holds exactly the one "
+            "finalError string, verbatim - no None, no extra entry",
+        )
+
+
+class TestRetriesStartWithoutEnd(PieventsTestCase):
+    """A start with no end counts in ``unfinished`` - the other counters
+    keep reading the records that are there."""
+
+    def test_retries_start_without_end_counts_unfinished(self):
+        # Arrange: one retry that completed successfully, one start that
+        # never gets an end
+        events = [
+            {
+                "type": "auto_retry_start",
+                "attempt": 1,
+                "maxAttempts": 3,
+                "delayMs": 1000,
+                "errorMessage": "529 overloaded",
+            },
+            {"type": "auto_retry_end", "success": True, "attempt": 2},
+            {
+                "type": "auto_retry_start",
+                "attempt": 1,
+                "maxAttempts": 3,
+                "delayMs": 2000,
+                "errorMessage": "529 overloaded",
+            },
+        ]
+        pievents = self._pievents()
+        # Act
+        result = pievents.retries(events)
+        # Assert
+        self.assertEqual(
+            result,
+            {
+                "attempted": 2,
+                "succeeded": 1,
+                "failed": 0,
+                "unfinished": 1,
+                "final_errors": [],
+            },
+            "the end-less start is a retry that was attempted but never "
+            "finished: unfinished 1, and nothing failed, so final_errors "
+            "stays empty",
+        )
+
+
+class TestRetriesFinalErrorHandling(PieventsTestCase):
+    """An absent ``finalError`` adds no entry: the list never holds
+    ``None``."""
+
+    def test_retries_successful_end_without_final_error_keeps_final_errors_empty(self):
+        # Arrange: a completed retry whose success end carries no
+        # finalError at all
+        events = [
+            {
+                "type": "auto_retry_start",
+                "attempt": 1,
+                "maxAttempts": 2,
+                "delayMs": 500,
+                "errorMessage": "connection reset",
+            },
+            {"type": "auto_retry_end", "success": True, "attempt": 2},
+        ]
+        pievents = self._pievents()
+        # Act
+        result = pievents.retries(events)
+        # Assert
+        self.assertEqual(
+            result,
+            {
+                "attempted": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "unfinished": 0,
+                "final_errors": [],
+            },
+            "a successful end with no finalError field contributes nothing "
+            "to the error list: nothing failed, so it stays [] - never a "
+            "None entry",
+        )
+
+    def test_retries_failed_end_without_final_error_counts_failed_keeps_final_errors_empty(self):
+        # Arrange: a final failure whose end carries no finalError field
+        events = [
+            {
+                "type": "auto_retry_start",
+                "attempt": 1,
+                "maxAttempts": 2,
+                "delayMs": 500,
+                "errorMessage": "connection reset",
+            },
+            {"type": "auto_retry_end", "success": False, "attempt": 2},
+        ]
+        pievents = self._pievents()
+        # Act
+        result = pievents.retries(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            RETRY_KEYS,
+            "the key set is pinned even when the error list is empty",
+        )
+        self.assertEqual(result["failed"], 1, "success false counts as a failure")
+        self.assertEqual(
+            result["final_errors"],
+            [],
+            "an absent finalError adds no entry: the failed retry is "
+            "counted, but the list stays empty and never holds None",
+        )
+
+
+class TestRetriesEmptyList(PieventsTestCase):
+    """Empty input: no records at all, so every counter is zero and the
+    error list is empty."""
+
+    def test_retries_empty_list_yields_zero_counters_and_no_final_errors(self):
+        pievents = self._pievents()
+        # Act
+        result = pievents.retries([])
+        # Assert
+        self.assertEqual(
+            result,
+            {
+                "attempted": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "unfinished": 0,
+                "final_errors": [],
+            },
+            "an empty stream has nothing to account for: all counters "
+            "exactly zero, no final errors",
+        )
+
+
+class TestRetriesParsedFixture(FixtureStreamTestCase):
+    """The recorded fixture stream, routed through ``parse`` and then
+    ``retries``: two retry starts, one successful end and one
+    final-failure end - the error list holds exactly the one recorded
+    finalError string."""
+
+    def test_retries_on_parsed_fixture_counts_one_success_one_final_failure(self):
+        # Arrange: the recorded stream, through the real entry path
+        pievents = self._pievents()
+        events = self._parsed_fixture()["events"]
+        # Act
+        result = pievents.retries(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            RETRY_KEYS,
+            "the recorded stream must yield exactly the five pinned keys",
+        )
+        self.assertEqual(
+            result,
+            {
+                "attempted": 2,
+                "succeeded": 1,
+                "failed": 1,
+                "unfinished": 0,
+                "final_errors": [FIXTURE_FINAL_ERROR],
+            },
+            "the fixture holds two auto_retry_start records, one "
+            "successful end and one final-failure end: attempted 2, "
+            "succeeded 1, failed 1, unfinished 0, and final_errors "
+            "holds exactly the one recorded finalError string",
+        )
