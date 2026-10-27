@@ -21,6 +21,8 @@ description: Build pull request descriptions following project guidelines
 - **Be specific**: Mention actual file paths (relative to root e.g. src/api/) and key modifications
 - **High-level focus**: Focus on major changes, not every small detail or file
 - **Use clear language**: Avoid jargon, explain technical concepts simply
+- **Include a useful example**: Every description carries at least one short, concrete example a reader can eyeball or run — a command with its real output, a before/after diff, or a short code sample of the new behaviour; a description that only names files is incomplete
+- **Write for a novice**: Assume the reader has never seen this repo; plain words; every jargon term or internal name gets a one-phrase explanation on first use
 - **GitHub format**: Structure for easy copy-paste into GitHub PR description
 
 ### Example Format:
@@ -32,6 +34,10 @@ description: Build pull request descriptions following project guidelines
 - **Brief description**: What was changed
 - **Another change**: What was modified
 - **Testing**: What tests were added/updated
+
+### Example
+$ ./mytool --check
+✔ all 42 checks passed
 ```
 
 ### What to Include

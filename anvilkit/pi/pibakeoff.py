@@ -392,7 +392,8 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
    ``spec["cwd"]`` with stdin from ``/dev/null``, then drain stdout and
    stderr each from its own reader thread so neither can stall on a full
    pipe buffer, while the main thread enforces the wall-clock deadline
-   ``spec["timeout_s"]``.
+   ``spec["timeout_s"]``; an explicit ``None`` there means unbounded - no
+   deadline, no kill, ``timed_out`` stays False.
 
    A run still blocked after the deadline is killed (SIGKILL) and reported,
    never raised: the child runs in its own session, the whole process
@@ -407,7 +408,7 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
    Args:
        spec: The invocation dict: ``argv`` (list of strings), ``cwd``
            (string), ``stdin`` (string; ``/dev/null``), ``timeout_s``
-           (float, the wall-clock budget), and optionally ``env`` (a
+           (float or None; None means unbounded), and optionally ``env`` (a
            dict merged over the parent environment for the child).
 
    Returns:
@@ -420,9 +421,9 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
        and no process is spawned. Also raised when ``env`` is present
        but not a dict: the key is named and no process is spawned.
    """
-   timeout_s = spec.get("timeout_s")
-   if timeout_s is None:
+   if "timeout_s" not in spec:
        raise BakeoffError("spec is missing the required key 'timeout_s'")
+   timeout_s = spec["timeout_s"]
 
    # The optional env overlay: absent or None inherits the parent
    # environment unchanged (every existing caller is unaffected); a dict
@@ -469,9 +470,12 @@ def subprocess_runner(spec: Dict[str, Any]) -> Dict[str, Any]:
    stderr_reader.start()
 
    start = time.monotonic()
-   deadline = start + timeout_s
+   deadline = start + timeout_s if timeout_s is not None else None
    timed_out = False
    while True:
+       if deadline is None:
+           proc.wait()
+           break
        remaining = deadline - time.monotonic()
        if remaining <= 0:
            timed_out = True

@@ -104,6 +104,7 @@ trigger: user
 - Use detected base branch for the PR, do not hardcode `main`
 - Always match the PR title to the GitHub issue title
 - Keep descriptions concise and focused on what changed
+- The description must include at least one useful example (a command with its real output, a before/after diff, or a short code sample) and must be understandable to a reader new to the repo (see `pull-request-builder.md`)
 - Use relative file paths (e.g., `src/frontend/workflow/ui_converter.py`)
 - Do not include test pass results in the description
 - Do not include impact/results fields

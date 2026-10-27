@@ -15,7 +15,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `prompts.py` | interactive prompts, every one of which can be bypassed |
 | `provision.py` | provisioning a target repository — the `setup-repo` orchestration |
 | `cli.py` | the Anvil command line: subcommand dispatch, flags and exit codes |
-| `pi/` | the Pi package: the bake-off / approval sandbox pipeline (see below) |
+| `pi/` | the Pi package: the bake-off, approval, sandbox and single-role pipeline (see below) |
 | `pi/piapproval.py` | phase-2 approval run driver — one job: drive the approval configurations |
 | `pi/piargv.py` | bake-off invocation argv builders — one job: turn inputs into `pi` command lines |
 | `pi/pibakeoff.py` | bake-off run driver — one job: drive bake-off configurations end to end |
@@ -25,4 +25,6 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `pi/pirecord.py` | bake-off run-record builder (closed thirteen-key record, table rendering) |
 | `pi/piruleset.py` | GitHub ruleset builder — the importable main-branch guard ruleset |
 | `pi/pisandbox.py` | sandbox image argv builders — one job: turn inputs into `docker` command lines |
+| `pi/pirole.py` | single-role role table and role argv builder — one job: resolve a role name to its model id, tier, prompt path and tools, and build the per-role `pi` invocation |
+| `pi/pidriver.py` | single-role run driver — one job: compose the sandbox container argv with the role argv and invoke the injected runner once |
 | `pi/pitrust.py` | write the project-local `.pi/` fixture for the phase-2 trust probe |
