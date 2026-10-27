@@ -1,4 +1,4 @@
-"""Single-role run driver (``plans/pi-phase6-single-role.md``, behaviour 9).
+"""Single-role run driver.
 
 One job: compose the sandbox container argv (``pisandbox.run_argv``, which
 ends at the image tag) with the role argv (``pirole.role_argv``, which
@@ -16,9 +16,9 @@ driver is testable with no Docker and imports no process-execution module
 itself (stdlib only).
 
 One exception type: ``DriverError``, raised when the container could not
-start: a non-zero exit with empty stdout (behaviour 12) means the pi
+start: a non-zero exit with empty stdout means the pi
 process never ran, so there is no agent result to report. The
-missing-prompt-file rule (behaviour 13) raises ``pirole.RoleError`` naming
+missing-prompt-file rule raises ``pirole.RoleError`` naming
 the absolute path instead: it is a role-definition failure decided before
 the container starts, not a container-start failure.
 """
@@ -40,8 +40,8 @@ class DriverError(Exception):
 
     A single exception type covers every driver failure, so callers need
     only one ``except`` clause. The container-start-failure rule (non-zero
-    exit with empty stdout, behaviour 12) raises it. The missing-prompt-file
-    rule (behaviour 13) is distinct: it is a role-definition failure decided
+    exit with empty stdout) raises it. The missing-prompt-file rule is
+    distinct: it is a role-definition failure decided
     before the container starts, and raises ``pirole.RoleError`` naming the
     absolute path.
     """

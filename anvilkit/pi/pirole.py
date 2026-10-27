@@ -1,16 +1,17 @@
-"""Role table for single-role Pi invocation (``plans/pi-phase6-single-role.md``, behaviour 4).
+"""Role table and role argv builder for single-role Pi invocation.
 
 One job: map a role name to its definition - model id, tier, prompt path and
 tools - and nothing else. This module decides, never acts: it performs no
 subprocess, no Docker and no file I/O, so it is importable and exercisable
-with no container (behaviour 14's seam guard). The argv builder (behaviour 5)
-is in this module; the driver (behaviours 9-13) lives in its own.
+with no container; the tests pin this import surface as a drift guard.
+The argv builder is in this module; the driver that invokes it lives in
+``anvilkit.pi.pidriver``.
 
 The table is deliberately fixed at four roles. ``architect`` is the only
 frontier-tier role; ``coder``, ``tester`` and ``docs`` all run on the local
 coder model. Every role starts at the default tool set and its own prompt
-path under ``.pi/roles/`` (the prompt *content* is phase 8's job, not this
-module's).
+path under ``.pi/roles/``; this module only resolves and validates the
+path, never the prompt content.
 
 Stdlib only. One exception type: ``RoleError``.
 """
@@ -24,7 +25,7 @@ ROLES = ("architect", "coder", "tester", "docs")
 _FRONTIER_ROLES = frozenset(("architect",))
 
 # Every role starts at Pi's default enabled tools
-# (doc/external/pi-dev/cli.md, Tools); per-role divergence is #55 and #67.
+# (doc/external/pi-dev/cli.md, Tools).
 _DEFAULT_TOOLS = "read,bash,edit,write"
 
 
@@ -80,7 +81,7 @@ _SESSION_ID_BODY_CHARS = frozenset(
 
 
 def _validate_session_id(session_id: str) -> None:
-    """Enforce Pi's session-id rule on the ``role_argv`` input (behaviour 7).
+    """Enforce Pi's session-id rule on the ``role_argv`` input.
 
     An id that is empty, carries a character outside letters, numbers,
     ``.``, ``_`` and ``-``, or starts or ends with anything but a letter or
