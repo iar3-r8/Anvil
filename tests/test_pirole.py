@@ -549,5 +549,87 @@ class TestRoleArgvHostileTaskVerbatim(RoleResolveTestCase):
         )
 
 
+# Pi's rule for session ids (doc/external/pi-dev/cli.md, Sessions
+# constraints): ids accept letters, numbers, ".", "_" and "-", and must start
+# and end with a letter or number. Each invalid id below violates exactly one
+# part of the rule and must be refused, never silently repaired.
+INVALID_SESSION_IDS = ("-leading", "trailing-", "has space", "has/slash", "")
+
+
+class TestRoleArgvSessionIdValidated(RoleResolveTestCase):
+    """Pi's session-id rule is enforced on the role_argv input.
+
+    A valid id crosses into the argv byte-identical, immediately after the
+    ``--session-id`` flag; an invalid id is refused with a ``RoleError`` that
+    quotes the id and states Pi's rule, so nothing is repaired or rewritten
+    on the way through.
+    """
+
+    def test_role_argv_valid_session_id_is_accepted_verbatim_after_the_flag(self):
+        # Arrange: a resolved coder definition and a valid session id.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        # Act.
+        argv = pirole.role_argv(definition, SESSION_ID, TASK)
+        # Assert: the id is one token, byte-identical to the input, sitting
+        # immediately after the --session-id flag.
+        flag = argv.index("--session-id")
+        self.assertEqual(
+            SESSION_ID,
+            argv[flag + 1],
+            "the valid session id must appear verbatim after --session-id; "
+            "got: %r" % (argv[flag:flag + 2],),
+        )
+
+    def test_role_argv_invalid_session_id_raises_role_error_quoting_id_and_rule(self):
+        # Arrange: a resolved coder definition; each invalid id violates one
+        # part of Pi's rule (leading dash, trailing dash, space, slash, empty).
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        for bad_id in INVALID_SESSION_IDS:
+            with self.subTest(session_id=bad_id):
+                # Act / Assert: a RoleError is raised - the id is refused,
+                # never silently repaired into a valid one, so nothing is
+                # returned.
+                with self.assertRaises(pirole.RoleError) as ctx:
+                    pirole.role_argv(definition, bad_id, TASK)
+                message = str(ctx.exception)
+                if bad_id:
+                    self.assertIn(
+                        "'{}'".format(bad_id),
+                        message,
+                        "the error must quote the offending session id %r; "
+                        "got: %r" % (bad_id, message),
+                    )
+                self.assertIn(
+                    "session_id",
+                    message,
+                    "the error must name the session_id field; got: %r" % message,
+                )
+                self.assertIn(
+                    "letters",
+                    message,
+                    "the error must state Pi's rule for allowed characters; "
+                    "got: %r" % message,
+                )
+                self.assertIn(
+                    "numbers",
+                    message,
+                    "the error must state Pi's rule for allowed characters; "
+                    "got: %r" % message,
+                )
+                self.assertIn(
+                    "start",
+                    message,
+                    "the error must state Pi's start-of-id rule; got: %r"
+                    % message,
+                )
+                self.assertIn(
+                    "end",
+                    message,
+                    "the error must state Pi's end-of-id rule; got: %r" % message,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
