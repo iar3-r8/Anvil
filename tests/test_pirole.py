@@ -26,6 +26,16 @@ Documented runner contract, cited from
 ``env`` dict) and exactly six result keys out -
 ``exit_code`` (int), ``stdout`` (str), ``stderr`` (str),
 ``wall_time_s`` (float), ``timed_out`` (bool), ``evidence`` (str).
+
+Behaviour 4 (``role-table-resolves-four-roles``) is also tested here:
+``pirole.resolve(name, coder_model_id, frontier_model_id)`` maps each of the
+four role names to a definition dict carrying its ``model_id``, ``tier``,
+``prompt_path`` and ``tools`` - the architect is the only frontier-tier role
+(frontier model id), while coder, tester and docs run on the local coder
+model - and an unknown name raises ``RoleError`` naming it and listing the
+four known roles. The ``pirole`` import is deferred into the tests so that,
+until the module exists, they fail at the import step rather than breaking
+collection of the boundary pins.
 """
 
 import sys
@@ -194,6 +204,112 @@ class TestRunnerSeamContract(PiRoleBoundaryPinTestCase):
             % result["stdout"],
         )
         self.assertGreaterEqual(result["wall_time_s"], 0.0)
+
+
+# Behaviour 4: role-table-resolves-four-roles. The four role names and their
+# tiering come from the plan (architect is frontier-tier, the other three are
+# local-tier); the definition shape is the dict ``resolve`` returns, pinned
+# on the four keys the role table must carry.
+ROLES = ("architect", "coder", "tester", "docs")
+CODER_MODEL_ID = "llama-swapped-coder-72b"
+FRONTIER_MODEL_ID = "claude-sonnet-4-5"
+
+
+class RoleResolveTestCase(PiRoleBoundaryPinTestCase):
+    """Shared deferred import of the not-yet-existing ``pirole`` module.
+
+    The import happens inside each test, not at module top level, so that
+    while ``anvilkit/pi/pirole.py`` does not yet exist the tests fail at
+    the import step (ModuleNotFoundError) instead of breaking collection
+    of the boundary pins above.
+    """
+
+    def _import_pirole(self):
+        from anvilkit.pi import pirole as pirole
+
+        return pirole
+
+
+class TestResolveRoles(RoleResolveTestCase):
+    """Each of the four role names resolves to its definition dict."""
+
+    def test_resolve_architect_carries_frontier_model_tier_and_paths(self):
+        # Arrange: the frontier-tier role name and both model ids.
+        pirole = self._import_pirole()
+        # Act.
+        definition = pirole.resolve(
+            "architect", CODER_MODEL_ID, FRONTIER_MODEL_ID
+        )
+        # Assert: the architect is the only frontier-tier role and carries
+        # the frontier model id, its own prompt path and the default tools.
+        self.assertEqual(FRONTIER_MODEL_ID, definition["model_id"])
+        self.assertEqual("frontier", definition["tier"])
+        self.assertEqual(".pi/roles/architect.md", definition["prompt_path"])
+        self.assertEqual("read,bash,edit,write", definition["tools"])
+
+    def test_resolve_coder_carries_local_model_tier_and_paths(self):
+        # Arrange: a local-tier role name and both model ids.
+        pirole = self._import_pirole()
+        # Act.
+        definition = pirole.resolve(
+            "coder", CODER_MODEL_ID, FRONTIER_MODEL_ID
+        )
+        # Assert: the coder runs on the local model, not the frontier one.
+        self.assertEqual(CODER_MODEL_ID, definition["model_id"])
+        self.assertEqual("local", definition["tier"])
+        self.assertEqual(".pi/roles/coder.md", definition["prompt_path"])
+        self.assertEqual("read,bash,edit,write", definition["tools"])
+
+    def test_resolve_tester_carries_local_model_tier_and_paths(self):
+        # Arrange: a local-tier role name and both model ids.
+        pirole = self._import_pirole()
+        # Act.
+        definition = pirole.resolve(
+            "tester", CODER_MODEL_ID, FRONTIER_MODEL_ID
+        )
+        # Assert: the tester runs on the local model with its own prompt.
+        self.assertEqual(CODER_MODEL_ID, definition["model_id"])
+        self.assertEqual("local", definition["tier"])
+        self.assertEqual(".pi/roles/tester.md", definition["prompt_path"])
+        self.assertEqual("read,bash,edit,write", definition["tools"])
+
+    def test_resolve_docs_carries_local_model_tier_and_paths(self):
+        # Arrange: a local-tier role name and both model ids.
+        pirole = self._import_pirole()
+        # Act.
+        definition = pirole.resolve(
+            "docs", CODER_MODEL_ID, FRONTIER_MODEL_ID
+        )
+        # Assert: the docs role runs on the local model with its own prompt.
+        self.assertEqual(CODER_MODEL_ID, definition["model_id"])
+        self.assertEqual("local", definition["tier"])
+        self.assertEqual(".pi/roles/docs.md", definition["prompt_path"])
+        self.assertEqual("read,bash,edit,write", definition["tools"])
+
+
+class TestResolveUnknownRole(RoleResolveTestCase):
+    """An unknown name raises RoleError naming the name and the four roles."""
+
+    def test_resolve_unknown_name_raises_role_error_naming_it_and_known_roles(self):
+        # Arrange: a name that is not one of the four roles.
+        pirole = self._import_pirole()
+        # Act / Assert: a RoleError is raised that names the unknown name
+        # and lists all four known roles, so the caller can see what exists.
+        with self.assertRaises(pirole.RoleError) as ctx:
+            pirole.resolve("manager", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        message = str(ctx.exception)
+        self.assertIn(
+            "manager",
+            message,
+            "the error must name the unknown role; got: %r" % message,
+        )
+        for role in ROLES:
+            self.assertIn(
+                role,
+                message,
+                "the error must list the known role %r among the four "
+                "roles; got: %r" % (role, message),
+            )
 
 
 if __name__ == "__main__":
