@@ -1597,3 +1597,164 @@ class TestInlineMalformedInputs(PieventsTestCase):
         parsed = pievents.parse(stream)
         self.assertEqual(parsed["malformed_lines"], 2)
         self.assertEqual(parsed["events"], [first, last])
+
+
+# --- The session header, first record only ---------------------------------
+#
+# Pinned return shape: ``session(events: List[dict])`` returns a plain dict
+# with exactly two keys, JSON-native throughout:
+#
+# - ``"session_id"``: ``Optional[str]`` - the ``id`` of the FIRST record,
+#   when that record is a ``session`` header carrying an ``id``; ``None``
+#   otherwise, and never ``""``;
+# - ``"version"``: ``Optional[int]`` - the ``version`` of that same first
+#   record; ``None`` when there is no first record to read it from.
+#
+# A plain dict, JSON-native, because the bake-off record embeds the fields
+# verbatim and ``json.dumps``-es them. Each test pins the complete key set
+# by value (``set(result) == SESSION_KEYS``), so the coder has no room for
+# undocumented keys.
+#
+# The session header is the FIRST record of a ``--mode json`` stream
+# (``doc/external/pi-dev/json-event-stream.md:41``). A ``session`` record
+# that is not first is ignored - only the first record is the header. An
+# absent header is normal, not an error (RPC mode emits none), so the
+# empty-input and not-first cases both yield both fields ``None``.
+#
+# This red fails on the missing function itself: ``pievents.session`` does
+# not exist yet, so calling it raises AttributeError. No sentinel guard is
+# used on purpose, so the suite fails for exactly one reason - the function
+# is absent - and nothing else.
+SESSION_KEYS = {"session_id", "version"}
+
+
+class TestSessionFirstRecordHeader(PieventsTestCase):
+    """The first record is a session header carrying an id and a version:
+    both are returned verbatim, and the result has exactly the two pinned
+    keys."""
+
+    def test_session_first_record_header_returns_id_and_version(self):
+        # Arrange
+        events = [{"type": "session", "version": 3, "id": "uuid", "cwd": "/path"}]
+        pievents = self._pievents()
+        # Act
+        result = pievents.session(events)
+        # Assert
+        self.assertIsInstance(
+            result,
+            dict,
+            "session must return a plain dict, so the bake-off record can "
+            "embed it and json.dumps it directly",
+        )
+        self.assertEqual(
+            set(result),
+            SESSION_KEYS,
+            "session must return exactly the keys 'session_id' and "
+            "'version': no extra keys, no missing keys",
+        )
+        self.assertIsInstance(
+            result["session_id"],
+            str,
+            "session_id from a real header must be a str",
+        )
+        self.assertIsInstance(
+            result["version"],
+            int,
+            "version from a real header must be an int",
+        )
+        self.assertEqual(
+            result,
+            {"session_id": "uuid", "version": 3},
+            "the first record is the header: its id and version are "
+            "returned verbatim",
+        )
+
+
+class TestSessionNotFirstIgnored(PieventsTestCase):
+    """A session record that is not the first record is ignored: both
+    fields come back None, because only the first record is the header."""
+
+    def test_session_record_not_first_is_ignored_both_fields_none(self):
+        # Arrange: the first record is not a header; a header arrives second
+        events = [
+            {"type": "agent_start"},
+            {"type": "session", "version": 3, "id": "uuid-not-first", "cwd": "/path"},
+        ]
+        pievents = self._pievents()
+        # Act
+        result = pievents.session(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            SESSION_KEYS,
+            "session must still return exactly the two pinned keys",
+        )
+        self.assertIs(
+            result["session_id"],
+            None,
+            "a session record that is not first is ignored: session_id is "
+            "None, never the later record's id",
+        )
+        self.assertIs(
+            result["version"],
+            None,
+            "a session record that is not first is ignored: version is None "
+            "too, never the later record's version",
+        )
+        self.assertEqual(result, {"session_id": None, "version": None})
+
+
+class TestSessionHeaderLackingId(PieventsTestCase):
+    """The first record is a header but lacks an id: session_id is None
+    (never the empty string), while version is still reported from that
+    same record."""
+
+    def test_session_header_lacking_id_yields_none_id_and_still_reports_version(self):
+        # Arrange: a header with a version but no id field
+        events = [{"type": "session", "version": 3, "cwd": "/path"}]
+        pievents = self._pievents()
+        # Act
+        result = pievents.session(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            SESSION_KEYS,
+            "session must still return exactly the two pinned keys",
+        )
+        self.assertIs(
+            result["session_id"],
+            None,
+            "a header lacking an id yields session_id None - never the "
+            "empty string",
+        )
+        self.assertEqual(
+            result["version"],
+            3,
+            "version is still reported from the header record even when "
+            "id is absent",
+        )
+        self.assertEqual(result, {"session_id": None, "version": 3})
+
+
+class TestSessionEmptyList(PieventsTestCase):
+    """An empty stream has no first record at all: both fields are None."""
+
+    def test_session_empty_list_yields_both_fields_none(self):
+        # Arrange
+        events = []
+        pievents = self._pievents()
+        # Act
+        result = pievents.session(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            SESSION_KEYS,
+            "session must still return exactly the two pinned keys",
+        )
+        self.assertIs(result["session_id"], None)
+        self.assertIs(result["version"], None)
+        self.assertEqual(
+            result,
+            {"session_id": None, "version": None},
+            "an empty stream has no first record: both fields are None",
+        )
