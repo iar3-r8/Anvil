@@ -18,9 +18,12 @@ itself (stdlib only).
 One exception type: ``DriverError``, raised when the container could not
 start: a non-zero exit with empty stdout (behaviour 12) means the pi
 process never ran, so there is no agent result to report. The
-missing-prompt-file rule (behaviour 13) will also raise it.
+missing-prompt-file rule (behaviour 13) raises ``pirole.RoleError`` naming
+the absolute path instead: it is a role-definition failure decided before
+the container starts, not a container-start failure.
 """
 
+from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
 from anvilkit.pi import pirole
@@ -37,9 +40,10 @@ class DriverError(Exception):
 
     A single exception type covers every driver failure, so callers need
     only one ``except`` clause. The container-start-failure rule (non-zero
-    exit with empty stdout, behaviour 12) and the missing-prompt-file rule
-    (behaviour 13) will raise it; it is distinct from ``pirole.RoleError``,
-    which owns everything decided before the container starts.
+    exit with empty stdout, behaviour 12) raises it. The missing-prompt-file
+    rule (behaviour 13) is distinct: it is a role-definition failure decided
+    before the container starts, and raises ``pirole.RoleError`` naming the
+    absolute path.
     """
 
 
@@ -52,6 +56,7 @@ def run_role(
     runner: Callable[[Dict[str, Any]], Dict[str, Any]],
     env: Optional[Dict[str, str]] = None,
     timeout_s: Optional[float] = None,
+    check_prompt_file: bool = False,
 ) -> Dict[str, Any]:
     """Run one role inside the sandbox container and return the runner's result.
 
@@ -84,6 +89,11 @@ def run_role(
             ``None`` means no ``-e`` tokens.
         timeout_s: optional wall-clock budget for the run; the driver's
             default applies when absent.
+        check_prompt_file: when True, the resolved absolute prompt path
+            (``repo_path`` joined with the definition's ``prompt_path``)
+            must be an existing file or the driver raises
+            ``pirole.RoleError`` naming it, before any argv is composed
+            and before the runner is invoked.
 
     Returns:
         Dict[str, Any]: the runner's six-key result dict, unmodified.
@@ -97,6 +107,12 @@ def run_role(
             empty - the container start failed, and there is no agent
             result to return.
     """
+    if check_prompt_file:
+        prompt_file = Path(repo_path) / definition["prompt_path"]
+        if not prompt_file.is_file():
+            raise pirole.RoleError(
+                "role prompt file not found: %s" % str(prompt_file)
+            )
     container_argv = pisandbox.run_argv(repo_path, tag, env=env)
     role_argv = pirole.role_argv(definition, session_id, task)
     invocation: Dict[str, Any] = {
