@@ -40,6 +40,7 @@ whole-stream stdout capture is asserted here as well.
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -980,3 +981,197 @@ class TestRunRoleContainerStartFailure(RunRoleTestCase):
             "the empty stream must pass through verbatim; got: %r"
             % result.get("stdout"),
         )
+
+
+# The prompt-file existence check: with the check enabled, a repo whose
+# ``.pi/roles/<role>.md`` is absent must fail before any container starts -
+# no runner invocation - with pirole's RoleError naming the absolute path
+# of the missing file. That error is a role-definition failure, distinct
+# from DriverError, which a container that could not start raises only
+# after a runner invocation. A repo where the prompt file exists passes
+# the check and reaches the runner: the check is about existence, not
+# about the driver refusing valid repos. The fake repos are tempfile
+# directories, so no test touches a real repo.
+def _make_fake_repo(tmp_dir: str, layout: str) -> str:
+    """Create a fake repo under ``tmp_dir`` with the given ``.pi`` layout.
+
+    ``layout`` is one of ``"empty"`` (a bare repo, no ``.pi`` at all),
+    ``"roles_dir"`` (``.pi/roles`` exists but carries no ``coder.md``) or
+    ``"prompt_file"`` (``.pi/roles/coder.md`` exists). The returned repo
+    path is absolute, so the prompt file's expected absolute path is the
+    repo path joined with the definition's ``prompt_path``.
+    """
+    repo = Path(tmp_dir) / "repo"
+    repo.mkdir(parents=True)
+    roles_dir: Optional[Path] = None
+    if layout in ("roles_dir", "prompt_file"):
+        roles_dir = repo / ".pi" / "roles"
+        roles_dir.mkdir(parents=True)
+    if layout == "prompt_file":
+        assert roles_dir is not None
+        (roles_dir / "coder.md").write_text(
+            "a coder prompt\n", encoding="utf-8"
+        )
+    return str(repo)
+
+
+class TestRunRoleMissingPromptFile(RunRoleTestCase):
+    """A missing prompt file is named before any container starts.
+
+    With the existence check enabled (``check_prompt_file=True``), a repo
+    lacking the role's prompt file produces no result and no runner
+    invocation: the failure is raised as pirole's ``RoleError`` naming
+    the absolute path of the missing file, a role-definition failure
+    distinct from ``DriverError`` (which a container that could not
+    start raises after a runner invocation). A repo where the prompt
+    file exists passes the check and proceeds to the runner.
+    """
+
+    def test_run_role_with_missing_prompt_file_raises_role_error_without_runner_invocation(self):
+        # Arrange: a bare repo - no .pi directory at all.
+        definition = _coder_definition()
+        fake = FakeRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_fake_repo(tmp, "empty")
+            self.assertFalse(
+                (Path(repo) / definition["prompt_path"]).is_file(),
+                "the repo must be missing the prompt file, or the "
+                "missing-file rule would be untested",
+            )
+            pidriver = self._import_pidriver()
+            # Act / Assert: nothing is returned - RoleError is raised.
+            with self.assertRaises(pirole.RoleError):
+                pidriver.run_role(
+                    definition=definition,
+                    repo_path=repo,
+                    tag=TAG,
+                    session_id=SESSION_ID,
+                    task=TASK,
+                    runner=fake,
+                    check_prompt_file=True,
+                )
+            # A missing prompt file must fail before any container start:
+            # the runner is invoked zero times.
+            self.assertEqual(
+                0,
+                len(fake.calls),
+                "a missing prompt file must fail before any container "
+                "start, so the runner must be invoked zero times; got %d "
+                "calls" % len(fake.calls),
+            )
+
+    def test_run_role_with_roles_dir_but_no_prompt_file_raises_role_error_without_runner_invocation(self):
+        # Arrange: the .pi/roles directory exists, but coder.md does not -
+        # the absence is the file, not its directory.
+        definition = _coder_definition()
+        fake = FakeRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_fake_repo(tmp, "roles_dir")
+            self.assertTrue(
+                (Path(repo) / ".pi" / "roles").is_dir(),
+                "the .pi/roles directory must exist, or this would be the "
+                "no-directory case, not the no-file case",
+            )
+            self.assertFalse(
+                (Path(repo) / definition["prompt_path"]).is_file(),
+                "the repo must be missing the prompt file, or the "
+                "missing-file rule would be untested",
+            )
+            pidriver = self._import_pidriver()
+            # Act / Assert: the same rule applies - RoleError, no runner.
+            with self.assertRaises(pirole.RoleError):
+                pidriver.run_role(
+                    definition=definition,
+                    repo_path=repo,
+                    tag=TAG,
+                    session_id=SESSION_ID,
+                    task=TASK,
+                    runner=fake,
+                    check_prompt_file=True,
+                )
+            self.assertEqual(
+                0,
+                len(fake.calls),
+                "a missing prompt file must fail before any container "
+                "start, so the runner must be invoked zero times; got %d "
+                "calls" % len(fake.calls),
+            )
+
+    def test_run_role_with_missing_prompt_file_error_names_absolute_path(self):
+        # Arrange: a bare repo; the expected path is the repo path joined
+        # with the definition's prompt path.
+        definition = _coder_definition()
+        fake = FakeRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_fake_repo(tmp, "empty")
+            expected_path = str(Path(repo) / definition["prompt_path"])
+            pidriver = self._import_pidriver()
+            # Act / Assert: the raised RoleError's message names the
+            # absolute path, so the operator knows exactly which file to
+            # create.
+            with self.assertRaises(pirole.RoleError) as ctx:
+                pidriver.run_role(
+                    definition=definition,
+                    repo_path=repo,
+                    tag=TAG,
+                    session_id=SESSION_ID,
+                    task=TASK,
+                    runner=fake,
+                    check_prompt_file=True,
+                )
+            message = str(ctx.exception)
+            self.assertIn(
+                expected_path,
+                message,
+                "the RoleError message must name the absolute path of "
+                "the missing prompt file %r; got: %r"
+                % (expected_path, message),
+            )
+            self.assertNotIsInstance(
+                ctx.exception,
+                pidriver.DriverError,
+                "a missing prompt file is a role-definition failure, not "
+                "a container-start failure, so the error must not be a "
+                "DriverError; got: %r" % type(ctx.exception).__name__,
+            )
+
+    def test_run_role_with_existing_prompt_file_proceeds_to_runner(self):
+        # Arrange: a repo carrying .pi/roles/coder.md - the boundary that
+        # the check is about existence, not about the driver refusing
+        # valid repos.
+        definition = _coder_definition()
+        fake = FakeRunner()
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _make_fake_repo(tmp, "prompt_file")
+            self.assertTrue(
+                (Path(repo) / definition["prompt_path"]).is_file(),
+                "the repo must carry the prompt file, or the "
+                "existing-file boundary would be untested",
+            )
+            pidriver = self._import_pidriver()
+            # Act: the check passes, and the driver proceeds to the
+            # runner as it does for any valid repo.
+            result = pidriver.run_role(
+                definition=definition,
+                repo_path=repo,
+                tag=TAG,
+                session_id=SESSION_ID,
+                task=TASK,
+                runner=fake,
+                check_prompt_file=True,
+            )
+            # Assert: no RoleError, exactly one runner invocation, and a
+            # result dict comes back.
+            self.assertEqual(
+                1,
+                len(fake.calls),
+                "an existing prompt file must reach the runner exactly "
+                "once; got %d calls" % len(fake.calls),
+            )
+            self.assertIsInstance(
+                result,
+                dict,
+                "a run whose prompt file exists must return the runner's "
+                "result dict, never an error; got: %r"
+                % type(result).__name__,
+            )
