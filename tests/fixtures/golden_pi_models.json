@@ -1,0 +1,16 @@
+{
+    "providers": {
+        "llamaswap": {
+            "baseUrl": "http://127.0.0.1:8000/v1",
+            "api": "openai-completions",
+            "apiKey": "llamaswap-local",
+            "models": [
+                {
+                    "id": "qwen3-coder",
+                    "contextWindow": 262144,
+                    "maxTokens": 262144
+                }
+            ]
+        }
+    }
+}

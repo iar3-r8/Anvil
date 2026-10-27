@@ -8,7 +8,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `yamlio.py` | safe YAML loading — the only module permitted to import `yaml` |
 | `env.py` | safe `.env` reading and writing |
 | `config.py` | reading `config.yaml` (llama-swap's, read-only) and `anvil.yaml` (Anvil's own) |
-| `render.py` | generating the Zoo Code artifacts: `zoo-code-settings.json` and `mcp.json` |
+| `render.py` | generating the agent artifacts — Zoo Code's `zoo-code-settings.json` and `.roo/mcp.json`, Pi's `models.json` and `.pi/mcp.json`; the only module that writes them |
 | `compose.py` | driving `docker compose` and the container runtime |
 | `health.py` | health checks against the llama-swap gateway |
 | `stress.py` | stress testing against the llama-swap gateway |

@@ -68,12 +68,20 @@ class AnvilSettings:
         self.anthropic_models: List[Dict[str, Any]] = list(zoo_code["anthropic_models"])
 
 
-def read_models(path: PathLike) -> ModelTopology:
+def read_models(
+    path: PathLike, strict_context_window: bool = False
+) -> ModelTopology:
     """Read model topology from llama-swap's ``config.yaml``.
+
+    With ``strict_context_window`` the coder's context window must be explicit:
+    a missing ``cmd``, a missing ``--max-model-len``, or a non-numeric value
+    raises instead of falling back to ``DEFAULT_CONTEXT_WINDOW``.
 
     Raises:
         ConfigError: the file is unreadable, ``matrix.vars.coder`` is missing, or
-            it names a model absent from the ``models`` section.
+            it names a model absent from the ``models`` section; with
+            ``strict_context_window``, also when the coder's context window
+            cannot be determined exactly.
     """
     data = _load(path)
 
@@ -95,7 +103,9 @@ def read_models(path: PathLike) -> ModelTopology:
 
     return ModelTopology(
         coder_id=coder_id,
-        coder_context_window=_extract_context_window(models[coder_id]),
+        coder_context_window=_extract_context_window(
+            models[coder_id], coder_id, path, strict_context_window
+        ),
         embedder_id=matrix_vars.get("nomic"),
         gateway_port=int(data.get("port", DEFAULT_GATEWAY_PORT)),
     )
@@ -137,15 +147,30 @@ def resolve_port(
     return int(default_port)
 
 
-def _extract_context_window(model: Mapping[str, Any]) -> int:
+def _extract_context_window(
+    model: Mapping[str, Any],
+    coder_id: str,
+    path: PathLike,
+    strict: bool = False,
+) -> int:
     """Pull ``--max-model-len`` out of a located model's command string.
 
     The value genuinely lives inside a command line, which is llama-swap's
     design. The model is resolved structurally first, so only its own command is
     scanned and the value need not be the final token on the line.
+
+    Lenient (the default) behaviour falls back to ``DEFAULT_CONTEXT_WINDOW``
+    when the flag is absent or non-numeric. In strict mode each of those cases
+    is a ``ConfigError`` that names the coder, so a wrong window can never be
+    reported as a measurement.
     """
     command = model.get("cmd")
     if not command:
+        if strict:
+            raise ConfigError(
+                "coder model {!r} in {} has no 'cmd'; its context window "
+                "cannot be determined".format(coder_id, path)
+            )
         return DEFAULT_CONTEXT_WINDOW
 
     tokens = str(command).split()
@@ -161,8 +186,19 @@ def _extract_context_window(model: Mapping[str, Any]) -> int:
         try:
             return int(candidate)
         except ValueError:
+            if strict:
+                raise ConfigError(
+                    "coder model {!r} in {}: {} value {!r} is not a number".format(
+                        coder_id, path, _MAX_MODEL_LEN_FLAG, candidate
+                    )
+                )
             continue
 
+    if strict:
+        raise ConfigError(
+            "coder model {!r} in {}: no {} in its cmd; its context window "
+            "cannot be determined".format(coder_id, path, _MAX_MODEL_LEN_FLAG)
+        )
     return DEFAULT_CONTEXT_WINDOW
 
 

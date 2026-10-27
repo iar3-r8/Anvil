@@ -1,4 +1,6 @@
-"""Generating the Zoo Code artifacts: ``zoo-code-settings.json`` and ``mcp.json``.
+"""Generating the agent artifacts: Zoo Code's ``zoo-code-settings.json`` and
+``.roo/mcp.json``, and Pi's agent-directory ``models.json`` and project
+``mcp.json``. This is the only module that writes agent artifacts.
 
 Templates are parsed as JSON, values are substituted into the resulting data
 structures, and the output is produced with ``json.dumps``.
@@ -14,6 +16,8 @@ Constraints:
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
+
+from anvilkit.pi import piargv
 
 PathLike = Union[str, Path]
 
@@ -127,8 +131,63 @@ def mcp_settings(
     return _to_json(config)
 
 
+def pi_mcp_settings(workspace_folder: str) -> str:
+    """Render the Pi ``mcp.json`` as a JSON string.
+
+    Takes no credential parameter: the rendered file is project-local
+    and committed, so it must carry no secret. The template's
+    ``${GITHUB_TOKEN}`` and ``${OXYLABS_USERNAME}`` /
+    ``${OXYLABS_PASSWORD}`` tokens are left verbatim — Pi interpolates
+    them from the environment at request time.
+
+    The Roo vocabulary keys ``alwaysAllow``, ``disabledTools`` and
+    ``disabled`` are dropped from every server: Pi's ``mcp.json``
+    does not recognise them. An unauthenticated oxylabs server simply
+    fails to connect and Pi reports it, instead of being disabled.
+    """
+    config = _load_json_template(MCP_TEMPLATE)
+
+    servers = config["mcpServers"]
+
+    git_args = servers["git"]["args"]
+    servers["git"]["args"] = [
+        workspace_folder if arg == "${workspaceFolder}" else arg for arg in git_args
+    ]
+
+    for server in servers.values():
+        for key in ("alwaysAllow", "disabledTools", "disabled"):
+            server.pop(key, None)
+
+    return _to_json(config)
+
+
 def extensions_settings() -> str:
     return _to_json(_load_json_template(EXTENSIONS_TEMPLATE))
+
+
+def pi_models_settings(
+    model_id: str,
+    port: int,
+    context_window: int,
+    host: str = "127.0.0.1",
+) -> str:
+    """Render the Pi agent-directory ``models.json`` as a JSON string.
+
+    Delegates the document to :func:`anvilkit.pi.piargv.models_document`,
+    which owns the field names and validation; ``maxTokens`` is set equal to
+    ``context_window`` so Pi never falls back to its 16384 default and
+    truncates a long-context model. The delegate's ``ArgvError`` is
+    translated to ``RenderError`` at this seam so one exception type per
+    module holds for callers.
+    """
+    try:
+        document = piargv.models_document(
+            model_id, port, context_window, context_window, host=host
+        )
+    except piargv.ArgvError as exc:
+        raise RenderError("models document: {}".format(exc)) from exc
+
+    return _to_json(document)
 
 
 def write_text(path: PathLike, content: str) -> None:
