@@ -39,6 +39,11 @@ GOLDEN_CODER_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 GOLDEN_EMBEDDER_MODEL = "nomic-ai/nomic-embed-text-v1.5"
 GOLDEN_WORKSPACE = "/golden/target/repo"
 GOLDEN_GITHUB_TOKEN = "ghp_goldentesttoken"
+# Golden triple for tests/fixtures/golden_pi_models.json (plans/pi-phase5-render.md
+# behaviours 6-10). The fixture equals json.dumps(piargv.models_document(
+# GOLDEN_PI_MODEL_ID, GOLDEN_PORT, GOLDEN_CONTEXT_WINDOW,
+# max_tokens=GOLDEN_CONTEXT_WINDOW), indent=4); host is the delegate default.
+GOLDEN_PI_MODEL_ID = "qwen3-coder"
 
 
 def load_fixture(name):
@@ -652,6 +657,179 @@ class TestZooSettingsContainerTarget(unittest.TestCase):
         profile = settings["providerProfiles"]["apiConfigs"]["llama_swap"]
 
         self.assertEqual(profile["openAiBaseUrl"], "http://localhost:8000/v1")
+
+
+class TestPiModelsGoldenParity(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 6 (pi-models-golden-parity)."""
+
+    def test_rendered_document_matches_golden_fixture(self):
+        rendered = render.pi_models_settings(
+            GOLDEN_PI_MODEL_ID,
+            GOLDEN_PORT,
+            GOLDEN_CONTEXT_WINDOW,
+        )
+
+        self.assertIsInstance(rendered, str, "output must be a JSON string")
+        self.assertEqual(
+            json.loads(rendered),
+            load_fixture("golden_pi_models.json"),
+            "rendered document must equal tests/fixtures/golden_pi_models.json",
+        )
+
+
+class TestPiModelsDelegatesToPiargv(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 7 (pi-models-delegates-to-piargv):
+    drift guard — the expected document is computed by the delegate itself,
+    never hand-copied."""
+
+    def test_rendered_document_equals_models_document(self):
+        from anvilkit.pi import piargv
+
+        model_id = "drift-guard-model"
+        port = 8123
+        context_window = 98304
+        host = "some-host"
+
+        rendered = json.loads(
+            render.pi_models_settings(
+                model_id, port, context_window, host=host
+            )
+        )
+
+        self.assertEqual(
+            rendered,
+            piargv.models_document(
+                model_id, port, context_window,
+                max_tokens=context_window, host=host,
+            ),
+            "the renderer must delegate to piargv.models_document",
+        )
+
+
+class TestPiModelsMaxTokensIsExplicit(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 8 (pi-models-max-tokens-is-explicit)."""
+
+    def test_max_tokens_equals_context_window_and_is_a_json_number(self):
+        rendered = json.loads(
+            render.pi_models_settings(GOLDEN_PI_MODEL_ID, GOLDEN_PORT, 131072)
+        )
+
+        model = rendered["providers"]["llamaswap"]["models"][0]
+
+        self.assertIn("maxTokens", model, "maxTokens must be present explicitly")
+        self.assertIsInstance(model["maxTokens"], int)
+        self.assertEqual(model["maxTokens"], 131072)
+        self.assertNotEqual(
+            model["maxTokens"],
+            16384,
+            "maxTokens must not fall back to Pi's 16384 default",
+        )
+        self.assertIn("contextWindow", model)
+        self.assertIsInstance(model["contextWindow"], int)
+        self.assertEqual(model["contextWindow"], 131072)
+
+
+class TestPiModelsHostDefaultsAndIsScoped(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 9 (pi-models-host-defaults-and-is-scoped)."""
+
+    def _document(self, **kwargs):
+        return json.loads(
+            render.pi_models_settings(
+                GOLDEN_PI_MODEL_ID, GOLDEN_PORT, GOLDEN_CONTEXT_WINDOW, **kwargs
+            )
+        )
+
+    def test_host_defaults_to_loopback(self):
+        self.assertEqual(
+            self._document()["providers"]["llamaswap"]["baseUrl"],
+            "http://127.0.0.1:8000/v1",
+        )
+
+    def test_explicit_host_changes_only_base_url(self):
+        default_doc = self._document()
+        explicit_doc = self._document(host="llama-swap")
+
+        self.assertEqual(
+            explicit_doc["providers"]["llamaswap"]["baseUrl"],
+            "http://llama-swap:8000/v1",
+        )
+
+        for doc in (default_doc, explicit_doc):
+            doc["providers"]["llamaswap"].pop("baseUrl")
+
+        self.assertEqual(
+            default_doc,
+            explicit_doc,
+            "changing the host must alter baseUrl and nothing else",
+        )
+
+
+class TestPiModelsArgvErrorBecomesRenderError(unittest.TestCase):
+    """plans/pi-phase5-render.md behaviour 10 (pi-models-argv-error-becomes-render-error).
+
+    Invalid inputs that the delegate refuses with ArgvError must surface as
+    render.RenderError — one exception type per module — naming the offending
+    field, so an ArgvError can never leak to the caller.
+    """
+
+    def _assert_render_error(self, kwargs, field_phrase):
+        with self.assertRaises(render.RenderError) as ctx:
+            render.pi_models_settings(
+                GOLDEN_PI_MODEL_ID, GOLDEN_PORT, GOLDEN_CONTEXT_WINDOW, **kwargs
+            )
+        self.assertIn(
+            field_phrase,
+            str(ctx.exception),
+            "the error must name the offending field",
+        )
+
+    def test_port_zero_raises_render_error(self):
+        self._assert_render_error({"port": 0}, "port")
+
+    def test_port_above_range_raises_render_error(self):
+        self._assert_render_error({"port": 65536}, "port")
+
+    def test_empty_model_id_raises_render_error(self):
+        with self.assertRaises(render.RenderError) as ctx:
+            render.pi_models_settings("  ", GOLDEN_PORT, GOLDEN_CONTEXT_WINDOW)
+        self.assertIn("model", str(ctx.exception))
+
+    def test_context_window_zero_raises_render_error(self):
+        with self.assertRaises(render.RenderError) as ctx:
+            render.pi_models_settings(GOLDEN_PI_MODEL_ID, GOLDEN_PORT, 0)
+        self.assertIn("context", str(ctx.exception))
+
+    def test_empty_host_raises_render_error(self):
+        self._assert_render_error({"host": ""}, "host")
+
+    def test_argv_error_never_reaches_the_caller(self):
+        """ArgvError must be translated at the module seam, never re-raised.
+
+        RenderError is not a subclass of ArgvError (and vice versa), so
+        assertRaises(RenderError) proves the delegate's exception was
+        translated rather than leaked.
+        """
+        from anvilkit.pi import piargv
+
+        cases = (
+            lambda: render.pi_models_settings(GOLDEN_PI_MODEL_ID, 0, GOLDEN_CONTEXT_WINDOW),
+            lambda: render.pi_models_settings(GOLDEN_PI_MODEL_ID, 65536, GOLDEN_CONTEXT_WINDOW),
+            lambda: render.pi_models_settings("", GOLDEN_PORT, GOLDEN_CONTEXT_WINDOW),
+            lambda: render.pi_models_settings(GOLDEN_PI_MODEL_ID, GOLDEN_PORT, 0),
+            lambda: render.pi_models_settings(
+                GOLDEN_PI_MODEL_ID, GOLDEN_PORT, GOLDEN_CONTEXT_WINDOW, host="   "
+            ),
+        )
+
+        self.assertFalse(
+            issubclass(render.RenderError, piargv.ArgvError),
+            "the leak guard is only meaningful because the two exception "
+            "types are unrelated",
+        )
+
+        for call in cases:
+            with self.assertRaises(render.RenderError):
+                call()
 
 
 if __name__ == "__main__":
