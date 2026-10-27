@@ -4,7 +4,7 @@ One job: map a role name to its definition - model id, tier, prompt path and
 tools - and nothing else. This module decides, never acts: it performs no
 subprocess, no Docker and no file I/O, so it is importable and exercisable
 with no container (behaviour 14's seam guard). The argv builder (behaviour 5)
-and the driver (behaviours 9-13) live in their own modules.
+is in this module; the driver (behaviours 9-13) lives in its own.
 
 The table is deliberately fixed at four roles. ``architect`` is the only
 frontier-tier role; ``coder``, ``tester`` and ``docs`` all run on the local
@@ -15,7 +15,7 @@ module's).
 Stdlib only. One exception type: ``RoleError``.
 """
 
-from typing import Dict
+from typing import Dict, List
 
 # The four known roles, in the order the error message lists them.
 ROLES = ("architect", "coder", "tester", "docs")
@@ -65,3 +65,44 @@ def resolve(name: str, coder_model_id: str, frontier_model_id: str) -> Dict[str,
         "prompt_path": ".pi/roles/{}.md".format(name),
         "tools": _DEFAULT_TOOLS,
     }
+
+
+def role_argv(definition: Dict[str, str], session_id: str, task: str) -> List[str]:
+    """Build the pi invocation for one role as a list of argv tokens.
+
+    The tokens, in order: ``pi``, ``--mode json``, ``--model <id>``,
+    ``--append-system-prompt <path>``, ``--tools <tools>``,
+    ``--session-id <id>``, ``--no-mcp``, ``-a``, the ``--`` terminator, and
+    the task last after it - the task is exactly one element, byte-identical
+    to the input, so it reaches ``subprocess`` with no shell and no quoting
+    (doc/external/pi-dev/cli.md, Invocation and output). An empty
+    ``model_id``, ``prompt_path`` or ``task`` raises ``RoleError`` naming the
+    field. No conflicting session flags (``--session``, ``--continue``,
+    ``-c``, ``--resume``, ``-r``, ``--no-session``) are ever emitted, since
+    Pi rejects them alongside ``--session-id``.
+    """
+    model_id = definition["model_id"]
+    if not model_id:
+        raise RoleError("role argv requires a non-empty model_id field")
+    prompt_path = definition["prompt_path"]
+    if not prompt_path:
+        raise RoleError("role argv requires a non-empty prompt_path field")
+    if not task:
+        raise RoleError("role argv requires a non-empty task")
+    return [
+        "pi",
+        "--mode",
+        "json",
+        "--model",
+        model_id,
+        "--append-system-prompt",
+        prompt_path,
+        "--tools",
+        definition["tools"],
+        "--session-id",
+        session_id,
+        "--no-mcp",
+        "-a",
+        "--",
+        task,
+    ]
