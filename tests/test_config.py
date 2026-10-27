@@ -436,5 +436,209 @@ class TestPortPrecedence(ConfigTestCase):
             config.resolve_port(flag_value=None, env_value="not-a-port", default_port=8000)
 
 
+class TestLenientContractPins(ConfigTestCase):
+    """Boundary pins, behaviours 1-2 of plans/pi-phase5-render.md.
+
+    The lenient contract of ``read_models`` is pinned before the
+    ``strict_context_window`` flag lands, so the flag can only be added while
+    these tests keep passing on the unchanged code.
+    """
+
+    def test_read_models_without_flag_falls_back_to_default_when_max_model_len_absent(self):
+        # behaviour 1: the coder cmd carries no --max-model-len.
+        path = self.write_yaml(
+            """\
+            port: 9123
+            matrix:
+              vars:
+                coder: "vendor/coder-model"
+                nomic: "vendor/embed-model"
+            models:
+              "vendor/coder-model":
+                cmd: >
+                  docker run --gpu-memory-utilization 0.9
+              "vendor/embed-model":
+                cmd: >
+                  docker run --max-model-len 2048
+            """
+        )
+
+        topology = config.read_models(path)
+
+        self.assertEqual(topology.coder_context_window, 262144)
+        self.assertEqual(topology.coder_context_window, config.DEFAULT_CONTEXT_WINDOW)
+        self.assertEqual(topology.coder_id, "vendor/coder-model")
+        self.assertEqual(topology.embedder_id, "vendor/embed-model")
+        self.assertEqual(topology.gateway_port, 9123)
+
+    def test_read_models_without_flag_falls_back_to_default_when_cmd_absent(self):
+        # behaviour 1, second case: the coder model has no cmd key at all.
+        path = self.write_yaml(
+            """\
+            port: 9123
+            matrix:
+              vars:
+                coder: "vendor/coder-model"
+                nomic: "vendor/embed-model"
+            models:
+              "vendor/coder-model":
+                type: proxy
+              "vendor/embed-model":
+                cmd: >
+                  docker run --max-model-len 2048
+            """
+        )
+
+        topology = config.read_models(path)
+
+        self.assertEqual(topology.coder_context_window, 262144)
+        self.assertEqual(topology.coder_context_window, config.DEFAULT_CONTEXT_WINDOW)
+        self.assertEqual(topology.coder_id, "vendor/coder-model")
+        self.assertEqual(topology.embedder_id, "vendor/embed-model")
+        self.assertEqual(topology.gateway_port, 9123)
+
+    def test_read_models_single_argument_call_shape_yields_lenient_result(self):
+        # behaviour 2: every existing call site (cli, provision, the pi entry
+        # points) invokes read_models with exactly one positional argument.
+        # The golden fixture is the realistic config those callers read; the
+        # single-argument form must keep resolving through the lenient path.
+        path = FIXTURES / "golden_config.yaml"
+
+        topology = config.read_models(path)
+
+        self.assertEqual(topology.coder_id, "Qwen/Qwen3.6-35B-A3B-FP8")
+        self.assertEqual(topology.coder_context_window, 262144)
+        self.assertEqual(topology.embedder_id, "nomic-ai/nomic-embed-text-v1.5")
+        self.assertEqual(topology.gateway_port, 8080)
+
+
+class TestStrictContextWindow(ConfigTestCase):
+    """New strict extraction, behaviours 3-5 of plans/pi-phase5-render.md.
+
+    RED until ``read_models`` gains the ``strict_context_window`` parameter.
+    """
+
+    def test_read_models_strict_missing_max_model_len_raises_config_error(self):
+        # behaviour 3: the flag is requested, the cmd has no --max-model-len.
+        # Raising (rather than returning the 262144 default) is the contract.
+        path = self.write_yaml(
+            """\
+            matrix:
+              vars:
+                coder: "vendor/coder-model"
+                nomic: "vendor/embed-model"
+            models:
+              "vendor/coder-model":
+                cmd: >
+                  docker run --gpu-memory-utilization 0.9
+              "vendor/embed-model":
+                cmd: >
+                  docker run --max-model-len 2048
+            """
+        )
+
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.read_models(path, strict_context_window=True)
+
+        message = str(ctx.exception)
+        self.assertIn("vendor/coder-model", message)
+        self.assertIn("--max-model-len", message)
+        self.assertIn(str(path), message)
+
+    def test_read_models_strict_missing_cmd_raises_config_error(self):
+        # behaviour 4: the coder model has no cmd key. The error must say the
+        # cmd is missing, not that --max-model-len is missing, so it stays
+        # distinguishable from behaviour 3.
+        path = self.write_yaml(
+            """\
+            matrix:
+              vars:
+                coder: "vendor/coder-model"
+                nomic: "vendor/embed-model"
+            models:
+              "vendor/coder-model":
+                type: proxy
+              "vendor/embed-model":
+                cmd: >
+                  docker run --max-model-len 2048
+            """
+        )
+
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.read_models(path, strict_context_window=True)
+
+        message = str(ctx.exception)
+        self.assertIn("cmd", message)
+        self.assertNotIn("--max-model-len", message)
+
+    def test_read_models_strict_returns_numeric_max_model_len_as_int(self):
+        # behaviour 5: both flag spellings are accepted and returned as int.
+        space = self.write_yaml(
+            """\
+            matrix:
+              vars:
+                coder: "vendor/coder-model"
+                nomic: "vendor/embed-model"
+            models:
+              "vendor/coder-model":
+                cmd: >
+                  docker run --max-model-len 131072
+              "vendor/embed-model":
+                cmd: >
+                  docker run --max-model-len 2048
+            """
+        )
+
+        topology = config.read_models(space, strict_context_window=True)
+        self.assertEqual(topology.coder_context_window, 131072)
+        self.assertIsInstance(topology.coder_context_window, int)
+        self.assertNotIsInstance(topology.coder_context_window, bool)
+
+        equals = self.write_yaml(
+            """\
+            matrix:
+              vars:
+                coder: "vendor/coder-model"
+                nomic: "vendor/embed-model"
+            models:
+              "vendor/coder-model":
+                cmd: >
+                  docker run --max-model-len=131072
+              "vendor/embed-model":
+                cmd: >
+                  docker run --max-model-len 2048
+            """
+        )
+
+        topology = config.read_models(equals, strict_context_window=True)
+        self.assertEqual(topology.coder_context_window, 131072)
+        self.assertIsInstance(topology.coder_context_window, int)
+        self.assertNotIsInstance(topology.coder_context_window, bool)
+
+    def test_read_models_strict_non_numeric_max_model_len_raises_config_error(self):
+        # behaviour 5: a non-numeric value is named in the error, never
+        # silently skipped into the default.
+        path = self.write_yaml(
+            """\
+            matrix:
+              vars:
+                coder: "vendor/coder-model"
+                nomic: "vendor/embed-model"
+            models:
+              "vendor/coder-model":
+                cmd: >
+                  docker run --max-model-len abc
+              "vendor/embed-model":
+                cmd: >
+                  docker run --max-model-len 2048
+            """
+        )
+
+        with self.assertRaises(config.ConfigError) as ctx:
+            config.read_models(path, strict_context_window=True)
+
+        self.assertIn("abc", str(ctx.exception))
+
+
 if __name__ == "__main__":
     unittest.main()
