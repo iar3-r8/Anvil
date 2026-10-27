@@ -208,3 +208,45 @@ def outcome(events: List[dict]) -> Dict[str, Any]:
         "cost_total": cost_total,
         "usage_reported": usage_reported,
     }
+
+
+def tool_durations(events: List[dict]) -> List[Dict[str, Any]]:
+    """Report the duration of each tool in a parsed event stream.
+
+    Returns a plain ``List[dict]`` in stream order, one entry per
+    ``tool_execution_end`` record. ``tool_execution_start`` and
+    ``tool_execution_update`` contribute no entry: only ``end`` carries a
+    duration, and empty input yields ``[]``.
+
+    Each entry is JSON-native, with exactly four keys:
+
+    - ``"toolCallId"``: verbatim from the record;
+    - ``"toolName"``: verbatim from the record;
+    - ``"durationMs"``: verbatim from the record; ``None`` when the field
+      is absent - ``durationMs`` is monotonic and absent when the tool did
+      not run (``doc/external/pi-dev/json-event-stream.md``, "Tool
+      execution events"), so an absent value must never read as a 0 ms run;
+      a non-numeric value passes through uncoerced;
+    - ``"isError"``: ``bool`` - truthy on the record stays ``True``; absent
+      means the tool completed without an error, so it becomes ``False``,
+      never ``None``.
+
+    ``tool_durations`` never raises.
+    """
+    durations: List[Dict[str, Any]] = []
+
+    for event in events:
+        if event.get("type") != "tool_execution_end":
+            continue
+        durations.append(
+            {
+                "toolCallId": event.get("toolCallId"),
+                "toolName": event.get("toolName"),
+                # ``.get`` returns None exactly when the field is absent,
+                # which is the required "the tool did not run" sentinel.
+                "durationMs": event.get("durationMs"),
+                "isError": bool(event.get("isError")),
+            }
+        )
+
+    return durations
