@@ -16,11 +16,7 @@ driver is testable with no Docker and imports no process-execution module
 itself (stdlib only).
 
 One exception type: ``DriverError``, raised when the container could not
-start: a non-zero exit with empty stdout means the pi
-process never ran, so there is no agent result to report. The
-missing-prompt-file rule raises ``pirole.RoleError`` naming
-the absolute path instead: it is a role-definition failure decided before
-the container starts, not a container-start failure.
+start (the rules are documented on ``run_role``).
 """
 
 from pathlib import Path
@@ -66,57 +62,29 @@ def run_role(
     timeout_s: Optional[float] = None,
     check_prompt_file: bool = False,
 ) -> Dict[str, Any]:
-    """Run one role inside the sandbox container and return the runner's result.
+    """Run one resolved role in the sandbox container and return the runner's result.
 
-    Composes ``pisandbox.run_argv(repo_path, tag, env=env)`` (the container
-    command, ending at the image tag) with
-    ``pirole.role_argv(definition, session_id, task)`` (the pi invocation,
-    beginning with the single ``pi`` token) so the tag sits at the junction
-    immediately before ``pi``. The runner is invoked exactly once with an
-    invocation dict carrying ``argv``, ``cwd`` (the repo path), ``stdin``
-    (``/dev/null``), ``timeout_s`` (the caller's budget when given, else
-    the tier-aware default: unbounded for the local tier, the frontier
-    cost kill switch for the frontier tier) and, only when a mapping was
-    passed, ``env``.
-
-    A non-zero exit with **empty** stdout is a container start failure, not
-    an agent result: the pi process never ran, so there is no output to
-    report, and the driver raises ``DriverError`` naming the image tag and
-    quoting the runner's stderr. Any other outcome - including a non-zero
-    exit with captured output - is the agent's own data and is returned
-    verbatim.
+    - timeout_s: the caller's budget when given; otherwise the tier-aware
+      default (local unbounded, frontier cost kill switch).
+    - A non-zero exit with empty stdout is a container start failure and
+      raises ``DriverError``; any non-zero exit with output is agent data
+      and is returned verbatim.
+    - check_prompt_file: a missing prompt file raises ``pirole.RoleError``
+      before the runner is invoked.
 
     Args:
-        definition: the already-resolved role definition dict from
-            ``pirole.resolve``; the driver never calls ``resolve`` itself.
-        repo_path: absolute host repo path, handed to ``pisandbox.run_argv``.
-        tag: the sandbox image tag, handed to ``pisandbox.run_argv``.
-        session_id: the session id, handed to ``pirole.role_argv`` verbatim.
-        task: the task text, handed to ``pirole.role_argv`` verbatim.
-        runner: the injected process-execution seam; the production runner
-            is ``anvilkit.pi.pibakeoff.subprocess_runner``.
-        env: optional env mapping for the container (the sandbox allowlist);
-            ``None`` means no ``-e`` tokens.
-        timeout_s: optional wall-clock budget for the run; when absent the
-            tier-aware default applies (unbounded for the local tier, the
-            frontier cost kill switch for the frontier tier).
-        check_prompt_file: when True, the resolved absolute prompt path
-            (``repo_path`` joined with the definition's ``prompt_path``)
-            must be an existing file or the driver raises
-            ``pirole.RoleError`` naming it, before any argv is composed
-            and before the runner is invoked.
+        env: optional env mapping for the container; ``None`` means no ``-e`` tokens.
+        timeout_s: optional wall-clock budget; absent means the tier-aware default.
+        check_prompt_file: verify the resolved prompt file exists before running.
 
     Returns:
         Dict[str, Any]: the runner's six-key result dict, unmodified.
 
     Raises:
-        SandboxError: from ``pisandbox.run_argv`` on a bad repo path, tag or
-            env name.
-        RoleError: from ``pirole.role_argv`` on an invalid session id or an
-            empty definition field.
-        DriverError: when the run's exit code is non-zero and its stdout is
-            empty - the container start failed, and there is no agent
-            result to return.
+        SandboxError: from ``pisandbox.run_argv`` on a bad repo path, tag or env name.
+        RoleError: from ``pirole.role_argv`` on an invalid session id or empty field;
+            or from the missing-prompt-file check.
+        DriverError: when the exit code is non-zero and stdout is empty.
     """
     if check_prompt_file:
         prompt_file = Path(repo_path) / definition["prompt_path"]
