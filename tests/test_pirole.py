@@ -438,5 +438,116 @@ class TestRoleArgvEmptyFieldRaises(RoleResolveTestCase):
         )
 
 
+# The hostile task pins the verbatim-pass-through guarantee: it opens with a
+# dash (which a naive option parser would treat as a flag) and carries every
+# shell metacharacter the plan names - a semicolon, a command substitution, a
+# backtick and a double quote.
+HOSTILE_TASK = '-fix; echo $(id) `id` "quoted"'
+
+
+class TestRoleArgvHostileTaskVerbatim(RoleResolveTestCase):
+    """A hostile task crosses into the argv unaltered, after the terminator.
+
+    The builder returns a list, never a shell string: the task is exactly one
+    element, byte-identical to the input, positioned immediately after the
+    ``--`` option terminator. No shell token is produced and no quoting is
+    applied - the list goes to ``subprocess`` with no shell, so the
+    metacharacters that would be live in a shell line are inert data here.
+    """
+
+    def test_role_argv_hostile_task_is_a_single_byte_identical_element(self):
+        # Arrange: a resolved coder definition, a valid session id and a task
+        # whose text opens with a dash and carries ;, $(id), a backtick and a
+        # quote.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        # Act.
+        argv = pirole.role_argv(definition, SESSION_ID, HOSTILE_TASK)
+        # Assert: the task is exactly one element and byte-identical to the
+        # input, so nothing was split, sanitized or wrapped on the way in.
+        self.assertIsInstance(
+            argv,
+            list,
+            "the role argv must be a list of tokens, never a shell string; "
+            "got: %r" % type(argv).__name__,
+        )
+        matches = [token for token in argv if token == HOSTILE_TASK]
+        self.assertEqual(
+            1,
+            len(matches),
+            "the hostile task must be exactly one argv element, byte-identical "
+            "to the input; got %d element(s) equal to the task in: %r"
+            % (len(matches), argv),
+        )
+
+    def test_role_argv_hostile_task_sits_immediately_after_the_option_terminator(self):
+        # Arrange: the same resolved definition and hostile task.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        # Act.
+        argv = pirole.role_argv(definition, SESSION_ID, HOSTILE_TASK)
+        # Assert: the task is positioned immediately after the ``--``
+        # terminator, so the leading dash is data, not an option.
+        self.assertIn(
+            "--",
+            argv,
+            "the option terminator must be present in the role argv; got: %r"
+            % (argv,),
+        )
+        terminator = argv.index("--")
+        self.assertEqual(
+            HOSTILE_TASK,
+            argv[terminator + 1],
+            "the hostile task must sit immediately after the -- terminator, "
+            "so a leading dash is data, not an option; got: %r" % (argv,),
+        )
+        self.assertEqual(
+            len(argv) - 1,
+            terminator + 1,
+            "the hostile task must be the final token, after the -- "
+            "terminator; got: %r" % (argv,),
+        )
+
+    def test_role_argv_hostile_task_is_never_quoted_escaped_or_split(self):
+        # Arrange: the same resolved definition and hostile task.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        # Act.
+        argv = pirole.role_argv(definition, SESSION_ID, HOSTILE_TASK)
+        # Assert: no quoting is applied - no token wraps the task in single
+        # or double quotes, and no token carries an escaped form of it.
+        self.assertNotIn(
+            "'{}'".format(HOSTILE_TASK),
+            argv,
+            "no quoting may be applied to the task, the list goes to "
+            "subprocess with no shell; got: %r" % (argv,),
+        )
+        self.assertNotIn(
+            '"{}"'.format(HOSTILE_TASK),
+            argv,
+            "no quoting may be applied to the task, the list goes to "
+            "subprocess with no shell; got: %r" % (argv,),
+        )
+        self.assertNotIn(
+            HOSTILE_TASK.replace('"', '\\"'),
+            argv,
+            "no escaping may be applied to the task, the list goes to "
+            "subprocess with no shell; got: %r" % (argv,),
+        )
+        # Assert: no shell token is produced - no token other than the task
+        # is a fragment of it, which would mean the task was split into
+        # shell words.
+        fragments = [
+            token for token in argv if token != HOSTILE_TASK and token in HOSTILE_TASK
+        ]
+        self.assertEqual(
+            [],
+            fragments,
+            "no shell token may be produced from the task; every token other "
+            "than the task itself must be a fixed flag or value; got: %r"
+            % (fragments,),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
