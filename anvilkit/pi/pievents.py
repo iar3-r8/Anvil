@@ -250,3 +250,71 @@ def tool_durations(events: List[dict]) -> List[Dict[str, Any]]:
         )
 
     return durations
+
+
+def retries(events: List[dict]) -> Dict[str, Any]:
+    """Account for assistant-turn retries in a parsed event stream.
+
+    Returns a plain dict with exactly five keys, JSON-native throughout so
+    the bake-off record can embed it and ``json.dumps`` it directly:
+
+    - ``"attempted"``: ``int`` - number of ``auto_retry_start`` records;
+    - ``"succeeded"``: ``int`` - ``auto_retry_end`` records whose
+      ``success`` is truthy;
+    - ``"failed"``: ``int`` - ``auto_retry_end`` records whose ``success``
+      is falsy (absent or false: the retry did not complete successfully);
+    - ``"unfinished"``: ``int`` - starts with no end: more starts than ends
+      in the stream (never negative);
+    - ``"final_errors"``: ``List[str]`` - the ``finalError`` string of each
+      end that carries one, in stream order. A ``success: false`` end
+      without a ``finalError`` still counts in ``failed`` and adds nothing
+      to the list, so the list never holds ``None``.
+
+    Correlation is by start/end pairing in stream order, not by id: the
+    retry events in the documentation carry no shared id field to correlate
+    on (``doc/external/pi-dev/json-event-stream.md``, "Retry events"):
+    ``auto_retry_start`` carries ``attempt``, ``maxAttempts``, ``delayMs``
+    and ``errorMessage`` (line 181); ``auto_retry_end`` carries ``success``
+    and ``attempt``, and a final failure adds a ``finalError`` string
+    (line 185).
+
+    Only the assistant-turn retry events are counted. The compaction and
+    branch-summary retry events (``summarization_retry_scheduled``,
+    ``summarization_retry_attempt_start``, ``summarization_retry_finished``)
+    are a different mechanism - compaction's, not the assistant turn's -
+    and never move any counter or entry, so a stream of only those yields
+    every counter at 0 and ``final_errors`` ``[]``.
+
+    Empty input yields all four counters at 0 and ``final_errors`` ``[]``.
+    ``retries`` never raises.
+    """
+    attempted = 0
+    finished = 0
+    succeeded = 0
+    failed = 0
+    final_errors: List[str] = []
+
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "auto_retry_start":
+            attempted += 1
+        elif event_type == "auto_retry_end":
+            finished += 1
+            if event.get("success"):
+                succeeded += 1
+            else:
+                failed += 1
+            # Verbatim: a final failure adds a finalError string
+            # (doc/external/pi-dev/json-event-stream.md, line 185); an
+            # absent field adds no entry, so the list never holds None.
+            final_error = event.get("finalError")
+            if final_error is not None:
+                final_errors.append(final_error)
+
+    return {
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "unfinished": attempted - finished if attempted > finished else 0,
+        "final_errors": final_errors,
+    }
