@@ -1758,3 +1758,115 @@ class TestSessionEmptyList(PieventsTestCase):
             {"session_id": None, "version": None},
             "an empty stream has no first record: both fields are None",
         )
+
+
+# --- Boundary pin: an absent session header is normal, never an error -------
+#
+# RPC mode emits no session header at all (doc/external/pi-dev/
+# json-event-stream.md:44), so a stream with no header and an empty stream
+# are both ordinary inputs. These tests are pins on that boundary: they pass
+# against the landed implementation and fail if a later change treats
+# absence as a failure, or starts reaching for a session record that is not
+# the first one.
+
+
+class TestSessionRpcStreamWithoutHeaderIsNotAnError(PieventsTestCase):
+    """An RPC-shaped stream: a real, non-empty stream whose first record is
+    not a session header, and which carries no session record anywhere.
+    session() must return both fields None - and must not raise, because
+    RPC mode emits no header at all."""
+
+    def test_session_rpc_shaped_stream_without_any_session_record_yields_both_fields_none(self):
+        # Arrange: agent_start first, then ordinary events - a session
+        # record never appears in this stream
+        events = [
+            {"type": "agent_start"},
+            {"type": "message_update", "usage": {"input": 10, "output": 1}},
+            {"type": "agent_settled", "aborted": False},
+        ]
+        pievents = self._pievents()
+        # Act: must not raise - no header is normal for an RPC stream
+        result = pievents.session(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            SESSION_KEYS,
+            "session must still return exactly the two pinned keys",
+        )
+        self.assertIs(
+            result["session_id"],
+            None,
+            "a stream with no session record anywhere is an ordinary "
+            "RPC-shaped stream: session_id is None, not an error",
+        )
+        self.assertIs(
+            result["version"],
+            None,
+            "a stream with no session record anywhere is an ordinary "
+            "RPC-shaped stream: version is None, not an error",
+        )
+        self.assertEqual(result, {"session_id": None, "version": None})
+
+
+class TestSessionEmptyListIsNotAnError(PieventsTestCase):
+    """An empty list is the absence of a header too: session() must return
+    both fields None, and must not raise - a zero-length stream is not a
+    failure state."""
+
+    def test_session_empty_list_yields_both_fields_none_without_raising(self):
+        # Arrange
+        pievents = self._pievents()
+        # Act: must not raise on an empty list
+        result = pievents.session([])
+        # Assert
+        self.assertEqual(
+            set(result),
+            SESSION_KEYS,
+            "session must still return exactly the two pinned keys",
+        )
+        self.assertIs(result["session_id"], None)
+        self.assertIs(result["version"], None)
+        self.assertEqual(
+            result,
+            {"session_id": None, "version": None},
+            "an empty list has no first record: both fields are None, and "
+            "the call itself must not raise",
+        )
+
+
+class TestSessionFixtureHeaderExtractedByFunction(FixtureStreamTestCase):
+    """The recorded fixture stream's session header, extracted by
+    session() itself: the framing tests pin the fixture's first record at
+    the parse level, and this test closes the gap by routing the parsed
+    fixture through the function, so the function - not just the framing -
+    is proven to return the recorded header."""
+
+    def test_session_on_parsed_fixture_returns_recorded_session_id_and_version(self):
+        # Arrange: the recorded stream, through the real entry path
+        pievents = self._pievents()
+        events = self._parsed_fixture()["events"]
+        # Act
+        result = pievents.session(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            SESSION_KEYS,
+            "session must still return exactly the two pinned keys",
+        )
+        self.assertEqual(
+            result["session_id"],
+            FIXTURE_SESSION_ID,
+            "session must return the id recorded in the fixture's header",
+        )
+        self.assertEqual(
+            result["version"],
+            3,
+            "session must return the version recorded in the fixture's "
+            "header",
+        )
+        self.assertEqual(
+            result,
+            {"session_id": FIXTURE_SESSION_ID, "version": 3},
+            "the recorded stream's header must be extracted by session() "
+            "itself, not only pinned at the parse level",
+        )
