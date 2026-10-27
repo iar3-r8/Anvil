@@ -27,15 +27,21 @@ Documented runner contract, cited from
 ``exit_code`` (int), ``stdout`` (str), ``stderr`` (str),
 ``wall_time_s`` (float), ``timed_out`` (bool), ``evidence`` (str).
 
-Behaviour 4 (``role-table-resolves-four-roles``) is also tested here:
+Behaviour 4 (``role-table-resolves-four-roles``) and behaviour 5
+(``role-argv-is-list-and-complete``) are also tested here:
 ``pirole.resolve(name, coder_model_id, frontier_model_id)`` maps each of the
 four role names to a definition dict carrying its ``model_id``, ``tier``,
 ``prompt_path`` and ``tools`` - the architect is the only frontier-tier role
 (frontier model id), while coder, tester and docs run on the local coder
 model - and an unknown name raises ``RoleError`` naming it and listing the
-four known roles. The ``pirole`` import is deferred into the tests so that,
-until the module exists, they fail at the import step rather than breaking
-collection of the boundary pins.
+four known roles. Behaviour 5 pins ``role_argv(definition, session_id,
+task)``: a ``List[str]`` (never a ``str``) carrying ``pi``, ``--mode json``,
+the model, the prompt path, the full tool list, the session id, ``--no-mcp``,
+``-a``, the ``--`` terminator, and the task last after it - and an empty
+model id, prompt path or task raises ``RoleError`` naming the field. The
+``pirole`` import is deferred into the tests so that, while a part of the
+module does not yet exist, those tests fail at the import or attribute step
+rather than breaking collection of the boundary pins.
 """
 
 import sys
@@ -310,6 +316,126 @@ class TestResolveUnknownRole(RoleResolveTestCase):
                 "the error must list the known role %r among the four "
                 "roles; got: %r" % (role, message),
             )
+
+
+# The argv builder takes a resolved definition, a session id and a task and
+# returns the pi invocation as a list of tokens. The session id used here is
+# a valid one (letters, digits, dots, underscores and dashes, starting and
+# ending with a letter or digit) so the happy path is pinned on the token
+# vector alone.
+SESSION_ID = "20261027T140530Z-coder"
+TASK = "add the role argv builder"
+
+
+class TestRoleArgvCompleteVector(RoleResolveTestCase):
+    """The role argv is a list of str tokens, complete and in order.
+
+    The token vector is pinned end to end: the pi executable first, the JSON
+    mode, the model, the prompt path, the full tool list, the session id, the
+    MCP kill switch, the project-approval flag, the option terminator, and
+    finally the task after it.
+    """
+
+    def test_role_argv_coder_session_task_is_list_of_str_with_complete_vector(self):
+        # Arrange: a resolved coder definition, a valid session id and a task.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        # Act.
+        argv = pirole.role_argv(definition, SESSION_ID, TASK)
+        # Assert: a list (never a str) whose tokens are all str.
+        self.assertIsInstance(
+            argv,
+            list,
+            "the role argv must be a list of tokens, never a string; got: %r"
+            % type(argv).__name__,
+        )
+        for token in argv:
+            self.assertIsInstance(token, str)
+        # The complete token vector, in order, with the task last after the
+        # option terminator.
+        self.assertEqual(
+            [
+                "pi",
+                "--mode",
+                "json",
+                "--model",
+                CODER_MODEL_ID,
+                "--append-system-prompt",
+                ".pi/roles/coder.md",
+                "--tools",
+                "read,bash,edit,write",
+                "--session-id",
+                SESSION_ID,
+                "--no-mcp",
+                "-a",
+                "--",
+                TASK,
+            ],
+            argv,
+            "the role argv must carry exactly these tokens in this order, "
+            "the task last after the terminator; got: %r" % (argv,),
+        )
+        # The task is the final token, positioned after the "--" terminator.
+        self.assertEqual(
+            "--",
+            argv[-2],
+            "the option terminator must sit immediately before the task; "
+            "got: %r" % (argv[-3:],),
+        )
+
+
+class TestRoleArgvEmptyFieldRaises(RoleResolveTestCase):
+    """An empty model id, prompt path or task raises RoleError naming it.
+
+    The definition is built by ``resolve`` and then one field is blanked, so
+    each failure is pinned on exactly one missing value while the other
+    inputs stay valid.
+    """
+
+    def test_role_argv_empty_model_id_raises_role_error_naming_the_field(self):
+        # Arrange: a resolved coder definition whose model id is blanked.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        definition["model_id"] = ""
+        # Act / Assert: nothing is returned; a RoleError names the field.
+        with self.assertRaises(pirole.RoleError) as ctx:
+            pirole.role_argv(definition, SESSION_ID, TASK)
+        message = str(ctx.exception)
+        self.assertIn(
+            "model_id",
+            message,
+            "the error must name the empty model id field; got: %r" % message,
+        )
+
+    def test_role_argv_empty_prompt_path_raises_role_error_naming_the_field(self):
+        # Arrange: a resolved coder definition whose prompt path is blanked.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        definition["prompt_path"] = ""
+        # Act / Assert: nothing is returned; a RoleError names the field.
+        with self.assertRaises(pirole.RoleError) as ctx:
+            pirole.role_argv(definition, SESSION_ID, TASK)
+        message = str(ctx.exception)
+        self.assertIn(
+            "prompt_path",
+            message,
+            "the error must name the empty prompt path field; got: %r"
+            % message,
+        )
+
+    def test_role_argv_empty_task_raises_role_error_naming_the_field(self):
+        # Arrange: a valid definition and session id, an empty task.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        # Act / Assert: nothing is returned; a RoleError names the field.
+        with self.assertRaises(pirole.RoleError) as ctx:
+            pirole.role_argv(definition, SESSION_ID, "")
+        message = str(ctx.exception)
+        self.assertIn(
+            "task",
+            message,
+            "the error must name the empty task field; got: %r" % message,
+        )
 
 
 if __name__ == "__main__":
