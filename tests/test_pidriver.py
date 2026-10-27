@@ -33,14 +33,16 @@ The ``pidriver`` import is deferred into each test so that, while
 import step (ModuleNotFoundError) instead of breaking collection of the
 module.
 
-Container-start-failure detection, stdout capture and the exit-status
-recording are later behaviours in the same plan and are not asserted here.
+Container-start-failure detection and the exit-status recording are later
+behaviours in the same plan and are not asserted here; the driver's
+whole-stream stdout capture is asserted here as well.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -329,3 +331,207 @@ class TestRunRoleWithoutEnv(RunRoleTestCase):
                 "no env mapping was passed, so no -e token may appear; "
                 "got: %r" % (invocation["argv"],),
             )
+
+
+# The canned capture stream: 5000 JSONL lines, then one non-JSON final
+# line with no trailing LF. The exact newline count and the unterminated
+# last line are what the whole-capture pin asserts on: a driver that
+# strips the final line, splits the stream, or re-encodes the bytes
+# changes at least one of them.
+JSONL_LINE_COUNT = 5000
+FINAL_NON_JSON_LINE = "plain text, not json"
+
+
+def _whole_jsonl_stream() -> str:
+    """The 5001-line stream the capture tests hand to the fake runner.
+
+    5000 JSONL lines (built with ``json.dumps`` so the JSON is valid by
+    construction) followed by one deliberately non-JSON final line. The
+    lines are joined with LF and no trailing LF is appended, so the last
+    line is unterminated exactly as a drained pipe can end.
+    """
+    lines: List[str] = [
+        json.dumps({"type": "message", "index": i})
+        for i in range(JSONL_LINE_COUNT)
+    ]
+    lines.append(FINAL_NON_JSON_LINE)
+    return "\n".join(lines)
+
+
+class TestRunRoleCapturesStdoutWhole(RunRoleTestCase):
+    """The driver captures the runner's stdout whole.
+
+    The runner's six-key result dict is the driver's return value: the
+    captured stdout passes through byte-for-byte, unsplit and unparsed.
+    The tests assert on the captured bytes and on the result dict's
+    shape; they do not interpret the stream, since interpreting the
+    JSONL is a later phase of the plan.
+    """
+
+    def _invoke_with_stdout(self, stdout: str, env: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+        """Arrange an injected runner returning the given stdout, act, and
+        return the driver's result."""
+        pidriver = self._import_pidriver()
+        fake = FakeRunner()
+        fake._result["stdout"] = stdout
+        kwargs: Dict[str, Any] = {}
+        if env is not None:
+            kwargs["env"] = env
+        return pidriver.run_role(
+            definition=_coder_definition(),
+            repo_path=REPO_PATH,
+            tag=TAG,
+            session_id=SESSION_ID,
+            task=TASK,
+            runner=fake,
+            **kwargs,
+        )
+
+    def test_run_role_with_whole_jsonl_stdout_is_byte_identical(self):
+        # Arrange: a runner whose canned result carries the whole stream.
+        stream = _whole_jsonl_stream()
+        fake = FakeRunner()
+        fake._result["stdout"] = stream
+        # Act.
+        result = self._invoke_with_stdout(stream)
+        # Assert: the result carries the runner's stdout byte-for-byte -
+        # equal as strings, and even the same object, so no copy, strip,
+        # split or re-encode happened on the way through the driver.
+        self.assertEqual(
+            stream,
+            result["stdout"],
+            "the driver's result must carry the runner's stdout "
+            "byte-for-byte; first and last bytes: %r ... %r"
+            % (result["stdout"][:60], result["stdout"][-60:]),
+        )
+        self.assertIs(
+            fake._result["stdout"],
+            result["stdout"],
+            "the driver must pass the runner's stdout object through "
+            "without copying or re-encoding it",
+        )
+
+    def test_run_role_with_whole_jsonl_stdout_is_unsplit_and_unparsed(self):
+        # Arrange / Act: the same whole stream through the driver.
+        stream = _whole_jsonl_stream()
+        result = self._invoke_with_stdout(stream, env=dict(ENV))
+        # Assert: the capture is still one string (never a list of lines),
+        # with exactly the 5000 newlines the 5001-line stream carries, the
+        # final line present and unterminated, and the non-JSON line
+        # verbatim - the byte facts that change if the driver strips,
+        # splits or re-encodes.
+        self.assertIsInstance(
+            result["stdout"],
+            str,
+            "the captured stdout must be one string, never split into a "
+            "list of lines; got: %r" % type(result["stdout"]).__name__,
+        )
+        self.assertEqual(
+            JSONL_LINE_COUNT,
+            result["stdout"].count("\n"),
+            "the stream's 5001 lines carry exactly 5000 newlines (the "
+            "final line has no trailing LF); got %d newlines"
+            % result["stdout"].count("\n"),
+        )
+        self.assertEqual(
+            JSONL_LINE_COUNT + 1,
+            len(result["stdout"].split("\n")),
+            "splitting the capture on LF must yield 5001 lines; got %d"
+            % len(result["stdout"].split("\n")),
+        )
+        self.assertTrue(
+            result["stdout"].endswith(FINAL_NON_JSON_LINE),
+            "the final (non-JSON) line must survive at the end of the "
+            "capture; got: %r" % result["stdout"][-60:],
+        )
+        self.assertFalse(
+            result["stdout"].endswith("\n"),
+            "the runner's stream has no trailing LF, and the driver must "
+            "not add or strip one",
+        )
+
+    def test_run_role_result_carries_all_six_runner_keys_verbatim(self):
+        # Arrange: the canned result carries non-default values in every
+        # key except stdout, so any key the driver fails to pass through
+        # shows up as a mismatch.
+        pidriver = self._import_pidriver()
+        fake = FakeRunner()
+        fake._result = {
+            "exit_code": 3,
+            "stdout": _whole_jsonl_stream(),
+            "stderr": "a note on stderr",
+            "wall_time_s": 12.5,
+            "timed_out": False,
+            "evidence": "",
+        }
+        # Act.
+        result = pidriver.run_role(
+            definition=_coder_definition(),
+            repo_path=REPO_PATH,
+            tag=TAG,
+            session_id=SESSION_ID,
+            task=TASK,
+            runner=fake,
+            env=dict(ENV),
+        )
+        # Assert: the six-key dict comes back whole, key for key.
+        self.assertEqual(
+            set(fake._result),
+            set(result),
+            "the result must carry exactly the runner's six keys; got: %r"
+            % sorted(result),
+        )
+        for key, value in fake._result.items():
+            self.assertEqual(
+                value,
+                result[key],
+                "result key %r must carry the runner's value verbatim; "
+                "got: %r" % (key, result[key]),
+            )
+
+    def test_run_role_with_mangled_runner_stdout_tracks_the_runner(self):
+        # Arrange: the runner's stdout is the stream with its final line
+        # stripped - the one mangling mode the byte-identity pin must
+        # catch, because it changes both the newline count and the tail.
+        stream = _whole_jsonl_stream()
+        mangled = stream.rsplit("\n", 1)[0]
+        # Anti-vacuity first: each of the three mangling modes the pin
+        # guards against is distinguishable from the whole stream, so an
+        # identity assertion on it cannot pass silently for a mangled
+        # capture.
+        self.assertNotEqual(
+            mangled,
+            stream,
+            "stripping the final line must change the bytes, or the "
+            "byte-identity pin would be vacuous",
+        )
+        self.assertNotEqual(
+            stream + "\n",
+            stream,
+            "re-encoding with a trailing LF must change the bytes, or "
+            "the byte-identity pin would be vacuous",
+        )
+        self.assertNotIsInstance(
+            stream.split("\n"),
+            str,
+            "splitting the stream yields a list, not a string, so the "
+            "unsplit assertion cannot be vacuous",
+        )
+        # Act: the mangled runner output goes through the driver.
+        result = self._invoke_with_stdout(mangled)
+        # Assert: the pin tracks the runner's actual output, not a
+        # constant - the mangled bytes come back verbatim, which is what
+        # makes a driver that re-derived, repaired or normalised the
+        # stream fail the byte-identity assertion in this class.
+        self.assertEqual(
+            mangled,
+            result["stdout"],
+            "the driver must return the runner's stdout as it is, "
+            "mangled or not; got: %r ... %r"
+            % (result["stdout"][:60], result["stdout"][-60:]),
+        )
+        self.assertFalse(
+            result["stdout"].endswith(FINAL_NON_JSON_LINE),
+            "the final line was stripped by the runner in this test, and "
+            "the driver must not resurrect it",
+        )
