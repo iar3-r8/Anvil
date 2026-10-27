@@ -1506,7 +1506,7 @@ class TestFixtureUsageRecords(FixtureStreamTestCase):
         self.assertEqual(len(usageless), 3)
         first, last = usage_events
         self.assertEqual(
-            first,
+            first["usage"],
             {
                 "input": 100,
                 "output": 1,
@@ -1523,7 +1523,7 @@ class TestFixtureUsageRecords(FixtureStreamTestCase):
             },
         )
         self.assertEqual(
-            last,
+            last["usage"],
             {
                 "input": 120,
                 "output": 20,
@@ -1541,8 +1541,8 @@ class TestFixtureUsageRecords(FixtureStreamTestCase):
         )
         for field in ("input", "output", "cacheRead", "cacheWrite", "totalTokens"):
             self.assertGreaterEqual(
-                last[field],
-                first[field],
+                last["usage"][field],
+                first["usage"][field],
                 "usage is cumulative: the second record must be >= the first "
                 "on every token field",
             )
