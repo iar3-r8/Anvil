@@ -129,6 +129,36 @@ def mcp_settings(
     return _to_json(config)
 
 
+def pi_mcp_settings(workspace_folder: str) -> str:
+    """Render the Pi ``mcp.json`` as a JSON string.
+
+    Takes no credential parameter: the rendered file is project-local
+    and committed, so it must carry no secret. The template's
+    ``${GITHUB_TOKEN}`` and ``${OXYLABS_USERNAME}`` /
+    ``${OXYLABS_PASSWORD}`` tokens are left verbatim — Pi interpolates
+    them from the environment at request time.
+
+    The Roo vocabulary keys ``alwaysAllow``, ``disabledTools`` and
+    ``disabled`` are dropped from every server: Pi's ``mcp.json``
+    does not recognise them. An unauthenticated oxylabs server simply
+    fails to connect and Pi reports it, instead of being disabled.
+    """
+    config = _load_json_template(MCP_TEMPLATE)
+
+    servers = config["mcpServers"]
+
+    git_args = servers["git"]["args"]
+    servers["git"]["args"] = [
+        workspace_folder if arg == "${workspaceFolder}" else arg for arg in git_args
+    ]
+
+    for server in servers.values():
+        for key in ("alwaysAllow", "disabledTools", "disabled"):
+            server.pop(key, None)
+
+    return _to_json(config)
+
+
 def extensions_settings() -> str:
     return _to_json(_load_json_template(EXTENSIONS_TEMPLATE))
 
