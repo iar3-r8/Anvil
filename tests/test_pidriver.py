@@ -535,3 +535,212 @@ class TestRunRoleCapturesStdoutWhole(RunRoleTestCase):
             "the final line was stripped by the runner in this test, and "
             "the driver must not resurrect it",
         )
+
+
+# The canned six-key runner results for the exit-status scenarios: a
+# failed agent turn (exit 1 with a non-empty stream), a clean run (exit
+# 0), and a run the driver killed at the deadline (``timed_out`` True and
+# ``exit_code`` -9, the subprocess negative-signal form for the SIGKILL
+# the runner's kill path reaps - anvilkit/pi/pibakeoff.py:494). Each
+# scenario's (exit_code, timed_out) pair is pairwise distinct from the
+# other two, which is what makes the scenario tests below able to catch
+# a driver that drops one of the fields, hardcodes a constant for it, or
+# conflates the agent's exit with its own status.
+NONZERO_EXIT_RESULT: Dict[str, Any] = {
+    "exit_code": 1,
+    "stdout": '{"type": "message", "text": "agent turn finished with a failure"}\n',
+    "stderr": "a diagnostic on stderr",
+    "wall_time_s": 3.5,
+    "timed_out": False,
+    "evidence": "",
+}
+ZERO_EXIT_RESULT: Dict[str, Any] = {
+    "exit_code": 0,
+    "stdout": '{"type": "message", "text": "agent turn finished cleanly"}\n',
+    "stderr": "",
+    "wall_time_s": 2.0,
+    "timed_out": False,
+    "evidence": "",
+}
+TIMED_OUT_RESULT: Dict[str, Any] = {
+    "exit_code": -9,
+    "stdout": '{"type": "message", "text": "partial work before the kill"}',
+    "stderr": "",
+    "wall_time_s": 30.0,
+    "timed_out": True,
+    "evidence": "killed after the 30.0s budget",
+}
+
+
+class TestRunRoleRecordsExitStatus(RunRoleTestCase):
+    """The driver records the agent's exit status as data, separately.
+
+    The runner's result is the driver's return value: ``exit_code`` and
+    ``timed_out`` pass through exactly as the runner reported them, the
+    agent's own outcome (the captured stream) stays in its own field, and
+    a non-zero agent exit with captured output is a result to be
+    returned, never an exception to be raised - a non-zero agent exit is
+    data, not a driver failure.
+    """
+
+    def _invoke(self, runner_result: Dict[str, Any]) -> Dict[str, Any]:
+        """Arrange an injected runner returning the canned six-key result,
+        act, and return the driver's result."""
+        pidriver = self._import_pidriver()
+        fake = FakeRunner()
+        fake._result = dict(runner_result)
+        return pidriver.run_role(
+            definition=_coder_definition(),
+            repo_path=REPO_PATH,
+            tag=TAG,
+            session_id=SESSION_ID,
+            task=TASK,
+            runner=fake,
+        )
+
+    def _assert_pairwise_distinct(
+        self, scenario: Dict[str, Any], *others: Dict[str, Any]
+    ) -> None:
+        """Anti-vacuity: the scenario's (exit_code, timed_out) pair must
+        differ from each other scenario's, so a driver that drops one of
+        the two fields or hardcodes a constant for it cannot pass every
+        scenario test."""
+        pair = (scenario["exit_code"], scenario["timed_out"])
+        for other in others:
+            self.assertNotEqual(
+                (other["exit_code"], other["timed_out"]),
+                pair,
+                "the scenarios' (exit_code, timed_out) pairs must be "
+                "pairwise distinct, or the exit-status pin could pass a "
+                "driver that drops or hardcodes one of the two fields",
+            )
+
+    def test_run_role_with_nonzero_exit_and_output_returns_result_not_raised(self):
+        # Arrange: the agent's turn exits 1 with a non-empty stream.
+        self._assert_pairwise_distinct(
+            NONZERO_EXIT_RESULT, ZERO_EXIT_RESULT, TIMED_OUT_RESULT
+        )
+        self.assertNotEqual(
+            0,
+            NONZERO_EXIT_RESULT["exit_code"],
+            "the scenario must be a genuinely non-zero exit, or a driver "
+            "that raises on non-zero exit would never be exercised",
+        )
+        self.assertTrue(
+            NONZERO_EXIT_RESULT["stdout"],
+            "the scenario must carry output alongside the non-zero exit, "
+            "or the reported-not-raised rule would be untested",
+        )
+        # Act: a driver that treats a non-zero agent exit as its own
+        # failure raises here and the test fails; a compliant driver
+        # returns the result dict.
+        result = self._invoke(NONZERO_EXIT_RESULT)
+        # Assert: a dict comes back (nothing was raised) carrying the
+        # agent's exit status and its own outcome as separate fields.
+        self.assertIsInstance(
+            result,
+            dict,
+            "a non-zero agent exit with output must be reported as a "
+            "result dict, never raised; got: %r" % type(result).__name__,
+        )
+        self.assertEqual(
+            NONZERO_EXIT_RESULT["exit_code"],
+            result["exit_code"],
+            "the result must carry the agent's own exit code verbatim, "
+            "not a driver-normalised value; got: %r" % result.get("exit_code"),
+        )
+        self.assertIs(
+            False,
+            result["timed_out"],
+            "the run did not time out, so the result's timed_out field "
+            "must be False; got: %r" % result.get("timed_out"),
+        )
+        self.assertIs(
+            NONZERO_EXIT_RESULT["stdout"],
+            result["stdout"],
+            "the agent's own outcome must pass through in its own "
+            "stdout field, uncorrupted by the exit status",
+        )
+
+    def test_run_role_with_zero_exit_returns_zero_exit_code_not_timed_out(self):
+        # Arrange: a clean agent turn.
+        self._assert_pairwise_distinct(
+            ZERO_EXIT_RESULT, NONZERO_EXIT_RESULT, TIMED_OUT_RESULT
+        )
+        self.assertEqual(
+            0,
+            ZERO_EXIT_RESULT["exit_code"],
+            "the scenario must be a zero exit, or the scenario pair would "
+            "not be distinct from the non-zero one",
+        )
+        # Act.
+        result = self._invoke(ZERO_EXIT_RESULT)
+        # Assert: the zero exit comes through as data in its own field.
+        self.assertEqual(
+            0,
+            result["exit_code"],
+            "the result must carry the runner's zero exit code verbatim; "
+            "got: %r" % result.get("exit_code"),
+        )
+        self.assertIs(
+            False,
+            result["timed_out"],
+            "the run did not time out, so the result's timed_out field "
+            "must be False; got: %r" % result.get("timed_out"),
+        )
+        self.assertIs(
+            ZERO_EXIT_RESULT["stdout"],
+            result["stdout"],
+            "the agent's own outcome must pass through in its own "
+            "stdout field; got: %r" % result.get("stdout"),
+        )
+
+    def test_run_role_with_timed_out_run_returns_timed_out_flag_and_kill_exit_code(self):
+        # Arrange: the run was killed at the deadline - the runner
+        # reports timed_out True and the -9 SIGKILL exit code.
+        self._assert_pairwise_distinct(
+            TIMED_OUT_RESULT, NONZERO_EXIT_RESULT, ZERO_EXIT_RESULT
+        )
+        self.assertTrue(
+            TIMED_OUT_RESULT["timed_out"],
+            "the scenario must be a timed-out run, or a driver that drops "
+            "the timed_out field would never be exercised",
+        )
+        self.assertNotEqual(
+            0,
+            TIMED_OUT_RESULT["exit_code"],
+            "the killed run carries a non-zero exit code, so a driver "
+            "that raises on non-zero exit would be exercised here too",
+        )
+        # Act: the killed run is still data, not a driver failure.
+        result = self._invoke(TIMED_OUT_RESULT)
+        # Assert: the timeout flag and the kill exit code pass through
+        # separately from the partial stream the agent produced before
+        # the kill.
+        self.assertIsInstance(result, dict)
+        self.assertIs(
+            True,
+            result["timed_out"],
+            "a timed-out run must come back with the timed_out field "
+            "True, not dropped or forced to False; got: %r"
+            % result.get("timed_out"),
+        )
+        self.assertEqual(
+            -9,
+            result["exit_code"],
+            "the killed run must carry the runner's -9 SIGKILL exit code "
+            "verbatim (anvilkit/pi/pibakeoff.py:494); got: %r"
+            % result.get("exit_code"),
+        )
+        self.assertIs(
+            TIMED_OUT_RESULT["stdout"],
+            result["stdout"],
+            "the partial stream captured before the kill must survive in "
+            "its own stdout field, separate from the status fields",
+        )
+        self.assertEqual(
+            TIMED_OUT_RESULT["evidence"],
+            result["evidence"],
+            "the runner's evidence string must pass through verbatim; "
+            "got: %r" % result.get("evidence"),
+        )
