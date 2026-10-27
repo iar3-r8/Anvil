@@ -1250,6 +1250,44 @@ class TestSubprocessRunner(PibakeoffTestCase):
         # Raised before any process spawned: no sleep in the wall time.
         self.assertLess(elapsed, 1.0)
 
+    def test_subprocess_runner_explicit_none_timeout_s_runs_unbounded_and_returns_record(
+        self,
+    ):
+        # An explicit None is a deliberate "no deadline", distinct from the
+        # missing key: the run completes normally and the six-key contract
+        # is intact (plans/pi-phase6-single-role.md, behaviour 15).
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        result = subprocess_runner(
+            self._spec(["/bin/true"], cwd, timeout_s=None)
+        )
+        self.assertEqual(_SUBPROCESS_RESULT_KEYS, set(result))
+        self.assertIsInstance(result["exit_code"], int)
+        self.assertIsInstance(result["stdout"], str)
+        self.assertIsInstance(result["stderr"], str)
+        self.assertIsInstance(result["wall_time_s"], float)
+        self.assertIsInstance(result["timed_out"], bool)
+        self.assertIsInstance(result["evidence"], str)
+        self.assertEqual(0, result["exit_code"])
+        self.assertIs(result["timed_out"], False)
+        self.assertEqual("", result["evidence"])
+
+    def test_subprocess_runner_explicit_none_timeout_s_allows_long_child_to_finish(
+        self,
+    ):
+        # Anti-vacuity: None must mean UNBOUNDED, not a hidden minimal
+        # budget. A 2 s child must run its full sleep and finish on its
+        # own, never killed and never reported as timed out.
+        subprocess_runner = self._get_subprocess_runner()
+        cwd = self._tmpdir()
+        result = subprocess_runner(
+            self._spec(["/bin/sleep", "2"], cwd, timeout_s=None)
+        )
+        self.assertIs(result["timed_out"], False)
+        self.assertEqual(0, result["exit_code"])
+        # sleep 2 cannot return before 2 s: the deadline never fired.
+        self.assertGreaterEqual(result["wall_time_s"], 2.0)
+
     def test_subprocess_runner_env_dict_overlays_parent_env(self):
         subprocess_runner = self._get_subprocess_runner()
         cwd = self._tmpdir()
