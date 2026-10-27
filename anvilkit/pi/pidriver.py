@@ -29,10 +29,10 @@ from typing import Any, Callable, Dict, Optional
 from anvilkit.pi import pirole
 from anvilkit.pi import pisandbox
 
-# The wall-clock budget handed to the runner when the caller does not name
-# one: a full role run must survive a long local-model turn, and the budget
-# is a kill switch, not an expectation.
-_DEFAULT_TIMEOUT_S = 900.0
+# The default budget for a frontier-tier run when the caller names none:
+# a cost kill switch, not an expectation - a long local-model turn must
+# never be killed for thinking, which is why the local tier has no budget.
+_FRONTIER_KILL_SWITCH_S = 3600.0
 
 
 class DriverError(Exception):
@@ -45,6 +45,14 @@ class DriverError(Exception):
     before the container starts, and raises ``pirole.RoleError`` naming the
     absolute path.
     """
+
+
+def _default_timeout_s(tier: str) -> Optional[float]:
+    """The budget for a run the caller did not budget: the local tier runs
+    unbounded (``None``), the frontier tier gets the cost kill switch."""
+    if tier == "frontier":
+        return float(_FRONTIER_KILL_SWITCH_S)
+    return None
 
 
 def run_role(
@@ -66,8 +74,10 @@ def run_role(
     beginning with the single ``pi`` token) so the tag sits at the junction
     immediately before ``pi``. The runner is invoked exactly once with an
     invocation dict carrying ``argv``, ``cwd`` (the repo path), ``stdin``
-    (``/dev/null``), ``timeout_s`` (the caller's budget or the driver's
-    default) and, only when a mapping was passed, ``env``.
+    (``/dev/null``), ``timeout_s`` (the caller's budget when given, else
+    the tier-aware default: unbounded for the local tier, the frontier
+    cost kill switch for the frontier tier) and, only when a mapping was
+    passed, ``env``.
 
     A non-zero exit with **empty** stdout is a container start failure, not
     an agent result: the pi process never ran, so there is no output to
@@ -87,8 +97,9 @@ def run_role(
             is ``anvilkit.pi.pibakeoff.subprocess_runner``.
         env: optional env mapping for the container (the sandbox allowlist);
             ``None`` means no ``-e`` tokens.
-        timeout_s: optional wall-clock budget for the run; the driver's
-            default applies when absent.
+        timeout_s: optional wall-clock budget for the run; when absent the
+            tier-aware default applies (unbounded for the local tier, the
+            frontier cost kill switch for the frontier tier).
         check_prompt_file: when True, the resolved absolute prompt path
             (``repo_path`` joined with the definition's ``prompt_path``)
             must be an existing file or the driver raises
@@ -119,7 +130,11 @@ def run_role(
         "argv": container_argv + role_argv,
         "cwd": repo_path,
         "stdin": "/dev/null",
-        "timeout_s": _DEFAULT_TIMEOUT_S if timeout_s is None else float(timeout_s),
+        "timeout_s": (
+            float(timeout_s)
+            if timeout_s is not None
+            else _default_timeout_s(definition["tier"])
+        ),
     }
     if env is not None:
         invocation["env"] = env
