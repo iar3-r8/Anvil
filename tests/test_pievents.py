@@ -2510,3 +2510,109 @@ class TestRetriesParsedFixture(FixtureStreamTestCase):
             "succeeded 1, failed 1, unfinished 0, and final_errors "
             "holds exactly the one recorded finalError string",
         )
+
+
+# --- Boundary pin: summarization retry is not an assistant-turn retry -------
+#
+# The compaction and branch-summary retry events (
+# ``doc/external/pi-dev/json-event-stream.md``, lines 187-195:
+# ``summarization_retry_scheduled``,
+# ``summarization_retry_attempt_start``, ``summarization_retry_finished``)
+# are a different mechanism from the assistant-turn auto retries
+# (lines 176-185): counting them would inflate the assistant-turn retry
+# rate. These tests are pins on that boundary: they pass against the
+# landed ``retries`` and fail if a later change starts counting the
+# summarization records - whether by exact type drift or by event-type
+# prefix sloppiness.
+class TestRetriesIgnoresSummarizationRetries(PieventsTestCase):
+    """A stream of the three compaction retry records, with no
+    ``auto_retry`` records at all, yields every counter at 0 and an
+    empty error list - and the pin holds even when the same records are
+    interleaved with a real successful auto retry."""
+
+    @staticmethod
+    def _summarization_records():
+        """The three compaction retry records in the documented field
+        shapes (``doc/external/pi-dev/json-event-stream.md``, lines
+        189-193)."""
+        return [
+            {
+                "type": "summarization_retry_scheduled",
+                "attempt": 1,
+                "maxAttempts": 3,
+                "delayMs": 2000,
+                "errorMessage": "terminated",
+            },
+            {
+                "type": "summarization_retry_attempt_start",
+                "source": "compaction",
+                "reason": "threshold",
+            },
+            {"type": "summarization_retry_finished"},
+        ]
+
+    def test_retries_summarization_retry_stream_yields_zero_counters_and_empty_final_errors(self):
+        # Arrange: the three compaction retry records, and no auto_retry
+        # records anywhere in the stream
+        events = self._summarization_records()
+        pievents = self._pievents()
+        # Act
+        result = pievents.retries(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            RETRY_KEYS,
+            "retries must still return exactly the five pinned keys",
+        )
+        self.assertEqual(
+            result,
+            {
+                "attempted": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "unfinished": 0,
+                "final_errors": [],
+            },
+            "summarization retry is compaction's mechanism, not the "
+            "assistant turn's: none of the three records may move any "
+            "counter, and no final error may be reported",
+        )
+
+    def test_retries_summarization_records_interleaved_with_successful_auto_retry_do_not_perturb_counts(self):
+        # Arrange: the same three summarization records interleaved
+        # around one successful auto_retry start/end pair
+        events = [
+            {
+                "type": "auto_retry_start",
+                "attempt": 1,
+                "maxAttempts": 3,
+                "delayMs": 2000,
+                "errorMessage": "529 overloaded",
+            },
+            self._summarization_records()[0],
+            {"type": "auto_retry_end", "success": True, "attempt": 2},
+            self._summarization_records()[1],
+            self._summarization_records()[2],
+        ]
+        pievents = self._pievents()
+        # Act
+        result = pievents.retries(events)
+        # Assert
+        self.assertEqual(
+            set(result),
+            RETRY_KEYS,
+            "retries must still return exactly the five pinned keys",
+        )
+        self.assertEqual(
+            result,
+            {
+                "attempted": 1,
+                "succeeded": 1,
+                "failed": 0,
+                "unfinished": 0,
+                "final_errors": [],
+            },
+            "only the one auto_retry pair moves the counters: attempted "
+            "1, succeeded 1 - the interleaved summarization records must "
+            "not add to any counter, not even by event-type prefix",
+        )
