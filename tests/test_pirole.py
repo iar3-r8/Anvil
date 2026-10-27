@@ -44,10 +44,13 @@ module does not yet exist, those tests fail at the import or attribute step
 rather than breaking collection of the boundary pins.
 """
 
+import ast
+import json
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -708,6 +711,182 @@ class TestRoleArgvOmitsConflictingSessionFlags(RoleResolveTestCase):
        # The inspected vector is the complete one, hostile task last after
        # the terminator - not a truncated or empty vector.
        self.assertEqual(HOSTILE_TASK, argv[-1])
+
+
+# Behaviour 14: decision-seam-holds. A drift guard on the decide/act split:
+# ``pirole`` decides (resolves the role, builds the argv) and must never act
+# (no subprocess, no docker), so the whole module stays importable and
+# exercisable with no container. The scan is done with ``ast`` over the
+# module's import nodes, so the guard is about what the module *imports*, not
+# about how its source is formatted, and it keeps pinning the seam without
+# any production change.
+
+
+def _imported_module_names(source: str) -> List[str]:
+    """The module names a source file imports, via ``ast``.
+
+    ``import subprocess`` yields ``"subprocess"``;
+    ``import anvilkit.pi.pisandbox`` yields
+    ``"anvilkit.pi.pisandbox"``;
+    ``from anvilkit.pi import pisandbox`` yields
+    ``"anvilkit.pi.pisandbox"`` (the qualified name) as well as the package
+    prefix ``"anvilkit.pi"``. Only real import nodes are read, so string
+    content, comments and docstrings can never trip the guard.
+    """
+    module_names = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module_names.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                module_names.append(node.module)
+                for alias in node.names:
+                    module_names.append(node.module + "." + alias.name)
+    return module_names
+
+
+class TestDecisionSeamHolds(RoleResolveTestCase):
+    """``pirole`` imports nothing that executes: the decide/act split holds.
+
+    The guard has two anti-vacuity controls: a banned set rebuilt from the
+    package itself (so a module that later learns to execute a process is
+    banned without touching this test), and positive controls run against
+    two real, already-landed modules - ``pibakeoff`` really imports
+    ``subprocess`` and ``pidriver`` really imports ``anvilkit.pi.pisandbox`` -
+    so the scan is proven to flag both halves of the seam before it is
+    asserted clean on ``pirole``.
+    """
+
+    def _banned_module_prefixes(self) -> List[str]:
+        """Rebuild the banned set: the process side and the docker side.
+
+        The process side is every ``anvilkit.pi`` module whose source imports
+        ``subprocess`` (the act of executing a command), rebuilt from the
+        package so a module that later learns to execute a process is banned
+        without touching this test. The docker side is pinned by name:
+        ``anvilkit.pi.pisandbox`` builds the docker run argv (the docker side
+        of the seam, per the plan's reuse check) without itself importing
+        ``subprocess``, so no scan can derive it - it is named here.
+        """
+        pi_package = REPO_ROOT / "anvilkit" / "pi"
+        process_side = set()
+        for path in sorted(pi_package.glob("*.py")):
+            if path.name == "__init__.py":
+                continue
+            if "subprocess" in _imported_module_names(path.read_text()):
+                process_side.add("anvilkit.pi." + path.stem)
+        return sorted({"subprocess", "anvilkit.pi.pisandbox"} | process_side)
+
+    def test_pirole_imports_never_reach_the_process_side_or_the_docker_side(self):
+        # Arrange: the module under guard and the banned set rebuilt from the
+        # package.
+        pirole = self._import_pirole()
+        banned = self._banned_module_prefixes()
+        # Anti-vacuity control: the scan must flag both real offenders before
+        # it is asserted clean, or the guard would pass on an empty pattern.
+        pibakeoff_source = (REPO_ROOT / "anvilkit" / "pi" / "pibakeoff.py").read_text()
+        self.assertIn(
+            "subprocess",
+            _imported_module_names(pibakeoff_source),
+            "the positive control failed: pibakeoff really imports "
+            "subprocess, so the scan must flag it; the guard would be "
+            "vacuous",
+        )
+        pidriver_source = (REPO_ROOT / "anvilkit" / "pi" / "pidriver.py").read_text()
+        pidriver_imports = _imported_module_names(pidriver_source)
+        self.assertTrue(
+            any(
+                name.startswith("anvilkit.pi.pisandbox")
+                for name in pidriver_imports
+            ),
+            "the positive control failed: pidriver really imports "
+            "anvilkit.pi.pisandbox (the docker-invoking module), so the "
+            "scan must flag it; the guard would be vacuous",
+        )
+        self.assertIn("anvilkit.pi.pisandbox", banned)
+        # Act / Assert: the banned names are absent from pirole's imports,
+        # including any alias or dotted prefix (e.g.
+        # ``from anvilkit.pi import pisandbox``).
+        source = Path(pirole.__file__).read_text()
+        imported = _imported_module_names(source)
+        for name in imported:
+            self.assertFalse(
+                any(
+                    name == banned_name or name.startswith(banned_name + ".")
+                    for banned_name in banned
+                ),
+                "pirole must stay a decision module: it must not import "
+                "subprocess or a docker-invoking module (the act belongs to "
+                "the driver); found %r in its imports: %r"
+                % (name, imported),
+            )
+
+    def test_pirole_is_importable_and_exercisable_in_a_fresh_interpreter_with_no_subprocess(self):
+        # Arrange: a fresh interpreter that imports pirole and nothing else -
+        # no container, and no other anvilkit module that could load
+        # subprocess first. The child asserts the seam itself (subprocess
+        # never entered sys.modules from that import) and then exercises the
+        # whole public surface.
+        child = (
+            "import json, sys\n"
+            "import anvilkit.pi.pirole as pirole\n"
+            "params = json.loads(r'''{p}''')\n"
+            "if 'subprocess' in sys.modules:\n"
+            "    print('SUBPROCESS_LOADED')\n"
+            "    sys.exit(3)\n"
+            "for role in params['roles']:\n"
+            "    definition = pirole.resolve(role, params['coder'], params['frontier'])\n"
+            "    argv = pirole.role_argv(definition, params['session_id'], params['task'])\n"
+            "    assert argv[0] == 'pi' and argv[-1] == params['task'], argv\n"
+            "try:\n"
+            "    pirole.resolve('manager', params['coder'], params['frontier'])\n"
+            "except pirole.RoleError:\n"
+            "    pass\n"
+            "else:\n"
+            "    print('NO_ROLE_ERROR')\n"
+            "    sys.exit(4)\n"
+            "print('OK')\n"
+        ).format(
+            p=json.dumps(
+                {
+                    "roles": list(ROLES),
+                    "coder": CODER_MODEL_ID,
+                    "frontier": FRONTIER_MODEL_ID,
+                    "session_id": SESSION_ID,
+                    "task": TASK,
+                }
+            )
+        )
+        spec = {
+            "argv": [sys.executable, "-c", child],
+            "cwd": str(REPO_ROOT),
+            "stdin": "/dev/null",
+            "timeout_s": 30.0,
+        }
+        # Act.
+        result = pibakeoff.subprocess_runner(spec)
+        # Assert: the fresh interpreter completed, subprocess never loaded
+        # from the pirole import, and the whole public surface ran.
+        self.assertEqual(
+            0,
+            result["exit_code"],
+            "the fresh interpreter must complete; got exit code %r, stdout "
+            "%r, stderr %r"
+            % (result["exit_code"], result["stdout"], result["stderr"]),
+        )
+        self.assertNotIn(
+            "SUBPROCESS_LOADED",
+            result["stdout"],
+            "importing pirole must not load the subprocess module; the "
+            "module decides and does not act",
+        )
+        self.assertNotIn(
+            "NO_ROLE_ERROR",
+            result["stdout"],
+            "an unknown role must still be refused by RoleError",
+        )
+        self.assertEqual("OK\n", result["stdout"])
 
 
 if __name__ == "__main__":
