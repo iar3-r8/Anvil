@@ -744,3 +744,239 @@ class TestRunRoleRecordsExitStatus(RunRoleTestCase):
             "the runner's evidence string must pass through verbatim; "
             "got: %r" % result.get("evidence"),
         )
+
+
+# The canned six-key runner results for the container-start-failure
+# boundary: the failure shape is a non-zero exit with **empty** stdout
+# and a stderr that names the image (the shape a docker image pull
+# failure takes: the container never reached the pi process), while the
+# two "not a driver failure" shapes pair the same non-zero exit with
+# captured output, or pair empty output with a zero exit. The trio pins
+# the distinguishing axis: what separates a driver error from recorded
+# agent data is the (exit_code, stdout-empty) pair, never the exit code
+# alone.
+CONTAINER_START_FAILURE_RESULT: Dict[str, Any] = {
+    "exit_code": 125,
+    "stdout": "",
+    "stderr": "docker: Error response from daemon: pull access denied for %s, repository does not exist" % TAG,
+    "wall_time_s": 0.4,
+    "timed_out": False,
+    "evidence": "",
+}
+ZERO_EXIT_EMPTY_RESULT: Dict[str, Any] = {
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "",
+    "wall_time_s": 1.0,
+    "timed_out": False,
+    "evidence": "",
+}
+
+
+class TestRunRoleContainerStartFailure(RunRoleTestCase):
+    """The driver names a container that could not start.
+
+    A non-zero exit with empty stdout means the pi process never ran:
+    the container start itself failed, and the driver raises
+    ``DriverError`` naming the image tag and quoting the stderr. The
+    boundary is the (exit_code, stdout-empty) pair, so the two adjacent
+    shapes are pinned as non-errors: a non-zero exit *with* captured
+    output is a recorded agent failure (returned as data, never raised),
+    and a zero exit with empty output is a clean run.
+    """
+
+    def _run_with_result(
+        self, runner_result: Dict[str, Any]
+    ) -> "tuple":
+        """Arrange an injected runner returning the canned six-key result;
+        return ``(pidriver, fake, kwargs)`` so the test can act with or
+        without expecting a raise."""
+        pidriver = self._import_pidriver()
+        fake = FakeRunner()
+        fake._result = dict(runner_result)
+        kwargs: Dict[str, Any] = {
+            "definition": _coder_definition(),
+            "repo_path": REPO_PATH,
+            "tag": TAG,
+            "session_id": SESSION_ID,
+            "task": TASK,
+            "runner": fake,
+        }
+        return pidriver, fake, kwargs
+
+    def _assert_failure_shape(
+        self,
+        scenario: Dict[str, Any],
+        *others: Dict[str, Any],
+    ) -> None:
+        """Anti-vacuity: the start-failure scenario's (exit_code,
+        stdout-empty) pair must differ from each adjacent scenario's, so
+        a driver keyed on the exit code alone - or on the empty stdout
+        alone - cannot pass the boundary in both directions."""
+        pair = (
+            scenario["exit_code"] != 0,
+            scenario["stdout"] == "",
+        )
+        for other in others:
+            self.assertNotEqual(
+                (other["exit_code"] != 0, other["stdout"] == ""),
+                pair,
+                "the container-start-failure scenario must be the only "
+                "one pairing a non-zero exit with empty stdout, or the "
+                "boundary could be satisfied by a driver keyed on one "
+                "of the two fields alone",
+            )
+
+    def test_run_role_with_nonzero_exit_and_empty_stdout_raises_driver_error(self):
+        # Arrange: the container never started - non-zero exit, empty
+        # stdout, stderr naming the image.
+        self._assert_failure_shape(
+            CONTAINER_START_FAILURE_RESULT,
+            NONZERO_EXIT_RESULT,
+            ZERO_EXIT_EMPTY_RESULT,
+        )
+        self.assertNotEqual(
+            0,
+            CONTAINER_START_FAILURE_RESULT["exit_code"],
+            "the scenario must carry a non-zero exit, or a driver that "
+            "raises only on non-zero exits would never be exercised",
+        )
+        self.assertEqual(
+            "",
+            CONTAINER_START_FAILURE_RESULT["stdout"],
+            "the scenario must carry empty stdout, or the empty-stdout "
+            "half of the start-failure rule would be untested",
+        )
+        self.assertTrue(
+            CONTAINER_START_FAILURE_RESULT["stderr"],
+            "the scenario must carry stderr to quote, or the error's "
+            "stderr quoting would be untested",
+        )
+        self.assertIn(
+            TAG,
+            CONTAINER_START_FAILURE_RESULT["stderr"],
+            "the scenario's stderr must name the image, as a real image "
+            "pull failure does",
+        )
+        pidriver, fake, kwargs = self._run_with_result(
+            CONTAINER_START_FAILURE_RESULT
+        )
+        # Act / Assert: nothing is returned - DriverError is raised.
+        with self.assertRaises(pidriver.DriverError):
+            pidriver.run_role(**kwargs)
+        # The start was still attempted: exactly one runner invocation.
+        self.assertEqual(
+            1,
+            len(fake.calls),
+            "the start attempt must still reach the runner exactly once; "
+            "got %d calls" % len(fake.calls),
+        )
+
+    def test_run_role_driver_error_names_image_tag_and_quotes_stderr(self):
+        # Arrange: the same start-failure shape.
+        pidriver, fake, kwargs = self._run_with_result(
+            CONTAINER_START_FAILURE_RESULT
+        )
+        # Act / Assert: the raised DriverError's message names the image
+        # tag and quotes the stderr, so the operator can see which image
+        # failed and why.
+        with self.assertRaises(pidriver.DriverError) as ctx:
+            pidriver.run_role(**kwargs)
+        message = str(ctx.exception)
+        self.assertIn(
+            TAG,
+            message,
+            "the DriverError message must name the image tag %r; got: "
+            "%r" % (TAG, message),
+        )
+        self.assertIn(
+            CONTAINER_START_FAILURE_RESULT["stderr"],
+            message,
+            "the DriverError message must quote the runner's stderr; "
+            "got: %r" % message,
+        )
+
+    def test_run_role_with_nonzero_exit_and_nonempty_stdout_returns_result_not_driver_error(self):
+        # Arrange: a non-zero agent exit *with* captured output - the
+        # recorded-agent-failure shape, one field away from the start
+        # failure.
+        self._assert_failure_shape(
+            NONZERO_EXIT_RESULT,
+            CONTAINER_START_FAILURE_RESULT,
+            ZERO_EXIT_EMPTY_RESULT,
+        )
+        self.assertNotEqual(
+            0,
+            NONZERO_EXIT_RESULT["exit_code"],
+            "the scenario must share the start-failure scenario's "
+            "non-zero exit, or the two would not be one field apart",
+        )
+        self.assertTrue(
+            NONZERO_EXIT_RESULT["stdout"],
+            "the scenario must carry output, or it would be the start-"
+            "failure shape, not the recorded-agent-failure shape",
+        )
+        pidriver, fake, kwargs = self._run_with_result(NONZERO_EXIT_RESULT)
+        # Act: a driver that raises on any non-zero exit would raise
+        # here; the compliant driver returns the result dict.
+        result = pidriver.run_role(**kwargs)
+        # Assert: a dict comes back (no DriverError) carrying the agent's
+        # exit code and output verbatim.
+        self.assertIsInstance(
+            result,
+            dict,
+            "a non-zero agent exit with output must be returned as a "
+            "result dict, never raised; got: %r"
+            % type(result).__name__,
+        )
+        self.assertEqual(
+            NONZERO_EXIT_RESULT["exit_code"],
+            result["exit_code"],
+            "the result must carry the agent's exit code verbatim; got: "
+            "%r" % result.get("exit_code"),
+        )
+        self.assertIs(
+            NONZERO_EXIT_RESULT["stdout"],
+            result["stdout"],
+            "the agent's output must pass through in its own stdout "
+            "field; got: %r" % result.get("stdout"),
+        )
+
+    def test_run_role_with_zero_exit_and_empty_stdout_returns_result_not_driver_error(self):
+        # Arrange: a clean run that produced no output - the empty-stdout
+        # shape paired with a zero exit, the other side of the boundary.
+        self._assert_failure_shape(
+            ZERO_EXIT_EMPTY_RESULT,
+            CONTAINER_START_FAILURE_RESULT,
+            NONZERO_EXIT_RESULT,
+        )
+        self.assertEqual(
+            0,
+            ZERO_EXIT_EMPTY_RESULT["exit_code"],
+            "the scenario must pair the start-failure scenario's empty "
+            "stdout with a zero exit, or the two would not be one field "
+            "apart",
+        )
+        pidriver, fake, kwargs = self._run_with_result(ZERO_EXIT_EMPTY_RESULT)
+        # Act: a driver keyed on empty stdout alone would raise here;
+        # the compliant driver returns the result dict.
+        result = pidriver.run_role(**kwargs)
+        # Assert: the zero exit and the empty stream come back as data.
+        self.assertIsInstance(
+            result,
+            dict,
+            "a zero-exit run must be returned as a result dict, never "
+            "raised; got: %r" % type(result).__name__,
+        )
+        self.assertEqual(
+            0,
+            result["exit_code"],
+            "the result must carry the runner's zero exit code verbatim; "
+            "got: %r" % result.get("exit_code"),
+        )
+        self.assertEqual(
+            "",
+            result["stdout"],
+            "the empty stream must pass through verbatim; got: %r"
+            % result.get("stdout"),
+        )
