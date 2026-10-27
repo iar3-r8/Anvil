@@ -15,8 +15,10 @@ the six-key result dict out. The production runner is
 driver is testable with no Docker and imports no process-execution module
 itself (stdlib only).
 
-One exception type: ``DriverError`` (behaviours 12-13 will raise it; none is
-raised yet in this cycle).
+One exception type: ``DriverError``, raised when the container could not
+start: a non-zero exit with empty stdout (behaviour 12) means the pi
+process never ran, so there is no agent result to report. The
+missing-prompt-file rule (behaviour 13) will also raise it.
 """
 
 from typing import Any, Callable, Dict, Optional
@@ -60,8 +62,14 @@ def run_role(
     immediately before ``pi``. The runner is invoked exactly once with an
     invocation dict carrying ``argv``, ``cwd`` (the repo path), ``stdin``
     (``/dev/null``), ``timeout_s`` (the caller's budget or the driver's
-    default) and, only when a mapping was passed, ``env`` - and the runner's
-    six-key result dict is returned verbatim.
+    default) and, only when a mapping was passed, ``env``.
+
+    A non-zero exit with **empty** stdout is a container start failure, not
+    an agent result: the pi process never ran, so there is no output to
+    report, and the driver raises ``DriverError`` naming the image tag and
+    quoting the runner's stderr. Any other outcome - including a non-zero
+    exit with captured output - is the agent's own data and is returned
+    verbatim.
 
     Args:
         definition: the already-resolved role definition dict from
@@ -85,6 +93,9 @@ def run_role(
             env name.
         RoleError: from ``pirole.role_argv`` on an invalid session id or an
             empty definition field.
+        DriverError: when the run's exit code is non-zero and its stdout is
+            empty - the container start failed, and there is no agent
+            result to return.
     """
     container_argv = pisandbox.run_argv(repo_path, tag, env=env)
     role_argv = pirole.role_argv(definition, session_id, task)
@@ -96,4 +107,10 @@ def run_role(
     }
     if env is not None:
         invocation["env"] = env
-    return runner(invocation)
+    result: Dict[str, Any] = runner(invocation)
+    if result["exit_code"] != 0 and result["stdout"] == "":
+        raise DriverError(
+            "container start failed for image tag %r; stderr: %s"
+            % (tag, result["stderr"])
+        )
+    return result
