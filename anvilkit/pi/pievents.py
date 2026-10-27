@@ -11,9 +11,9 @@ process I/O"): records are separated by LF only; an optional preceding
 carriage return is stripped for CRLF streams; Unicode line and paragraph
 separators (U+2028/U+2029) are ordinary string content, never boundaries.
 
-Stdlib only: ``json``. No exception type yet - ``parse`` never raises on
-malformed input, so there is no failure to classify. The module's
-one-exception convention applies once a later function that can fail is
+Stdlib only: ``json``. No exception type yet - every function in this
+module is total and never raises, so there is no failure to classify. The
+module's one-exception convention applies once a function that can fail is
 added.
 """
 
@@ -57,6 +57,43 @@ def parse(text: str) -> Dict[str, Any]:
         events.append(record)
 
     return {"events": events, "malformed_lines": malformed_lines}
+
+
+def session(events: List[dict]) -> Dict[str, Any]:
+    """Extract the session header from a parsed event stream.
+
+    Returns a plain dict with exactly two keys, JSON-native throughout so
+    the bake-off record can embed it and ``json.dumps`` it directly:
+
+    - ``"session_id"``: ``Optional[str]`` - the ``id`` of the first record,
+      when that record is a ``session`` header carrying an ``id``; ``None``
+      otherwise, and never ``""`` (an absent field means "no id", so it is
+      not coerced to an empty string);
+    - ``"version"``: ``Optional[int]`` - the ``version`` of that same first
+      record; ``None`` when there is no first record to read it from, or
+      the record carries no ``version`` field.
+
+    The first record of a ``--mode json`` stream is the session header
+    (``doc/external/pi-dev/json-event-stream.md``, "Session header"). A
+    ``session`` record that is not the first record is ignored: only the
+    first record is the header. An absent header is normal, not an error
+    - RPC mode emits no header at all - so a stream whose first record is
+    not a header, and an empty stream, both yield ``{"session_id": None,
+    "version": None}``. ``session`` never raises.
+    """
+    if not events:
+        return {"session_id": None, "version": None}
+
+    first = events[0]
+    if first.get("type") != "session":
+        return {"session_id": None, "version": None}
+
+    # Verbatim: "id" not in the header -> None, never "". ``.get`` returns
+    # None exactly when the field is absent.
+    return {
+        "session_id": first.get("id"),
+        "version": first.get("version"),
+    }
 
 
 def tool_calls(events: List[dict]) -> Dict[str, int]:
