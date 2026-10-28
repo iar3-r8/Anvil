@@ -118,8 +118,25 @@ permission marker fails with the chown one-liner as its fix line, and
 one whose stderr carries a no-such-file marker fails with the seed
 instruction and no chown line; a ``FileNotFoundError`` from the runner
 is a not-on-PATH fail, never a traceback.
+
+Behaviour 11: ``check_coder_id(models_json_text, config_path,
+read_models=...)`` is layer 3's coder-id-match check. It takes the
+models.json text -- the exact stdout behaviour 10 exposed -- and the
+config path, reading the coder id from
+``read_models(config_path).coder_id`` (``matrix.vars.coder``) through
+an injectable ``read_models`` seam defaulting to the real
+``config.read_models`` -- the same pattern behaviour 8 pins, so
+neither id is hard-coded. It collects every
+``providers.<name>.models[].id``: the coder id present passes, the
+layer named ``"coder-id-match"``, the detail naming the provider
+carrying it; the id absent fails, printing both the expected coder id
+and the seeded ids found. Malformed JSON fails naming the parse
+error; a missing ``providers`` key or a provider with no ``models``
+list (or a ``models`` that is not a list) fails saying so -- never a
+``KeyError`` or ``TypeError`` escaping.
 """
 
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -1964,6 +1981,267 @@ class TestModelsJsonCheckNotOnPath(unittest.TestCase):
         self.assertEqual(result.ok, STATE_FAILED)
         self.assertIn("path", result.detail.lower())
         self.assertIsNone(content)
+
+
+# Behaviour 11: layer 3's coder-id-match check. Unlike behaviour 10 it
+# takes no docker seam: the models.json text is the exact stdout
+# behaviour 10's seam exposed, and the coder id is read from
+# ``read_models(config_path).coder_id`` (``matrix.vars.coder``) through
+# an injectable ``read_models`` seam that defaults to the real
+# ``config.read_models`` -- the same seam pattern behaviour 8 pins, so
+# neither id is hard-coded. The public seam these tests pin:
+#
+#     smoke.check_coder_id(models_json_text, config_path,
+#                          read_models=...) -> LayerResult
+#
+# The layer is named ``"coder-id-match"``. The models.json shape is the
+# one in ``tests/fixtures/golden_pi_models.json``: a top-level
+# ``providers`` mapping of provider name to provider object, each
+# provider carrying a ``models`` list, each model carrying an ``id``.
+# The coder id present as some ``providers.<name>.models[].id`` passes,
+# the detail naming the provider carrying it; the id absent fails,
+# printing both the expected coder id and the seeded ids found.
+# Malformed JSON fails naming the parse error; a missing ``providers``
+# key, a provider with no ``models`` key, or a ``models`` that is not a
+# list fails saying so -- never a ``KeyError`` or ``TypeError``
+# escaping.
+CODER_ID_CHECK_NAME = "check_coder_id"
+CODER_ID_LAYER_NAME = "coder-id-match"
+
+
+def _coder_id_check():
+    """Return the behaviour-11 coder-id check, or fail naming what is
+    missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, CODER_ID_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "%s(models_json_text, config_path, read_models=...) yet "
+            "(behaviour 11 of plans/smoke-test.md)" % CODER_ID_CHECK_NAME
+        )
+    return check
+
+
+def _models_json_text(providers):
+    """A models.json document built around the given ``providers``."""
+    return json.dumps({"providers": providers})
+
+
+def _provider(model_ids):
+    """A provider object with one model entry per id in ``model_ids``."""
+    return {
+        "baseUrl": "http://127.0.0.1:8000/v1",
+        "api": "openai-completions",
+        "models": [{"id": model_id} for model_id in model_ids],
+    }
+
+
+class TestCoderIdCheckPass(unittest.TestCase):
+    """Behaviour 11: the coder id present under a provider passes, the
+    detail naming that provider."""
+
+    def test_check_coder_id_id_present_under_one_provider_passes_naming_that_provider(self):
+        # Arrange: the injected read_models supplies the coder id and the
+        # seeded models.json carries it under one provider.
+        coder_id = "qwen3-coder"
+        text = _models_json_text({
+            "llamaswap": _provider([coder_id, "some-other-model"]),
+        })
+        read_models = _fake_read_models(coder_id)
+
+        # Act.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer is the coder-id-match layer in the pass
+        # state, naming the provider that carries the id and the id
+        # itself.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn("llamaswap", result.detail)
+        self.assertIn(coder_id, result.detail)
+
+    def test_check_coder_id_id_present_under_second_of_two_providers_names_that_provider(self):
+        # Arrange: the id sits under the second provider only.
+        coder_id = "the-coder-from-config"
+        text = _models_json_text({
+            "provider-a": _provider(["seeded-only-in-a"]),
+            "provider-b": _provider([coder_id]),
+        })
+        read_models = _fake_read_models(coder_id)
+
+        # Act.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the pass names the provider carrying the id, not the
+        # other one.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn("provider-b", result.detail)
+
+    def test_check_coder_id_reads_the_id_from_read_models_not_a_literal(self):
+        # Arrange: a slash-carrying, hard-codeable-looking id supplied by
+        # the fake topology; the seeded text carries only that id.
+        coder_id = "org/repo/model-v9"
+        text = _models_json_text({"llamaswap": _provider([coder_id])})
+        read_models = _fake_read_models(coder_id)
+
+        # Act.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the check matched the id read from config.yaml and read
+        # the config the caller named.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(coder_id, result.detail)
+        self.assertEqual(
+            read_models.calls, [("config.yaml", False)],
+            "read_models must be called with the config path the caller "
+            "named",
+        )
+
+
+class TestCoderIdCheckAbsent(unittest.TestCase):
+    """Behaviour 11 (error): the coder id absent fails, printing both the
+    expected id and the seeded ids found."""
+
+    def test_check_coder_id_id_absent_fails_naming_expected_id_and_seeded_ids(self):
+        # Arrange: the seeded text registers two models, neither the coder
+        # id the config names.
+        coder_id = "the-coder-from-config"
+        text = _models_json_text({
+            "llamaswap": _provider(["seeded-one", "seeded-two"]),
+        })
+        read_models = _fake_read_models(coder_id)
+
+        # Act.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, printing both the expected coder id
+        # and the seeded ids found.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(coder_id, result.detail)
+        self.assertIn("seeded-one", result.detail)
+        self.assertIn("seeded-two", result.detail)
+
+
+class TestCoderIdCheckMalformedJson(unittest.TestCase):
+    """Behaviour 11 (error): malformed JSON fails naming the parse error --
+    never a ``JSONDecodeError`` traceback escaping."""
+
+    def test_check_coder_id_malformed_json_fails_naming_the_parse_error(self):
+        # Arrange: a models.json that does not parse (a truncated object).
+        text = '{"providers": {'
+        # Derive the parse error text from the stdlib parser itself, so
+        # the assertion cites the exact clause the implementation must
+        # surface.
+        expected_error = None
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            expected_error = str(exc)
+        self.assertIsNotNone(
+            expected_error, "fixture text must not parse"
+        )
+        read_models = _fake_read_models("the-coder-from-config")
+
+        # Act: a JSONDecodeError escaping the check would error the test
+        # with a traceback; instead the layer must fail.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, and its detail names the parse error
+        # -- the word "parse" plus the error text the parser produced
+        # (its first clause, before the line and column, which the test
+        # does not re-derive).
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        detail = result.detail.lower()
+        self.assertIn("parse", detail)
+        clause = expected_error.split(":")[0].lower()
+        self.assertIn(
+            clause,
+            detail,
+            "fail detail %r must carry the parse error text %r"
+            % (result.detail, clause),
+        )
+        self.assertNotIn("Traceback", result.detail)
+
+
+class TestCoderIdCheckMissingProviders(unittest.TestCase):
+    """Behaviour 11 (error): a missing ``providers`` key fails saying so --
+    never a ``KeyError`` escaping."""
+
+    def test_check_coder_id_missing_providers_key_fails_saying_so(self):
+        # Arrange: valid JSON without the top-level providers key.
+        text = json.dumps({"models": []})
+        read_models = _fake_read_models("the-coder-from-config")
+
+        # Act: a KeyError escaping the check would error the test with a
+        # traceback; instead the layer must fail.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, and its detail says the providers key
+        # is missing.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("providers", result.detail.lower())
+
+
+class TestCoderIdCheckProviderWithoutModels(unittest.TestCase):
+    """Behaviour 11 (error): a provider with no ``models`` key, or a
+    ``models`` that is not a list, fails saying so -- never a
+    ``KeyError`` or ``TypeError`` escaping."""
+
+    def test_check_coder_id_provider_without_models_key_fails_saying_so(self):
+        # Arrange: a provider object without the models key.
+        text = json.dumps({
+            "providers": {
+                "llamaswap": {"baseUrl": "http://127.0.0.1:8000/v1"},
+            },
+        })
+        read_models = _fake_read_models("the-coder-from-config")
+
+        # Act: a KeyError escaping the check would error the test with a
+        # traceback; instead the layer must fail.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, and its detail says the models list
+        # is missing.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("models", result.detail.lower())
+
+    def test_check_coder_id_provider_models_not_a_list_fails_saying_so(self):
+        # Arrange: a provider whose models value is not a list.
+        text = json.dumps({
+            "providers": {"llamaswap": {"models": "not-a-list"}},
+        })
+        read_models = _fake_read_models("the-coder-from-config")
+
+        # Act: a TypeError escaping the check would error the test with a
+        # traceback; instead the layer must fail.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, and its detail says the models value
+        # is not a list.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("models", result.detail.lower())
 
 
 if __name__ == "__main__":
