@@ -43,7 +43,22 @@ it) and ``None`` on every fail; a readable but empty or whitespace-only
 file fails as unseeded, a no-such-file stderr fails with the seed
 instruction and no chown line, and a permission stderr fails with the
 ``chown -R`` one-liner as its fix line, composed from the adopted
-constants.
+constants. ``check_coder_id`` (behaviour 11) is layer 3'
+coder-id-match check, over no runner: it parses the exact stdout
+:func:`check_models_json` exposed on a pass as the models.json shape
+of ``tests/fixtures/golden_pi_models.json`` -- a top-level
+``providers`` mapping of provider name to provider object, each
+provider carrying a ``models`` list, each model carrying an ``id``
+-- and reads the coder id from llama-swap's read-only
+``config.yaml`` through the injected ``read_models`` seam (default
+:func:`anvilkit.config.read_models`). It passes, naming the provider
+carrying the id and the id itself, when the coder id appears as some
+``providers.<name>.models[].id``; the id absent fails, printing both
+the expected coder id and the seeded ids found, malformed JSON fails
+naming the parse error, and a missing or non-dict ``providers`` key,
+a provider with no ``models`` key, or a ``models`` that is not a list
+fails saying so -- a ``KeyError``, ``TypeError`` or
+``JSONDecodeError`` never escapes.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -53,7 +68,8 @@ spelled once as :data:`GATEWAY_CONTAINER` (behaviour 7).
 """
 
 import dataclasses
-from typing import Callable, Optional, Sequence, Tuple
+import json
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from anvilkit import config, health
 from anvilkit.pi import pisandbox
@@ -547,3 +563,80 @@ def check_models_json(
        ),
        None,
    )
+
+
+def check_coder_id(
+    models_json_text: str,
+    config_path: config.PathLike,
+    read_models: Callable[[config.PathLike], config.ModelTopology] = config.read_models,
+) -> "LayerResult":
+    """Layer 3: does the seeded models.json register the coder model?
+
+    ``read_models`` (default :func:`anvilkit.config.read_models`) is called
+    once with ``(config_path, False)`` and its ``coder_id``
+    (``matrix.vars.coder``) is the id this layer matches -- never a
+    hard-coded one. ``models_json_text`` is the exact stdout
+    :func:`check_models_json` exposed on a pass; it is parsed as the
+    models.json shape of ``tests/fixtures/golden_pi_models.json`` -- a
+    top-level ``providers`` mapping of provider name to provider object,
+    each provider carrying a ``models`` list, each model carrying an
+    ``id``. The layer passes when the coder id appears as some
+    ``providers.<name>.models[].id``, naming the provider carrying it and
+    the id itself; the id absent fails, printing both the expected coder
+    id and the seeded ids found. A ``JSONDecodeError`` fails naming the
+    parse error, a missing or non-dict ``providers`` key fails naming
+    ``providers``, and a provider with no ``models`` key or a ``models``
+    that is not a list fails saying so -- a ``KeyError``, ``TypeError`` or
+    ``JSONDecodeError`` never escapes.
+    """
+    topology = read_models(config_path, False)
+    coder_id = topology.coder_id
+    try:
+        document = json.loads(models_json_text)
+    except json.JSONDecodeError as exc:
+        return LayerResult(
+            name="coder-id-match",
+            ok=STATE_FAILED,
+            detail="models.json does not parse: %s" % exc,
+        )
+    providers = document.get("providers") if isinstance(document, dict) else None
+    if not isinstance(providers, dict):
+        return LayerResult(
+            name="coder-id-match",
+            ok=STATE_FAILED,
+            detail="models.json has no providers mapping",
+        )
+    seeded_ids = []  # type: List[str]
+    carrying_provider = None  # type: Optional[str]
+    for provider_name, provider in providers.items():
+        if not isinstance(provider, dict):
+            continue
+        models = provider.get("models")
+        if not isinstance(models, list):
+            return LayerResult(
+                name="coder-id-match",
+                ok=STATE_FAILED,
+                detail="provider %s has no models list" % provider_name,
+            )
+        for model in models:
+            if not isinstance(model, dict):
+                continue
+            model_id = model.get("id")
+            if not isinstance(model_id, str):
+                continue
+            seeded_ids.append(model_id)
+            if model_id == coder_id and carrying_provider is None:
+                carrying_provider = provider_name
+    if carrying_provider is not None:
+        return LayerResult(
+            name="coder-id-match",
+            ok=STATE_OK,
+            detail="coder model %s is registered under provider %s"
+            % (coder_id, carrying_provider),
+        )
+    return LayerResult(
+        name="coder-id-match",
+        ok=STATE_FAILED,
+        detail="coder model %s is not registered; models.json seeds %s"
+        % (coder_id, ", ".join(seeded_ids) if seeded_ids else "no models"),
+    )
