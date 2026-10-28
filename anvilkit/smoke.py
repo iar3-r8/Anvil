@@ -9,6 +9,11 @@ layer results into the process exit code the CLI returns, and
 injected docker runner once with the version-probe argv and turns the outcome
 into a ``LayerResult`` -- a ``FileNotFoundError`` from the runner is a fail
 saying docker is not on PATH, never a traceback.
+``check_sandbox_image`` (behaviour 5) is layer 1's image-presence check,
+over the same injected runner: it inspects the image tag (defaulting to the
+plan's pinned tag) and derives its fail fix line from
+``anvilkit.pi.pisandbox.build_argv`` so it cannot drift from the build
+command.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -149,3 +154,49 @@ def check_docker_daemon(
         ok=STATE_FAILED,
         detail=stderr.strip(),
     )
+
+
+# The image tag layer 1's image check inspects by default (behaviour 5 of
+# ``plans/smoke-test.md``): the plan's pinned default, spelled here once and
+# never re-typed into an argv.
+DEFAULT_IMAGE_TAG = "pi-sandbox"
+
+
+def check_sandbox_image(
+   docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]],
+   tag: str = DEFAULT_IMAGE_TAG,
+) -> "LayerResult":
+   """Layer 1: is the sandbox image present under ``tag``?
+
+   ``docker_runner`` is the same injected seam as
+   :func:`check_docker_daemon`, with the contract
+   ``docker_runner(argv) -> (exit_code, stdout, stderr)``. It is called
+   exactly once with ``["docker", "image", "inspect", <tag>]``; exit 0
+   passes, a non-zero exit fails with its stderr in the detail and exactly
+   one fix line, ``" ".join(pisandbox.build_argv(tag))`` -- derived from the
+   same public builder the image is actually built with, so a Dockerfile-
+   path change cannot leave the fix stale. A ``FileNotFoundError`` from the
+   runner fails saying docker is not on PATH, mirroring the daemon check.
+   """
+   try:
+       exit_code, _stdout, stderr = docker_runner(
+           ["docker", "image", "inspect", tag]
+       )
+   except FileNotFoundError:
+       return LayerResult(
+           name="sandbox-image",
+           ok=STATE_FAILED,
+           detail="docker not on PATH",
+       )
+   if exit_code == 0:
+       return LayerResult(
+           name="sandbox-image",
+           ok=STATE_OK,
+           detail="image %s present" % tag,
+       )
+   return LayerResult(
+       name="sandbox-image",
+       ok=STATE_FAILED,
+       detail=stderr.strip(),
+       fix_lines=(" ".join(pisandbox.build_argv(tag)),),
+   )
