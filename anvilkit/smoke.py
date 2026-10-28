@@ -3,9 +3,12 @@
 Renders per-layer verdicts for a human: one line per layer carrying its name
 and detail, a verdict glyph for passed and failed layers, and indented fix
 lines beneath a failing layer only. This behaviour is the report renderer
-behaviour 1 of ``plans/smoke-test.md``; the layer checks themselves arrive in
-later behaviours. ``summarize`` (behaviour 2) turns the layer results into the
-process exit code the CLI returns.
+behaviour 1 of ``plans/smoke-test.md``. ``summarize`` (behaviour 2) turns the
+layer results into the process exit code the CLI returns, and
+``check_docker_daemon`` (behaviour 4) is layer 1's daemon check: it runs the
+injected docker runner once with the version-probe argv and turns the outcome
+into a ``LayerResult`` -- a ``FileNotFoundError`` from the runner is a fail
+saying docker is not on PATH, never a traceback.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -14,7 +17,7 @@ as literals.
 """
 
 import dataclasses
-from typing import Sequence
+from typing import Callable, Sequence, Tuple
 
 from anvilkit.pi import pisandbox
 
@@ -108,3 +111,41 @@ def summarize(results: Sequence["LayerResult"]) -> int:
     if internal_failed:
         return 1
     return 0
+
+
+# The version probe layer 1 runs (behaviour 4 of ``plans/smoke-test.md``):
+# list-form argv only, no shell.
+DAEMON_ARGV = ["docker", "version", "--format", "{{.Server.Version}}"]
+
+
+def check_docker_daemon(
+    docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]]
+) -> "LayerResult":
+    """Layer 1: is the Docker daemon reachable?
+
+    ``docker_runner`` is the injected seam with the contract
+    ``docker_runner(argv) -> (exit_code, stdout, stderr)``. It is called
+    exactly once with :data:`DAEMON_ARGV`; exit 0 passes with the trimmed
+    server version in the detail, a non-zero exit fails with the stderr in
+    the detail, and a ``FileNotFoundError`` from the runner fails saying
+    docker is not on PATH -- it never escapes as a traceback.
+    """
+    try:
+        exit_code, stdout, stderr = docker_runner(DAEMON_ARGV)
+    except FileNotFoundError:
+        return LayerResult(
+            name="docker-daemon",
+            ok=STATE_FAILED,
+            detail="docker not on PATH",
+        )
+    if exit_code == 0:
+        return LayerResult(
+            name="docker-daemon",
+            ok=STATE_OK,
+            detail="server %s" % stdout.strip(),
+        )
+    return LayerResult(
+        name="docker-daemon",
+        ok=STATE_FAILED,
+        detail=stderr.strip(),
+    )
