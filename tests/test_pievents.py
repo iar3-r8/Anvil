@@ -2616,3 +2616,403 @@ class TestRetriesIgnoresSummarizationRetries(PieventsTestCase):
             "1, succeeded 1 - the interleaved summarization records must "
             "not add to any counter, not even by event-type prefix",
         )
+
+
+# --- Compaction pressure, paired start/end ----------------------------------
+#
+# Pinned return shape: ``compactions(events: List[dict])`` returns a
+# ``List[dict]`` in stream order, one entry per ``compaction_start``
+# record, paired with the ``compaction_end`` that follows it when one
+# arrives. A start with no end still yields its entry, flagged
+# ``completed`` False. Empty input yields ``[]``.
+#
+# Each entry has exactly five keys, JSON-native throughout:
+#
+# - ``"reason"``: verbatim from the start record's ``reason``; never
+#   validated against the three documented values (
+#   ``doc/external/pi-dev/json-event-stream.md:148``);
+# - ``"tokensBefore"`` / ``"estimatedTokensAfter"``: verbatim from the
+#   paired end's ``result`` (
+#   ``doc/external/pi-dev/json-event-stream.md:160``); ``None`` when the
+#   end never arrived, when it carries no ``result`` at all (an aborted
+#   or failed compaction, line 172), or when the field is absent inside
+#   a present result. A missing value is "we do not know", never ``0`` -
+#   a ``0`` would read as a compaction that freed the whole window;
+# - ``"aborted"``: the end record's ``aborted`` verbatim; ``None`` when
+#   no end arrived, because we do not know whether it aborted;
+# - ``"completed"``: ``True`` iff the paired end arrived - an end is an
+#   end, even an aborted one; ``False`` for a start with no end.
+#
+# Each test pins the complete key set by value
+# (``set(entry) == COMPACTION_KEYS``), so the coder has no room for
+# undocumented keys.
+#
+# This red fails on the missing function itself: ``pievents.compactions``
+# does not exist yet, so calling it raises AttributeError. No sentinel
+# guard is used on purpose, so the suite fails for exactly one reason -
+# the function is absent - and nothing else.
+COMPACTION_KEYS = {
+    "reason",
+    "tokensBefore",
+    "estimatedTokensAfter",
+    "aborted",
+    "completed",
+}
+
+
+class CompactionsTestCase(PieventsTestCase):
+    """Base for the compaction reds: access to ``compactions``, failing
+    clearly if the function is absent."""
+
+    def _compactions(self):
+        """Fetch ``anvilkit.pi.pievents.compactions``, failing clearly if absent."""
+        pievents = self._pievents()
+        return pievents.compactions
+
+
+class TestCompactionsPairedThresholdCompaction(CompactionsTestCase):
+    """A start whose reason is 'threshold' paired with an end whose
+    result holds both token fields: one entry, every field pinned by
+    value, the reason carried verbatim."""
+
+    def test_compactions_paired_threshold_compaction_returns_one_pinned_entry(self):
+        # Arrange
+        events = [
+            {"type": "compaction_start", "reason": "threshold"},
+            {
+                "type": "compaction_end",
+                "aborted": False,
+                "result": {"tokensBefore": 150000, "estimatedTokensAfter": 32000},
+            },
+        ]
+        compactions = self._compactions()
+        # Act
+        result = compactions(events)
+        # Assert
+        self.assertIsInstance(
+            result,
+            list,
+            "compactions must return a List[dict], one entry per compaction",
+        )
+        self.assertEqual(len(result), 1, "one start/end pair yields one entry")
+        entry = result[0]
+        self.assertEqual(
+            set(entry),
+            COMPACTION_KEYS,
+            "the entry must have exactly the keys 'reason', 'tokensBefore', "
+            "'estimatedTokensAfter', 'aborted', 'completed': no extra keys, "
+            "no missing keys",
+        )
+        self.assertEqual(
+            entry,
+            {
+                "reason": "threshold",
+                "tokensBefore": 150000,
+                "estimatedTokensAfter": 32000,
+                "aborted": False,
+                "completed": True,
+            },
+            "reason and both token fields verbatim from the paired records; "
+            "the end arrived, so completed is True",
+        )
+
+
+class TestCompactionsStreamOrder(CompactionsTestCase):
+    """Two complete compactions in one stream yield two entries in stream
+    order, each reading its own start's reason and its own end's result."""
+
+    def test_compactions_two_compactions_yield_two_entries_in_stream_order(self):
+        # Arrange: a threshold compaction, then an overflow compaction
+        events = [
+            {"type": "compaction_start", "reason": "threshold"},
+            {
+                "type": "compaction_end",
+                "aborted": False,
+                "result": {"tokensBefore": 150000, "estimatedTokensAfter": 32000},
+            },
+            {"type": "compaction_start", "reason": "overflow"},
+            {
+                "type": "compaction_end",
+                "aborted": False,
+                "result": {"tokensBefore": 210000, "estimatedTokensAfter": 55000},
+            },
+        ]
+        compactions = self._compactions()
+        # Act
+        result = compactions(events)
+        # Assert
+        self.assertEqual(
+            len(result),
+            2,
+            "two compactions yield two entries, not one and not three",
+        )
+        self.assertEqual(
+            [entry["reason"] for entry in result],
+            ["threshold", "overflow"],
+            "entries keep stream order: each reads its own start's reason",
+        )
+        for entry in result:
+            self.assertEqual(
+                set(entry),
+                COMPACTION_KEYS,
+                "every entry holds exactly the five pinned keys",
+            )
+        self.assertEqual(
+            result[0],
+            {
+                "reason": "threshold",
+                "tokensBefore": 150000,
+                "estimatedTokensAfter": 32000,
+                "aborted": False,
+                "completed": True,
+            },
+            "the first entry reads the first compaction's own values",
+        )
+        self.assertEqual(
+            result[1],
+            {
+                "reason": "overflow",
+                "tokensBefore": 210000,
+                "estimatedTokensAfter": 55000,
+                "aborted": False,
+                "completed": True,
+            },
+            "the second entry reads the second compaction's own values, "
+            "not the first's",
+        )
+
+
+class TestCompactionsAbortedEndWithoutResult(CompactionsTestCase):
+    """An end that aborted carries no result at all (
+    ``doc/external/pi-dev/json-event-stream.md:172``): both token fields
+    are None - 'we do not know' - never 0, which would read as a
+    compaction that freed the whole window."""
+
+    def test_compactions_aborted_end_without_result_reports_none_tokens(self):
+        # Arrange: a start paired with an aborted end that has no result
+        events = [
+            {"type": "compaction_start", "reason": "manual"},
+            {"type": "compaction_end", "aborted": True},
+        ]
+        compactions = self._compactions()
+        # Act
+        result = compactions(events)
+        # Assert
+        self.assertEqual(
+            len(result),
+            1,
+            "an aborted end still ends the compaction: one entry",
+        )
+        entry = result[0]
+        self.assertEqual(set(entry), COMPACTION_KEYS, "the five pinned keys")
+        self.assertEqual(entry["reason"], "manual", "the start's reason verbatim")
+        self.assertIs(
+            entry["tokensBefore"],
+            None,
+            "no result means we do not know the tokens: None, never 0",
+        )
+        self.assertIs(
+            entry["estimatedTokensAfter"],
+            None,
+            "no result means we do not know the tokens: None, never 0",
+        )
+        self.assertIs(entry["aborted"], True, "the end said it aborted")
+        self.assertIs(
+            entry["completed"],
+            True,
+            "the end arrived, so the compaction is complete even though "
+            "it aborted",
+        )
+        self.assertEqual(
+            entry,
+            {
+                "reason": "manual",
+                "tokensBefore": None,
+                "estimatedTokensAfter": None,
+                "aborted": True,
+                "completed": True,
+            },
+            "the complete aborted-compaction entry is pinned by value",
+        )
+
+
+class TestCompactionsStartWithoutEnd(CompactionsTestCase):
+    """A start that never gets an end: the entry is still reported, with
+    both token fields None, aborted None (we do not know) and completed
+    False."""
+
+    def test_compactions_start_without_end_reports_none_fields_and_not_completed(self):
+        # Arrange: a start with no end anywhere in the stream
+        events = [{"type": "compaction_start", "reason": "overflow"}]
+        compactions = self._compactions()
+        # Act
+        result = compactions(events)
+        # Assert
+        self.assertEqual(
+            len(result),
+            1,
+            "a start always yields its entry, even when it never ends",
+        )
+        entry = result[0]
+        self.assertEqual(set(entry), COMPACTION_KEYS, "the five pinned keys")
+        self.assertEqual(entry["reason"], "overflow", "the start's reason verbatim")
+        self.assertIs(entry["tokensBefore"], None, "no end: we do not know the tokens")
+        self.assertIs(
+            entry["estimatedTokensAfter"],
+            None,
+            "no end: we do not know the tokens",
+        )
+        self.assertIs(
+            entry["aborted"],
+            None,
+            "no end arrived: we do not know whether it aborted - None, "
+            "never a coerced False",
+        )
+        self.assertIs(
+            entry["completed"],
+            False,
+            "no end: the compaction did not complete",
+        )
+        self.assertEqual(
+            entry,
+            {
+                "reason": "overflow",
+                "tokensBefore": None,
+                "estimatedTokensAfter": None,
+                "aborted": None,
+                "completed": False,
+            },
+            "the complete end-less entry is pinned by value",
+        )
+
+
+class TestCompactionsResultMissingTokenField(CompactionsTestCase):
+    """A result that is present but holds only one of the two token
+    fields: the missing field is None, never 0 - a 0 would read as a
+    compaction that freed the whole window."""
+
+    def test_compactions_result_missing_token_field_reports_none_never_zero(self):
+        # Arrange: a successful end whose result holds tokensBefore only
+        events = [
+            {"type": "compaction_start", "reason": "threshold"},
+            {
+                "type": "compaction_end",
+                "aborted": False,
+                "result": {"tokensBefore": 90000},
+            },
+        ]
+        compactions = self._compactions()
+        # Act
+        result = compactions(events)
+        # Assert
+        self.assertEqual(len(result), 1, "one start/end pair yields one entry")
+        entry = result[0]
+        self.assertEqual(set(entry), COMPACTION_KEYS, "the five pinned keys")
+        self.assertEqual(
+            entry["tokensBefore"],
+            90000,
+            "the field the result holds, verbatim",
+        )
+        self.assertIs(
+            entry["estimatedTokensAfter"],
+            None,
+            "the field absent from a present result is 'we do not know': "
+            "None, never 0",
+        )
+        self.assertIs(entry["aborted"], False, "the end said it did not abort")
+        self.assertIs(entry["completed"], True, "the end arrived")
+
+
+class TestCompactionsEmptyList(CompactionsTestCase):
+    """Empty input yields an empty list - no records, no entries, no
+    error."""
+
+    def test_compactions_empty_list_yields_empty_list(self):
+        compactions = self._compactions()
+        # Act
+        result = compactions([])
+        # Assert
+        self.assertEqual(
+            result,
+            [],
+            "no compaction records means no entries",
+        )
+
+
+class TestCompactionsReasonVerbatim(CompactionsTestCase):
+    """A reason outside the three documented values passes through
+    verbatim: the field is data, never validated against
+    ``doc/external/pi-dev/json-event-stream.md:148``."""
+
+    def test_compactions_undocumented_reason_passes_through_verbatim(self):
+        # Arrange: a start whose reason is not one of the documented values
+        events = [
+            {"type": "compaction_start", "reason": "weird"},
+            {
+                "type": "compaction_end",
+                "aborted": False,
+                "result": {"tokensBefore": 1000, "estimatedTokensAfter": 900},
+            },
+        ]
+        compactions = self._compactions()
+        # Act
+        result = compactions(events)
+        # Assert
+        self.assertEqual(len(result), 1, "one start/end pair yields one entry")
+        entry = result[0]
+        self.assertEqual(
+            entry["reason"],
+            "weird",
+            "reason is verbatim from the start record, never validated "
+            "against the documented values",
+        )
+        self.assertEqual(
+            entry,
+            {
+                "reason": "weird",
+                "tokensBefore": 1000,
+                "estimatedTokensAfter": 900,
+                "aborted": False,
+                "completed": True,
+            },
+            "the rest of the entry is unaffected by the unusual reason",
+        )
+
+
+class TestCompactionsParsedFixture(FixtureStreamTestCase):
+    """The recorded fixture stream, routed through ``parse`` and then
+    ``compactions``: the fixture's single threshold compaction (the
+    fixture's compaction-record pin names this case at the parse level)
+    yields exactly one entry with the recorded pressure values."""
+
+    def test_compactions_on_parsed_fixture_returns_the_one_recorded_entry(self):
+        # Arrange: the recorded stream, through the real entry path
+        pievents = self._pievents()
+        events = self._parsed_fixture()["events"]
+        # Act
+        result = pievents.compactions(events)
+        # Assert
+        self.assertIsInstance(result, list, "compactions must return a List[dict]")
+        self.assertEqual(
+            len(result),
+            1,
+            "the fixture records exactly one compaction: one entry and "
+            "nothing else",
+        )
+        self.assertEqual(
+            set(result[0]),
+            COMPACTION_KEYS,
+            "the recorded entry has exactly the five pinned keys",
+        )
+        self.assertEqual(
+            result[0],
+            {
+                "reason": "threshold",
+                "tokensBefore": 150000,
+                "estimatedTokensAfter": 32000,
+                "aborted": False,
+                "completed": True,
+            },
+            "the recorded threshold compaction's paired pressure values, "
+            "pinned from the file end to end",
+        )
