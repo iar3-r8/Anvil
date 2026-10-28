@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1–12 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–14 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -137,6 +137,7 @@ list (or a ``models`` that is not a list) fails saying so -- never a
 """
 
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -2880,6 +2881,167 @@ class TestRolePromptSourcePin(unittest.TestCase):
             "anvilkit/smoke.py re-spells the coder prompt path %r; derive "
             "it from pirole.resolve instead" % literal,
         )
+
+
+# Behaviour 14: fresh session id per invocation. Given nothing, the
+# generator must hand out a new id every time, so no old Pi session is
+# ever resumed. The public seam these tests pin:
+#
+#     smoke.new_session_id() -> str
+#
+# No arguments; returns a string of the shape ``smoke-<UTC timestamp>
+# -<random suffix>`` -- the plan pins the ``smoke-`` prefix and the
+# dash-separated shape; the exact timestamp format and suffix length are
+# NOT pinned by the tests, which stay robust to the format the
+# implementation chooses (``secrets`` is the intended randomness source).
+# Every id must pass the REAL ``pirole`` session-id validation --
+# ``role_argv`` (the validator at ``pirole.py:72-101``) raises
+# ``RoleError`` on an id outside letters, numbers, ``.``, ``_`` and ``-``,
+# or one that does not start and end with a letter or number -- so Pi
+# can never reject one. Two calls must differ.
+NEW_SESSION_ID_NAME = "new_session_id"
+# The plan's pinned shape: the ``smoke-`` prefix, then only the
+# session-id body characters -- letters, numbers, ``.``, ``_`` and ``-``.
+SESSION_ID_SHAPE = re.compile(r"^smoke-[A-Za-z0-9._-]+$")
+
+
+def _new_session_id():
+    """Call the behaviour-14 generator once, or fail naming what is
+    missing."""
+    smoke_mod = _require_smoke()
+    gen = getattr(smoke_mod, NEW_SESSION_ID_NAME, None)
+    if gen is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s() yet "
+            "(behaviour 14 of plans/smoke-test.md)" % NEW_SESSION_ID_NAME
+        )
+    return gen()
+
+
+def _coder_definition():
+    """The real coder role definition from ``pirole.resolve`` -- the same
+    definition the production run uses, so the validator is exercised
+    against the real role table, not a fake."""
+    return pirole.resolve("coder", "coder-model", "frontier-model")
+
+
+class TestNewSessionIdReturnsString(unittest.TestCase):
+    """Behaviour 14: the generator exists, takes no arguments, and
+    returns a non-empty string."""
+
+    def test_new_session_id_returns_a_non_empty_string(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert.
+        self.assertIsInstance(session_id, str)
+        self.assertTrue(session_id, "the session id must not be empty")
+
+
+class TestNewSessionIdShape(unittest.TestCase):
+    """Behaviour 14: the id starts with ``smoke-``, is the dash-separated
+    ``smoke-<UTC timestamp>-<random suffix>``, carries only
+    ``[A-Za-z0-9._-]`` besides, and starts and ends alphanumeric."""
+
+    def test_new_session_id_carries_the_smoke_prefix(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert: the plan's pinned prefix.
+        self.assertTrue(
+            session_id.startswith("smoke-"),
+            "the id %r must carry the plan's pinned 'smoke-' prefix"
+            % session_id,
+        )
+
+    def test_new_session_id_is_dash_separated_prefix_timestamp_suffix(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert: the plan's shape is smoke-<UTC timestamp>-<random
+        # suffix>: the prefix dash plus at least the separator between
+        # timestamp and suffix, whatever dashes the timestamp format
+        # itself carries.
+        self.assertGreaterEqual(
+            session_id.count("-"),
+            2,
+            "the id %r must be dash-separated smoke-<timestamp>-<suffix>"
+            % session_id,
+        )
+
+    def test_new_session_id_matches_the_pinned_shape(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert: prefix plus only the session-id body characters.
+        self.assertRegex(
+            session_id,
+            SESSION_ID_SHAPE,
+            "the id %r must match the plan's shape "
+            "smoke-<UTC timestamp>-<random suffix> with only the "
+            "session-id body characters" % session_id,
+        )
+
+    def test_new_session_id_starts_and_ends_alphanumeric(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert: the start and end are letters or numbers -- the rule
+        # the real validator at pirole.py:72-101 enforces.
+        self.assertTrue(
+            session_id[0].isalnum(),
+            "the id %r must start with a letter or number" % session_id,
+        )
+        self.assertTrue(
+            session_id[-1].isalnum(),
+            "the id %r must end with a letter or number" % session_id,
+        )
+
+
+class TestNewSessionIdFreshPerInvocation(unittest.TestCase):
+    """Behaviour 14: two calls yield two different ids, so no old
+    session is ever resumed."""
+
+    def test_new_session_id_two_calls_differ(self):
+        # Act: the plan's exact scenario -- the generator called twice.
+        first = _new_session_id()
+        second = _new_session_id()
+
+        # Assert.
+        self.assertNotEqual(
+            first,
+            second,
+            "two invocations must produce different session ids "
+            "(got %r twice)" % first,
+        )
+
+
+class TestNewSessionIdPassesPiroleValidation(unittest.TestCase):
+    """Behaviour 14: every generated id is accepted by the REAL
+    ``pirole.role_argv`` session-id validation -- the validator at
+    ``pirole.py:72-101``, not a re-implemented regex."""
+
+    def test_new_session_id_is_accepted_by_the_real_role_argv_validator(self):
+        # Arrange: the real coder definition from the real role table.
+        definition = _coder_definition()
+
+        # Act + Assert: each of two generated ids crosses the real
+        # validator -- a RoleError escaping role_argv would error the
+        # test with a traceback, so reaching the assert is the pass.
+        for session_id in (_new_session_id(), _new_session_id()):
+            argv = pirole.role_argv(definition, session_id, "trivial task")
+            # The id crosses byte-identical: it is the value right after
+            # the --session-id flag, exactly once.
+            self.assertEqual(
+                argv.count("--session-id"), 1,
+                "the real validator must accept %r and emit it once; "
+                "got argv %r" % (session_id, argv),
+            )
+            self.assertEqual(
+                argv[argv.index("--session-id") + 1], session_id,
+                "a valid session id crosses role_argv verbatim; %r was "
+                "rewritten" % session_id,
+            )
 
 
 if __name__ == "__main__":
