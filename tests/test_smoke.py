@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1–10 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–12 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -2242,6 +2242,315 @@ class TestCoderIdCheckProviderWithoutModels(unittest.TestCase):
         self.assertEqual(result.name, CODER_ID_LAYER_NAME)
         self.assertEqual(result.ok, STATE_FAILED)
         self.assertIn("models", result.detail.lower())
+
+
+# Behaviour 12: ``--fix`` chowns the volume only. The repair is a function
+# the operator command (behaviour 18) calls for layer 3 when ``--fix`` is set
+# and the models.json check (behaviour 10) failed with a permission failure.
+# The public seam these tests pin:
+#
+#     smoke.repair_models_json(docker_runner, tag=..., fix=...,
+#                              first_read=(LayerResult, Optional[str]))
+#         -> (LayerResult, Optional[str])
+#
+# It takes the injected docker runner, the image tag, a flag for whether fix
+# is requested, and the first-read result (the ``(LayerResult, Optional[str])``
+# tuple behaviour 10's ``check_models_json`` returns). It returns the final
+# verdict as the same ``(LayerResult, Optional[str])`` tuple. The chown argv
+# is composed from the adopted constants; the read argv is behaviour 10's
+# cat argv. The tests assert spawn counts on the fake's recorded calls:
+#
+# - ``--fix`` + permission failure: exactly ONE chown spawn, then the read is
+#   retried exactly ONCE; if the retry passes, the final verdict is pass.
+# - Without ``--fix``: NO chown spawn ever; the verdict is whatever the read
+#   produced (fail with the one-liner fix line printed, per behaviour 10).
+# - ``--fix`` + missing-file failure: NO chown spawn, final verdict fail.
+# - ``--fix`` + a generic other non-zero exit: NO chown spawn, final fail.
+# - ``--fix`` + permission failure + chown-itself-fails: one chown spawn,
+#   fail with the chown stderr, and the read is NOT retried a second time
+#   (at most one retry total).
+
+
+REPAIR_CHECK_NAME = "repair_models_json"
+
+
+def _repair_check():
+    """Return the behaviour-12 repair seam, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, REPAIR_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner, tag=..., "
+            "fix=..., first_read=...) yet "
+            "(behaviour 12 of plans/smoke-test.md)" % REPAIR_CHECK_NAME
+        )
+    return check
+
+
+def _chown_argv(tag):
+    """The list-form argv the repair chowns the volume with.
+
+    Composed from the adopted smoke constants -- the named volume, the agent
+    home and the image uid -- with the root user id ``"0"`` and the ``chown``
+    verb the only literals, per the plan.
+    """
+    smoke_mod = _require_smoke()
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        smoke_mod.NAMED_VOLUME + ":" + smoke_mod.AGENT_HOME,
+        "--user",
+        "0",
+        tag,
+        "chown",
+        "-R",
+        smoke_mod.IMAGE_UID + ":" + smoke_mod.IMAGE_UID,
+        smoke_mod.AGENT_HOME,
+    ]
+
+
+def _scripted_runner(script):
+    """A fake ``docker_runner`` that returns results from ``script`` in
+    order and records every argv it is handed.
+
+    ``script`` is a sequence of ``(exit_code, stdout, stderr)`` tuples; each
+    invocation pops the next one. When the script is exhausted the runner
+    raises ``AssertionError`` -- a test that drives more invocations than it
+    scripted has over-driven the seam, and that is a test bug, not a
+    silent repeat of the last result.
+    """
+    remaining = list(script)
+    calls = []
+
+    def runner(argv):
+        calls.append(list(argv))
+        if not remaining:
+            raise AssertionError(
+                "scripted runner exhausted: the repair over-drove the seam "
+                "(invoked %d times, only %d scripted)"
+                % (len(calls), len(script))
+            )
+        return remaining.pop(0)
+
+    runner.calls = calls
+    return runner
+
+
+def _permission_read_result(tag=None):
+    """A behaviour-10 permission-failure ``(LayerResult, None)`` to feed
+    the repair as its ``first_read``; the chown one-liner fix line is built
+    for ``tag`` (defaulting to the module's default tag)."""
+    smoke_mod = _require_smoke()
+    if tag is None:
+        tag = smoke_mod.DEFAULT_IMAGE_TAG
+    result = smoke_mod.LayerResult(
+        name=MODELS_JSON_LAYER_NAME,
+        ok=STATE_FAILED,
+        detail="cat: %s/models.json: Permission denied" % smoke_mod.AGENT_HOME,
+        fix_lines=(_chown_one_liner(tag),),
+    )
+    return (result, None)
+
+
+def _missing_file_read_result():
+    """A behaviour-10 missing-file ``(LayerResult, None)`` to feed the
+    repair as its ``first_read``."""
+    smoke_mod = _require_smoke()
+    result = smoke_mod.LayerResult(
+        name=MODELS_JSON_LAYER_NAME,
+        ok=STATE_FAILED,
+        detail="%s/models.json is missing; seed it" % smoke_mod.AGENT_HOME,
+    )
+    return (result, None)
+
+
+def _generic_failure_read_result():
+    """A behaviour-10 generic-other-failure ``(LayerResult, None)`` -- a
+    non-zero exit whose stderr carries neither the permission nor the
+    no-such-file marker -- to feed the repair as its ``first_read``."""
+    smoke_mod = _require_smoke()
+    result = smoke_mod.LayerResult(
+        name=MODELS_JSON_LAYER_NAME,
+        ok=STATE_FAILED,
+        detail="some other opaque error",
+    )
+    return (result, None)
+
+
+class TestRepairPermissionFixRetriesAndPasses(unittest.TestCase):
+    """Behaviour 12: ``--fix`` + a permission failure spawns exactly ONE
+    chown, retries the read exactly ONCE, and passes when the retry
+    succeeds."""
+
+    def test_repair_fix_permission_fail_chowns_once_retries_once_and_passes(self):
+        # Arrange: a permission failure is the first read; the script is
+        # chown-exit-0 then the retried cat-exit-0 with a seeded file.
+        tag = "anvil-pi:dev"
+        models_text = '{"providers": {"a": {"models": [{"id": "x"}]}}}\n'
+        runner = _scripted_runner([
+            (0, "", ""),            # the chown
+            (0, models_text, ""),   # the retried read
+        ])
+        first_read = _permission_read_result()
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=True, first_read=first_read,
+        )
+
+        # Assert: the chown was spawned exactly once with the pinned argv,
+        # the read was retried exactly once with the cat argv, and the final
+        # verdict is pass carrying the retried read's stdout.
+        self.assertEqual(len(runner.calls), 2)
+        self.assertEqual(runner.calls[0], _chown_argv(tag))
+        self.assertEqual(runner.calls[1], _models_json_argv(tag))
+        self.assertEqual(final.ok, STATE_OK)
+        self.assertEqual(content, models_text)
+
+    def test_repair_fix_permission_fail_chown_argv_is_exactly_the_pinned_one(self):
+        # Arrange: a permission failure; the script is chown-exit-0 then a
+        # failing retried read, so the only spawn is the chown.
+        tag = "anvil-pi:dev"
+        runner = _scripted_runner([
+            (0, "", ""),
+            (1, "", "still permission denied"),
+        ])
+        first_read = _permission_read_result()
+
+        # Act.
+        _repair_check()(runner, tag=tag, fix=True, first_read=first_read)
+
+        # Assert: the chown argv is exactly the pinned one -- there is no way
+        # to "repair silently" or chown a different path.
+        chown_calls = [
+            call for call in runner.calls if call == _chown_argv(tag)
+        ]
+        self.assertEqual(
+            len(chown_calls), 1,
+            "expected exactly one chown spawn with the pinned argv, got %r"
+            % (runner.calls,),
+        )
+
+
+class TestRepairNoFixSpawnsNothing(unittest.TestCase):
+    """Behaviour 12 (error): without ``--fix`` NO chown is spawned ever, and
+    the verdict is whatever the first read produced -- a fail with the
+    chown one-liner fix line, per behaviour 10."""
+
+    def test_repair_no_fix_permission_fail_spawns_nothing_and_returns_first_read(self):
+        # Arrange: a permission failure, but ``fix=False``. The script is
+        # empty -- if the repair spawns anything, the runner raises.
+        tag = "anvil-pi:dev"
+        runner = _scripted_runner([])
+        first_read = _permission_read_result(tag)
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=False, first_read=first_read,
+        )
+
+        # Assert: nothing was spawned, the verdict is the first read's fail
+        # (a permission fail), and no content is exposed.
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(final.ok, STATE_FAILED)
+        self.assertIsNone(content)
+        self.assertTrue(
+            any(_chown_one_liner(tag) in fix for fix in final.fix_lines),
+            "without --fix the fail must still carry the chown one-liner "
+            "fix line; got %r" % (final.fix_lines,),
+        )
+
+
+class TestRepairMissingFileSpawnsNothing(unittest.TestCase):
+    """Behaviour 12 (error): ``--fix`` + a missing-file failure spawns NO
+    chown, and the final verdict is fail."""
+
+    def test_repair_fix_missing_file_spawns_no_chown_and_fails(self):
+        # Arrange: a missing-file failure, ``fix=True``. The script is empty
+        # -- if the repair chowns, the runner raises.
+        tag = "anvil-pi:dev"
+        runner = _scripted_runner([])
+        first_read = _missing_file_read_result()
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=True, first_read=first_read,
+        )
+
+        # Assert: no chown spawn, final verdict fail, no content.
+        chown_calls = [
+            call for call in runner.calls if call == _chown_argv(tag)
+        ]
+        self.assertEqual(
+            chown_calls, [],
+            "a missing-file failure must not chown the volume; got %r"
+            % (runner.calls,),
+        )
+        self.assertEqual(final.ok, STATE_FAILED)
+        self.assertIsNone(content)
+
+
+class TestRepairGenericFailureSpawnsNothing(unittest.TestCase):
+    """Behaviour 12 (error): ``--fix`` + a generic other non-zero exit
+    (neither permission nor missing-file) spawns NO chown, and the final
+    verdict is fail."""
+
+    def test_repair_fix_generic_failure_spawns_no_chown_and_fails(self):
+        # Arrange: a generic other failure, ``fix=True``. The script is empty
+        # -- if the repair chowns, the runner raises.
+        tag = "anvil-pi:dev"
+        runner = _scripted_runner([])
+        first_read = _generic_failure_read_result()
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=True, first_read=first_read,
+        )
+
+        # Assert: no chown spawn, final verdict fail, no content.
+        chown_calls = [
+            call for call in runner.calls if call == _chown_argv(tag)
+        ]
+        self.assertEqual(
+            chown_calls, [],
+            "a generic other failure must not chown the volume; got %r"
+            % (runner.calls,),
+        )
+        self.assertEqual(final.ok, STATE_FAILED)
+        self.assertIsNone(content)
+
+
+class TestRepairFailingChownFailsWithoutSecondRetry(unittest.TestCase):
+    """Behaviour 12 (error): a failing chown (non-zero exit) fails the layer
+    with the chown's stderr in the detail, and the read is NOT retried a
+    second time -- at most one retry total, and here none."""
+
+    def test_repair_fix_permission_fail_chown_fails_fails_layer_with_chown_stderr_and_no_retry(self):
+        # Arrange: a permission failure, ``fix=True``; the chown itself
+        # fails non-zero with its own stderr. The script is chown-exit-1 only
+        # -- if the repair retries the read, the runner raises (the script
+        # is exhausted) and the test errors.
+        tag = "anvil-pi:dev"
+        chown_stderr = "chown: cannot read directory: Permission denied"
+        runner = _scripted_runner([
+            (1, "", chown_stderr),
+        ])
+        first_read = _permission_read_result()
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=True, first_read=first_read,
+        )
+
+        # Assert: exactly one chown spawn (no read retry), the layer failed
+        # with the chown's stderr in the detail, and no content is exposed.
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(runner.calls[0], _chown_argv(tag))
+        self.assertEqual(final.ok, STATE_FAILED)
+        self.assertIn(chown_stderr, final.detail)
+        self.assertIsNone(content)
 
 
 if __name__ == "__main__":
