@@ -3500,20 +3500,3 @@ class TestUsageDetailParsedFixture(FixtureStreamTestCase):
             "recorded cache counts and cost block, pinned from the file "
             "end to end",
         )
-        self.assertEqual(
-            set(result[0]),
-            COMPACTION_KEYS,
-            "the recorded entry has exactly the five pinned keys",
-        )
-        self.assertEqual(
-            result[0],
-            {
-                "reason": "threshold",
-                "tokensBefore": 150000,
-                "estimatedTokensAfter": 32000,
-                "aborted": False,
-                "completed": True,
-            },
-            "the recorded threshold compaction's paired pressure values, "
-            "pinned from the file end to end",
-        )

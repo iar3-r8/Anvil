@@ -393,3 +393,83 @@ def compactions(events: List[dict]) -> List[Dict[str, Any]]:
                 )
 
     return entries
+
+
+def usage_detail(events: List[dict]) -> Dict[str, Any]:
+    """Report the cache and cost breakdown of a parsed event stream.
+
+    Returns a plain dict with exactly eight keys, JSON-native throughout
+    so the record pipeline can embed it and ``json.dumps`` it directly:
+
+    - ``"cacheRead"`` / ``"cacheWrite"``: ``int`` - the cache token
+      counts of the LAST ``message_update`` that carried a ``usage``
+      field, in stream order, verbatim;
+    - ``"cost_input"`` / ``"cost_output"`` / ``"cost_cacheRead"`` /
+      ``"cost_cacheWrite"`` / ``"cost_total"``: ``float`` - the flattened
+      ``cost`` block of that same last usage (``cost.input``,
+      ``cost.output``, ``cost.cacheRead``, ``cost.cacheWrite``,
+      ``cost.total``); all five zeros when the usage carries no
+      ``cost`` block - the provider withheld the cost, so the cost
+      fields are placeholders while the token fields still report;
+    - ``"usage_reported"``: ``bool`` - ``True`` iff at least one
+      ``message_update`` carried a ``usage`` field. ``False`` plus zeros
+      is the signal that the numbers are placeholders, not measurements.
+
+    The source rule is identical to ``outcome``'s (line 142): the LAST
+    ``message_update`` that carried a ``usage`` field wins - usage is
+    cumulative (``doc/external/pi-dev/json-event-stream.md``, line 110),
+    so values are never summed; a ``message_update`` without a
+    ``usage`` field is a content delta and does not reset the last-seen
+    usage. The ``usage`` field carries ``input``, ``output``,
+    ``cacheRead``, ``cacheWrite``, ``totalTokens`` and ``cost``
+    (``doc/external/pi-dev/json-event-stream.md``, line 113). This
+    sibling reports the cache and cost fields that ``outcome``
+    deliberately omits: ``outcome``'s closed seven-key shape is a
+    landed pin and is untouched here.
+
+    No usage ever seen yields all value fields zero and
+    ``usage_reported`` ``False``; empty input yields the same.
+    ``usage_detail`` never raises.
+    """
+    usage_reported = False
+    cache_read = 0
+    cache_write = 0
+    cost_input = 0.0
+    cost_output = 0.0
+    cost_cache_read = 0.0
+    cost_cache_write = 0.0
+    cost_total = 0.0
+
+    for event in events:
+        if event.get("type") != "message_update":
+            continue
+        usage = event.get("usage")
+        if not isinstance(usage, dict):
+            continue
+        usage_reported = True
+        # Verbatim from the last usage; ``.get`` returns the default
+        # exactly when the field is absent.
+        cache_read = usage.get("cacheRead", 0)
+        cache_write = usage.get("cacheWrite", 0)
+        # An absent cost block yields all five cost zeros while the
+        # token fields still report. A non-dict cost block is treated
+        # the same way as ``outcome`` treats one: the cost fields are
+        # left as the previous usage set them, never reset.
+        cost = usage.get("cost")
+        if isinstance(cost, dict):
+            cost_input = cost.get("input", 0.0)
+            cost_output = cost.get("output", 0.0)
+            cost_cache_read = cost.get("cacheRead", 0.0)
+            cost_cache_write = cost.get("cacheWrite", 0.0)
+            cost_total = cost.get("total", 0.0)
+
+    return {
+        "cacheRead": cache_read,
+        "cacheWrite": cache_write,
+        "cost_input": cost_input,
+        "cost_output": cost_output,
+        "cost_cacheRead": cost_cache_read,
+        "cost_cacheWrite": cost_cache_write,
+        "cost_total": cost_total,
+        "usage_reported": usage_reported,
+    }
