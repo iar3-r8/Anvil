@@ -4,7 +4,8 @@ Renders per-layer verdicts for a human: one line per layer carrying its name
 and detail, a verdict glyph for passed and failed layers, and indented fix
 lines beneath a failing layer only. This behaviour is the report renderer
 behaviour 1 of ``plans/smoke-test.md``; the layer checks themselves arrive in
-later behaviours.
+later behaviours. ``summarize`` (behaviour 2) turns the layer results into the
+process exit code the CLI returns.
 """
 
 import dataclasses
@@ -67,3 +68,29 @@ def format_report(results: Sequence["LayerResult"]) -> str:
     for result in results:
         lines.extend(_layer_lines(result))
     return "\n".join(lines) + "\n"
+
+
+def summarize(results: Sequence["LayerResult"]) -> int:
+    """Map the layer results onto the process exit code.
+
+    The layer number is the 1-based position in the list: positions 1–4 are
+    the docker class (exit 4), positions 5–6 the internal class (exit 1). A
+    state that is neither :data:`STATE_OK` nor :data:`STATE_SKIPPED` counts
+    as failed in its positional class; a skipped layer never contributes to a
+    non-zero exit. When both classes have failures the docker class (4)
+    wins; an empty list yields 0.
+    """
+    docker_failed = False
+    internal_failed = False
+    for position, result in enumerate(results, start=1):
+        if result.ok in (STATE_OK, STATE_SKIPPED):
+            continue
+        if position <= 4:
+            docker_failed = True
+        else:
+            internal_failed = True
+    if docker_failed:
+        return 4
+    if internal_failed:
+        return 1
+    return 0
