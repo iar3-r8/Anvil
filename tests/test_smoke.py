@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1–16 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–17 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -137,6 +137,7 @@ list (or a ``models`` that is not a list) fails saying so -- never a
 """
 
 import json
+import os
 import re
 import sys
 import tempfile
@@ -3689,6 +3690,281 @@ class TestBadImageTagCheckForwardsTagAndRepo(unittest.TestCase):
             "the argv must be the real run_role composition "
             "(container argv + role argv); got %r" % (argv,),
         )
+
+
+# Behaviour 17: missing prompt raises RoleError with no spawn — the
+# missing-prompt sub-check of the layer-6 report name ``failure-paths``.
+# The check is a function the operator command (behaviour 18) calls for
+# the failure-paths layer, over a repo with NO ``.pi/roles/coder.md``:
+# it exists to prove the driver's role-definition failure path fires
+# BEFORE any spawn. The public seam these tests pin:
+#
+#     smoke.check_missing_prompt(runner, repo_path, tag, task,
+#                                 resolve_role=...)
+#         -> LayerResult
+#
+# - The check must call the REAL ``pidriver.run_role`` with
+#   ``check_prompt_file=True`` and the resolved coder definition (via the
+#   same injectable ``resolve_role`` seam as behaviours 15/16, whose
+#   ``prompt_path`` is id-independent, so the default seam's placeholder
+#   model ids mean no real model is ever needed) — the driver is NEVER
+#   wrapped or mocked, so the driver's own missing-prompt rule (a
+#   ``pirole.RoleError`` naming the absolute prompt path) genuinely fires.
+# - ``runner`` is the same injected pidriver runner seam; because the
+#   driver raises before the runner is invoked, the fake's call count is
+#   the spawn assertion: it must be ZERO.
+# - When the ``RoleError`` fires, the layer PASSES (the failure path is
+#   proved), its detail naming the ``RoleError`` and carrying the
+#   exception's message — which names the absolute prompt path. When
+#   ``run_role`` returns instead (the prompt file exists, so the path
+#   could not fire), the layer must NOT pass via RoleError — the
+#   ``DriverError`` of behaviour 16 and the ``RoleError`` here are
+#   deliberately distinct.
+# - The check is read-only with respect to the repo: it creates the
+#   scenario's absence, never the prompt file itself (the
+#   diagnose-and-print rule, behaviour 13).
+MISSING_PROMPT_CHECK_NAME = "check_missing_prompt"
+MISSING_PROMPT_LAYER_NAME = "missing-prompt"
+# The marker words the plan's Then/Error pin in the pass detail: the
+# RoleError that fired, and the absence of the DriverError that must NOT
+# be claimed (the two failure paths are deliberately distinct).
+ROLE_ERROR_MARKER = "RoleError"
+DRIVER_ERROR_MARKER = "DriverError"
+
+
+def _missing_prompt_check():
+    """Return the behaviour-17 check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, MISSING_PROMPT_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "%s(runner, repo_path, tag, task, resolve_role=...) yet "
+            "(behaviour 17 of plans/smoke-test.md)"
+            % MISSING_PROMPT_CHECK_NAME
+        )
+    return check
+
+
+def _coder_prompt_path():
+    """The coder role's prompt path from the real role table — the same
+    path the driver's missing-prompt check resolves (id-independent)."""
+    return _default_coder_definition()["prompt_path"]
+
+
+class TestMissingPromptCheckPassesOnRoleError(unittest.TestCase):
+    """Behaviour 17: a repo with no ``.pi/roles/coder.md`` makes the REAL
+    ``pidriver.run_role`` (with ``check_prompt_file=True``) raise
+    ``RoleError``; the check catches it and the layer PASSES, having
+    proved the failure path fired — without spawning anything."""
+
+    def test_missing_prompt_catches_role_error_and_passes(self):
+        # Arrange: a fresh repo with NO .pi/roles/coder.md. The scripted
+        # runner outcome is irrelevant — the driver raises before the
+        # runner is ever invoked.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act: a RoleError escaping the check would error the test
+            # with a traceback; instead the layer must pass.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the failure path fired — the layer passed, its detail
+        # names the absolute prompt path (the repo's absolute path joined
+        # with the role table's prompt path), and no traceback escaped.
+        self.assertEqual(result.name, MISSING_PROMPT_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+        expected_path = str(Path(repo) / _coder_prompt_path())
+        self.assertIn(
+            expected_path, result.detail,
+            "the pass detail must name the absolute prompt path %r; "
+            "got %r" % (expected_path, result.detail),
+        )
+        self.assertNotIn("Traceback", result.detail)
+
+    def test_missing_prompt_pass_does_not_invoke_the_runner(self):
+        # Arrange: the scenario of the behaviour — the repo has no prompt
+        # file; the no-spawn assertion is on the fake's call count.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the layer proved the path, and the runner was driven
+        # ZERO times — the driver raises before the runner is invoked.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertEqual(
+            runner.invocations, [],
+            "the runner must not have been called when the prompt file "
+            "is missing; got %d invocation(s)" % len(runner.invocations),
+        )
+
+    def test_missing_prompt_pass_detail_names_role_error_not_driver_error(self):
+        # Arrange: the missing-prompt scenario; the detail must claim the
+        # RoleError that fired and must not claim the DriverError that
+        # must not be confused with it — the two are deliberately distinct.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the RoleError marker is present, the DriverError marker
+        # is not.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(ROLE_ERROR_MARKER, result.detail)
+        self.assertNotIn(
+            DRIVER_ERROR_MARKER, result.detail,
+            "the missing-prompt detail must not claim a DriverError; "
+            "the two failure paths are deliberately distinct; got %r"
+            % result.detail,
+        )
+
+
+class TestMissingPromptCheckReadsRepoOnly(unittest.TestCase):
+    """Behaviour 17: the check is read-only with respect to the repo — it
+    diagnoses and prints (the behaviour-13 rule), it never creates the
+    prompt file the scenario is missing."""
+
+    def test_missing_prompt_check_creates_no_files_in_the_repo(self):
+        # Arrange: a fresh repo; its (empty) contents before the call.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            before = sorted(os.listdir(repo))
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+            after = sorted(os.listdir(repo))
+
+        # Assert: the check proved the path without writing anything —
+        # the repo's contents are byte-for-byte the same set.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertEqual(
+            after, before,
+            "the check must not create, modify or delete anything in "
+            "the repo; contents changed from %r to %r" % (before, after),
+        )
+
+
+class TestMissingPromptCheckForwardsRepoPath(unittest.TestCase):
+    """Behaviour 17: the raised RoleError names the absolute path for the
+    repo the check was given — the driver composes ``str(Path(repo_path) /
+    prompt_path)``, and the pass detail carries that exact string, so a
+    different repo yields a different path in the detail."""
+
+    def test_missing_prompt_detail_names_the_given_repo_joined_with_the_prompt_path(self):
+        # Arrange: two distinct repos, both without the prompt file.
+        with tempfile.TemporaryDirectory() as repo_a, \
+                tempfile.TemporaryDirectory() as repo_b:
+            runner_a = _fake_runner(_runner_result(0, "", ""))
+            result_a = _missing_prompt_check()(
+                runner_a, repo_a, BAD_TAG, TRIVIAL_TASK,
+            )
+            runner_b = _fake_runner(_runner_result(0, "", ""))
+            result_b = _missing_prompt_check()(
+                runner_b, repo_b, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: each detail names the absolute path for exactly the
+        # repo that check was given — repo_a's path in detail_a, repo_b's
+        # in detail_b, and neither the other's.
+        path_a = str(Path(repo_a) / _coder_prompt_path())
+        path_b = str(Path(repo_b) / _coder_prompt_path())
+        self.assertEqual(result_a.ok, STATE_OK)
+        self.assertEqual(result_b.ok, STATE_OK)
+        self.assertIn(path_a, result_a.detail)
+        self.assertNotIn(path_b, result_a.detail)
+        self.assertIn(path_b, result_b.detail)
+        self.assertNotIn(path_a, result_b.detail)
+
+
+class TestMissingPromptCheckFailsWhenPromptPresent(unittest.TestCase):
+    """Behaviour 17 (error): a repo WITH a non-empty prompt file makes
+    ``run_role`` proceed to the runner, so the RoleError path could not
+    fire — the check must NOT pass via RoleError, and its detail must not
+    claim one. The distinctness the plan pins: a ``DriverError`` instead
+    fails the layer, since the two are deliberately distinct."""
+
+    def test_prompt_present_does_not_pass_via_role_error(self):
+        # Arrange: the prompt file exists and is non-empty, so the
+        # driver's check passes and the runner is genuinely driven with a
+        # scripted, non-DriverError outcome (exit 0).
+        runner = _fake_runner(
+            _runner_result(0, '{"type": "session"}\n', ""),
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            prompt = Path(repo) / _coder_prompt_path()
+            prompt.parent.mkdir(parents=True)
+            prompt.write_text("You are the coder.\n", encoding="utf-8")
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the driver was driven to the runner (the prompt file
+        # was found), and the verdict never passes via a RoleError claim
+        # — the detail carries no RoleError marker.
+        self.assertEqual(len(runner.invocations), 1)
+        self.assertNotIn(
+            ROLE_ERROR_MARKER, result.detail,
+            "with the prompt file present the RoleError path did not "
+            "fire; the detail must not claim one; got %r" % result.detail,
+        )
+
+
+class TestMissingPromptCheckLayerName(unittest.TestCase):
+    """Behaviour 17: the layer is the missing-prompt sub-check of the
+    plan's layer-6 report name ``failure-paths`` — named the way
+    behaviour 16's ``bad-image-tag`` sub-check is named for it."""
+
+    def test_missing_prompt_layer_is_named_missing_prompt(self):
+        # Arrange: the missing-prompt scenario; the name is asserted
+        # regardless of the verdict.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the sub-check carries the plan's missing-prompt name,
+        # and the layer-6 report name it belongs to is the one the report
+        # set spells.
+        self.assertEqual(result.name, MISSING_PROMPT_LAYER_NAME)
+        self.assertIn(
+            FAILURE_PATHS_LAYER_NAME, LAYER_NAMES,
+            "the layer-6 report name %r must stay in the report set "
+            "(LAYER_NAMES); the missing-prompt sub-check belongs to it"
+            % FAILURE_PATHS_LAYER_NAME,
+        )
+
+
+class TestMissingPromptCheckNeedsNoModel(unittest.TestCase):
+    """Behaviour 17: no model is needed — the check works with the
+    default ``resolve_role`` seam's placeholder ids (no override), so this
+    runs on a GPU-less host: the driver raises before the placeholder
+    ``--model`` token could ever reach a real model."""
+
+    def test_missing_prompt_with_the_default_resolve_seam_proves_the_path(self):
+        # Arrange: the missing-prompt scenario; the check is called with
+        # NO ``resolve_role`` override, so the default seam's placeholder
+        # ids are what the check uses.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the path fired with the placeholder-id seam, and the
+        # runner was still never called.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertEqual(len(runner.invocations), 0)
 
 
 if __name__ == "__main__":
