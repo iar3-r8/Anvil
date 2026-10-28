@@ -111,6 +111,21 @@ layer PASSES, naming the ``DriverError``, the bad tag and the daemon
 stderr in its detail; when ``run_role`` returns instead the failure path
 did not fire and the layer FAILS saying so -- the opposite verdict of
 behaviour 15, whose ``DriverError`` is a failure.
+``check_missing_prompt`` (behaviour 17) is the missing-prompt sub-check of
+the layer-6 report name ``failure-paths``: it calls the same real
+:func:`anvilkit.pi.pidriver.run_role` with ``check_prompt_file=True`` and
+the resolved coder definition (via the same injectable ``resolve_role``
+seam as :func:`check_coder_run`, whose placeholder model ids mean no real
+model is ever needed), a fresh :func:`new_session_id` and the injected
+runner -- never wrapping or mocking the driver, so the driver's own
+missing-prompt rule (a ``pirole.RoleError`` naming the absolute prompt
+path) genuinely fires BEFORE the runner is invoked. When the
+``RoleError`` fires the layer PASSES, its detail naming the
+``RoleError`` and carrying the exception's message verbatim -- never
+claiming the ``DriverError`` of behaviour 16, which is deliberately
+distinct; when ``run_role`` returns instead the role-error path did not
+fire and the layer FAILS saying so. The check is read-only with respect
+to the repo: it diagnoses and prints, it never creates the prompt file.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -1050,4 +1065,62 @@ def check_bad_image_tag(
         ok=STATE_FAILED,
         detail="the failure path did not fire: run returned with exit code %s"
         % result["exit_code"],
+    )
+
+
+def check_missing_prompt(
+    runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+    repo_path: str,
+    tag: str,
+    task: str,
+    resolve_role: Callable[[str], Dict[str, str]] = _default_coder_run_resolve_role,
+) -> "LayerResult":
+    """The failure-paths layer's missing-prompt sub-check (behaviour 17 of
+    ``plans/smoke-test.md``).
+
+    ``runner`` is the same injected seam ``pidriver.run_role`` takes (one
+    invocation dict in, the six-key result dict out), forwarded to the real
+    driver unchanged -- never wrapped or mocked, so the driver's own
+    missing-prompt rule genuinely fires. The check calls the real
+    :func:`anvilkit.pi.pidriver.run_role` with ``check_prompt_file=True``
+    and the resolved coder definition (via the same injectable
+    ``resolve_role`` seam as :func:`check_coder_run`, whose placeholder
+    model ids mean no real model is ever needed -- the driver raises
+    before the placeholder ``--model`` token could reach one), a fresh
+    :func:`new_session_id`, ``repo_path`` and ``tag`` forwarded unchanged,
+    and ``task``. The layer is named ``"missing-prompt"``.
+
+    When the driver's ``RoleError`` fires -- the prompt file is absent, so
+    it raises BEFORE the runner is ever invoked -- the failure path is
+    proved and the layer PASSES, its detail naming the ``RoleError`` and
+    carrying the exception's message verbatim (which names the absolute
+    prompt path) -- never claiming the ``DriverError`` of
+    :func:`check_bad_image_tag`, which is deliberately distinct. When
+    ``run_role`` returns instead -- the prompt file exists, so the path
+    could not fire -- the role-error path did not fire and the layer
+    FAILS saying so. The check is read-only with respect to the repo: it
+    diagnoses and prints, it never creates the prompt file.
+    """
+    definition = resolve_role("coder")
+    session_id = new_session_id()
+    try:
+        _result = pidriver.run_role(
+            definition,
+            repo_path,
+            tag,
+            session_id,
+            task,
+            runner,
+            check_prompt_file=True,
+        )
+    except pirole.RoleError as exc:
+        return LayerResult(
+            name="missing-prompt",
+            ok=STATE_OK,
+            detail="RoleError fired as expected: %s" % exc,
+        )
+    return LayerResult(
+        name="missing-prompt",
+        ok=STATE_FAILED,
+        detail="the role-error path did not fire: the prompt file exists",
     )
