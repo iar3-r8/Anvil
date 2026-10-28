@@ -21,6 +21,16 @@ layer 2's gateway container check, over the same runner: it lists running
 containers filtered by the adopted :data:`GATEWAY_CONTAINER` name and passes
 only when a line of the output equals that name exactly (after stripping) --
 never a substring -- with the compose-up command as the fail fix line.
+``check_gateway_model`` (behaviour 8) is layer 2's coder-model check: it
+reads the coder id from llama-swap's read-only ``config.yaml`` through the
+injected ``read_models`` seam and probes the resolved host port through the
+injected ``check_gateway`` seam, which default to the real
+:func:`anvilkit.config.read_models` and :func:`anvilkit.health.check_gateway`.
+It passes only when the coder id is registered on the gateway and hot;
+offline, id-absent and id-present-but-cold each yield their own distinct
+detail, a ``ConfigError`` from ``read_models`` fails the layer naming the
+file, and every detail states that the in-network port is 8080 regardless of
+the host ``LLM_PORT``.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -32,6 +42,7 @@ spelled once as :data:`GATEWAY_CONTAINER` (behaviour 7).
 import dataclasses
 from typing import Callable, Sequence, Tuple
 
+from anvilkit import config, health
 from anvilkit.pi import pisandbox
 
 # The stable header rendered by ``format_report``, even when there is nothing
@@ -312,4 +323,78 @@ def check_gateway_container(
        detail="container %s not running" % GATEWAY_CONTAINER,
        fix_lines=(NETWORK_FIX_COMMAND
                   + "  # compose starts the gateway container",),
+   )
+
+
+# The in-network port the gateway always serves on, which layer 2's
+# gateway-model detail states on pass and on every fail, regardless of the
+# host LLM_PORT (behaviour 8 of ``plans/smoke-test.md``).
+_IN_NETWORK_PORT = "8080"
+_IN_NETWORK_FACT = (
+   "the in-network port is %s regardless of the host LLM_PORT"
+   % _IN_NETWORK_PORT
+)
+
+
+def check_gateway_model(
+   port: int,
+   config_path: config.PathLike,
+   check_gateway: Callable[[int], health.GatewayStatus] = health.check_gateway,
+   read_models: Callable[[config.PathLike], config.ModelTopology] = config.read_models,
+) -> "LayerResult":
+   """Layer 2: is the coder model registered on the gateway and hot?
+
+   ``read_models`` (default :func:`anvilkit.config.read_models`) is called
+   once with ``config_path``; its ``coder_id`` (``matrix.vars.coder``) is the
+   id this layer matches -- never a hard-coded one. ``check_gateway``
+   (default :func:`anvilkit.health.check_gateway`) is called once with the
+   resolved port, positionally. The layer passes when the gateway is online,
+   the coder id is among ``status.models`` and that entry is hot. Each
+   failure mode -- offline, id absent, id present but cold -- carries its own
+   distinct detail, and a ``ConfigError`` from ``read_models`` fails the
+   layer naming ``config_path``; no exception ever escapes. Every detail,
+   pass or fail, states that the in-network port is :data:`_IN_NETWORK_PORT`
+   regardless of the host ``LLM_PORT``.
+   """
+   try:
+       topology = read_models(config_path)
+   except config.ConfigError as exc:
+       return LayerResult(
+           name="gateway-model",
+           ok=STATE_FAILED,
+           detail="cannot read the coder id from %s: %s; %s"
+           % (config_path, exc, _IN_NETWORK_FACT),
+       )
+   status = check_gateway(port)
+   if not status.online:
+       return LayerResult(
+           name="gateway-model",
+           ok=STATE_FAILED,
+           detail="gateway is offline (%s); %s"
+           % (status.error or "no reason given", _IN_NETWORK_FACT),
+       )
+   entry = None
+   for model in status.models:
+       if model.id == topology.coder_id:
+           entry = model
+           break
+   if entry is None:
+       return LayerResult(
+           name="gateway-model",
+           ok=STATE_FAILED,
+           detail="coder model %s is not registered on the gateway; %s"
+           % (topology.coder_id, _IN_NETWORK_FACT),
+       )
+   if not entry.hot:
+       return LayerResult(
+           name="gateway-model",
+           ok=STATE_FAILED,
+           detail="coder model %s is registered but cold; %s"
+           % (topology.coder_id, _IN_NETWORK_FACT),
+       )
+   return LayerResult(
+       name="gateway-model",
+       ok=STATE_OK,
+       detail="coder model %s is registered and hot; %s"
+       % (topology.coder_id, _IN_NETWORK_FACT),
    )
