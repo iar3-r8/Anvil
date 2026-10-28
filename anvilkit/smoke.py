@@ -30,7 +30,11 @@ It passes only when the coder id is registered on the gateway and hot;
 offline, id-absent and id-present-but-cold each yield their own distinct
 detail, a ``ConfigError`` from ``read_models`` fails the layer naming the
 file, and every detail states that the in-network port is 8080 regardless of
-the host ``LLM_PORT``.
+the host ``LLM_PORT``. ``check_agent_volume`` (behaviour 9) is layer 3's
+agent-volume-presence check, over the same runner: it inspects the adopted
+:data:`NAMED_VOLUME` name and passes only when the inspect exits 0; a
+non-zero exit fails with a detail saying the volume is created on first run
+and stays empty until seeded.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -397,4 +401,44 @@ def check_gateway_model(
        ok=STATE_OK,
        detail="coder model %s is registered and hot; %s"
        % (topology.coder_id, _IN_NETWORK_FACT),
+   )
+
+
+def check_agent_volume(
+   docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]]
+) -> "LayerResult":
+   """Layer 3: does the agent volume exist?
+
+   ``docker_runner`` is the same injected seam as
+   :func:`check_docker_daemon`, with the contract
+   ``docker_runner(argv) -> (exit_code, stdout, stderr)``. It is called
+   exactly once with ``["docker", "volume", "inspect", <name>]`` where
+   ``<name>`` is the adopted :data:`NAMED_VOLUME` constant, never a
+   re-spelled literal, so a rename in ``anvilkit.pi.pisandbox`` keeps the
+   check and the run in step. Exit 0 passes, a non-zero exit fails with a
+   detail saying the volume is created on first run and stays empty until
+   seeded, and a ``FileNotFoundError`` from the runner fails saying docker
+   is not on PATH, mirroring the daemon check.
+   """
+   try:
+       exit_code, _stdout, stderr = docker_runner(
+           ["docker", "volume", "inspect", NAMED_VOLUME]
+       )
+   except FileNotFoundError:
+       return LayerResult(
+           name="agent-volume",
+           ok=STATE_FAILED,
+           detail="docker not on PATH",
+       )
+   if exit_code == 0:
+       return LayerResult(
+           name="agent-volume",
+           ok=STATE_OK,
+           detail="volume %s present" % NAMED_VOLUME,
+       )
+   return LayerResult(
+       name="agent-volume",
+       ok=STATE_FAILED,
+       detail="volume %s missing -- created on first run, stays empty "
+              "until seeded" % NAMED_VOLUME,
    )
