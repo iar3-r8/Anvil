@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1–9 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–10 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -101,6 +101,23 @@ whose detail says the volume is created on first run and stays empty
 until seeded (one of the issue's known pitfalls); a
 ``FileNotFoundError`` from the runner is a not-on-PATH fail, never a
 traceback.
+
+Behaviour 10: ``check_models_json(docker_runner, tag=...)`` is layer
+3's models.json-readability check, over the same injected seam, with
+the image tag defaulting to the module's ``DEFAULT_IMAGE_TAG``. It runs
+``["docker", "run", "--rm", "-v", <NAMED_VOLUME>:<AGENT_HOME>, "--user",
+<IMAGE_UID>, <tag>, "cat", <AGENT_HOME> + "/models.json"]`` -- every
+name from the adopted constants -- and returns a
+``(LayerResult, Optional[str])`` tuple: the ``LayerResult`` is named
+``"models-json"``, and the second element is the exact stdout the
+in-container cat printed on a pass -- the text behaviour 11 parses for
+the coder id -- or ``None`` on every fail. Exit 0 with non-empty stdout
+is the pass state; exit 0 with empty or whitespace-only stdout fails as
+unseeded, a distinct detail; a non-zero exit whose stderr carries a
+permission marker fails with the chown one-liner as its fix line, and
+one whose stderr carries a no-such-file marker fails with the seed
+instruction and no chown line; a ``FileNotFoundError`` from the runner
+is a not-on-PATH fail, never a traceback.
 """
 
 import sys
@@ -1674,6 +1691,279 @@ class TestAgentVolumeCheckNotOnPath(unittest.TestCase):
         self.assertEqual(result.name, VOLUME_LAYER_NAME)
         self.assertEqual(result.ok, STATE_FAILED)
         self.assertIn("path", result.detail.lower())
+
+
+# Behaviour 10: layer 3's models.json-readability check. It takes the
+# same injected docker seam as behaviours 4-7 plus an image tag whose
+# default is the module's ``DEFAULT_IMAGE_TAG``. The public seam these
+# tests pin:
+#
+#     smoke.check_models_json(docker_runner, tag=...)
+#         -> (LayerResult, Optional[str])
+#
+# The ``LayerResult`` is named ``"models-json"``; the ``Optional[str]``
+# carries the models.json text the in-container cat printed, exposed so
+# behaviour 11 can parse it for the coder id -- the exact stdout on a
+# pass, ``None`` on every fail. The check runs exactly one list-form
+# argv whose names all come from the adopted constants. The two
+# non-zero-exit failure modes are told apart by the runner's stderr
+# content: a permission marker (``PERMISSION_MARKER``) fails with the
+# chown one-liner as its fix line; a no-such-file marker
+# (``NO_SUCH_FILE_MARKER``) fails with the seed instruction and no
+# chown line. A readable but empty file (exit 0, empty or
+# whitespace-only stdout) fails as ``UNSEEDED_MARKER``, a third,
+# distinct detail.
+MODELS_JSON_CHECK_NAME = "check_models_json"
+MODELS_JSON_LAYER_NAME = "models-json"
+# The marker the permission-denied stderr must carry, matched
+# case-insensitively; the fixture stderr is built to contain it.
+PERMISSION_MARKER = "permission"
+# The marker the no-such-file stderr must carry, matched
+# case-insensitively; the fixture stderr is built to contain it.
+NO_SUCH_FILE_MARKER = "no such file"
+# The marker word the unseeded (empty-file) fail detail must carry,
+# pinned so it cannot collapse into the permission or no-file details.
+UNSEEDED_MARKER = "unseeded"
+# The marker word the no-such-file fail detail must carry, pinned so
+# the missing file is told apart from the misowned one.
+SEED_MARKER = "seed"
+
+
+def _models_json_check():
+    """Return the behaviour-10 models.json check, or fail naming what
+    is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, MODELS_JSON_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner, tag=...) yet "
+            "(behaviour 10 of plans/smoke-test.md)" % MODELS_JSON_CHECK_NAME
+        )
+    return check
+
+
+def _models_json_argv(tag):
+    """The list-form argv layer 3 uses to cat the agent's models.json.
+
+    Every name is read from the adopted smoke constants -- the named
+    volume, the agent home and the image uid -- so this test proves the
+    check builds its argv from the adopted names, not re-spelled
+    literals.
+    """
+    smoke_mod = _require_smoke()
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        smoke_mod.NAMED_VOLUME + ":" + smoke_mod.AGENT_HOME,
+        "--user",
+        smoke_mod.IMAGE_UID,
+        tag,
+        "cat",
+        smoke_mod.AGENT_HOME + "/models.json",
+    ]
+
+
+def _chown_one_liner(tag):
+    """The chown one-liner the permission fail must offer as a fix.
+
+    Composed from the adopted smoke constants; only the root user id and
+    the ``chown`` verb are literals, per the plan.
+    """
+    smoke_mod = _require_smoke()
+    return " ".join([
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        smoke_mod.NAMED_VOLUME + ":" + smoke_mod.AGENT_HOME,
+        "--user",
+        "0",
+        tag,
+        "chown",
+        "-R",
+        smoke_mod.IMAGE_UID + ":" + smoke_mod.IMAGE_UID,
+        smoke_mod.AGENT_HOME,
+    ])
+
+
+class TestModelsJsonCheckPass(unittest.TestCase):
+    """Behaviour 10: exit 0 with non-empty stdout passes, and the read
+    text is exposed through the seam for behaviour 11 to parse."""
+
+    def test_check_models_json_exit_zero_non_empty_stdout_passes_and_exposes_content(self):
+        # Arrange: the in-container cat answers exit 0 with a seeded file;
+        # the trailing newline proves the exposed text is the exact
+        # stdout, not a stripped copy.
+        models_text = '{"providers": {"a": {"models": [{"id": "x"}]}}}\n'
+        runner = _recording_runner(0, models_text, "")
+
+        # Act: the pinned seam returns (LayerResult, Optional[str]).
+        result, content = _models_json_check()(runner)
+
+        # Assert: the layer is the models-json layer in the pass state,
+        # and the seam exposes the exact stdout for behaviour 11.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertEqual(content, models_text)
+
+
+class TestModelsJsonCheckArgv(unittest.TestCase):
+    """Behaviour 10: the check invokes the runner with the list-form
+    ``docker run --rm -v <volume>:<agent home> --user <uid> <tag> cat
+    <agent home>/models.json`` argv, exactly once, every name from the
+    adopted constants."""
+
+    def test_check_models_json_default_tag_invokes_cat_argv_in_list_form(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "{}\n", "")
+
+        # Act: no tag passed -- the module's DEFAULT_IMAGE_TAG must apply.
+        _models_json_check()(runner)
+
+        # Assert: the check ran exactly the plan's argv, as a list, once,
+        # with the names read from the adopted constants and the tag read
+        # from the module's own default.
+        smoke_mod = _require_smoke()
+        self.assertEqual(
+            runner.calls, [_models_json_argv(smoke_mod.DEFAULT_IMAGE_TAG)]
+        )
+
+    def test_check_models_json_explicit_tag_invokes_cat_argv_with_that_tag(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        tag = "anvil-pi:dev"
+        runner = _recording_runner(0, "{}\n", "")
+
+        # Act.
+        _models_json_check()(runner, tag)
+
+        # Assert: the explicit tag is the image the cat runs in.
+        self.assertEqual(runner.calls, [_models_json_argv(tag)])
+
+
+class TestModelsJsonCheckUnseeded(unittest.TestCase):
+    """Behaviour 10 (error): exit 0 with an empty or whitespace-only
+    stdout fails as unseeded -- a distinct detail, distinct from the
+    permission and no-file fails -- and exposes no content."""
+
+    def test_check_models_json_exit_zero_empty_stdout_fails_as_unseeded(self):
+        # Arrange: cat reads a file that exists but is empty.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        result, content = _models_json_check()(runner)
+
+        # Assert: the layer failed as unseeded, exposing no content.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(UNSEEDED_MARKER, result.detail.lower())
+        self.assertIsNone(content)
+
+    def test_check_models_json_exit_zero_whitespace_only_stdout_fails_as_unseeded(self):
+        # Arrange: cat reads a file holding only whitespace.
+        runner = _recording_runner(0, "   \n\t\n", "")
+
+        # Act.
+        result, content = _models_json_check()(runner)
+
+        # Assert: whitespace-only is still unseeded, not a pass.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(UNSEEDED_MARKER, result.detail.lower())
+        self.assertIsNone(content)
+
+
+class TestModelsJsonCheckPermissionDenied(unittest.TestCase):
+    """Behaviour 10 (error): a permission marker in the non-zero exit's
+    stderr fails with the chown one-liner as the fix line, composed
+    from the adopted constants."""
+
+    def test_check_models_json_permission_denied_fails_with_chown_one_liner(self):
+        # Arrange: cat cannot read the file; the non-zero stderr carries
+        # the permission marker.
+        smoke_mod = _require_smoke()
+        tag = "anvil-pi:dev"
+        stderr = "cat: %s/models.json: Permission denied" % smoke_mod.AGENT_HOME
+        runner = _recording_runner(1, "", stderr)
+
+        # Act.
+        result, content = _models_json_check()(runner, tag)
+
+        # Assert: the layer failed -- not unseeded, the file exists but is
+        # unreadable -- and one fix line carries the chown one-liner built
+        # from the adopted constants for this tag.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(
+            PERMISSION_MARKER, stderr.lower(),
+            "fixture stderr %r must carry the permission marker" % stderr,
+        )
+        self.assertNotIn(UNSEEDED_MARKER, result.detail.lower())
+        self.assertTrue(
+            any(_chown_one_liner(tag) in fix for fix in result.fix_lines),
+            "fix lines %r must carry the chown one-liner for tag %r"
+            % (result.fix_lines, tag),
+        )
+        self.assertIsNone(content)
+
+
+class TestModelsJsonCheckNoSuchFile(unittest.TestCase):
+    """Behaviour 10 (error): a no-such-file marker in the non-zero
+    stderr fails with the seed instruction and NO chown fix line --
+    the file is missing, not misowned."""
+
+    def test_check_models_json_no_such_file_fails_with_seed_instruction_and_no_chown(self):
+        # Arrange: cat cannot find the file; the non-zero stderr carries
+        # the no-such-file marker.
+        smoke_mod = _require_smoke()
+        stderr = (
+            "cat: %s/models.json: No such file or directory"
+            % smoke_mod.AGENT_HOME
+        )
+        runner = _recording_runner(1, "", stderr)
+
+        # Act.
+        result, content = _models_json_check()(runner)
+
+        # Assert: the layer failed with the seed instruction in the
+        # detail (not unseeded -- unseeded means present but empty), and
+        # no fix line offers a chown.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(
+            NO_SUCH_FILE_MARKER, stderr.lower(),
+            "fixture stderr %r must carry the no-such-file marker" % stderr,
+        )
+        self.assertIn(SEED_MARKER, result.detail.lower())
+        self.assertNotIn(UNSEEDED_MARKER, result.detail.lower())
+        self.assertFalse(
+            any("chown" in fix for fix in result.fix_lines),
+            "fix lines %r must not carry a chown line for a missing file"
+            % (result.fix_lines,),
+        )
+        self.assertIsNone(content)
+
+
+class TestModelsJsonCheckNotOnPath(unittest.TestCase):
+    """Behaviour 10 (error): ``FileNotFoundError`` from the runner is a
+    not-on-PATH fail, never a traceback."""
+
+    def test_check_models_json_runner_not_found_fails_saying_not_on_path(self):
+        # Arrange: the runner raises ``FileNotFoundError`` as when docker
+        # is missing from PATH.
+        def runner(argv):
+            raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+        # Act: the exception must not escape the check -- a traceback here
+        # fails the test.
+        result, content = _models_json_check()(runner)
+
+        # Assert: the layer failed, its detail says docker is not on
+        # PATH, and no content is exposed.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("path", result.detail.lower())
+        self.assertIsNone(content)
 
 
 if __name__ == "__main__":
