@@ -138,6 +138,7 @@ list (or a ``models`` that is not a list) fails saying so -- never a
 
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -145,6 +146,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
    sys.path.insert(0, str(REPO_ROOT))
 
+from anvilkit.pi import pirole  # noqa: E402
 from anvilkit.pi import pisandbox  # noqa: E402
 
 # Behaviour 3 (PIN): the public names ``smoke.py`` must expose for the four
@@ -2551,6 +2553,324 @@ class TestRepairFailingChownFailsWithoutSecondRetry(unittest.TestCase):
         self.assertEqual(final.ok, STATE_FAILED)
         self.assertIn(chown_stderr, final.detail)
         self.assertIsNone(content)
+
+
+# Behaviour 13: layer 4's role-prompt-presence check. Unlike layers 1-3 it
+# takes no docker runner: it is a plain filesystem check on the target
+# repo. The prompt path is never spelled in ``smoke.py``: the check derives
+# it from the role definition an injected ``resolve_role`` seam returns --
+# ``resolve_role("coder")["prompt_path"]`` -- and joins it onto the repo
+# path. The real ``pirole.resolve(name, coder_model_id, frontier_model_id)``
+# needs the two model ids, which only the command (behaviour 18) has after
+# reading the config, so the seam is a one-argument
+# ``resolve_role(name) -> definition dict`` that the caller wraps around
+# ``pirole.resolve``; the tests inject a fake carrying a known
+# ``prompt_path``. The public seam these tests pin:
+#
+#     smoke.check_role_prompt(repo_path, resolve_role=...) -> LayerResult
+#
+# The layer is named ``"role-prompt"``. An existing non-empty file at
+# ``<repo>/<prompt_path>`` passes, the detail carrying the absolute path; a
+# missing path fails, the detail saying it is missing, with a fix line
+# carrying the minimal content to write (a minimal valid role markdown,
+# pinned here by its markdown heading); an empty or whitespace-only file
+# fails with a detail distinct from the missing one (pinned by the word
+# "empty"); a directory at the path fails saying it is not a file (pinned
+# by "not a file"). The tests build the repo in a ``tempfile`` directory
+# and derive every prompt path from the resolver's ``prompt_path``; a PIN
+# test asserts the literal spelling never appears in ``smoke.py``'s source.
+ROLE_PROMPT_CHECK_NAME = "check_role_prompt"
+ROLE_PROMPT_LAYER_NAME = "role-prompt"
+# Stable markers the fail details and fix lines must carry.
+MISSING_MARKER = "missing"
+EMPTY_MARKER = "empty"
+NOT_A_FILE_MARKER = "not a file"
+# A minimal valid role markdown carries at least a heading; the fix line
+# with the content to write must carry one.
+MINIMAL_CONTENT_HEADING = "##"
+
+
+def _role_prompt_check():
+    """Return the behaviour-13 check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, ROLE_PROMPT_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(repo_path, resolve_role=...) "
+            "yet (behaviour 13 of plans/smoke-test.md)"
+            % ROLE_PROMPT_CHECK_NAME
+        )
+    return check
+
+
+def _fake_resolve_role(prompt_path):
+    """A ``resolve_role`` fake mapping any role name to a definition dict in
+    the shape ``pirole.resolve`` returns, carrying ``prompt_path``.
+
+    Records the names it is asked for so a test can assert the check asked
+    for the coder role.
+    """
+    calls = []
+
+    def resolve_role(name):
+        calls.append(name)
+        return {
+            "model_id": "the-model-from-config",
+            "tier": "local",
+            "prompt_path": prompt_path,
+            "tools": "read,bash,edit,write",
+        }
+
+    resolve_role.calls = calls
+    return resolve_role
+
+
+def _real_coder_prompt_path():
+    """The coder role's prompt path from the real ``pirole.resolve``, so the
+    tests exercise the known value without re-spelling it."""
+    return pirole.resolve(
+        "coder", "coder-model", "frontier-model"
+    )["prompt_path"]
+
+
+def _missing_prompt_result(repo, prompt_path):
+    """Run the behaviour-13 check against a repo that has no prompt file at
+    ``prompt_path`` -- the missing-file result every distinct-detail test
+    compares against."""
+    return _role_prompt_check()(
+        str(repo), resolve_role=_fake_resolve_role(prompt_path),
+    )
+
+
+class TestRolePromptCheckPass(unittest.TestCase):
+    """Behaviour 13: an existing non-empty prompt file passes, the detail
+    carrying the absolute path."""
+
+    def test_check_role_prompt_existing_nonempty_file_passes_with_absolute_path(self):
+        # Arrange: a tmp repo with the coder prompt file at the path the
+        # fake resolver names (the real ``pirole.resolve`` value).
+        prompt_path = _real_coder_prompt_path()
+        resolver = _fake_resolve_role(prompt_path)
+        with tempfile.TemporaryDirectory() as repo:
+            prompt_file = Path(repo) / prompt_path
+            prompt_file.parent.mkdir(parents=True)
+            prompt_file.write_text(
+                "# Coder\n\nYou write and modify code.\n", encoding="utf-8"
+            )
+
+            # Act.
+            result = _role_prompt_check()(str(repo), resolve_role=resolver)
+
+            # Assert: the check asked for the coder role, the layer passed,
+            # and its detail carries the absolute joined path.
+            self.assertEqual(resolver.calls, ["coder"])
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_OK)
+            expected = str(Path(repo) / prompt_path)
+            self.assertTrue(
+                expected.startswith("/"), "the tmp repo path is absolute"
+            )
+            self.assertIn(
+                expected,
+                result.detail,
+                "pass detail %r must carry the absolute path %r"
+                % (result.detail, expected),
+            )
+
+
+class TestRolePromptCheckMissing(unittest.TestCase):
+    """Behaviour 13 (error): a missing prompt path fails, the detail saying
+    it is missing, with a fix line carrying the minimal content to write."""
+
+    def test_check_role_prompt_missing_file_fails_saying_missing(self):
+        # Arrange: a tmp repo with no prompt file anywhere.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            self.assertFalse((Path(repo) / prompt_path).exists())
+
+            # Act.
+            result = _missing_prompt_result(repo, prompt_path)
+
+            # Assert: the layer failed and its detail says it is missing.
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertIn(
+                MISSING_MARKER,
+                result.detail.lower(),
+                "the missing-file fail detail %r must say it is missing"
+                % result.detail,
+            )
+
+    def test_check_role_prompt_missing_file_fail_fix_lines_carry_minimal_content(self):
+        # Arrange: a tmp repo with no prompt file anywhere.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            self.assertFalse((Path(repo) / prompt_path).exists())
+
+            # Act.
+            result = _missing_prompt_result(repo, prompt_path)
+
+            # Assert: at least one fix line carries the minimal content to
+            # write -- a minimal valid role markdown, pinned by its heading.
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertTrue(
+                result.fix_lines,
+                "a missing prompt must carry fix lines with the content "
+                "to write; got none",
+            )
+            self.assertTrue(
+                any(MINIMAL_CONTENT_HEADING in fix for fix in result.fix_lines),
+                "a fix line must carry the minimal markdown content (a "
+                "heading); got %r" % (result.fix_lines,),
+            )
+
+
+class TestRolePromptCheckEmptyDistinct(unittest.TestCase):
+    """Behaviour 13 (error): an empty or whitespace-only prompt file fails
+    with a detail distinct from the missing one."""
+
+    def test_check_role_prompt_empty_file_fails_distinct_from_missing(self):
+        # Arrange: a tmp repo with an empty prompt file.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            prompt_file = Path(repo) / prompt_path
+            prompt_file.parent.mkdir(parents=True)
+            prompt_file.write_text("", encoding="utf-8")
+
+            # Act.
+            result = _role_prompt_check()(
+                str(repo), resolve_role=_fake_resolve_role(prompt_path),
+            )
+
+            # Assert: failed, the detail says empty, and it is not the
+            # missing-file detail.
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertIn(
+                EMPTY_MARKER,
+                result.detail.lower(),
+                "the empty-file fail detail %r must say the file is empty"
+                % result.detail,
+            )
+            self.assertNotEqual(
+                result.detail,
+                _missing_prompt_result(repo, prompt_path).detail,
+                "an empty file must fail distinctly from a missing one",
+            )
+
+    def test_check_role_prompt_whitespace_only_file_fails_distinct_from_missing(self):
+        # Arrange: a prompt file holding only whitespace.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            prompt_file = Path(repo) / prompt_path
+            prompt_file.parent.mkdir(parents=True)
+            prompt_file.write_text("   \n\t\n  ", encoding="utf-8")
+
+            # Act + Assert: as the empty case -- failed, says empty, and
+            # distinct from the missing-file detail.
+            result = _role_prompt_check()(
+                str(repo), resolve_role=_fake_resolve_role(prompt_path),
+            )
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertIn(EMPTY_MARKER, result.detail.lower())
+            self.assertNotEqual(
+                result.detail,
+                _missing_prompt_result(repo, prompt_path).detail,
+                "a whitespace-only file must fail distinctly from a "
+                "missing one",
+            )
+
+
+class TestRolePromptCheckDirectory(unittest.TestCase):
+    """Behaviour 13 (error): a directory at the prompt path fails saying it
+    is not a file."""
+
+    def test_check_role_prompt_directory_at_path_fails_saying_not_a_file(self):
+        # Arrange: the prompt path is a directory in a tmp repo.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            (Path(repo) / prompt_path).mkdir(parents=True)
+
+            # Act.
+            result = _role_prompt_check()(
+                str(repo), resolve_role=_fake_resolve_role(prompt_path),
+            )
+
+            # Assert: the layer failed, saying it is not a file.
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertIn(
+                NOT_A_FILE_MARKER,
+                result.detail.lower(),
+                "a directory at the prompt path must fail saying it is not "
+                "a file; got %r" % result.detail,
+            )
+
+
+class TestRolePromptCheckDerivesPath(unittest.TestCase):
+    """Behaviour 13: the path is derived from ``resolve_role``'s
+    ``prompt_path`` -- changing the fake's value changes the path the check
+    looks at, so no literal spelling can satisfy it."""
+
+    def test_check_role_prompt_looks_at_the_resolved_prompt_path_not_a_literal(self):
+        # Arrange: a tmp repo with a prompt file at a CUSTOM path the fake
+        # resolver names -- deliberately not the coder role's real path, so
+        # a check hard-coding the real spelling cannot pass.
+        custom = "custom/roles/some-role.md"
+        real = _real_coder_prompt_path()
+        self.assertNotEqual(custom, real)
+        with tempfile.TemporaryDirectory() as repo:
+            custom_file = Path(repo) / custom
+            custom_file.parent.mkdir(parents=True)
+            custom_file.write_text("# Some role\n", encoding="utf-8")
+
+            # Act: the resolver names the custom path (present) and, in a
+            # second run, a different absent one.
+            pass_result = _role_prompt_check()(
+                str(repo), resolve_role=_fake_resolve_role(custom),
+            )
+            fail_result = _role_prompt_check()(
+                str(repo),
+                resolve_role=_fake_resolve_role("custom/roles/other-role.md"),
+            )
+
+            # Assert: the check looked at exactly the resolved path.
+            self.assertEqual(
+                pass_result.ok,
+                STATE_OK,
+                "the check must look at the resolver's prompt_path %r, not "
+                "a spelled literal (the real coder path %r is absent)"
+                % (custom, real),
+            )
+            self.assertIn(str(Path(repo) / custom), pass_result.detail)
+            self.assertEqual(fail_result.ok, STATE_FAILED)
+            self.assertIn(
+                MISSING_MARKER, fail_result.detail.lower()
+            )
+
+
+class TestRolePromptSourcePin(unittest.TestCase):
+    """Behaviour 13 (PIN): ``smoke.py`` never spells the coder prompt path
+    literally -- it derives it from ``pirole.resolve``'s ``prompt_path``."""
+
+    def test_source_never_spells_the_coder_prompt_path_literally(self):
+        # Arrange: the raw source of anvilkit/smoke.py (the same
+        # source-reading approach as the behaviour-3 pin).
+        smoke_mod = _require_smoke()
+        source = Path(smoke_mod.__file__).read_text(encoding="utf-8")
+        # The literal the pin forbids, read from pirole itself so the test
+        # does not re-type it either.
+        literal = pirole.resolve("coder", "x", "y")["prompt_path"]
+
+        # Assert: the spelling appears nowhere in the source, not even in a
+        # comment.
+        self.assertNotIn(
+            literal,
+            source,
+            "anvilkit/smoke.py re-spells the coder prompt path %r; derive "
+            "it from pirole.resolve instead" % literal,
+        )
 
 
 if __name__ == "__main__":
