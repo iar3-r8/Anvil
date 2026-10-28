@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1–14 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–16 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -3442,6 +3442,252 @@ class TestCoderRunCheckLayerName(unittest.TestCase):
             result.name, LAYER_NAMES,
             "the layer name %r must be the plan's report-set name"
             % result.name,
+        )
+
+
+# Behaviour 16: bad image tag raises DriverError — layer 6. The check is a
+# function the operator command (behaviour 18) calls for the failure-paths
+# layer. It exists to prove the driver's failure path actually fires, using
+# a tag no image matches, so it needs NO model and runs on a GPU-less host.
+# The public seam these tests pin:
+#
+#     smoke.check_bad_image_tag(runner, repo_path, tag, task,
+#                               resolve_role=...)
+#         -> LayerResult
+#
+# - ``runner`` is the injected pidriver runner — the SAME seam
+#   ``pidriver.run_role`` takes (one invocation dict in, the six-key result
+#   dict out). The fake is production-shaped: for a bad tag the docker
+#   daemon refuses the start — non-zero exit, EMPTY stdout, a
+#   "No such image" stderr line — and the REAL ``pidriver.run_role`` raises
+#   its ``DriverError`` for exactly that outcome. The driver is NEVER
+#   wrapped or mocked.
+# - ``tag``: an image tag no image matches; ``task`` and ``repo_path`` are
+#   forwarded to ``run_role`` unchanged.
+# - When the driver's ``DriverError`` fires, the layer PASSES (the failure
+#   path is proved) and its detail names the ``DriverError`` and the bad
+#   tag. When the run returns exit 0 instead, the image clearly exists, the
+#   path did not fire, and the layer FAILS saying so — the opposite verdict
+#   of behaviour 15, whose ``DriverError`` is a failure.
+#
+# The layer is the bad-image-tag sub-check of the plan's layer-6 report
+# name ``failure-paths`` (position 5 in ``LAYER_NAMES`` above), named the
+# way behaviour 15's ``coder-run`` sub-check is named for layer 5.
+BAD_IMAGE_TAG_CHECK_NAME = "check_bad_image_tag"
+BAD_IMAGE_TAG_LAYER_NAME = "bad-image-tag"
+# The layer-6 report name this sub-check belongs to, as spelled in
+# LAYER_NAMES above.
+FAILURE_PATHS_LAYER_NAME = "failure-paths"
+# The image tag no image matches.
+BAD_TAG = "no-such-tag"
+# The production-shaped daemon refusal: non-zero exit, empty stdout, the
+# "No such image" stderr line docker prints for the bad tag.
+NO_SUCH_IMAGE_STDERR = (
+    "docker: Error response from daemon: No such image: %s" % BAD_TAG
+)
+# The detail marker the plan's error case pins: a run returning exit 0
+# means the failure path did not fire.
+PATH_NOT_FIRED_MARKER = "did not fire"
+# The placeholder coder model id the default ``resolve_role`` seam
+# composes (the behaviour-15 default seam's ids) — the no-model-needed
+# fact the plan pins for this layer.
+PLACEHOLDER_CODER_MODEL_ID = "coder-model"
+
+
+def _bad_image_tag_check():
+    """Return the behaviour-16 check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, BAD_IMAGE_TAG_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "%s(runner, repo_path, tag, task, resolve_role=...) yet "
+            "(behaviour 16 of plans/smoke-test.md)"
+            % BAD_IMAGE_TAG_CHECK_NAME
+        )
+    return check
+
+
+def _run_bad_tag(result_dict):
+    """Drive the behaviour-16 check once against a scripted runner outcome
+    in a throwaway repo; return ``(result, runner)``."""
+    runner = _fake_runner(result_dict)
+    with tempfile.TemporaryDirectory() as repo:
+        result = _bad_image_tag_check()(
+            runner, repo, BAD_TAG, TRIVIAL_TASK,
+        )
+    return result, runner
+
+
+class TestBadImageTagCheckPassesOnDriverError(unittest.TestCase):
+    """Behaviour 16: a tag no image matches makes the REAL
+    ``pidriver.run_role`` raise ``DriverError``; the check catches it and
+    the layer PASSES, having proved the failure path fired."""
+
+    def test_bad_tag_nonzero_exit_empty_stdout_passes_proving_the_driver_error(self):
+        # Arrange: the production-shaped daemon refusal — non-zero exit,
+        # empty stdout, the "No such image" stderr the driver's message
+        # carries. The real run_role raises DriverError for exactly this.
+        runner = _fake_runner(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act: a DriverError escaping the check would error the test
+            # with a traceback; instead the layer must pass.
+            result = _bad_image_tag_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the failure path fired — the layer passed, its detail
+        # names the DriverError and the bad tag, and no traceback escaped.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn("DriverError", result.detail)
+        self.assertIn(BAD_TAG, result.detail)
+        self.assertNotIn("Traceback", result.detail)
+        self.assertEqual(len(runner.invocations), 1)
+
+    def test_bad_tag_passing_detail_carries_the_daemon_stderr(self):
+        # Arrange: the same production-shaped refusal; the driver's message
+        # carries the stderr, which the proof should surface.
+        result, _runner = _run_bad_tag(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+
+        # Assert: the proof names what the daemon said about the bad tag.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(NO_SUCH_IMAGE_STDERR, result.detail)
+
+
+class TestBadImageTagCheckFailsWhenPathDidNotFire(unittest.TestCase):
+    """Behaviour 16 (error): a run returning exit 0 instead means the
+    failure path did NOT fire — the image clearly exists — so the layer
+    FAILS saying so. The opposite verdict of behaviour 15."""
+
+    def test_bad_tag_exit_zero_fails_saying_the_path_did_not_fire(self):
+        # Arrange: the "bad" tag unexpectedly runs — exit 0, an event
+        # stream, clean stderr.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        result, runner = _run_bad_tag(_runner_result(0, stdout, ""))
+
+        # Assert: the path did not fire — the layer failed, naming it.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(PATH_NOT_FIRED_MARKER, result.detail.lower())
+        self.assertEqual(len(runner.invocations), 1)
+
+    def test_bad_tag_exit_zero_empty_stdout_also_fails_saying_the_path_did_not_fire(self):
+        # Arrange: exit 0 with no stream at all — run_role still returns
+        # (its DriverError rule needs a non-zero exit), so the path still
+        # did not fire.
+        result, _runner = _run_bad_tag(_runner_result(0, "", ""))
+
+        # Assert: same did-not-fire verdict.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(PATH_NOT_FIRED_MARKER, result.detail.lower())
+
+    def test_bad_tag_exit_zero_detail_does_not_claim_a_driver_error(self):
+        # Arrange: the exit-0 outcome; a detail claiming the DriverError
+        # fired would be a lie.
+        result, _runner = _run_bad_tag(
+            _runner_result(0, '{"type": "session"}\n', ""),
+        )
+
+        # Assert: the did-not-fire detail is not a DriverError proof.
+        self.assertNotIn("DriverError", result.detail)
+
+
+class TestBadImageTagCheckLayerName(unittest.TestCase):
+    """Behaviour 16: the layer is the bad-image-tag sub-check of the
+    plan's layer-6 report name ``failure-paths`` — named the way
+    behaviour 15's ``coder-run`` sub-check is named for layer 5."""
+
+    def test_bad_image_tag_layer_is_named_bad_image_tag(self):
+        # Arrange: the production-shaped refusal; the name is asserted
+        # regardless of the verdict.
+        runner = _fake_runner(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _bad_image_tag_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the sub-check carries the plan's bad-image-tag name, and
+        # the layer-6 report name it belongs to is the one the report set
+        # spells.
+        self.assertEqual(result.name, BAD_IMAGE_TAG_LAYER_NAME)
+        self.assertIn(
+            FAILURE_PATHS_LAYER_NAME, LAYER_NAMES,
+            "the layer-6 report name %r must stay in the report set "
+            "(LAYER_NAMES); the bad-image-tag sub-check belongs to it"
+            % FAILURE_PATHS_LAYER_NAME,
+        )
+
+
+class TestBadImageTagCheckNeedsNoModel(unittest.TestCase):
+    """Behaviour 16: no model is needed — the check works with the
+    default ``resolve_role`` seam's placeholder ids, so this runs on a
+    GPU-less host."""
+
+    def test_bad_tag_with_the_default_resolve_seam_placeholder_ids_proves_the_path(self):
+        # Arrange: the production-shaped refusal; the check is called with
+        # NO ``resolve_role`` override, so the default seam's placeholder
+        # ids are what the driver composes.
+        runner = _fake_runner(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _bad_image_tag_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the placeholder --model token crossed the real driver
+        # untouched — the run never touches a real model — and the path
+        # still fired.
+        self.assertEqual(result.ok, STATE_OK)
+        argv = runner.invocations[0]["argv"]
+        self.assertIn("--model", argv)
+        self.assertEqual(
+            argv[argv.index("--model") + 1], PLACEHOLDER_CODER_MODEL_ID,
+            "the default resolve_role seam must compose the placeholder "
+            "model id %r; got argv %r"
+            % (PLACEHOLDER_CODER_MODEL_ID, argv),
+        )
+
+
+class TestBadImageTagCheckForwardsTagAndRepo(unittest.TestCase):
+    """Behaviour 16: the bad tag and the repo path are forwarded through
+    to the real ``run_role`` — the tag is the sandbox container argv's
+    last token and the driver's ``cwd`` is the repo path, so the daemon
+    refusal is about exactly this tag."""
+
+    def test_bad_tag_forwards_the_bad_tag_in_the_container_argv_and_the_repo_as_cwd(self):
+        # Arrange: the production-shaped refusal; the fake runner records
+        # the invocation.
+        runner = _fake_runner(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            _bad_image_tag_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: exactly one invocation; its cwd is the repo path, and
+        # the argv is the real run_role composition whose container part
+        # ends at the bad tag.
+        self.assertEqual(len(runner.invocations), 1)
+        invocation = runner.invocations[0]
+        self.assertEqual(invocation["cwd"], repo)
+        argv = invocation["argv"]
+        self.assertEqual(argv[0], "docker")
+        self.assertEqual(argv[1], "run")
+        session_id = _session_id_from_invocation(invocation)
+        container_argv = pisandbox.run_argv(repo, BAD_TAG)
+        self.assertEqual(container_argv[-1], BAD_TAG)
+        self.assertEqual(
+            argv[:len(container_argv)], container_argv,
+            "the container argv must be the real run_argv ending at the "
+            "bad tag; got %r" % (argv[:len(container_argv)],),
+        )
+        expected = container_argv + pirole.role_argv(
+            _default_coder_definition(), session_id, TRIVIAL_TASK,
+        )
+        self.assertEqual(
+            argv, expected,
+            "the argv must be the real run_role composition "
+            "(container argv + role argv); got %r" % (argv,),
         )
 
 
