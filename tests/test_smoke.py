@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1–7 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–8 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -74,6 +74,21 @@ state whose fix line carries the compose-up command
 never a substring -- ``llama-swap-service-old`` alone is a fail; a
 ``FileNotFoundError`` from the runner is a not-on-PATH fail, never a
 traceback.
+
+Behaviour 8: ``check_gateway_model(port, config_path,
+check_gateway=..., read_models=...)`` is layer 2's
+coder-model-registered-and-hot check. It reuses two in-repo
+collaborators that the plan names -- ``health.check_gateway`` and
+``config.read_models`` -- both injectable so the tests run without a
+network or a file. The coder id comes from
+``read_models(config_path).coder_id`` (``matrix.vars.coder``) and is
+never hard-coded. The gateway is online, the id present in
+``status.models`` and that entry's ``hot`` is ``True`` -- that is the
+pass state, named ``"gateway-model"``. The report always states the
+in-network port is 8080 regardless of the host ``LLM_PORT``, on the
+pass detail too. Offline, id absent, and id present-but-cold are three
+distinct details, each carrying the 8080 fact; a ``ConfigError`` from
+``read_models`` fails the layer naming the file -- never a traceback.
 """
 
 import sys
@@ -1124,6 +1139,402 @@ class TestGatewayContainerCheckNotOnPath(unittest.TestCase):
         self.assertEqual(result.name, GATEWAY_LAYER_NAME)
         self.assertEqual(result.ok, STATE_FAILED)
         self.assertIn("path", result.detail.lower())
+
+
+# Behaviour 8: layer 2's coder-model-registered-and-hot check. Unlike
+# behaviours 4-7 it does not run docker; it reuses two in-repo collaborators
+# that the plan names: ``health.check_gateway`` and ``config.read_models``.
+# The public seam these tests pin:
+#
+#     smoke.check_gateway_model(port, config_path,
+#                               check_gateway=..., read_models=...)
+#
+# returns a ``LayerResult`` named ``"gateway-model"``. ``port`` is the resolved
+# host port; ``config_path`` is the path to llama-swap's read-only
+# ``config.yaml`` whose ``matrix.vars.coder`` supplies the model id. Both
+# collaborators are injectable callables defaulting to the real
+# ``health.check_gateway`` and ``config.read_models``; the tests inject fakes
+# for both so no network and no file is touched.
+#
+# The plan pins one fact the report always states, on pass and on every fail:
+# the in-network port is 8080 regardless of the host ``LLM_PORT``. The exact
+# wording is free, so the test pins the load-bearing token ``8080``.
+#
+# The three failure modes -- offline, id absent, id present-but-cold -- must be
+# three distinct details. The test pins one stable marker word each
+# (``OFFLINE_MARKER``, ``ABSENT_MARKER``, ``COLD_MARKER``) and asserts all
+# three details carry a different marker, so the layer cannot collapse two
+# modes into one detail.
+MODEL_CHECK_NAME = "check_gateway_model"
+MODEL_LAYER_NAME = "gateway-model"
+# The plan's pinned in-network fact, asserted as a load-bearing token.
+IN_NETWORK_PORT = "8080"
+# One stable marker word per failure mode, pinned here so the three fail
+# details are asserted to be distinguishable from each other.
+OFFLINE_MARKER = "offline"
+ABSENT_MARKER = "not registered"
+COLD_MARKER = "cold"
+
+
+def _model_check():
+    """Return the behaviour-8 model check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, MODEL_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(port, config_path, "
+            "check_gateway=..., read_models=...) yet "
+            "(behaviour 8 of plans/smoke-test.md)" % MODEL_CHECK_NAME
+        )
+    return check
+
+
+class _FakeTopology(object):
+    """A stand-in for ``config.ModelTopology``: only ``coder_id`` is read."""
+
+    def __init__(self, coder_id):
+        self.coder_id = coder_id
+
+
+class _FakeModel(object):
+    """A stand-in for ``health.ModelStatus``: ``id`` and ``hot``."""
+
+    def __init__(self, id, hot):
+        self.id = id
+        self.hot = hot
+
+
+class _FakeGatewayStatus(object):
+    """A stand-in for ``health.GatewayStatus``: ``online``, ``models``,
+    ``error``."""
+
+    def __init__(self, online, models, error=None):
+        self.online = online
+        self.models = list(models)
+        self.error = error
+
+
+def _fake_read_models(coder_id):
+    """A ``read_models`` fake returning a topology with ``coder_id``.
+
+    Records its calls so a test can assert the check read the config the
+    caller named, and that it never hard-coded the id.
+    """
+    calls = []
+
+    def read_models(path, strict_context_window=False):
+        calls.append((path, strict_context_window))
+        return _FakeTopology(coder_id)
+
+    read_models.calls = calls
+    return read_models
+
+
+def _fake_check_gateway(status):
+    """A ``check_gateway`` fake returning ``status`` and recording its port."""
+    calls = []
+
+    def check_gateway(port, timeout=2.0):
+        calls.append(port)
+        return status
+
+    check_gateway.calls = calls
+    return check_gateway
+
+
+class TestGatewayModelCheckPass(unittest.TestCase):
+    """Behaviour 8: the coder id present and hot passes, and the detail
+    states the in-network port is 8080."""
+
+    def test_check_gateway_model_id_present_and_hot_passes(self):
+        # Arrange: the coder id comes from the fake topology, the gateway is
+        # online and that id is hot.
+        coder_id = "meta-llama/Llama-3.1-8B-Instruct"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True,
+            models=[_FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer is the gateway-model layer in the pass state.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+
+    def test_check_gateway_model_pass_detail_states_in_network_port_8080(self):
+        # Arrange: a passing gateway (id hot).
+        coder_id = "some-coder-model"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the report always states the in-network port is 8080, on
+        # the pass detail too -- pinned to the load-bearing token.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(
+            IN_NETWORK_PORT,
+            result.detail,
+            "pass detail %r must state the in-network port is %s"
+            % (result.detail, IN_NETWORK_PORT),
+        )
+
+    def test_check_gateway_model_pass_detail_names_the_coder_id(self):
+        # Arrange: the coder id is supplied by the fake topology, not
+        # hard-coded in the check.
+        coder_id = "the-supplied-coder-id"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the pass detail carries the id the fake read_models
+        # supplied, proving the id is derived from config.yaml, not
+        # hard-coded.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(coder_id, result.detail)
+
+
+class TestGatewayModelCheckOffline(unittest.TestCase):
+    """Behaviour 8 (error): an offline gateway fails with an offline detail
+    carrying ``status.error`` when present, plus the in-network fact."""
+
+    def test_check_gateway_model_offline_fails_with_offline_detail(self):
+        # Arrange: the gateway reports offline with an error string.
+        coder_id = "some-coder-model"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=False, models=[],
+            error="Connection refused on port 18080",
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer failed with the offline marker, carrying the
+        # gateway error and the in-network fact.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(OFFLINE_MARKER, result.detail.lower())
+        self.assertIn("Connection refused", result.detail)
+        self.assertIn(IN_NETWORK_PORT, result.detail)
+
+
+class TestGatewayModelCheckIdAbsent(unittest.TestCase):
+    """Behaviour 8 (error): online but the coder id absent from the registry
+    fails with an id-absent detail naming the id, plus the in-network fact."""
+
+    def test_check_gateway_model_id_absent_fails_naming_the_id(self):
+        # Arrange: the gateway is online but registers a different model,
+        # not the coder id the config names.
+        coder_id = "the-coder-from-config"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel("some-other-model", True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer failed with the id-absent marker, naming the
+        # coder id from config.yaml, plus the in-network fact.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(ABSENT_MARKER, result.detail.lower())
+        self.assertIn(coder_id, result.detail)
+        self.assertIn(IN_NETWORK_PORT, result.detail)
+
+
+class TestGatewayModelCheckCold(unittest.TestCase):
+    """Behaviour 8 (error): online and the id present but not hot fails with
+    a cold detail, plus the in-network fact."""
+
+    def test_check_gateway_model_id_present_but_cold_fails(self):
+        # Arrange: the gateway is online and registers the coder id, but it
+        # is not loaded (cold).
+        coder_id = "the-coder-from-config"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel(coder_id, False)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer failed with the cold marker, naming the id, plus
+        # the in-network fact.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(COLD_MARKER, result.detail.lower())
+        self.assertIn(coder_id, result.detail)
+        self.assertIn(IN_NETWORK_PORT, result.detail)
+
+
+class TestGatewayModelCheckThreeDistinctDetails(unittest.TestCase):
+    """Behaviour 8 (error): the three failure details -- offline, id absent,
+    id present-but-cold -- are distinguishable from each other, each carrying
+    the in-network port fact."""
+
+    def _detail(self, status):
+        read_models = _fake_read_models("the-coder-from-config")
+        check_gateway = _fake_check_gateway(status)
+        return _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        ).detail
+
+    def test_three_failure_details_are_pairwise_distinct(self):
+        # Arrange: one gateway status per failure mode.
+        offline = self._detail(_FakeGatewayStatus(
+            online=False, models=[], error="conn refused"))
+        absent = self._detail(_FakeGatewayStatus(
+            online=True, models=[_FakeModel("some-other-model", True)]))
+        cold = self._detail(_FakeGatewayStatus(
+            online=True,
+            models=[_FakeModel("the-coder-from-config", False)]))
+
+        # Assert: each detail carries its own marker, and all three carry the
+        # in-network fact.
+        self.assertIn(OFFLINE_MARKER, offline.lower())
+        self.assertIn(ABSENT_MARKER, absent.lower())
+        self.assertIn(COLD_MARKER, cold.lower())
+        for detail in (offline, absent, cold):
+            self.assertIn(IN_NETWORK_PORT, detail)
+
+    def test_three_failure_details_are_not_all_identical(self):
+        # Arrange: the three failure details as above.
+        offline = self._detail(_FakeGatewayStatus(
+            online=False, models=[], error="conn refused"))
+        absent = self._detail(_FakeGatewayStatus(
+            online=True, models=[_FakeModel("some-other-model", True)]))
+        cold = self._detail(_FakeGatewayStatus(
+            online=True,
+            models=[_FakeModel("the-coder-from-config", False)]))
+
+        # Assert: no two failure modes collapse into the same detail.
+        self.assertNotEqual(offline, absent)
+        self.assertNotEqual(offline, cold)
+        self.assertNotEqual(absent, cold)
+
+
+class TestGatewayModelCheckConfigError(unittest.TestCase):
+    """Behaviour 8 (error): a ``ConfigError`` from ``read_models`` fails the
+    layer naming the file, never a traceback."""
+
+    def test_check_gateway_model_config_error_fails_naming_the_file(self):
+        # Arrange: the read_models fake raises ``ConfigError`` for a named
+        # file, as when matrix.vars.coder is missing.
+        from anvilkit.config import ConfigError
+
+        config_path = "config.yaml"
+
+        def read_models(path, strict_context_window=False):
+            raise ConfigError(
+                "matrix.vars.coder is not defined in %s" % path
+            )
+
+        status = _FakeGatewayStatus(online=True, models=[])
+        check_gateway = _fake_check_gateway(status)
+
+        # Act: the exception must not escape the check -- a traceback here
+        # fails the test.
+        result = _model_check()(
+            18080, config_path,
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer failed naming the file, with the in-network fact.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(config_path, result.detail)
+        self.assertIn(IN_NETWORK_PORT, result.detail)
+
+
+class TestGatewayModelCheckSeam(unittest.TestCase):
+    """Behaviour 8 (seam): the check calls the injected ``check_gateway``
+    with the resolved port and reads the id from the injected
+    ``read_models`` -- never a hard-coded id."""
+
+    def test_check_gateway_model_passes_the_resolved_port_to_check_gateway(self):
+        # Arrange: a recording check_gateway and a read_models supplying an
+        # id that also appears in the gateway.
+        coder_id = "the-coder-from-config"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the check called check_gateway exactly once, with the
+        # resolved port.
+        self.assertEqual(check_gateway.calls, [18080])
+
+    def test_check_gateway_model_reads_the_id_from_read_models(self):
+        # Arrange: a read_models supplying a slash-carrying id that also
+        # appears in the gateway; a second, hard-codeable-looking id that
+        # must not be the one matched.
+        coder_id = "org/repo/model-v2"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True,
+            models=[_FakeModel("org/repo/model-v1", True),
+                    _FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the check matched the id read from config.yaml (the v2 id),
+        # not a re-spelled literal, and read the config the caller named.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(coder_id, result.detail)
+        self.assertEqual(
+            read_models.calls, [("config.yaml", False)],
+            "read_models must be called with the config path the caller "
+            "named",
+        )
 
 
 if __name__ == "__main__":
