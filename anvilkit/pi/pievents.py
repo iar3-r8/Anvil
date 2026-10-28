@@ -318,3 +318,78 @@ def retries(events: List[dict]) -> Dict[str, Any]:
         "unfinished": attempted - finished if attempted > finished else 0,
         "final_errors": final_errors,
     }
+
+
+def compactions(events: List[dict]) -> List[Dict[str, Any]]:
+    """Report compaction pressure in a parsed event stream.
+
+    Returns a plain ``List[dict]`` in stream order, one entry per
+    ``compaction_start`` record, paired with the ``compaction_end`` that
+    follows it when one arrives. Correlation is by start/end pairing in
+    stream order, not by id: the compaction events in the documentation
+    carry no shared id field to correlate on
+    (``doc/external/pi-dev/json-event-stream.md``, "Compaction events").
+    An end with no start pending contributes nothing. A start that never
+    gets an end still yields its entry, flagged ``completed`` ``False``.
+    Empty input yields ``[]``.
+
+    Each entry is JSON-native, with exactly five keys:
+
+    - ``"reason"``: verbatim from the start record's ``reason``; never
+      validated against the three documented values ``manual``,
+      ``threshold`` and ``overflow`` (
+      ``doc/external/pi-dev/json-event-stream.md``,
+      "compaction_start.reason", line 148) - the field is data;
+    - ``"tokensBefore"`` / ``"estimatedTokensAfter"``: verbatim from the
+      paired end's ``result`` (
+      ``doc/external/pi-dev/json-event-stream.md``,
+      "compaction_end.result", line 160); ``None`` when the end never
+      arrived, when it carries no ``result`` at all - an aborted or
+      failed compaction omits it (line 172) - or when the field is
+      absent inside a present ``result``. A missing value is "we do not
+      know", never ``0``: a ``0`` would read as a compaction that freed
+      the whole window;
+    - ``"aborted"``: the end record's ``aborted`` verbatim; ``None`` when
+      no end arrived, because we do not know whether it aborted;
+    - ``"completed"``: ``True`` iff the paired end arrived - an end is an
+      end, even an aborted one; ``False`` for a start with no end.
+
+    ``compactions`` never raises.
+    """
+    entries: List[Dict[str, Any]] = []
+    open_entries: List[Dict[str, Any]] = []
+
+    for event in events:
+        event_type = event.get("type")
+        if event_type == "compaction_start":
+            entry = {
+                # Verbatim from the start; never validated against the
+                # documented values (line 148). ``.get`` returns None
+                # exactly when the field is absent.
+                "reason": event.get("reason"),
+                # Both token fields start None: "we do not know" until a
+                # paired end's result says otherwise. Never 0.
+                "tokensBefore": None,
+                "estimatedTokensAfter": None,
+                # No end yet: we do not know whether it aborted.
+                "aborted": None,
+                "completed": False,
+            }
+            entries.append(entry)
+            open_entries.append(entry)
+        elif event_type == "compaction_end" and open_entries:
+            entry = open_entries.pop(0)
+            entry["completed"] = True
+            # Verbatim from the end; absent -> None, never a coerced
+            # False (which would claim the stream never gave).
+            entry["aborted"] = event.get("aborted")
+            # If compaction aborted or failed, result is absent (line
+            # 172) - a non-dict result is treated the same: unknown.
+            result = event.get("result")
+            if isinstance(result, dict):
+                entry["tokensBefore"] = result.get("tokensBefore")
+                entry["estimatedTokensAfter"] = result.get(
+                    "estimatedTokensAfter"
+                )
+
+    return entries
