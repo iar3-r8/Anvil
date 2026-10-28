@@ -58,7 +58,17 @@ the expected coder id and the seeded ids found, malformed JSON fails
 naming the parse error, and a missing or non-dict ``providers`` key,
 a provider with no ``models`` key, or a ``models`` that is not a list
 fails saying so -- a ``KeyError``, ``TypeError`` or
-``JSONDecodeError`` never escapes.
+``JSONDecodeError`` never escapes. ``repair_models_json`` (behaviour 12)
+is layer 3's ``--fix`` repair, over the same runner: it takes the exact
+``(LayerResult, Optional[str])`` tuple :func:`check_models_json` returned
+and, only when ``fix`` is set and the read failed with a fix line carrying
+the chown one-liner, spawns the root chown exactly once and retries the
+read exactly once with the identical argv, the retry's verdict -- and its
+exact stdout on a pass -- becoming the final one; a chown that itself exits
+non-zero fails the layer with the chown's stderr in the detail and no read
+retry at all, and a pass, ``fix=False``, or a failure without the chown fix
+line (missing-file or generic) returns the first read's verdict unchanged,
+spawning nothing.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -469,11 +479,111 @@ def check_agent_volume(
    )
 
 
-def check_models_json(
-   docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]],
-   tag: str = DEFAULT_IMAGE_TAG,
+def _models_json_read_argv(tag: str) -> List[str]:
+    """The list-form argv that cats the agent's models.json (behaviour 10).
+
+    Every name is read from the adopted constants, never re-spelled; the
+    behaviour-12 retry reuses this helper, so its argv cannot drift from
+    the first read's.
+    """
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        NAMED_VOLUME + ":" + AGENT_HOME,
+        "--user",
+        IMAGE_UID,
+        tag,
+        "cat",
+        AGENT_HOME + "/models.json",
+    ]
+
+
+def _chown_argv(tag: str) -> List[str]:
+    """The list-form argv the root chown runs with (behaviour 12).
+
+    Only the root user id and the ``chown`` verb are literals; every name
+    is read from the adopted constants, so the repair and the fail fix line
+    are composed from the same argv and cannot drift.
+    """
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        NAMED_VOLUME + ":" + AGENT_HOME,
+        "--user",
+        "0",
+        tag,
+        "chown",
+        "-R",
+        IMAGE_UID + ":" + IMAGE_UID,
+        AGENT_HOME,
+    ]
+
+
+def _models_json_verdict(
+    exit_code: int,
+    stdout: str,
+    stderr: str,
+    tag: str,
 ) -> Tuple["LayerResult", Optional[str]]:
-   """Layer 3: is the agent's models.json readable by the image uid?
+    """Turn one read's raw outcome into the behaviour-10 verdict 2-tuple.
+
+    Exit 0 with non-empty stdout is the pass state, exposing the exact
+    stdout; exit 0 with an empty or whitespace-only stdout is a fail saying
+    the file is unseeded, with no content exposed; a non-zero exit whose
+    stderr says no such file is a fail saying the file is missing and must
+    be seeded, with no chown fix line; any other non-zero exit is a fail
+    with the stderr in the detail and exactly one fix line carrying the
+    root chown one-liner. ``tag`` feeds the chown fix line only.
+    """
+    if exit_code == 0:
+        if not stdout.strip():
+            return (
+                LayerResult(
+                    name="models-json",
+                    ok=STATE_FAILED,
+                    detail="%s/models.json is readable but unseeded "
+                           "(empty or whitespace-only)" % AGENT_HOME,
+                ),
+                None,
+            )
+        return (
+            LayerResult(
+                name="models-json",
+                ok=STATE_OK,
+                detail="models.json readable by the image uid",
+            ),
+            stdout,
+        )
+    if "no such file" in stderr.lower():
+        return (
+            LayerResult(
+                name="models-json",
+                ok=STATE_FAILED,
+                detail="%s/models.json is missing; seed it into the agent "
+                       "volume before re-running" % AGENT_HOME,
+            ),
+            None,
+        )
+    return (
+        LayerResult(
+            name="models-json",
+            ok=STATE_FAILED,
+            detail=stderr.strip(),
+            fix_lines=(" ".join(_chown_argv(tag)),),
+        ),
+        None,
+    )
+
+
+def check_models_json(
+    docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]],
+    tag: str = DEFAULT_IMAGE_TAG,
+) -> Tuple["LayerResult", Optional[str]]:
+    """Layer 3: is the agent's models.json readable by the image uid?
 
    ``docker_runner`` is the same injected seam as
    :func:`check_docker_daemon`, with the contract
@@ -494,75 +604,87 @@ def check_models_json(
    composed from the adopted constants. A ``FileNotFoundError`` from the
    runner fails saying docker is not on PATH, mirroring the daemon check.
    """
-   try:
-       exit_code, stdout, stderr = docker_runner(
-           ["docker", "run", "--rm",
-            "-v", NAMED_VOLUME + ":" + AGENT_HOME,
-            "--user", IMAGE_UID,
-            tag, "cat", AGENT_HOME + "/models.json"]
-       )
-   except FileNotFoundError:
-       return (
-           LayerResult(
-               name="models-json",
-               ok=STATE_FAILED,
-               detail="docker not on PATH",
-           ),
-           None,
-       )
-   if exit_code == 0:
-       if not stdout.strip():
-           return (
-               LayerResult(
-                   name="models-json",
-                   ok=STATE_FAILED,
-                   detail="%s/models.json is readable but unseeded "
-                          "(empty or whitespace-only)" % AGENT_HOME,
-               ),
-               None,
-           )
-       return (
-           LayerResult(
-               name="models-json",
-               ok=STATE_OK,
-               detail="models.json readable by the image uid",
-           ),
-           stdout,
-       )
-   if "no such file" in stderr.lower():
-       return (
-           LayerResult(
-               name="models-json",
-               ok=STATE_FAILED,
-               detail="%s/models.json is missing; seed it into the agent "
-                      "volume before re-running" % AGENT_HOME,
-           ),
-           None,
-       )
-   return (
-       LayerResult(
-           name="models-json",
-           ok=STATE_FAILED,
-           detail=stderr.strip(),
-           fix_lines=(
-               " ".join([
-                   "docker",
-                   "run",
-                   "--rm",
-                   "-v",
-                   NAMED_VOLUME + ":" + AGENT_HOME,
-                   "--user",
-                   "0",
-                   tag,
-                   "chown",
-                   "-R",
-                   IMAGE_UID + ":" + IMAGE_UID,
-                   AGENT_HOME,
-               ]),
-           ),
-       ),
-       None,
-   )
+    try:
+        exit_code, stdout, stderr = docker_runner(
+            _models_json_read_argv(tag)
+        )
+    except FileNotFoundError:
+        return (
+            LayerResult(
+                name="models-json",
+                ok=STATE_FAILED,
+                detail="docker not on PATH",
+            ),
+            None,
+        )
+    return _models_json_verdict(exit_code, stdout, stderr, tag)
+
+
+def repair_models_json(
+    docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]],
+    *,
+    tag: str = DEFAULT_IMAGE_TAG,
+    fix: bool = False,
+    first_read: Tuple["LayerResult", Optional[str]],
+) -> Tuple["LayerResult", Optional[str]]:
+    """Layer 3: the ``--fix`` chown-and-retry repair (behaviour 12).
+
+    ``docker_runner`` is the same injected seam as
+    :func:`check_models_json`, with the contract
+    ``docker_runner(argv) -> (exit_code, stdout, stderr)``. ``first_read``
+    is the exact ``(LayerResult, Optional[str])`` tuple
+    :func:`check_models_json` returned, and the repair decides from it. A
+    pass, ``fix=False``, or a failure whose fix lines carry no chown one-
+    liner (the missing-file and generic failures) returns ``first_read``
+    unchanged, spawning nothing. ``fix=True`` with a permission failure --
+    a fix line carrying the root chown one-liner -- spawns the chown
+    exactly once with :func:`_chown_argv` and retries the read exactly
+    once with the identical argv :func:`check_models_json` used; the
+    retry's verdict -- and its exact stdout on a pass -- is the final one
+    returned. A chown that itself exits non-zero fails the layer with the
+    chown's stderr in the detail and no read retry at all. A
+    ``FileNotFoundError`` from the runner fails the layer saying docker is
+    not on PATH, mirroring the read check.
+    """
+    result, _content = first_read
+    if result.ok != STATE_FAILED or not fix:
+        return first_read
+    if not any("chown" in fix_line for fix_line in result.fix_lines):
+        return first_read
+    try:
+        exit_code, _chown_stdout, chown_stderr = docker_runner(
+            _chown_argv(tag)
+        )
+    except FileNotFoundError:
+        return (
+            LayerResult(
+                name="models-json",
+                ok=STATE_FAILED,
+                detail="docker not on PATH",
+            ),
+            None,
+        )
+    if exit_code != 0:
+        return (
+            LayerResult(
+                name="models-json",
+                ok=STATE_FAILED,
+                detail="chown failed: %s" % chown_stderr.strip(),
+            ),
+            None,
+        )
+    try:
+        exit_code, stdout, stderr = docker_runner(_models_json_read_argv(tag))
+    except FileNotFoundError:
+        return (
+            LayerResult(
+                name="models-json",
+                ok=STATE_FAILED,
+                detail="docker not on PATH",
+            ),
+            None,
+        )
+    return _models_json_verdict(exit_code, stdout, stderr, tag)
 
 
 def check_coder_id(
