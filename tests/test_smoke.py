@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1, 2, 3 and 4 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1, 2, 3, 4 and 5 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -38,6 +38,15 @@ never ``shell=True``. It runs ``["docker", "version", "--format",
 version in the detail; a non-zero exit is the fail state with the stderr in
 the detail; a ``FileNotFoundError`` from the runner is a fail saying docker
 is not on PATH -- never a traceback.
+
+Behaviour 5: ``check_sandbox_image(docker_runner, tag=...)`` is layer
+1's image-presence check, over the same injected seam, with the image
+tag defaulting to the plan's pinned ``pi-sandbox``. It runs
+``["docker", "image", "inspect", <tag>]`` and returns a ``LayerResult``:
+exit 0 is the pass state; a non-zero exit is the fail state whose fix
+lines are exactly ``[" ".join(pisandbox.build_argv(tag))]`` -- the fix
+line is derived from ``anvilkit.pi.pisandbox.build_argv``, never
+hand-typed, so a Dockerfile-path change cannot leave it stale.
 """
 
 import sys
@@ -615,6 +624,125 @@ class TestDockerDaemonCheckNotOnPath(unittest.TestCase):
         self.assertEqual(result.name, "docker-daemon")
         self.assertEqual(result.ok, STATE_FAILED)
         self.assertIn("path", result.detail.lower())
+
+
+# Behaviour 5: layer 1's pi-sandbox image check. It takes the same
+# injected docker seam as behaviour 4 plus an image tag whose default is
+# the plan's pinned default ``pi-sandbox``. The public seam these tests
+# pin: ``smoke.check_sandbox_image(docker_runner, tag=...)`` returns a
+# ``LayerResult``. Its fail fix line is derived as
+# ``" ".join(pisandbox.build_argv(tag))`` -- never hand-typed -- so a
+# Dockerfile-path change cannot leave the fix stale.
+IMAGE_CHECK_NAME = "check_sandbox_image"
+DEFAULT_IMAGE_TAG = "pi-sandbox"
+
+
+def _image_check():
+    """Return the behaviour-5 image check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, IMAGE_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner, tag=...) yet "
+            "(behaviour 5 of plans/smoke-test.md)" % IMAGE_CHECK_NAME
+        )
+    return check
+
+
+def _inspect_argv(tag):
+    """The list-form argv layer 1 uses to inspect the image for ``tag``."""
+    return ["docker", "image", "inspect", tag]
+
+
+def _derived_fix_line(tag):
+    """The fix line computed from ``pisandbox.build_argv``.
+
+    The test derives the expected fix line from the same public builder
+    the implementation must call, which is what proves the
+    derived-not-hand-typed rule rather than pinning a string that a
+    Dockerfile-path change could leave stale.
+    """
+    return " ".join(pisandbox.build_argv(tag))
+
+
+class TestSandboxImageCheckPass(unittest.TestCase):
+    """Behaviour 5: exit 0 from the image inspect is the pass state."""
+
+    def test_check_sandbox_image_exit_zero_passes(self):
+        # Arrange: the injected runner answers the image inspect with
+        # exit 0.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        result = _image_check()(runner, "anvil-pi:dev")
+
+        # Assert: the layer is in the pass state.
+        self.assertEqual(result.ok, STATE_OK)
+
+    def test_check_sandbox_image_default_tag_inspects_pi_sandbox(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "", "")
+
+        # Act: no tag passed -- the check's default must apply.
+        _image_check()(runner)
+
+        # Assert: the default tag is the plan's pinned ``pi-sandbox``,
+        # inspected through the plan's list-form argv, exactly once.
+        self.assertEqual(runner.calls, [_inspect_argv("pi-sandbox")])
+
+
+class TestSandboxImageCheckFail(unittest.TestCase):
+    """Behaviour 5: a non-zero inspect exit fails with exactly one fix
+    line, the derived build argv."""
+
+    def test_check_sandbox_image_nonzero_exit_fails_with_derived_fix_line_explicit_tag(self):
+        # Arrange: the image inspect fails for an explicit, non-default
+        # tag.
+        tag = "anvil-pi:dev"
+        runner = _recording_runner(
+            1, "", "Error: No such image: %s" % tag
+        )
+
+        # Act.
+        result = _image_check()(runner, tag)
+
+        # Assert: the layer failed, and its fix lines are exactly the one
+        # derived from ``pisandbox.build_argv(tag)`` -- computed here, not
+        # hand-typed, so check and fix cannot desynchronise.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertEqual(tuple(result.fix_lines), (_derived_fix_line(tag),))
+
+    def test_check_sandbox_image_nonzero_exit_fails_with_derived_fix_line_default_tag(self):
+        # Arrange: the image inspect fails and no tag is passed, so the
+        # default tag must drive the fix line.
+        runner = _recording_runner(
+            1, "", "Error: No such image: pi-sandbox"
+        )
+
+        # Act.
+        result = _image_check()(runner)
+
+        # Assert: the fix line is derived from the default tag.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertEqual(
+            tuple(result.fix_lines), (_derived_fix_line(DEFAULT_IMAGE_TAG),)
+        )
+
+
+class TestSandboxImageCheckArgv(unittest.TestCase):
+    """Behaviour 5: the check invokes the runner with the list-form
+    ``docker image inspect <tag>`` argv, exactly once."""
+
+    def test_check_sandbox_image_invokes_inspect_argv_in_list_form(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        tag = "anvil-pi:dev"
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        _image_check()(runner, tag)
+
+        # Assert: the check ran exactly the plan's argv, as a list, once.
+        self.assertEqual(runner.calls, [_inspect_argv(tag)])
 
 
 if __name__ == "__main__":
