@@ -16,12 +16,17 @@ plan's pinned tag) and derives its fail fix line from
 command. ``check_sandbox_network`` (behaviour 6) is layer 1's
 internal-network-presence check, over the same runner: it inspects the
 adopted :data:`INTERNAL_NETWORK` name and its fail fix line names that
-compose creates the network.
+compose creates the network. ``check_gateway_container`` (behaviour 7) is
+layer 2's gateway container check, over the same runner: it lists running
+containers filtered by the adopted :data:`GATEWAY_CONTAINER` name and passes
+only when a line of the output equals that name exactly (after stripping) --
+never a substring -- with the compose-up command as the fail fix line.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
 ``anvilkit.pi.pisandbox`` (behaviour 3), so this module never re-spells them
-as literals.
+as literals. The gateway container name is the compose ``container_name``,
+spelled once as :data:`GATEWAY_CONTAINER` (behaviour 7).
 """
 
 import dataclasses
@@ -248,4 +253,63 @@ def check_sandbox_network(
        ok=STATE_FAILED,
        detail=stderr.strip(),
        fix_lines=(NETWORK_FIX_COMMAND + "  # compose creates the network",),
+   )
+
+
+# The gateway container name (behaviour 7 of ``plans/smoke-test.md``): the
+# ``container_name`` from ``docker-compose.yml`` -- the service/DNS name is
+# only an address, never the match.
+GATEWAY_CONTAINER = "llama-swap-service"
+
+
+def check_gateway_container(
+   docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]]
+) -> "LayerResult":
+   """Layer 2: is the gateway container running?
+
+   ``docker_runner`` is the same injected seam as
+   :func:`check_docker_daemon`, with the contract
+   ``docker_runner(argv) -> (exit_code, stdout, stderr)``. It is called
+   exactly once with ``["docker", "ps", "--filter", "name=<container>",
+   "--format", "{{.Names}}"]`` where ``<container>`` is the adopted
+   :data:`GATEWAY_CONTAINER` constant. Exit 0 passes when some line of the
+   output, stripped, equals the container name exactly -- never a
+   substring, so a longer container that merely contains it fails; a
+   non-zero exit, or an output with no exact line (including empty
+   output), fails with the stderr in the detail and one fix line carrying
+   the compose-up command. A ``FileNotFoundError`` from the runner fails
+   saying docker is not on PATH, mirroring the daemon check.
+   """
+   try:
+       exit_code, stdout, stderr = docker_runner(
+           ["docker", "ps", "--filter", "name=" + GATEWAY_CONTAINER,
+            "--format", "{{.Names}}"]
+       )
+   except FileNotFoundError:
+       return LayerResult(
+           name="gateway-container",
+           ok=STATE_FAILED,
+           detail="docker not on PATH",
+       )
+   if exit_code != 0:
+       return LayerResult(
+           name="gateway-container",
+           ok=STATE_FAILED,
+           detail=stderr.strip(),
+           fix_lines=(NETWORK_FIX_COMMAND
+                      + "  # compose starts the gateway container",),
+       )
+   if any(line.strip() == GATEWAY_CONTAINER
+          for line in stdout.splitlines()):
+       return LayerResult(
+           name="gateway-container",
+           ok=STATE_OK,
+           detail="container %s running" % GATEWAY_CONTAINER,
+       )
+   return LayerResult(
+       name="gateway-container",
+       ok=STATE_FAILED,
+       detail="container %s not running" % GATEWAY_CONTAINER,
+       fix_lines=(NETWORK_FIX_COMMAND
+                  + "  # compose starts the gateway container",),
    )
