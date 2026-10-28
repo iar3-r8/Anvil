@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviour 1 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1 and 2 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -14,6 +14,14 @@ two spaces) under a failing layer only; a passing or skipped result never
 prints its fix lines, and a skipped result prints neither verdict glyph; an
 empty result list renders only the stable header ``"Anvil smoke test"`` and
 no layer lines.
+
+Behaviour 2: ``summarize(results)`` returns a process exit code — 0 when
+nothing failed, 4 (the docker class, ``EXIT_DOCKER`` in ``anvilkit/cli.py``)
+when any of layers 1–4 failed, 1 (the internal class, ``EXIT_ERROR``) when
+only layer 5 or 6 failed. The seam these tests pin: the layer number is the
+1-based position in the list, position 1 being layer 1 and position 6 layer
+6. A layer whose state is neither ``"ok"`` nor ``"skipped"`` counts as
+failed; a skipped layer never contributes to a non-zero exit.
 """
 
 import sys
@@ -72,6 +80,31 @@ def _layer(name, state, detail, fix_lines=None):
 def _render(results):
     """Render ``results`` with ``smoke.format_report``."""
     return _require_smoke().format_report(results)
+
+
+def _summarize(results):
+    """Return ``smoke.summarize(results)``."""
+    return _require_smoke().summarize(results)
+
+
+# The six layer names in layer order (behaviours 4-17 of the plan), used to
+# build full six-layer result lists; the list position is the layer number.
+LAYER_NAMES = (
+    "docker-daemon",       # layer 1: docker
+    "gateway",             # layer 2: gateway
+    "sandbox-agent-volume",  # layer 3: agent volume
+    "role-prompt",         # layer 4: role prompt
+    "coder-run",           # layer 5: the run
+    "failure-paths",       # layer 6: the failure paths
+)
+
+
+def _layers(states):
+    """Six ``LayerResult``s in layer order, one per state in ``states``."""
+    return [
+        _layer(name, state, "detail for %s" % name)
+        for name, state in zip(LAYER_NAMES, states)
+    ]
 
 
 class TestFormatReportPassingLayer(unittest.TestCase):
@@ -264,6 +297,136 @@ class TestFormatReportEmptyList(unittest.TestCase):
         self.assertEqual(text.strip().splitlines(), [HEADER])
         self.assertNotIn(PASS_GLYPH, text)
         self.assertNotIn(FAIL_GLYPH, text)
+
+
+class TestSummarizeAllPassed(unittest.TestCase):
+    """Behaviour 2: nothing failed yields exit 0, including an empty list."""
+
+    def test_summarize_all_six_layers_ok_returns_zero(self):
+        # Arrange: every layer passed.
+        results = _layers([STATE_OK] * 6)
+
+        # Act + Assert: exit 0.
+        self.assertEqual(_summarize(results), 0)
+
+    def test_summarize_empty_list_returns_zero(self):
+        # Act + Assert: no results at all is not a failure.
+        self.assertEqual(_summarize([]), 0)
+
+
+class TestSummarizeDockerClassLayers(unittest.TestCase):
+    """Behaviour 2: any of layers 1-4 (the docker class) failing alone
+    yields 4, the docker exit code (``EXIT_DOCKER`` in ``anvilkit/cli.py``)."""
+
+    def test_summarize_layer_1_failed_alone_returns_four(self):
+        # Arrange: only layer 1 (docker) failed.
+        results = _layers([STATE_FAILED, STATE_OK, STATE_OK,
+                           STATE_OK, STATE_OK, STATE_OK])
+
+        # Act + Assert: docker class wins with exit 4.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_layer_2_failed_alone_returns_four(self):
+        # Arrange: only layer 2 (gateway) failed.
+        results = _layers([STATE_OK, STATE_FAILED, STATE_OK,
+                           STATE_OK, STATE_OK, STATE_OK])
+
+        # Act + Assert.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_layer_3_failed_alone_returns_four(self):
+        # Arrange: only layer 3 (agent volume) failed.
+        results = _layers([STATE_OK, STATE_OK, STATE_FAILED,
+                           STATE_OK, STATE_OK, STATE_OK])
+
+        # Act + Assert.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_layer_4_failed_alone_returns_four(self):
+        # Arrange: only layer 4 (role prompt) failed.
+        results = _layers([STATE_OK, STATE_OK, STATE_OK, STATE_FAILED,
+                           STATE_OK, STATE_OK])
+
+        # Act + Assert.
+        self.assertEqual(_summarize(results), 4)
+
+
+class TestSummarizeInternalClassLayers(unittest.TestCase):
+    """Behaviour 2: only layer 5 or 6 (the internal class) failing yields
+    1, the internal exit code (``EXIT_ERROR`` in ``anvilkit/cli.py``)."""
+
+    def test_summarize_layer_5_failed_alone_returns_one(self):
+        # Arrange: layers 1-4 passed, only layer 5 (the run) failed.
+        results = _layers([STATE_OK, STATE_OK, STATE_OK, STATE_OK,
+                           STATE_FAILED, STATE_OK])
+
+        # Act + Assert: internal class, exit 1 — not the docker class.
+        self.assertEqual(_summarize(results), 1)
+
+    def test_summarize_layer_6_failed_alone_returns_one(self):
+        # Arrange: layers 1-4 passed, only layer 6 (failure paths) failed.
+        results = _layers([STATE_OK, STATE_OK, STATE_OK, STATE_OK,
+                           STATE_OK, STATE_FAILED])
+
+        # Act + Assert.
+        self.assertEqual(_summarize(results), 1)
+
+
+class TestSummarizeDockerClassWins(unittest.TestCase):
+    """Behaviour 2 (error): when both classes fail, the docker class (4)
+    wins over the internal class (1)."""
+
+    def test_summarize_layers_2_and_5_both_failed_returns_four(self):
+        # Arrange: layer 2 (docker class) and layer 5 (internal class) both
+        # failed, the rest passed.
+        results = _layers([STATE_OK, STATE_FAILED, STATE_OK,
+                           STATE_OK, STATE_FAILED, STATE_OK])
+
+        # Act + Assert: 4, never 1.
+        self.assertEqual(_summarize(results), 4)
+
+
+class TestSummarizeSkippedNeverContributes(unittest.TestCase):
+    """Behaviour 2 (error): a skipped layer never contributes to a
+    non-zero exit — a skipped layer 5 must not push the exit to 1."""
+
+    def test_summarize_earlier_layers_failed_layer_5_skipped_returns_four(self):
+        # Arrange: layers 1-4 all failed, so layer 5 is reported skipped
+        # (never failed), and layer 6 passed.
+        results = _layers([STATE_FAILED, STATE_FAILED, STATE_FAILED,
+                           STATE_FAILED, STATE_SKIPPED, STATE_OK])
+
+        # Act + Assert: exit 4 from the docker class, never 1 from the
+        # skipped layer 5.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_all_six_layers_skipped_returns_zero(self):
+        # Arrange: no layer failed — every one is skipped.
+        results = _layers([STATE_SKIPPED] * 6)
+
+        # Act + Assert: skipping is not failing.
+        self.assertEqual(_summarize(results), 0)
+
+
+class TestSummarizeUnknownStateCountsAsFailed(unittest.TestCase):
+    """Behaviour 2 (design intent): a state that is neither ``"ok"`` nor
+    ``"skipped"`` counts as failed, in whatever class its position holds."""
+
+    def test_summarize_unknown_state_at_layer_1_position_returns_four(self):
+        # Arrange: layer 1 in an unrecognised state, the rest passed.
+        results = _layers(["error", STATE_OK, STATE_OK,
+                           STATE_OK, STATE_OK, STATE_OK])
+
+        # Act + Assert: counts as a layer-1 failure, docker class.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_unknown_state_at_layer_6_position_returns_one(self):
+        # Arrange: layer 6 in an unrecognised state, the rest passed.
+        results = _layers([STATE_OK, STATE_OK, STATE_OK, STATE_OK,
+                           STATE_OK, "error"])
+
+        # Act + Assert: counts as a layer-6 failure, internal class.
+        self.assertEqual(_summarize(results), 1)
 
 
 if __name__ == "__main__":
