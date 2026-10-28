@@ -78,7 +78,13 @@ path, a missing path fails saying it is missing with a fix line carrying
 the minimal content to write, an empty or whitespace-only file fails
 saying it is empty -- a detail distinct from the missing one -- and a
 directory at the path fails saying it is not a file; it never creates,
-modifies, deletes or renames anything.
+modifies, deletes or renames anything. ``new_session_id``
+(behaviour 14) mints a fresh session id per invocation --
+``smoke-<UTC timestamp>-<random suffix>`` -- from ``datetime.datetime``
+and ``secrets.token_hex``, so two calls never collide even within the
+same tick and the id always passes the real
+:func:`anvilkit.pi.pirole.role_argv` session-id validation (letters,
+numbers, ``.``, ``_``, ``-``; starts and ends alphanumeric).
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -88,8 +94,10 @@ spelled once as :data:`GATEWAY_CONTAINER` (behaviour 7).
 """
 
 import dataclasses
+import datetime
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -839,3 +847,33 @@ def check_role_prompt(
         ok=STATE_OK,
         detail="role prompt present at %s" % absolute,
     )
+
+
+# The UTC timestamp :func:`new_session_id` stamps into each id
+# (behaviour 14 of ``plans/smoke-test.md``): second resolution, compact,
+# and alphanumeric-only, so the id's start and end characters are always
+# letters or numbers no matter what the random suffix contributes.
+_SESSION_ID_STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
+# The random half of the id: 16 hex characters from the CSPRNG, which is
+# what makes two calls differ even within the same tick -- the timestamp
+# alone only guarantees freshness to the second.
+_SESSION_ID_SUFFIX_BYTES = 8
+
+
+def new_session_id() -> str:
+    """Mint a fresh session id for one smoke-test invocation.
+
+    Returns ``smoke-<UTC timestamp>-<random suffix>``: the plan's pinned
+    ``smoke-`` prefix, a UTC timestamp at second resolution
+    (:data:`_SESSION_ID_STAMP_FORMAT`), and a 16-hex-character suffix from
+    :func:`secrets.token_hex`. Every character is in Pi's session-id body
+    set (letters, numbers, ``.``, ``_``, ``-``) and the id starts and ends
+    with a letter or number, so the real
+    :func:`anvilkit.pi.pirole.role_argv` validation never rejects one;
+    the random suffix makes two calls differ even when they land in the
+    same tick, so no old session is ever resumed.
+    """
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime(
+        _SESSION_ID_STAMP_FORMAT
+    )
+    return "smoke-" + stamp + "-" + secrets.token_hex(_SESSION_ID_SUFFIX_BYTES)
