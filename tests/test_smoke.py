@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1 and 2 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1, 2 and 3 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -22,6 +22,12 @@ only layer 5 or 6 failed. The seam these tests pin: the layer number is the
 1-based position in the list, position 1 being layer 1 and position 6 layer
 6. A layer whose state is neither ``"ok"`` nor ``"skipped"`` counts as
 failed; a skipped layer never contributes to a non-zero exit.
+
+Behaviour 3 (PIN): ``smoke.py`` must adopt the four pinned names -- the
+named volume, the internal network, the image uid and the agent home -- as
+module-level constants taken from ``anvilkit.pi.pisandbox``; each must equal
+the corresponding private ``pisandbox`` attribute, and the raw source of
+``anvilkit/smoke.py`` must contain none of the four literal spellings.
 """
 
 import sys
@@ -30,7 +36,28 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+   sys.path.insert(0, str(REPO_ROOT))
+
+from anvilkit.pi import pisandbox  # noqa: E402
+
+# Behaviour 3 (PIN): the public names ``smoke.py`` must expose for the four
+# pinned names, each mapped to the private ``pisandbox`` attribute it adopts.
+PINNED_CONSTANTS = (
+   ("NAMED_VOLUME", "_NAMED_VOLUME"),
+   ("INTERNAL_NETWORK", "_INTERNAL_NETWORK"),
+   ("IMAGE_UID", "_IMAGE_UID"),
+   ("AGENT_HOME", "_AGENT_HOME"),
+)
+
+# The literal spellings that must never appear in ``anvilkit/smoke.py``'s
+# source: the names are imported from ``anvilkit.pi.pisandbox``, not
+# re-spelled (a comment re-typing one counts -- the pin is deliberately raw).
+PINNED_LITERALS = (
+   "sandbox-agent",
+   "sandbox-internal",
+   "1001",
+   "/home/sandbox/.pi/agent",
+)
 
 # Behaviour 1 (TDD red): this does not exist yet, so the import is guarded.
 # The tests below turn the missing import into a clear, named failure
@@ -427,6 +454,58 @@ class TestSummarizeUnknownStateCountsAsFailed(unittest.TestCase):
 
         # Act + Assert: counts as a layer-6 failure, internal class.
         self.assertEqual(_summarize(results), 1)
+
+
+class TestPinnedNameReuse(unittest.TestCase):
+    """Behaviour 3 (PIN): ``smoke.py`` adopts the four pinned names from
+    ``anvilkit.pi.pisandbox`` rather than re-spelling them as literals."""
+
+    def test_pinned_constants_are_exposed_at_module_level(self):
+        # Act: import smoke and look for the four public constants.
+        smoke_mod = _require_smoke()
+
+        # Assert: all four public names exist at module level.
+        for smoke_name, _pi_name in PINNED_CONSTANTS:
+            self.assertTrue(
+                hasattr(smoke_mod, smoke_name),
+                "anvilkit/smoke.py must expose module constant %s, the "
+                "pinned name from anvilkit/pi/pisandbox.py" % smoke_name,
+            )
+
+    def test_pinned_constants_equal_the_pisandbox_attributes(self):
+        # Arrange: the public smoke names mapped to the pisandbox attributes
+        # they must adopt.
+        smoke_mod = _require_smoke()
+
+        # Act + Assert: each public constant is exactly the pisandbox value.
+        for smoke_name, pi_name in PINNED_CONSTANTS:
+            self.assertTrue(
+                hasattr(smoke_mod, smoke_name),
+                "anvilkit/smoke.py must expose module constant %s" % smoke_name,
+            )
+            self.assertEqual(
+                getattr(smoke_mod, smoke_name),
+                getattr(pisandbox, pi_name),
+                "%s must be the value of anvilkit.pi.pisandbox.%s, not a "
+                "re-spelled literal" % (smoke_name, pi_name),
+            )
+
+    def test_source_never_re_spells_the_pinned_literals(self):
+        # Arrange: the raw source of anvilkit/smoke.py, located from the
+        # module's ``__file__`` (same source-reading approach as the
+        # rules-mirror tests).
+        smoke_mod = _require_smoke()
+        source = Path(smoke_mod.__file__).read_text(encoding="utf-8")
+
+        # Assert: none of the four literal spellings appears anywhere in the
+        # source, not even in a comment.
+        for literal in PINNED_LITERALS:
+            self.assertNotIn(
+                literal,
+                source,
+                "anvilkit/smoke.py re-spells the pinned literal %r; import "
+                "it from anvilkit.pi.pisandbox instead" % literal,
+            )
 
 
 if __name__ == "__main__":
