@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1, 2, 3, 4 and 5 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–6 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -47,6 +47,17 @@ exit 0 is the pass state; a non-zero exit is the fail state whose fix
 lines are exactly ``[" ".join(pisandbox.build_argv(tag))]`` -- the fix
 line is derived from ``anvilkit.pi.pisandbox.build_argv``, never
 hand-typed, so a Dockerfile-path change cannot leave it stale.
+
+Behaviour 6: ``check_sandbox_network(docker_runner)`` is layer 1's
+internal-network-presence check, over the same injected seam. It runs
+``["docker", "network", "inspect", <name>]`` where ``<name>`` is the
+module's ``INTERNAL_NETWORK`` constant adopted from
+``anvilkit.pi.pisandbox._INTERNAL_NETWORK`` -- never a re-spelled literal,
+so a rename cannot desynchronise the check from the run. Exit 0 is the
+pass state; a non-zero exit is the fail state whose fix line carries the
+compose-up command ``docker compose --profile coder up -d`` and names
+that compose creates the network; a ``FileNotFoundError`` from the runner
+is a not-on-PATH fail, never a traceback.
 """
 
 import sys
@@ -745,5 +756,141 @@ class TestSandboxImageCheckArgv(unittest.TestCase):
         self.assertEqual(runner.calls, [_inspect_argv(tag)])
 
 
+# Behaviour 6: layer 1's internal-network-presence check. It takes the
+# same injected docker seam as behaviours 4 and 5. The public seam these
+# tests pin: ``smoke.check_sandbox_network(docker_runner)`` returns a
+# ``LayerResult``. The network name must come from the module's adopted
+# ``INTERNAL_NETWORK`` constant, so a rename in ``pisandbox`` keeps the
+# check and the run in step.
+NETWORK_CHECK_NAME = "check_sandbox_network"
+# The plan's pinned fix command for a missing network: the compose-up that
+# creates it. The plan pins the command; the wording that names compose as
+# its creator is free, which is why the test asserts the command itself and
+# a create-verb reference separately.
+NETWORK_FIX_COMMAND = "docker compose --profile coder up -d"
+
+
+def _network_check():
+   """Return the behaviour-6 network check, or fail naming what is missing."""
+   smoke_mod = _require_smoke()
+   check = getattr(smoke_mod, NETWORK_CHECK_NAME, None)
+   if check is None:
+       raise AssertionError(
+           "anvilkit.smoke does not define %s(docker_runner) yet "
+           "(behaviour 6 of plans/smoke-test.md)" % NETWORK_CHECK_NAME
+       )
+   return check
+
+
+def _network_argv():
+   """The list-form argv layer 1 uses to inspect the internal network.
+
+   The name is read from ``smoke.INTERNAL_NETWORK`` -- the constant
+   adopted from ``anvilkit.pi.pisandbox._INTERNAL_NETWORK`` -- so this
+   test proves the check inspects the adopted name, not a re-spelled
+   literal.
+   """
+   smoke_mod = _require_smoke()
+   return ["docker", "network", "inspect", smoke_mod.INTERNAL_NETWORK]
+
+
+class TestSandboxNetworkCheckPass(unittest.TestCase):
+   """Behaviour 6: exit 0 from the network inspect is the pass state."""
+
+   def test_check_sandbox_network_exit_zero_passes(self):
+       # Arrange: the injected runner answers the network inspect with
+       # exit 0.
+       runner = _recording_runner(0, "", "")
+
+       # Act.
+       result = _network_check()(runner)
+
+       # Assert: the layer is the sandbox-network layer, in the pass state.
+       self.assertEqual(result.name, "sandbox-network")
+       self.assertEqual(result.ok, STATE_OK)
+
+
+class TestSandboxNetworkCheckArgv(unittest.TestCase):
+   """Behaviour 6: the check invokes the runner with the list-form
+   ``docker network inspect <name>`` argv, exactly once, where ``<name>``
+   is the module's adopted ``INTERNAL_NETWORK`` constant."""
+
+   def test_check_sandbox_network_invokes_inspect_argv_with_adopted_name(self):
+       # Arrange: the injected runner records whatever argv it is handed.
+       runner = _recording_runner(0, "", "")
+
+       # Act.
+       _network_check()(runner)
+
+       # Assert: the check ran exactly the plan's argv, as a list, once,
+       # with the name read from the adopted constant.
+       self.assertEqual(runner.calls, [_network_argv()])
+
+
+class TestSandboxNetworkCheckFail(unittest.TestCase):
+   """Behaviour 6: a non-zero inspect exit fails with the compose-up fix
+   line, which names that compose creates the network."""
+
+   def test_check_sandbox_network_nonzero_exit_fails_with_compose_up_fix_line(self):
+       # Arrange: the network inspect fails non-zero with a stderr
+       # message.
+       runner = _recording_runner(
+           1, "", "Error: network \"sandbox-internal\" not found"
+       )
+
+       # Act.
+       result = _network_check()(runner)
+
+       # Assert: the layer is the sandbox-network layer in the fail state,
+       # and one fix line carries the plan's pinned compose-up command.
+       self.assertEqual(result.name, "sandbox-network")
+       self.assertEqual(result.ok, STATE_FAILED)
+       self.assertTrue(
+           any(NETWORK_FIX_COMMAND in fix for fix in result.fix_lines),
+           "fix lines %r must include the compose-up command %r"
+           % (result.fix_lines, NETWORK_FIX_COMMAND),
+       )
+
+   def test_check_sandbox_network_fix_lines_name_that_compose_creates_the_network(self):
+       # Arrange: the network inspect fails non-zero.
+       runner = _recording_runner(1, "", "network not found")
+
+       # Act.
+       result = _network_check()(runner)
+
+       # Assert: beyond the pinned command, the fix text says compose
+       # creates the network -- a create-verb is the load-bearing word,
+       # since the command itself contains no such verb.
+       joined = " ".join(result.fix_lines).lower()
+       self.assertIn(NETWORK_FIX_COMMAND.lower(), joined)
+       self.assertIn(
+           "creat",
+           joined,
+           "fix lines %r must name that compose creates the network"
+           % (result.fix_lines,),
+       )
+
+
+class TestSandboxNetworkCheckNotOnPath(unittest.TestCase):
+   """Behaviour 6 (error): ``FileNotFoundError`` from the runner is a
+   not-on-PATH fail, never a traceback."""
+
+   def test_check_sandbox_network_runner_not_found_fails_saying_not_on_path(self):
+       # Arrange: the runner raises ``FileNotFoundError`` as when docker
+       # is missing from PATH.
+       def runner(argv):
+           raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+       # Act: the exception must not escape the check -- a traceback here
+       # fails the test.
+       result = _network_check()(runner)
+
+       # Assert: the layer failed, and its detail says docker is not on
+       # PATH.
+       self.assertEqual(result.name, "sandbox-network")
+       self.assertEqual(result.ok, STATE_FAILED)
+       self.assertIn("path", result.detail.lower())
+
+
 if __name__ == "__main__":
-    unittest.main()
+   unittest.main()
