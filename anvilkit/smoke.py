@@ -34,7 +34,16 @@ the host ``LLM_PORT``. ``check_agent_volume`` (behaviour 9) is layer 3's
 agent-volume-presence check, over the same runner: it inspects the adopted
 :data:`NAMED_VOLUME` name and passes only when the inspect exits 0; a
 non-zero exit fails with a detail saying the volume is created on first run
-and stays empty until seeded.
+and stays empty until seeded. ``check_models_json`` (behaviour 10) is
+layer 3's models.json-readability check, over the same runner and with an
+image tag defaulting to :data:`DEFAULT_IMAGE_TAG`: it cats the agent home's
+``models.json`` in a container running as the adopted image uid and returns
+the layer result plus the exact stdout on a pass (so behaviour 11 can parse
+it) and ``None`` on every fail; a readable but empty or whitespace-only
+file fails as unseeded, a no-such-file stderr fails with the seed
+instruction and no chown line, and a permission stderr fails with the
+``chown -R`` one-liner as its fix line, composed from the adopted
+constants.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -44,7 +53,7 @@ spelled once as :data:`GATEWAY_CONTAINER` (behaviour 7).
 """
 
 import dataclasses
-from typing import Callable, Sequence, Tuple
+from typing import Callable, Optional, Sequence, Tuple
 
 from anvilkit import config, health
 from anvilkit.pi import pisandbox
@@ -441,4 +450,100 @@ def check_agent_volume(
        ok=STATE_FAILED,
        detail="volume %s missing -- created on first run, stays empty "
               "until seeded" % NAMED_VOLUME,
+   )
+
+
+def check_models_json(
+   docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]],
+   tag: str = DEFAULT_IMAGE_TAG,
+) -> Tuple["LayerResult", Optional[str]]:
+   """Layer 3: is the agent's models.json readable by the image uid?
+
+   ``docker_runner`` is the same injected seam as
+   :func:`check_docker_daemon`, with the contract
+   ``docker_runner(argv) -> (exit_code, stdout, stderr)``. It is called
+   exactly once with the list-form argv
+   ``["docker", "run", "--rm", "-v", <NAMED_VOLUME>:<AGENT_HOME>,
+   "--user", <IMAGE_UID>, <tag>, "cat", <AGENT_HOME>/models.json"]`` --
+   every name from the adopted constants, the tag defaulting to
+   :data:`DEFAULT_IMAGE_TAG`. The second element of the returned
+   2-tuple carries the exact stdout the in-container ``cat`` printed, so
+   behaviour 11 can parse it; it is ``None`` on every fail. Exit 0 with
+   non-empty stdout is the pass state; exit 0 with an empty or
+   whitespace-only stdout is a fail saying the file is unseeded, with no
+   content exposed; a non-zero exit whose stderr says no such file is a
+   fail saying the file is missing and must be seeded, with no chown fix
+   line; any other non-zero exit is a fail with the stderr in the detail
+   and exactly one fix line carrying the root ``chown -R`` one-liner
+   composed from the adopted constants. A ``FileNotFoundError`` from the
+   runner fails saying docker is not on PATH, mirroring the daemon check.
+   """
+   try:
+       exit_code, stdout, stderr = docker_runner(
+           ["docker", "run", "--rm",
+            "-v", NAMED_VOLUME + ":" + AGENT_HOME,
+            "--user", IMAGE_UID,
+            tag, "cat", AGENT_HOME + "/models.json"]
+       )
+   except FileNotFoundError:
+       return (
+           LayerResult(
+               name="models-json",
+               ok=STATE_FAILED,
+               detail="docker not on PATH",
+           ),
+           None,
+       )
+   if exit_code == 0:
+       if not stdout.strip():
+           return (
+               LayerResult(
+                   name="models-json",
+                   ok=STATE_FAILED,
+                   detail="%s/models.json is readable but unseeded "
+                          "(empty or whitespace-only)" % AGENT_HOME,
+               ),
+               None,
+           )
+       return (
+           LayerResult(
+               name="models-json",
+               ok=STATE_OK,
+               detail="models.json readable by the image uid",
+           ),
+           stdout,
+       )
+   if "no such file" in stderr.lower():
+       return (
+           LayerResult(
+               name="models-json",
+               ok=STATE_FAILED,
+               detail="%s/models.json is missing; seed it into the agent "
+                      "volume before re-running" % AGENT_HOME,
+           ),
+           None,
+       )
+   return (
+       LayerResult(
+           name="models-json",
+           ok=STATE_FAILED,
+           detail=stderr.strip(),
+           fix_lines=(
+               " ".join([
+                   "docker",
+                   "run",
+                   "--rm",
+                   "-v",
+                   NAMED_VOLUME + ":" + AGENT_HOME,
+                   "--user",
+                   "0",
+                   tag,
+                   "chown",
+                   "-R",
+                   IMAGE_UID + ":" + IMAGE_UID,
+                   AGENT_HOME,
+               ]),
+           ),
+       ),
+       None,
    )
