@@ -2636,10 +2636,19 @@ def _real_coder_prompt_path():
 def _missing_prompt_result(repo, prompt_path):
     """Run the behaviour-13 check against a repo that has no prompt file at
     ``prompt_path`` -- the missing-file result every distinct-detail test
-    compares against."""
-    return _role_prompt_check()(
-        str(repo), resolve_role=_fake_resolve_role(prompt_path),
-    )
+    compares against.
+
+    The check runs against its own fresh temp repo, guaranteed to contain no
+    prompt file anywhere: the caller's repo must not leak into the verdict,
+    because a read-only check reports what is actually present (so a caller
+    repo that still holds an empty or whitespace-only prompt file would
+    yield the empty detail, not the missing one). ``repo`` is accepted for
+    call-site compatibility and ignored.
+    """
+    with tempfile.TemporaryDirectory() as missing_repo:
+        return _role_prompt_check()(
+            str(missing_repo), resolve_role=_fake_resolve_role(prompt_path),
+        )
 
 
 class TestRolePromptCheckPass(unittest.TestCase):
