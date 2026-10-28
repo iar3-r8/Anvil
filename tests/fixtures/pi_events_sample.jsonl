@@ -1,0 +1,20 @@
+{"type": "session", "version": 3, "id": "9f1c7a42-6e3d-4b8a-9c2f-7d5e8a1b3c4d", "timestamp": "2026-10-27T20:00:00.000Z", "cwd": "/workspace"}
+{"type": "agent_start"}
+{"type": "message_update", "usage": {"input": 100, "output": 1, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 101, "cost": {"input": 0.0001, "output": 0.0001, "cacheRead": 0.0, "cacheWrite": 0.0, "total": 0.0002}}, "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "Running the suite now"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": " with retries on"}}
+{"type": "auto_retry_start", "attempt": 1}
+{"type": "auto_retry_end", "success": true}
+{"type": "tool_execution_start", "toolCallId": "call_a", "toolName": "bash", "args": {"command": "true"}}
+{"type": "tool_execution_update", "toolCallId": "call_a", "toolName": "bash", "args": {"command": "true"}, "partialResult": {}}
+{"type": "tool_execution_end", "toolCallId": "call_a", "toolName": "bash", "result": null, "isError": false, "durationMs": 0}
+{"type": "auto_retry_start", "attempt": 2, "maxAttempts": 3, "delayMs": 2000, "errorMessage": "529 overloaded"}
+{"type": "auto_retry_end", "success": false, "attempt": 2, "finalError": "529 overloaded: all retries exhausted"}
+{"type": "compaction_start", "reason": "threshold"}
+{"type": "compaction_end", "aborted": false, "result": {"tokensBefore": 150000, "estimatedTokensAfter": 32000}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": "retry failed: all retries exhausted"}}
+{"type": "message_update", "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": " - falling back"}}
+{"type": "tool_execution_start", "toolCallId": "call_b", "toolName": "bash", "args": {"command": "exit 1"}}
+{"type": "tool_execution_end", "toolCallId": "call_b", "toolName": "bash", "result": null, "isError": false}
+{"type": "message_update", "usage": {"input": 120, "output": 20, "cacheRead": 400, "cacheWrite": 50, "totalTokens": 590, "cost": {"input": 0.0002, "output": 0.001, "cacheRead": 0.0002, "cacheWrite": 0.0001, "total": 0.0015}}, "assistantMessageEvent": {"type": "text_delta", "contentIndex": 0, "delta": " done"}}
+{"type": "agent_end", "messages": [], "willRetry": false}
+{"type": "agent_settled", "aborted": false}
