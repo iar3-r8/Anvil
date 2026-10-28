@@ -2,9 +2,10 @@
 
 Anvil consumes the Pi JSON event stream when recording bake-off runs
 (``plans/pi-phase1-bakeoff.md``). This module owns the whole job of turning
-that byte stream into structured Python data: framing the records, and - in
-later cycles - the higher-level functions built on top of the framing
-(``tool_calls`` and ``outcome`` account for tool usage and final state).
+that byte stream into structured Python data: ``parse`` frames the records,
+and the functions built on top of it - ``session``, ``tool_calls``,
+``outcome``, ``tool_durations``, ``retries``, ``compactions``,
+``usage_detail`` - each report one aspect of a run.
 
 Framing rule (``doc/external/pi-dev/json-event-stream.md``, "Framing and
 process I/O"): records are separated by LF only; an optional preceding
