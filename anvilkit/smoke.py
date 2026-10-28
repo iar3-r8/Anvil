@@ -68,7 +68,17 @@ exact stdout on a pass -- becoming the final one; a chown that itself exits
 non-zero fails the layer with the chown's stderr in the detail and no read
 retry at all, and a pass, ``fix=False``, or a failure without the chown fix
 line (missing-file or generic) returns the first read's verdict unchanged,
-spawning nothing.
+spawning nothing. ``check_role_prompt`` (behaviour 13) is layer 4's
+role-prompt-presence check, over no runner: a plain read-only filesystem
+check on the target repo -- it derives the path from the injected
+``resolve_role`` seam's ``prompt_path`` (default a closure over the real
+:func:`anvilkit.pi.pirole.resolve`, whose prompt path does not depend on
+the model ids), and an existing non-empty file passes naming the absolute
+path, a missing path fails saying it is missing with a fix line carrying
+the minimal content to write, an empty or whitespace-only file fails
+saying it is empty -- a detail distinct from the missing one -- and a
+directory at the path fails saying it is not a file; it never creates,
+modifies, deletes or renames anything.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -79,10 +89,12 @@ spelled once as :data:`GATEWAY_CONTAINER` (behaviour 7).
 
 import dataclasses
 import json
-from typing import Callable, List, Optional, Sequence, Tuple
+import os
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from anvilkit import config, health
-from anvilkit.pi import pisandbox
+from anvilkit.pi import pirole, pisandbox
 
 # The stable header rendered by ``format_report``, even when there is nothing
 # else to say. Later behaviours assert this exact string.
@@ -761,4 +773,69 @@ def check_coder_id(
         ok=STATE_FAILED,
         detail="coder model %s is not registered; models.json seeds %s"
         % (coder_id, ", ".join(seeded_ids) if seeded_ids else "no models"),
+    )
+
+
+# The minimal valid role markdown the missing-prompt fix line carries -- a
+# minimal role prompt, pinned by its markdown heading.
+_MINIMAL_ROLE_PROMPT = "## Coder\nYou write and modify code."
+
+
+def _default_resolve_role(name: str) -> Dict[str, str]:
+    """The default ``resolve_role``: the real :func:`anvilkit.pi.pirole.resolve`
+    with placeholder model ids.
+
+    ``pirole.resolve`` only validates the role name, and its ``prompt_path``
+    is ``.pi/roles/<name>.md`` regardless of the ids, so the two ids the
+    real signature requires can be placeholders here; the command (behaviour
+    18) wraps the real ids around the same seam.
+    """
+    return pirole.resolve(name, "placeholder", "placeholder")
+
+
+def check_role_prompt(
+    repo_path: str,
+    resolve_role: Callable[[str], Dict[str, str]] = _default_resolve_role,
+) -> "LayerResult":
+    """Layer 4: is the coder role's prompt file present in the target repo?
+
+    A plain read-only filesystem check, over no runner. The path is derived,
+    never spelled: ``repo_path`` joined with the
+    ``resolve_role("coder")["prompt_path"]`` the injected seam returns
+    (default a closure over the real :func:`anvilkit.pi.pirole.resolve`). An
+    existing non-empty file passes, the detail carrying the absolute joined
+    path; a missing path fails saying it is missing, the fix line carrying
+    the minimal content to write; an empty or whitespace-only file fails
+    saying it is empty -- a detail distinct from the missing one; a
+    directory at the path fails saying it is not a file. This check never
+    creates, modifies, deletes or renames anything: it diagnoses and prints
+    (issue 83).
+    """
+    prompt_path = Path(repo_path) / resolve_role("coder")["prompt_path"]
+    absolute = os.path.abspath(str(prompt_path))
+    if not prompt_path.exists():
+        return LayerResult(
+            name="role-prompt",
+            ok=STATE_FAILED,
+            detail="role prompt missing at %s" % absolute,
+            fix_lines=(
+                ("create %s with at least:\n%s" % (absolute, _MINIMAL_ROLE_PROMPT)),
+            ),
+        )
+    if prompt_path.is_dir():
+        return LayerResult(
+            name="role-prompt",
+            ok=STATE_FAILED,
+            detail="not a file at %s (a directory is there)" % absolute,
+        )
+    if not prompt_path.read_bytes().strip():
+        return LayerResult(
+            name="role-prompt",
+            ok=STATE_FAILED,
+            detail="role prompt is empty at %s" % absolute,
+        )
+    return LayerResult(
+        name="role-prompt",
+        ok=STATE_OK,
+        detail="role prompt present at %s" % absolute,
     )
