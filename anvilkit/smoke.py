@@ -98,7 +98,19 @@ record -- judged on the stream existing, never on stderr or model content;
 each failing condition names itself in its own distinct detail, a
 ``DriverError`` from the driver fails the layer with the exception's
 message, and a prior layer not passing makes the layer ``skipped`` with
-the runner uncalled.
+the runner uncalled. ``check_bad_image_tag`` (behaviour 16) is the
+bad-image-tag sub-check of the layer-6 report name ``failure-paths``: it
+calls the same real :func:`anvilkit.pi.pidriver.run_role` with an image
+tag no image matches (so the daemon refuses the start -- non-zero exit,
+empty stdout -- and the driver's own ``DriverError`` genuinely fires)
+with the resolved coder definition (via the same injectable
+``resolve_role`` seam as :func:`check_coder_run`, so no real model is
+ever needed), a fresh :func:`new_session_id` and the injected runner --
+never wrapping or mocking the driver. When the ``DriverError`` fires the
+layer PASSES, naming the ``DriverError``, the bad tag and the daemon
+stderr in its detail; when ``run_role`` returns instead the failure path
+did not fire and the layer FAILS saying so -- the opposite verdict of
+behaviour 15, whose ``DriverError`` is a failure.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -983,4 +995,59 @@ def check_coder_run(
         name="coder-run",
         ok=STATE_OK,
         detail="coder run completed: %d event record(s)" % len(events),
+    )
+
+
+def check_bad_image_tag(
+    runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+    repo_path: str,
+    tag: str,
+    task: str,
+    resolve_role: Callable[[str], Dict[str, str]] = _default_coder_run_resolve_role,
+) -> "LayerResult":
+    """The failure-paths layer's bad-image-tag sub-check (behaviour 16 of
+    ``plans/smoke-test.md``).
+
+    ``runner`` is the same injected seam ``pidriver.run_role`` takes (one
+    invocation dict in, the six-key result dict out), forwarded to the real
+    driver unchanged -- never wrapped or mocked, so the driver's own
+    ``DriverError`` rule (non-zero exit with empty stdout) is genuinely hit.
+    ``tag`` is an image tag no image matches, so the docker daemon refuses
+    the start and the driver raises; ``repo_path`` and ``task`` are forwarded
+    to ``run_role`` unchanged. The session id is a fresh
+    :func:`new_session_id` product, and the definition comes from
+    ``resolve_role("coder")`` with the behaviour-15 default seam -- its
+    placeholder model ids mean no real model is ever needed, so this runs on
+    a GPU-less host. The layer is named ``"bad-image-tag"``.
+
+    When the driver's ``DriverError`` fires, the failure path is proved and
+    the layer PASSES, its detail naming the ``DriverError`` and carrying the
+    exception's message verbatim (which names the bad tag and the daemon
+    stderr). When ``run_role`` returns instead -- exit 0 with or without a
+    stream -- the failure path did not fire and the layer FAILS saying so,
+    the opposite verdict of :func:`check_coder_run`, whose ``DriverError``
+    is a failure.
+    """
+    definition = resolve_role("coder")
+    session_id = new_session_id()
+    try:
+        result = pidriver.run_role(
+            definition,
+            repo_path,
+            tag,
+            session_id,
+            task,
+            runner,
+        )
+    except pidriver.DriverError as exc:
+        return LayerResult(
+            name="bad-image-tag",
+            ok=STATE_OK,
+            detail="DriverError fired as expected: %s" % exc,
+        )
+    return LayerResult(
+        name="bad-image-tag",
+        ok=STATE_FAILED,
+        detail="the failure path did not fire: run returned with exit code %s"
+        % result["exit_code"],
     )
