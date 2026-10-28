@@ -6,14 +6,28 @@ lines beneath a failing layer only. This behaviour is the report renderer
 behaviour 1 of ``plans/smoke-test.md``; the layer checks themselves arrive in
 later behaviours. ``summarize`` (behaviour 2) turns the layer results into the
 process exit code the CLI returns.
+
+The four pinned names -- the agent volume, the internal network, the image
+uid and the agent home -- are adopted as module-level constants from
+``anvilkit.pi.pisandbox`` (behaviour 3), so this module never re-spells them
+as literals.
 """
 
 import dataclasses
 from typing import Sequence
 
+from anvilkit.pi import pisandbox
+
 # The stable header rendered by ``format_report``, even when there is nothing
 # else to say. Later behaviours assert this exact string.
 HEADER = "Anvil smoke test"
+
+# The four pinned names, adopted from ``anvilkit.pi.pisandbox`` rather than
+# re-spelled (behaviour 3 of ``plans/smoke-test.md``).
+NAMED_VOLUME = pisandbox._NAMED_VOLUME
+INTERNAL_NETWORK = pisandbox._INTERNAL_NETWORK
+IMAGE_UID = pisandbox._IMAGE_UID
+AGENT_HOME = pisandbox._AGENT_HOME
 
 # Canonical layer states.
 STATE_OK = "ok"
