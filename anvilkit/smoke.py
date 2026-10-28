@@ -13,7 +13,10 @@ saying docker is not on PATH, never a traceback.
 over the same injected runner: it inspects the image tag (defaulting to the
 plan's pinned tag) and derives its fail fix line from
 ``anvilkit.pi.pisandbox.build_argv`` so it cannot drift from the build
-command.
+command. ``check_sandbox_network`` (behaviour 6) is layer 1's
+internal-network-presence check, over the same runner: it inspects the
+adopted :data:`INTERNAL_NETWORK` name and its fail fix line names that
+compose creates the network.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -199,4 +202,50 @@ def check_sandbox_image(
        ok=STATE_FAILED,
        detail=stderr.strip(),
        fix_lines=(" ".join(pisandbox.build_argv(tag)),),
+   )
+
+
+# The compose-up that creates the internal network (behaviour 6 of
+# ``plans/smoke-test.md``): the plan pins this exact command, so it is
+# spelled here once and never re-typed.
+NETWORK_FIX_COMMAND = "docker compose --profile coder up -d"
+
+
+def check_sandbox_network(
+   docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]]
+) -> "LayerResult":
+   """Layer 1: is the internal network present?
+
+   ``docker_runner`` is the same injected seam as
+   :func:`check_docker_daemon`, with the contract
+   ``docker_runner(argv) -> (exit_code, stdout, stderr)``. It is called
+   exactly once with ``["docker", "network", "inspect", <name>]`` where
+   ``<name>`` is the adopted :data:`INTERNAL_NETWORK` constant, never a
+   re-spelled literal, so a rename in ``anvilkit.pi.pisandbox`` keeps the
+   check and the run in step. Exit 0 passes, a non-zero exit fails with
+   its stderr in the detail and exactly one fix line naming that compose
+   creates the network, and a ``FileNotFoundError`` from the runner fails
+   saying docker is not on PATH, mirroring the daemon check.
+   """
+   try:
+       exit_code, _stdout, stderr = docker_runner(
+           ["docker", "network", "inspect", INTERNAL_NETWORK]
+       )
+   except FileNotFoundError:
+       return LayerResult(
+           name="sandbox-network",
+           ok=STATE_FAILED,
+           detail="docker not on PATH",
+       )
+   if exit_code == 0:
+       return LayerResult(
+           name="sandbox-network",
+           ok=STATE_OK,
+           detail="network %s present" % INTERNAL_NETWORK,
+       )
+   return LayerResult(
+       name="sandbox-network",
+       ok=STATE_FAILED,
+       detail=stderr.strip(),
+       fix_lines=(NETWORK_FIX_COMMAND + "  # compose creates the network",),
    )
