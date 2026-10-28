@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1–6 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–7 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -58,6 +58,22 @@ pass state; a non-zero exit is the fail state whose fix line carries the
 compose-up command ``docker compose --profile coder up -d`` and names
 that compose creates the network; a ``FileNotFoundError`` from the runner
 is a not-on-PATH fail, never a traceback.
+
+Behaviour 7: ``check_gateway_container(docker_runner)`` is layer 2's
+gateway container check, over the same injected seam. The container name
+is the module constant ``GATEWAY_CONTAINER`` -- the ``container_name``
+from ``docker-compose.yml`` (``llama-swap-service``); ``llama-swap`` is
+the service/DNS name only and must never be the match. It runs
+``["docker", "ps", "--filter", "name=<container>", "--format",
+"{{.Names}}"]`` and returns a ``LayerResult`` named
+``"gateway-container"``: exit 0 with a line that equals the container
+name exactly (after stripping) is the pass state; a non-zero exit, or an
+output with no such exact line (including empty output), is the fail
+state whose fix line carries the compose-up command
+``docker compose --profile coder up -d``. The match is exact per line,
+never a substring -- ``llama-swap-service-old`` alone is a fail; a
+``FileNotFoundError`` from the runner is a not-on-PATH fail, never a
+traceback.
 """
 
 import sys
@@ -890,6 +906,224 @@ class TestSandboxNetworkCheckNotOnPath(unittest.TestCase):
        self.assertEqual(result.name, "sandbox-network")
        self.assertEqual(result.ok, STATE_FAILED)
        self.assertIn("path", result.detail.lower())
+
+
+# Behaviour 7: layer 2's gateway container check. It takes the same
+# injected docker seam as behaviours 4-6. The public seam these tests
+# pin: ``smoke.check_gateway_container(docker_runner)`` returns a
+# ``LayerResult`` named ``"gateway-container"``. The container name must
+# come from a module-level constant ``GATEWAY_CONTAINER`` equal to the
+# ``container_name`` from ``docker-compose.yml`` (``llama-swap-service``);
+# ``llama-swap`` is the service/DNS name only and must never be the
+# match. The check matches a line of the ``docker ps`` output that equals
+# the container name exactly (after stripping surrounding whitespace) --
+# never a substring.
+GATEWAY_CHECK_NAME = "check_gateway_container"
+GATEWAY_LAYER_NAME = "gateway-container"
+GATEWAY_CONTAINER_NAME = "llama-swap-service"
+# The plan's pinned fix command for a missing gateway container: the
+# compose-up that starts it. The test pins the command string itself, not
+# any reuse of another module constant.
+GATEWAY_FIX_COMMAND = "docker compose --profile coder up -d"
+
+
+def _gateway_check():
+    """Return the behaviour-7 gateway container check, or fail naming what
+    is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, GATEWAY_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner) yet "
+            "(behaviour 7 of plans/smoke-test.md)" % GATEWAY_CHECK_NAME
+        )
+    return check
+
+
+def _gateway_container():
+    """The container name read from the module's ``GATEWAY_CONTAINER``
+    constant, or fail naming the missing constant.
+
+    The argv test builds its expected argv from this constant rather than
+    a re-spelled literal, so it proves the check filters on the adopted
+    name.
+    """
+    smoke_mod = _require_smoke()
+    container = getattr(smoke_mod, "GATEWAY_CONTAINER", None)
+    if container is None:
+        raise AssertionError(
+            "anvilkit.smoke does not expose module constant GATEWAY_CONTAINER "
+            "(behaviour 7 of plans/smoke-test.md)"
+        )
+    return container
+
+
+def _gateway_argv(container):
+    """The list-form argv layer 2 uses to list the gateway container.
+
+    The filter value is ``name=<container>`` -- never a ``--name`` flag --
+    per the plan.
+    """
+    return [
+        "docker",
+        "ps",
+        "--filter",
+        "name=" + container,
+        "--format",
+        "{{.Names}}",
+    ]
+
+
+class TestGatewayContainerConstant(unittest.TestCase):
+    """Behaviour 7 (PIN): the container name is pinned as the module-level
+    constant ``GATEWAY_CONTAINER``, the ``container_name`` from
+    ``docker-compose.yml`` -- not the service/DNS name."""
+
+    def test_gateway_container_constant_is_the_compose_container_name(self):
+        # Act: read the constant from the smoke module.
+        smoke_mod = _require_smoke()
+
+        # Assert: the constant exists and is exactly the compose
+        # container_name -- never the service/DNS name ``llama-swap``.
+        self.assertTrue(
+            hasattr(smoke_mod, "GATEWAY_CONTAINER"),
+            "anvilkit/smoke.py must expose module constant GATEWAY_CONTAINER, "
+            "the container_name from docker-compose.yml",
+        )
+        self.assertEqual(
+            smoke_mod.GATEWAY_CONTAINER,
+            GATEWAY_CONTAINER_NAME,
+            "GATEWAY_CONTAINER must be the compose container_name %r, not a "
+            "re-spelled or service-name literal" % GATEWAY_CONTAINER_NAME,
+        )
+
+
+class TestGatewayContainerCheckPass(unittest.TestCase):
+    """Behaviour 7: a ``docker ps`` line that equals the container name
+    exactly (after stripping) is the pass state."""
+
+    def test_check_gateway_container_exit_zero_with_exact_line_passes(self):
+        # Arrange: the runner answers with a single exact container-name
+        # line.
+        runner = _recording_runner(0, "llama-swap-service\n", "")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: the layer is the gateway-container layer in the pass
+        # state.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+
+    def test_check_gateway_container_exit_zero_with_exact_line_among_others_passes(self):
+        # Arrange: the exact container-name line sits among other running
+        # container names.
+        stdout = "coder_qdrant-service\nllama-swap-service\nother-container\n"
+        runner = _recording_runner(0, stdout, "")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: the exact line still passes, even with neighbours.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+
+
+class TestGatewayContainerCheckExactPerLine(unittest.TestCase):
+    """Behaviour 7 (error): the match is exact per line, never a
+    substring -- ``llama-swap-service-old`` alone is a fail."""
+
+    def test_check_gateway_container_exit_zero_with_superset_name_only_fails(self):
+        # Arrange: the only line is a longer name that contains the
+        # container name as a substring.
+        runner = _recording_runner(0, "llama-swap-service-old\n", "")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: a substring is not a match -- the layer failed.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+
+
+class TestGatewayContainerCheckFail(unittest.TestCase):
+    """Behaviour 7: a non-zero exit or an output with no exact line fails
+    with the compose-up fix line."""
+
+    def test_check_gateway_container_nonzero_exit_fails_with_compose_up_fix_line(self):
+        # Arrange: the ``docker ps`` invocation fails non-zero with a
+        # stderr message.
+        runner = _recording_runner(1, "", "Error: something went wrong")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: the layer is the gateway-container layer in the fail
+        # state, and one fix line carries the plan's pinned compose-up
+        # command.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertTrue(
+            any(GATEWAY_FIX_COMMAND in fix for fix in result.fix_lines),
+            "fix lines %r must include the compose-up command %r"
+            % (result.fix_lines, GATEWAY_FIX_COMMAND),
+        )
+
+    def test_check_gateway_container_exit_zero_empty_output_fails_with_compose_up_fix_line(self):
+        # Arrange: the daemon answers but nothing is running.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: empty output is a fail, with the compose-up fix line.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertTrue(
+            any(GATEWAY_FIX_COMMAND in fix for fix in result.fix_lines),
+            "fix lines %r must include the compose-up command %r"
+            % (result.fix_lines, GATEWAY_FIX_COMMAND),
+        )
+
+
+class TestGatewayContainerCheckArgv(unittest.TestCase):
+    """Behaviour 7: the check invokes the runner with the list-form
+    ``docker ps --filter name=<container> --format {{.Names}}`` argv,
+    exactly once, where ``<container>`` is the module's
+    ``GATEWAY_CONTAINER`` constant."""
+
+    def test_check_gateway_container_invokes_ps_argv_in_list_form(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "llama-swap-service\n", "")
+
+        # Act.
+        _gateway_check()(runner)
+
+        # Assert: the check ran exactly the plan's argv, as a list, once,
+        # with the filter value read from the adopted constant -- not a
+        # ``--name`` flag.
+        self.assertEqual(runner.calls, [_gateway_argv(_gateway_container())])
+
+
+class TestGatewayContainerCheckNotOnPath(unittest.TestCase):
+    """Behaviour 7 (error): ``FileNotFoundError`` from the runner is a
+    not-on-PATH fail, never a traceback."""
+
+    def test_check_gateway_container_runner_not_found_fails_saying_not_on_path(self):
+        # Arrange: the runner raises ``FileNotFoundError`` as when docker
+        # is missing from PATH.
+        def runner(argv):
+            raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+        # Act: the exception must not escape the check -- a traceback here
+        # fails the test.
+        result = _gateway_check()(runner)
+
+        # Assert: the layer is the gateway-container layer in the fail
+        # state, and its detail says docker is not on PATH.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("path", result.detail.lower())
 
 
 if __name__ == "__main__":
