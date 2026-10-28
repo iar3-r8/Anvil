@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1, 2 and 3 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1, 2, 3 and 4 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -28,6 +28,16 @@ named volume, the internal network, the image uid and the agent home -- as
 module-level constants taken from ``anvilkit.pi.pisandbox``; each must equal
 the corresponding private ``pisandbox`` attribute, and the raw source of
 ``anvilkit/smoke.py`` must contain none of the four literal spellings.
+
+Behaviour 4: ``check_docker_daemon(docker_runner)`` is layer 1's daemon
+check, taking the plan's single injected docker seam --
+``docker_runner(argv) -> (exit_code, stdout, stderr)``, list-form argv,
+never ``shell=True``. It runs ``["docker", "version", "--format",
+"{{.Server.Version}}"]`` and returns a ``LayerResult`` named
+``"docker-daemon"``: exit 0 is the pass state with the trimmed server
+version in the detail; a non-zero exit is the fail state with the stderr in
+the detail; a ``FileNotFoundError`` from the runner is a fail saying docker
+is not on PATH -- never a traceback.
 """
 
 import sys
@@ -506,6 +516,105 @@ class TestPinnedNameReuse(unittest.TestCase):
                 "anvilkit/smoke.py re-spells the pinned literal %r; import "
                 "it from anvilkit.pi.pisandbox instead" % literal,
             )
+    
+    
+# Behaviour 4: layer 1's daemon check. The plan's docker seam (recorded in
+# its Assumptions) is one injected ``docker_runner(argv) -> (exit_code,
+# stdout, stderr)`` with list-form argv; this check must take the runner so
+# it is testable without Docker installed. The public seam these tests pin:
+# ``smoke.check_docker_daemon(docker_runner)`` returns a ``LayerResult``.
+DAEMON_CHECK_NAME = "check_docker_daemon"
+DAEMON_ARGV = ["docker", "version", "--format", "{{.Server.Version}}"]
+
+
+def _daemon_check(runner):
+    """Call the behaviour-4 daemon check with ``runner`` as its seam."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, DAEMON_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner) yet "
+            "(behaviour 4 of plans/smoke-test.md)" % DAEMON_CHECK_NAME
+        )
+    return check(runner)
+
+
+def _recording_runner(exit_code, stdout, stderr):
+    """A fake ``docker_runner`` returning fixed values and recording argv."""
+    calls = []
+
+    def runner(argv):
+        calls.append(list(argv))
+        return (exit_code, stdout, stderr)
+
+    runner.calls = calls
+    return runner
+
+
+class TestDockerDaemonCheckPass(unittest.TestCase):
+    """Behaviour 4: exit 0 passes with the server version in the detail."""
+
+    def test_check_docker_daemon_exit_zero_passes_with_version_in_detail(self):
+        # Arrange: the injected runner answers the version probe with exit 0.
+        runner = _recording_runner(0, "27.1.1\n", "")
+
+        # Act.
+        result = _daemon_check(runner)
+
+        # Assert: the layer is the docker-daemon layer, in the pass state,
+        # and the detail carries the (trimmed) server version.
+        self.assertEqual(result.name, "docker-daemon")
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn("27.1.1", result.detail)
+
+    def test_check_docker_daemon_runs_the_version_probe_in_list_form(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "27.1.1", "")
+
+        # Act.
+        _daemon_check(runner)
+
+        # Assert: the check ran exactly the plan's argv, as a list.
+        self.assertEqual(runner.calls, [DAEMON_ARGV])
+
+
+class TestDockerDaemonCheckNonZeroExit(unittest.TestCase):
+    """Behaviour 4: a non-zero exit fails with the stderr in the detail."""
+
+    def test_check_docker_daemon_nonzero_exit_fails_with_stderr_in_detail(self):
+        # Arrange: the daemon is up but the probe fails non-zero with a
+        # stderr message.
+        stderr = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+        runner = _recording_runner(1, "", stderr)
+
+        # Act.
+        result = _daemon_check(runner)
+
+        # Assert: the layer failed, and its detail carries the stderr —
+        # not a bare exit code.
+        self.assertEqual(result.name, "docker-daemon")
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(stderr, result.detail)
+
+
+class TestDockerDaemonCheckNotOnPath(unittest.TestCase):
+    """Behaviour 4 (error): ``FileNotFoundError`` from the runner is a fail
+    saying docker is not on PATH — never a traceback."""
+
+    def test_check_docker_daemon_runner_not_found_fails_saying_not_on_path(self):
+        # Arrange: the runner raises ``FileNotFoundError`` as when docker is
+        # missing from PATH.
+        def runner(argv):
+            raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+        # Act: the exception must not escape the check — a traceback here
+        # fails the test.
+        result = _daemon_check(runner)
+
+        # Assert: the layer failed, and its detail says docker is not on PATH.
+        self.assertEqual(result.name, "docker-daemon")
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("path", result.detail.lower())
 
 
 if __name__ == "__main__":
