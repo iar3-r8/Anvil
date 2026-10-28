@@ -147,6 +147,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
    sys.path.insert(0, str(REPO_ROOT))
 
+from anvilkit.pi import pidriver  # noqa: E402
+from anvilkit.pi import pievents  # noqa: E402
 from anvilkit.pi import pirole  # noqa: E402
 from anvilkit.pi import pisandbox  # noqa: E402
 
@@ -3044,5 +3046,404 @@ class TestNewSessionIdPassesPiroleValidation(unittest.TestCase):
             )
 
 
+# Behaviour 15: the real coder run — layer 5. The check is a function the
+# operator command (behaviour 18) calls ONLY after layers 1–4 have all
+# passed. The public seam these tests pin:
+#
+#     smoke.check_coder_run(runner, repo_path, tag, task,
+#                          earlier_layers_ok=True, resolve_role=...)
+#         -> LayerResult
+#
+# - ``runner`` is the injected pidriver runner — the SAME seam
+#   ``pidriver.run_role`` takes (one invocation dict in, the six-key
+#   result dict out: ``exit_code``, ``stdout``, ``stderr``,
+#   ``wall_time_s``, ``timed_out``, ``evidence``). It is NEVER a real
+#   process in this suite: the fake records the invocation and returns a
+#   scripted six-key dict, and the REAL ``pidriver.run_role`` is what the
+#   check must call with it — so the driver's own ``DriverError`` rule
+#   (non-zero exit with EMPTY stdout) is genuinely hit, not re-implemented.
+# - ``repo_path`` / ``tag``: the target repo and the sandbox image tag,
+#   forwarded to ``run_role`` unchanged.
+# - ``task``: the trivial task — a one-line instruction needing no tools;
+#   the run is judged on the event stream existing, never on what the
+#   model said.
+# - ``earlier_layers_ok``: a flag telling the check whether layers 1–4 all
+#   passed. When it is ``False`` the layer is ``STATE_SKIPPED`` (NEVER
+#   ``STATE_OK`` or ``STATE_FAILED``) and the runner is NEVER called.
+# - ``resolve_role``: an injectable seam returning the resolved role
+#   definition dict (the real ``pirole.resolve("coder", ...)`` shape —
+#   ``tier``, ``prompt_path``, etc.); defaulting to the real resolver with
+#   placeholder ids, like ``check_role_prompt``'s default.
+#
+# The layer is named ``"coder-run"`` (the plan's layer-5 name in the
+# report set, matching ``LAYER_NAMES`` above). The pass condition is
+# exactly three, all of them: ``exit_code == 0`` AND ``timed_out is
+# False`` AND ``len(pievents.parse(stdout)["events"]) >= 1`` — judged on
+# the stream existing, never on stderr. The three failure modes are three
+# distinct details, each naming itself (exit code / timeout / empty
+# stream); a ``DriverError`` from ``run_role`` fails the layer with the
+# exception's message — never a traceback; and a stderr line like
+# "No project session found ... creating a new session" is first-run
+# noise that never fails the layer.
+CODER_RUN_CHECK_NAME = "check_coder_run"
+CODER_RUN_LAYER_NAME = "coder-run"
+# The plan's layer-5 name, exactly as spelled in LAYER_NAMES.
+# The trivial task: one line, no tools needed; the verdict is on the
+# stream, never on the model's answer content.
+TRIVIAL_TASK = "Reply with the word ok."
+# Marker words each failing condition must name in its own detail.
+EXIT_CODE_MARKER = "exit"
+TIMEOUT_MARKER = "timeout"
+EMPTY_STREAM_MARKER = "stream"
+# The first-run noise line a fresh session prints to stderr; it must
+# never fail the layer.
+NOISE_STDERR = (
+    "No project session found at .pi/sessions/; creating a new session."
+)
+
+
+def _coder_run_check():
+    """Return the behaviour-15 check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, CODER_RUN_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "%s(runner, repo_path, tag, task, earlier_layers_ok=True, "
+            "resolve_role=...) yet (behaviour 15 of plans/smoke-test.md)"
+            % CODER_RUN_CHECK_NAME
+        )
+    return check
+
+
+def _runner_result(exit_code, stdout, stderr, timed_out=False):
+    """A six-key pidriver result dict for a scripted runner outcome."""
+    return {
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "wall_time_s": 1.0,
+        "timed_out": timed_out,
+        "evidence": [],
+    }
+
+
+def _fake_runner(result):
+    """A fake pidriver runner returning ``result`` and recording the
+    invocation dicts it is handed.
+
+    Records every invocation so a test can assert the ``session_id`` the
+    check used (via ``--session-id`` in the recorded ``argv``), the task
+    that reached the end of the argv, and the runner's call count.
+    """
+    invocations = []
+
+    def runner(invocation):
+        invocations.append(invocation)
+        return result
+
+    runner.invocations = invocations
+    return runner
+
+
+def _default_coder_definition():
+    """The real coder role definition — the same shape the production
+    run uses, so ``role_argv``'s session-id validation is exercised
+    against the real role table."""
+    return pirole.resolve("coder", "coder-model", "frontier-model")
+
+
+def _session_id_from_invocation(invocation):
+    """The session id the driver's argv carried: the token right after
+    the single ``--session-id`` flag."""
+    argv = invocation["argv"]
+    return argv[argv.index("--session-id") + 1]
+
+
+class TestCoderRunCheckPass(unittest.TestCase):
+    """Behaviour 15: exit 0, not timed out, and a non-empty parseable
+    stream is the pass state — the layer is named ``coder-run``."""
+
+    def test_coder_run_exit_zero_not_timed_out_with_events_passes(self):
+        # Arrange: a passing run — exit 0, a JSONL event stream with one
+        # record, clean stderr.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        self.assertGreaterEqual(
+            len(pievents.parse(stdout)["events"]), 1,
+            "fixture stdout must yield at least one record",
+        )
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+            # Assert: the layer is the coder-run layer in the pass state.
+            self.assertEqual(result.name, CODER_RUN_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_OK)
+            # The runner was driven exactly once, through run_role.
+            self.assertEqual(len(runner.invocations), 1)
+
+
+class TestCoderRunCheckNamesFailureModes(unittest.TestCase):
+    """Behaviour 15 (error): each failing condition names itself — exit
+    code, timeout, empty stream — three distinct details."""
+
+    def _run(self, result_dict):
+        runner = _fake_runner(result_dict)
+        with tempfile.TemporaryDirectory() as repo:
+            return _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            ), runner
+
+    def test_coder_run_nonzero_exit_with_output_fails_naming_the_exit_code(self):
+        # Arrange: the agent produced output but exited non-zero.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        result, runner = self._run(_runner_result(1, stdout, ""))
+
+        # Assert: failed, the detail names the exit code, and it is NOT
+        # the timeout or empty-stream detail.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(EXIT_CODE_MARKER, result.detail.lower())
+        self.assertNotIn(TIMEOUT_MARKER, result.detail.lower())
+        self.assertEqual(len(runner.invocations), 1)
+
+    def test_coder_run_timed_out_fails_naming_the_timeout(self):
+        # Arrange: the run timed out (exit code zero or not, the timeout
+        # is its own failure mode).
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        result, _runner = self._run(
+            _runner_result(0, stdout, "", timed_out=True),
+        )
+
+        # Assert: failed, the detail names the timeout, and it is NOT the
+        # exit-code or empty-stream detail.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(TIMEOUT_MARKER, result.detail.lower())
+        self.assertNotIn(EXIT_CODE_MARKER, result.detail.lower())
+
+    def test_coder_run_empty_stream_fails_naming_the_empty_stream(self):
+        # Arrange: exit 0, not timed out, but the stdout parses to zero
+        # records — the stream does not exist.
+        result, _runner = self._run(_runner_result(0, "", ""))
+
+        # Assert: failed, the detail names the empty stream, and it is
+        # NOT the exit-code or timeout detail.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(EMPTY_STREAM_MARKER, result.detail.lower())
+        self.assertNotIn(EXIT_CODE_MARKER, result.detail.lower())
+        self.assertNotIn(TIMEOUT_MARKER, result.detail.lower())
+
+    def test_coder_run_three_failure_details_are_pairwise_distinct(self):
+        # Arrange: one scripted outcome per failure mode.
+        exit_fail, _ = self._run(_runner_result(1, "output\n", ""))
+        timeout_fail, _ = self._run(
+            _runner_result(0, '{"type": "session"}\n', "", timed_out=True),
+        )
+        empty_fail, _ = self._run(_runner_result(0, "", ""))
+
+        # Assert: no two failure modes collapse into the same detail.
+        self.assertNotEqual(exit_fail.detail, timeout_fail.detail)
+        self.assertNotEqual(exit_fail.detail, empty_fail.detail)
+        self.assertNotEqual(timeout_fail.detail, empty_fail.detail)
+
+
+class TestCoderRunCheckDriverError(unittest.TestCase):
+    """Behaviour 15 (error): a non-zero exit with EMPTY stdout makes the
+    REAL ``pidriver.run_role`` raise ``DriverError``; the layer catches it
+    and fails with the exception's message — never a traceback."""
+
+    def test_coder_run_nonzero_exit_empty_stdout_catches_driver_error_with_its_message(self):
+        # Arrange: the scripted outcome is a container start failure —
+        # non-zero exit, empty stdout, a stderr the driver's message
+        # carries. The real run_role raises DriverError for exactly this.
+        stderr = "docker: Error response from daemon: No such image: pi-sandbox"
+        runner = _fake_runner(_runner_result(1, "", stderr))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act: a DriverError escaping the check would error the test
+            # with a traceback; instead the layer must fail.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: the layer failed, carrying the driver's message — which
+        # carries the tag and the stderr — and no traceback text.
+        self.assertEqual(result.name, CODER_RUN_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(stderr, result.detail)
+        self.assertIn("pi-sandbox", result.detail)
+        self.assertNotIn("Traceback", result.detail)
+        self.assertEqual(len(runner.invocations), 1)
+
+
+class TestCoderRunCheckSkippedWhenEarlierLayersFailed(unittest.TestCase):
+    """Behaviour 15 (error): when the earlier layers did not all pass, the
+    layer is ``STATE_SKIPPED`` — NEVER passed, NEVER failed — and the
+    runner is NEVER called."""
+
+    def test_coder_run_earlier_layers_not_ok_reports_skipped_with_runner_uncalled(self):
+        # Arrange: a runner that would answer if driven; the earlier
+        # layers have NOT all passed.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+                earlier_layers_ok=False,
+            )
+
+        # Assert: skipped — not ok, not failed — and the runner was
+        # driven zero times.
+        self.assertEqual(result.name, CODER_RUN_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_SKIPPED)
+        self.assertNotEqual(result.ok, STATE_OK)
+        self.assertNotEqual(result.ok, STATE_FAILED)
+        self.assertEqual(
+            runner.invocations, [],
+            "the runner must never be called when the earlier layers "
+            "did not all pass",
+        )
+
+
+class TestCoderRunCheckStderrNoiseIgnored(unittest.TestCase):
+    """Behaviour 15 (design intent): a stderr line like
+    "No project session found ... creating a new session" is first-run
+    noise — it never fails the layer, because the pass condition is on
+    exit_code / timed_out / stream, never on stderr."""
+
+    def test_coder_run_passing_run_with_session_noise_on_stderr_still_passes(self):
+        # Arrange: a passing run whose stderr carries the first-run noise
+        # line.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        self.assertIn("No project session found", NOISE_STDERR)
+        runner = _fake_runner(
+            _runner_result(0, stdout, NOISE_STDERR),
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: the noise line must not have failed the layer.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertNotIn("Traceback", result.detail)
+
+
+class TestCoderRunCheckFreshSessionId(unittest.TestCase):
+    """Behaviour 15: the check uses a FRESH ``smoke-``-shaped session id
+    from ``new_session_id`` — observed as the value after ``--session-id``
+    in the argv the real ``run_role`` handed the fake runner, so the id
+    crossed the real ``role_argv`` validator untouched."""
+
+    def test_coder_run_uses_a_fresh_smoke_shaped_session_id(self):
+        # Arrange: a passing run; the fake runner records the invocation.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: exactly one invocation; its argv carries exactly one
+        # --session-id; the id after it is a fresh ``smoke-``-shaped id —
+        # the same shape ``new_session_id`` mints, so it passes the real
+        # pirole validator (which run_role already enforced).
+        self.assertEqual(len(runner.invocations), 1)
+        argv = runner.invocations[0]["argv"]
+        self.assertEqual(argv.count("--session-id"), 1)
+        session_id = _session_id_from_invocation(runner.invocations[0])
+        self.assertRegex(
+            session_id, SESSION_ID_SHAPE,
+            "the session id %r must be the fresh smoke- shaped id from "
+            "new_session_id" % session_id,
+        )
+        # The id the driver used is a genuine new_session_id() product:
+        # it is accepted by the real validator (run_role already proved
+        # that by not raising) and is not a hard-coded id — two invocations
+        # of the check yield two different ids.
+        runner2 = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo2:
+            _coder_run_check()(
+                runner2, repo2, "pi-sandbox", TRIVIAL_TASK,
+            )
+        second_id = _session_id_from_invocation(runner2.invocations[0])
+        self.assertNotEqual(
+            session_id, second_id,
+            "each run must mint a fresh session id (got %r twice)"
+            % session_id,
+        )
+
+
+class TestCoderRunCheckForwardsTaskAndRepo(unittest.TestCase):
+    """Behaviour 15: the check forwards the trivial task and the repo
+    path through to the real ``run_role`` — the task arrives after the
+    ``--`` terminator, byte-identical, and the driver's ``cwd`` is the
+    repo path."""
+
+    def test_coder_run_forwards_the_trivial_task_after_the_terminator_and_the_repo_as_cwd(self):
+        # Arrange: a passing run.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: the invocation's cwd is the repo path, and the full argv
+        # is exactly the real composition — the sandbox container argv plus
+        # the role argv the real builders produce, with the trivial task
+        # after the ``--`` terminator, byte-identical.
+        invocation = runner.invocations[0]
+        self.assertEqual(invocation["cwd"], repo)
+        argv = invocation["argv"]
+        session_id = _session_id_from_invocation(invocation)
+        expected = pisandbox.run_argv(repo, "pi-sandbox") + pirole.role_argv(
+            _default_coder_definition(), session_id, TRIVIAL_TASK,
+        )
+        self.assertEqual(
+            argv,
+            expected,
+            "the argv must be the real run_role composition "
+            "(container argv + role argv); got %r" % (argv,),
+        )
+        self.assertEqual(
+            argv[-2:], ["--", TRIVIAL_TASK],
+            "the task must reach the end of the argv after the -- "
+            "terminator, byte-identical; got %r" % (argv[-2:],),
+        )
+        # The argv begins with the sandbox container argv the real
+        # run_role composes — docker run, not a hand-rolled prefix.
+        self.assertEqual(argv[0], "docker")
+        self.assertEqual(argv[1], "run")
+
+
+class TestCoderRunCheckLayerName(unittest.TestCase):
+    """Behaviour 15: the layer is named ``coder-run`` — the plan's
+    layer-5 name in the report set, exactly as ``LAYER_NAMES`` spells it."""
+
+    def test_coder_run_layer_is_named_coder_run(self):
+        # Arrange: any scripted outcome; the name is asserted regardless
+        # of the verdict.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: the layer name is exactly the plan's layer-5 name.
+        self.assertEqual(result.name, "coder-run")
+        self.assertIn(
+            result.name, LAYER_NAMES,
+            "the layer name %r must be the plan's report-set name"
+            % result.name,
+        )
+
+
 if __name__ == "__main__":
-   unittest.main()
+    unittest.main()
