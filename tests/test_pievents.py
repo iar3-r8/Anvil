@@ -2999,6 +2999,507 @@ class TestCompactionsParsedFixture(FixtureStreamTestCase):
             "the fixture records exactly one compaction: one entry and "
             "nothing else",
         )
+
+
+# --- The cache and cost breakdown: last usage wins, never summed -----------
+#
+# Pinned return shape: ``usage_detail(events: List[dict])`` returns a plain
+# dict with exactly eight keys, JSON-native throughout:
+#
+# - ``"cacheRead"`` / ``"cacheWrite"``: ``int`` - the cache token counts of
+#   the LAST ``message_update`` that carried a ``usage`` field, in stream
+#   order;
+# - ``"cost_input"`` / ``"cost_output"`` / ``"cost_cacheRead"`` /
+#   ``"cost_cacheWrite"`` / ``"cost_total"``: ``float`` - the flattened
+#   fields of that same last usage's ``cost`` block (``cost.input``,
+#   ``cost.output``, ``cost.cacheRead``, ``cost.cacheWrite``,
+#   ``cost.total``); zeros when the usage carries no ``cost`` block;
+# - ``"usage_reported"``: ``bool`` - ``True`` iff at least one
+#   ``message_update`` carried a ``usage`` field. ``False`` plus zeros is
+#   the signal that the numbers are placeholders, not measurements.
+#
+# The source rule is identical to ``outcome``'s
+# (``anvilkit/pi/pievents.py``, "Extract a run's outcome and usage"): the
+# LAST ``message_update`` that carried a ``usage`` field wins - usage is
+# cumulative (``doc/external/pi-dev/json-event-stream.md:110``), so values
+# are never summed; a ``message_update`` without a ``usage`` field is a
+# content delta and does not reset the last-seen usage. The ``usage`` field
+# carries ``input``, ``output``, ``cacheRead``, ``cacheWrite``,
+# ``totalTokens``, ``cost``
+# (``doc/external/pi-dev/json-event-stream.md:113``).
+#
+# A plain dict, JSON-native, because the record pipeline embeds the fields
+# verbatim and ``json.dumps``-es them. Each test pins the complete key set
+# by value (``set(result) == USAGE_DETAIL_KEYS``), so the coder has no room
+# for undocumented keys.
+#
+# The breakdown is a SIBLING of ``outcome`` on purpose: ``outcome``'s
+# seven-key shape is a landed pin (``OUTCOME_KEYS`` above), and
+# ``TestOutcomeUnchangedByUsageDetail`` re-pins that shape against a green
+# that extends ``outcome``'s return instead of adding the sibling.
+#
+# This red fails on the missing function itself: ``pievents.usage_detail``
+# does not exist yet, so calling it raises AttributeError. No sentinel guard
+# is used on purpose, so the suite fails for exactly one reason - the
+# function is absent - and nothing else.
+USAGE_DETAIL_KEYS = {
+    "cacheRead",
+    "cacheWrite",
+    "cost_input",
+    "cost_output",
+    "cost_cacheRead",
+    "cost_cacheWrite",
+    "cost_total",
+    "usage_reported",
+}
+
+
+class UsageDetailTestCase(PieventsTestCase):
+    """Base for the usage-detail reds: access to ``usage_detail`` and a
+    usage-block builder in Pi's shape."""
+
+    def _usage_detail(self):
+        """Fetch ``anvilkit.pi.pievents.usage_detail``; the missing
+        function raises AttributeError, the one reason this red may fail."""
+        pievents = self._pievents()
+        return pievents.usage_detail
+
+    @staticmethod
+    def _usage(
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        cache_read,
+        cache_write,
+        cost,
+    ):
+        """A cumulative usage block in Pi's shape
+        (``doc/external/pi-dev/json-event-stream.md:113``): the six fields,
+        with the ``cost`` block attached only when ``cost`` is not None."""
+        block = {
+            "input": input_tokens,
+            "output": output_tokens,
+            "cacheRead": cache_read,
+            "cacheWrite": cache_write,
+            "totalTokens": total_tokens,
+        }
+        if cost is not None:
+            block["cost"] = cost
+        return block
+
+
+class TestUsageDetailReturnShape(UsageDetailTestCase):
+    """The pinned return shape: a plain dict, exactly the eight keys,
+    with the documented types; an empty stream yields zeros with
+    ``usage_reported`` False."""
+
+    def test_usage_detail_returns_dict_with_exactly_eight_keys_and_types(self):
+        usage_detail = self._usage_detail()
+        result = usage_detail([])
+        self.assertIsInstance(
+            result,
+            dict,
+            "usage_detail must return a plain dict, so the record "
+            "pipeline can embed it and json.dumps it directly",
+        )
+        self.assertEqual(
+            set(result),
+            USAGE_DETAIL_KEYS,
+            "usage_detail must return exactly the eight keys: no extra "
+            "keys, no missing keys",
+        )
+        self.assertIsInstance(result["cacheRead"], int)
+        self.assertIsInstance(result["cacheWrite"], int)
+        for key in (
+            "cost_input",
+            "cost_output",
+            "cost_cacheRead",
+            "cost_cacheWrite",
+            "cost_total",
+        ):
+            self.assertIsInstance(
+                result[key], float, "usage_detail['%s'] must be a float" % key
+            )
+        self.assertIsInstance(result["usage_reported"], bool)
+
+    def test_usage_detail_empty_stream_is_all_zeros_with_usage_not_reported(self):
+        usage_detail = self._usage_detail()
+        result = usage_detail([])
+        self.assertEqual(
+            result,
+            {
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost_input": 0.0,
+                "cost_output": 0.0,
+                "cost_cacheRead": 0.0,
+                "cost_cacheWrite": 0.0,
+                "cost_total": 0.0,
+                "usage_reported": False,
+            },
+            "an empty stream reported no usage: every value field is a "
+            "zero placeholder and usage_reported says so",
+        )
+
+
+class TestUsageDetailCacheAndCostBreakdown(UsageDetailTestCase):
+    """The full breakdown: a stream whose last message_update usage
+    carries nonzero cache counts and a full cost block - all eight
+    fields pinned by value, the key set alongside."""
+
+    def test_usage_detail_last_usage_with_full_cost_block_reports_all_eight_fields(self):
+        usage_detail = self._usage_detail()
+        events = [
+            {"type": "session", "version": 3, "id": "uuid", "cwd": "/path"},
+            {"type": "agent_start"},
+            {
+                "type": "message_update",
+                "usage": self._usage(
+                    120,
+                    20,
+                    590,
+                    400,
+                    50,
+                    {
+                        "input": 0.0002,
+                        "output": 0.001,
+                        "cacheRead": 0.0002,
+                        "cacheWrite": 0.0001,
+                        "total": 0.0015,
+                    },
+                ),
+                "assistantMessageEvent": {"type": "text_delta", "delta": " done"},
+            },
+            {"type": "agent_end", "messages": [], "willRetry": False},
+            {"type": "agent_settled", "aborted": False},
+        ]
+        result = usage_detail(events)
+        self.assertEqual(
+            set(result),
+            USAGE_DETAIL_KEYS,
+            "the eight pinned keys: no extra keys, no missing keys",
+        )
+        self.assertEqual(
+            result,
+            {
+                "cacheRead": 400,
+                "cacheWrite": 50,
+                "cost_input": 0.0002,
+                "cost_output": 0.001,
+                "cost_cacheRead": 0.0002,
+                "cost_cacheWrite": 0.0001,
+                "cost_total": 0.0015,
+                "usage_reported": True,
+            },
+            "cache counts and every flattened cost field verbatim from "
+            "the last usage's block; usage_reported True because the "
+            "stream carried a usage",
+        )
+
+
+class TestUsageDetailLastUsageWins(UsageDetailTestCase):
+    """Two usages in the stream: the result reflects ONLY the last one.
+    Usage is cumulative, so summing both would double-count the run -
+    every field pinned against the summed alternative."""
+
+    def test_usage_detail_two_usages_reflects_only_the_last_never_a_sum(self):
+        usage_detail = self._usage_detail()
+        events = [
+            {
+                "type": "message_update",
+                "usage": self._usage(
+                    100,
+                    10,
+                    130,
+                    100,
+                    20,
+                    {
+                        "input": 0.0001,
+                        "output": 0.0001,
+                        "cacheRead": 0.00005,
+                        "cacheWrite": 0.00005,
+                        "total": 0.0002,
+                    },
+                ),
+                "assistantMessageEvent": {"type": "text_delta", "delta": " first"},
+            },
+            {
+                "type": "message_update",
+                "usage": self._usage(
+                    120,
+                    20,
+                    590,
+                    400,
+                    50,
+                    {
+                        "input": 0.0002,
+                        "output": 0.001,
+                        "cacheRead": 0.0002,
+                        "cacheWrite": 0.0001,
+                        "total": 0.0015,
+                    },
+                ),
+                "assistantMessageEvent": {"type": "text_delta", "delta": " second"},
+            },
+        ]
+        result = usage_detail(events)
+        self.assertEqual(
+            result,
+            {
+                "cacheRead": 400,
+                "cacheWrite": 50,
+                "cost_input": 0.0002,
+                "cost_output": 0.001,
+                "cost_cacheRead": 0.0002,
+                "cost_cacheWrite": 0.0001,
+                "cost_total": 0.0015,
+                "usage_reported": True,
+            },
+            "the LAST usage wins, never a sum of the two cumulative "
+            "snapshots",
+        )
+        self.assertEqual(
+            result["cacheRead"],
+            400,
+            "the last usage's cacheRead alone; summing both usages would "
+            "read 500",
+        )
+        self.assertEqual(
+            result["cost_total"],
+            0.0015,
+            "the last usage's cost total alone; summing both would read "
+            "0.0017",
+        )
+
+
+class TestUsageDetailContentDeltaAfterLastUsage(UsageDetailTestCase):
+    """A message_update without a usage field after the last usage is a
+    content delta: it must not reset the last-seen usage."""
+
+    def test_usage_detail_usageless_delta_after_last_usage_keeps_last_usage(self):
+        usage_detail = self._usage_detail()
+        events = [
+            {
+                "type": "message_update",
+                "usage": self._usage(
+                    120,
+                    20,
+                    590,
+                    400,
+                    50,
+                    {
+                        "input": 0.0002,
+                        "output": 0.001,
+                        "cacheRead": 0.0002,
+                        "cacheWrite": 0.0001,
+                        "total": 0.0015,
+                    },
+                ),
+                "assistantMessageEvent": {"type": "text_delta", "delta": " done"},
+            },
+            # No usage field: a content delta, not a usage snapshot
+            {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_delta",
+                    "delta": " trailing",
+                },
+            },
+            {"type": "agent_settled", "aborted": False},
+        ]
+        result = usage_detail(events)
+        self.assertEqual(
+            result,
+            {
+                "cacheRead": 400,
+                "cacheWrite": 50,
+                "cost_input": 0.0002,
+                "cost_output": 0.001,
+                "cost_cacheRead": 0.0002,
+                "cost_cacheWrite": 0.0001,
+                "cost_total": 0.0015,
+                "usage_reported": True,
+            },
+            "a usage-less message_update is a content delta: the last "
+            "seen usage survives it",
+        )
+
+
+class TestUsageDetailNoUsageSeen(UsageDetailTestCase):
+    """A stream with no usage at all (the empty list is the
+    return-shape class's case): every value field a zero placeholder,
+    ``usage_reported`` False - never a claim of measured zeros."""
+
+    def test_usage_detail_stream_without_usage_is_all_zeros_with_usage_not_reported(self):
+        usage_detail = self._usage_detail()
+        events = [
+            {"type": "session", "version": 3, "id": "uuid", "cwd": "/path"},
+            {"type": "agent_start"},
+            {"type": "turn_start"},
+            {
+                "type": "message_update",
+                "assistantMessageEvent": {
+                    "type": "text_delta",
+                    "delta": "no usage here",
+                },
+            },
+            {"type": "tool_execution_start", "toolCallId": "A", "toolName": "edit"},
+            {
+                "type": "tool_execution_end",
+                "toolCallId": "A",
+                "toolName": "edit",
+                "isError": False,
+                "durationMs": 3,
+            },
+            {"type": "agent_end", "messages": [], "willRetry": False},
+            {"type": "agent_settled", "aborted": False},
+        ]
+        result = usage_detail(events)
+        self.assertEqual(
+            set(result),
+            USAGE_DETAIL_KEYS,
+            "the key set is pinned even when nothing was reported",
+        )
+        self.assertEqual(
+            result,
+            {
+                "cacheRead": 0,
+                "cacheWrite": 0,
+                "cost_input": 0.0,
+                "cost_output": 0.0,
+                "cost_cacheRead": 0.0,
+                "cost_cacheWrite": 0.0,
+                "cost_total": 0.0,
+                "usage_reported": False,
+            },
+            "no usage ever seen: the zeros are placeholders, and "
+            "usage_reported False says so",
+        )
+
+
+class TestUsageDetailAbsentCostBlock(UsageDetailTestCase):
+    """A usage with no cost block at all: the cache token fields still
+    report and ``usage_reported`` stays True - the usage was seen;
+    only the provider withheld the cost, so every cost field is a
+    zero."""
+
+    def test_usage_detail_usage_without_cost_block_reports_tokens_with_cost_zeros(self):
+        usage_detail = self._usage_detail()
+        events = [
+            {
+                "type": "message_update",
+                "usage": self._usage(120, 20, 590, 400, 50, None),
+                "assistantMessageEvent": {"type": "text_delta", "delta": " done"},
+            },
+        ]
+        result = usage_detail(events)
+        self.assertEqual(
+            set(result),
+            USAGE_DETAIL_KEYS,
+            "the eight pinned keys, cost block or not",
+        )
+        self.assertEqual(
+            result,
+            {
+                "cacheRead": 400,
+                "cacheWrite": 50,
+                "cost_input": 0.0,
+                "cost_output": 0.0,
+                "cost_cacheRead": 0.0,
+                "cost_cacheWrite": 0.0,
+                "cost_total": 0.0,
+                "usage_reported": True,
+            },
+            "the usage was seen: the cache token fields report their "
+            "values and usage_reported is True; with no cost block, "
+            "every cost field is a zero",
+        )
+
+
+class TestOutcomeUnchangedByUsageDetail(PieventsTestCase):
+    """Guard for the sibling decision: adding the cache and cost
+    breakdown must not widen outcome's closed seven-key return. A
+    green that extends outcome's dict with the new fields fails
+    here."""
+
+    def test_outcome_still_returns_exactly_seven_keys_with_full_usage(self):
+        pievents = self._pievents()
+        outcome = pievents.outcome
+        events = [
+            {
+                "type": "message_update",
+                "usage": {
+                    "input": 120,
+                    "output": 20,
+                    "cacheRead": 400,
+                    "cacheWrite": 50,
+                    "totalTokens": 590,
+                    "cost": {
+                        "input": 0.0002,
+                        "output": 0.001,
+                        "cacheRead": 0.0002,
+                        "cacheWrite": 0.0001,
+                        "total": 0.0015,
+                    },
+                },
+                "assistantMessageEvent": {"type": "text_delta", "delta": " done"},
+            },
+            {"type": "agent_settled", "aborted": False},
+        ]
+        result = outcome(events)
+        self.assertEqual(
+            set(result),
+            OUTCOME_KEYS,
+            "outcome must still return exactly its seven keys: the cache "
+            "and cost breakdown belongs to usage_detail, not to outcome",
+        )
+        self.assertEqual(
+            result,
+            {
+                "settled": True,
+                "aborted": False,
+                "input": 120,
+                "output": 20,
+                "totalTokens": 590,
+                "cost_total": 0.0015,
+                "usage_reported": True,
+            },
+            "outcome's seven values are unchanged by the sibling "
+            "function's existence",
+        )
+
+
+class TestUsageDetailParsedFixture(FixtureStreamTestCase):
+    """The recorded fixture stream, routed through ``parse`` and then
+    ``usage_detail``: the fixture's last usage (cacheRead 400,
+    cacheWrite 50, full cost block) wins over its earlier usage, and
+    the cost block flattens into the five cost fields."""
+
+    def test_usage_detail_on_parsed_fixture_reports_the_last_recorded_usage(self):
+        pievents = self._pievents()
+        events = self._parsed_fixture()["events"]
+        result = pievents.usage_detail(events)
+        self.assertEqual(
+            set(result),
+            USAGE_DETAIL_KEYS,
+            "the recorded stream must yield exactly the eight pinned keys",
+        )
+        self.assertEqual(
+            result,
+            {
+                "cacheRead": 400,
+                "cacheWrite": 50,
+                "cost_input": 0.0002,
+                "cost_output": 0.001,
+                "cost_cacheRead": 0.0002,
+                "cost_cacheWrite": 0.0001,
+                "cost_total": 0.0015,
+                "usage_reported": True,
+            },
+            "the fixture's LAST usage wins over its earlier one: the "
+            "recorded cache counts and cost block, pinned from the file "
+            "end to end",
+        )
         self.assertEqual(
             set(result[0]),
             COMPACTION_KEYS,
