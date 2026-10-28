@@ -85,6 +85,20 @@ and ``secrets.token_hex``, so two calls never collide even within the
 same tick and the id always passes the real
 :func:`anvilkit.pi.pirole.role_argv` session-id validation (letters,
 numbers, ``.``, ``_``, ``-``; starts and ends alphanumeric).
+``check_coder_run`` (behaviour 15) is layer 5's real coder run: it calls
+the real :func:`anvilkit.pi.pidriver.run_role` with the resolved coder
+definition (via the injectable ``resolve_role`` seam, defaulting to a
+closure over the real :func:`anvilkit.pi.pirole.resolve`), a fresh session
+id from :func:`new_session_id`, the target repo, the image tag, the
+trivial task and the injected runner -- never wrapping or mocking the
+driver, so the driver's own ``DriverError`` rule (non-zero exit with empty
+stdout) genuinely fires. It passes only when ``exit_code == 0``,
+``timed_out is False`` and ``pievents.parse(stdout)`` yields at least one
+record -- judged on the stream existing, never on stderr or model content;
+each failing condition names itself in its own distinct detail, a
+``DriverError`` from the driver fails the layer with the exception's
+message, and a prior layer not passing makes the layer ``skipped`` with
+the runner uncalled.
 
 The four pinned names -- the agent volume, the internal network, the image
 uid and the agent home -- are adopted as module-level constants from
@@ -99,10 +113,10 @@ import json
 import os
 import secrets
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from anvilkit import config, health
-from anvilkit.pi import pirole, pisandbox
+from anvilkit.pi import pidriver, pievents, pirole, pisandbox
 
 # The stable header rendered by ``format_report``, even when there is nothing
 # else to say. Later behaviours assert this exact string.
@@ -877,3 +891,96 @@ def new_session_id() -> str:
         _SESSION_ID_STAMP_FORMAT
     )
     return "smoke-" + stamp + "-" + secrets.token_hex(_SESSION_ID_SUFFIX_BYTES)
+
+
+def _default_coder_run_resolve_role(name: str) -> Dict[str, str]:
+    """The default ``resolve_role`` for :func:`check_coder_run`.
+
+    The real :func:`anvilkit.pi.pirole.resolve` with the test-suite's
+    placeholder model ids: the coder role runs on the local tier, so its
+    ``model_id`` is the first id, and its ``prompt_path`` is id-independent,
+    so the ids only pin the ``--model`` token the driver composes.
+    """
+    return pirole.resolve(name, "coder-model", "frontier-model")
+
+
+def check_coder_run(
+    runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+    repo_path: str,
+    tag: str,
+    task: str,
+    earlier_layers_ok: bool = True,
+    resolve_role: Callable[[str], Dict[str, str]] = _default_coder_run_resolve_role,
+) -> "LayerResult":
+    """Layer 5: the real coder run (behaviour 15 of ``plans/smoke-test.md``).
+
+    ``runner`` is the same injected seam ``pidriver.run_role`` takes (one
+    invocation dict in, the six-key result dict out), forwarded to the real
+    driver unchanged -- never wrapped or mocked, so the driver's own
+    ``DriverError`` rule (non-zero exit with empty stdout) is genuinely hit.
+    ``repo_path`` and ``tag`` are forwarded to ``run_role`` unchanged;
+    ``task`` is the trivial one-line instruction. The session id is a fresh
+    :func:`new_session_id` product, so no old session is ever resumed. The
+    layer is named ``"coder-run"``.
+
+    When ``earlier_layers_ok`` is ``False`` the layer is
+    :data:`STATE_SKIPPED` -- never passed, never failed -- and the runner is
+    never invoked. Otherwise the check calls the real
+    :func:`anvilkit.pi.pidriver.run_role` with the definition from
+    ``resolve_role("coder")`` (default a closure over the real
+    :func:`anvilkit.pi.pirole.resolve`), and the verdict is on the stream
+    only, never on stderr or model content: it passes when ``exit_code`` is
+    0, ``timed_out`` is ``False`` and :func:`anvilkit.pi.pievents.parse` of
+    the stdout yields at least one record. Each failing condition names
+    itself in its own distinct detail -- a non-zero exit names the exit code,
+    a timed-out run names the timeout, an empty stream names the stream --
+    and a ``DriverError`` raised by the driver fails the layer with the
+    exception's message, so no traceback ever escapes.
+    """
+    if not earlier_layers_ok:
+        return LayerResult(
+            name="coder-run",
+            ok=STATE_SKIPPED,
+            detail="skipped: an earlier layer did not pass",
+        )
+    definition = resolve_role("coder")
+    session_id = new_session_id()
+    try:
+        result = pidriver.run_role(
+            definition,
+            repo_path,
+            tag,
+            session_id,
+            task,
+            runner,
+        )
+    except pidriver.DriverError as exc:
+        return LayerResult(
+            name="coder-run",
+            ok=STATE_FAILED,
+            detail=str(exc),
+        )
+    if result["exit_code"] != 0:
+        return LayerResult(
+            name="coder-run",
+            ok=STATE_FAILED,
+            detail="coder run exited with code %s" % result["exit_code"],
+        )
+    if result["timed_out"] is not False:
+        return LayerResult(
+            name="coder-run",
+            ok=STATE_FAILED,
+            detail="coder run hit the timeout budget",
+        )
+    events = pievents.parse(result["stdout"])["events"]
+    if len(events) < 1:
+        return LayerResult(
+            name="coder-run",
+            ok=STATE_FAILED,
+            detail="coder run produced no event stream",
+        )
+    return LayerResult(
+        name="coder-run",
+        ok=STATE_OK,
+        detail="coder run completed: %d event record(s)" % len(events),
+    )
