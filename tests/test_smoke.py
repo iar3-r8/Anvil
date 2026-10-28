@@ -1,4 +1,4 @@
-"""Tests for anvilkit.smoke, behaviours 1–8 of plans/smoke-test.md.
+"""Tests for anvilkit.smoke, behaviours 1–9 of plans/smoke-test.md.
 
 Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
 exist yet, so the guarded import below turns the missing module into a clear,
@@ -89,6 +89,18 @@ in-network port is 8080 regardless of the host ``LLM_PORT``, on the
 pass detail too. Offline, id absent, and id present-but-cold are three
 distinct details, each carrying the 8080 fact; a ``ConfigError`` from
 ``read_models`` fails the layer naming the file -- never a traceback.
+
+Behaviour 9: ``check_agent_volume(docker_runner)`` is layer 3's
+agent-volume-presence check, over the same injected seam. It runs
+``["docker", "volume", "inspect", <name>]`` where ``<name>`` is the
+module's ``NAMED_VOLUME`` constant adopted from
+``anvilkit.pi.pisandbox._NAMED_VOLUME`` -- never a re-spelled literal,
+so a rename cannot desynchronise the check from the run. Exit 0 is the
+pass state, named ``"agent-volume"``; a non-zero exit is the fail state
+whose detail says the volume is created on first run and stays empty
+until seeded (one of the issue's known pitfalls); a
+``FileNotFoundError`` from the runner is a not-on-PATH fail, never a
+traceback.
 """
 
 import sys
@@ -1535,6 +1547,133 @@ class TestGatewayModelCheckSeam(unittest.TestCase):
             "read_models must be called with the config path the caller "
             "named",
         )
+
+
+# Behaviour 9: layer 3's agent-volume-presence check. It takes the same
+# injected docker seam as behaviours 4-7. The public seam these tests
+# pin: ``smoke.check_agent_volume(docker_runner)`` returns a
+# ``LayerResult`` named ``"agent-volume"``. The volume name must come
+# from the module's adopted ``NAMED_VOLUME`` constant, so a rename in
+# ``pisandbox`` keeps the check and the run in step. Exit 0 is the pass
+# state; a non-zero exit is the fail state whose detail says the volume
+# is created on first run and stays empty until seeded. The exact
+# wording is free, so the test pins two load-bearing marker words:
+# ``first run`` and ``empty``.
+VOLUME_CHECK_NAME = "check_agent_volume"
+VOLUME_LAYER_NAME = "agent-volume"
+# The two marker words the plan's fail detail must carry, pinned here so
+# the explanation cannot be dropped or reworded into something that no
+# longer says "created on first run" and "stays empty until seeded".
+FIRST_RUN_MARKER = "first run"
+EMPTY_VOLUME_MARKER = "empty"
+
+
+def _volume_check():
+    """Return the behaviour-9 volume check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, VOLUME_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner) yet "
+            "(behaviour 9 of plans/smoke-test.md)" % VOLUME_CHECK_NAME
+        )
+    return check
+
+
+def _volume_argv():
+    """The list-form argv layer 3 uses to inspect the agent volume.
+
+    The name is read from ``smoke.NAMED_VOLUME`` -- the constant adopted
+    from ``anvilkit.pi.pisandbox._NAMED_VOLUME`` -- so this test proves
+    the check inspects the adopted name, not a re-spelled literal.
+    """
+    smoke_mod = _require_smoke()
+    return ["docker", "volume", "inspect", smoke_mod.NAMED_VOLUME]
+
+
+class TestAgentVolumeCheckPass(unittest.TestCase):
+    """Behaviour 9: exit 0 from the volume inspect is the pass state."""
+
+    def test_check_agent_volume_exit_zero_passes(self):
+        # Arrange: the injected runner answers the volume inspect with
+        # exit 0.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        result = _volume_check()(runner)
+
+        # Assert: the layer is the agent-volume layer, in the pass state.
+        self.assertEqual(result.name, VOLUME_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+
+
+class TestAgentVolumeCheckArgv(unittest.TestCase):
+    """Behaviour 9: the check invokes the runner with the list-form
+    ``docker volume inspect <name>`` argv, exactly once, where ``<name>``
+    is the module's adopted ``NAMED_VOLUME`` constant."""
+
+    def test_check_agent_volume_invokes_inspect_argv_with_adopted_name(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        _volume_check()(runner)
+
+        # Assert: the check ran exactly the plan's argv, as a list, once,
+        # with the name read from the adopted constant.
+        self.assertEqual(runner.calls, [_volume_argv()])
+
+
+class TestAgentVolumeCheckFail(unittest.TestCase):
+    """Behaviour 9: a non-zero inspect exit fails with a detail saying the
+    volume is created on first run and stays empty until seeded."""
+
+    def test_check_agent_volume_nonzero_exit_fails_saying_created_on_first_run_and_stays_empty(self):
+        # Arrange: the volume inspect fails non-zero.
+        runner = _recording_runner(1, "", "Error: No such volume")
+
+        # Act.
+        result = _volume_check()(runner)
+
+        # Assert: the layer is the agent-volume layer in the fail state,
+        # and its detail carries both pinned marker words -- "created on
+        # first run" and "stays empty until seeded".
+        self.assertEqual(result.name, VOLUME_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        detail = result.detail.lower()
+        self.assertIn(
+            FIRST_RUN_MARKER,
+            detail,
+            "fail detail %r must say the volume is created on first run"
+            % (result.detail,),
+        )
+        self.assertIn(
+            EMPTY_VOLUME_MARKER,
+            detail,
+            "fail detail %r must say the volume stays empty until seeded"
+            % (result.detail,),
+        )
+
+
+class TestAgentVolumeCheckNotOnPath(unittest.TestCase):
+    """Behaviour 9 (error): ``FileNotFoundError`` from the runner is a
+    not-on-PATH fail, never a traceback."""
+
+    def test_check_agent_volume_runner_not_found_fails_saying_not_on_path(self):
+        # Arrange: the runner raises ``FileNotFoundError`` as when docker
+        # is missing from PATH.
+        def runner(argv):
+            raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+        # Act: the exception must not escape the check -- a traceback here
+        # fails the test.
+        result = _volume_check()(runner)
+
+        # Assert: the layer failed, and its detail says docker is not on
+        # PATH.
+        self.assertEqual(result.name, VOLUME_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("path", result.detail.lower())
 
 
 if __name__ == "__main__":
