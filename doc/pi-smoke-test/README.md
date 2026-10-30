@@ -43,6 +43,10 @@ anvil smoke-test
   performs; see section 4.
 - **`--dry-run`** — print what each layer would check; spawn no process and
   make no HTTP call.
+- **`--dump-events`** — append the layer-5 run's raw JSONL event stream to
+  the report, verbatim, under a `coder-run events` section. Nothing is
+  appended when the layer-5 run check was skipped or failed, and `--dry-run`
+  never appends (it never runs the check).
 
 ## 3. The six layers
 
@@ -55,7 +59,7 @@ report prints it:
 | 2 | `gateway` | the `llama-swap-service` container is running, and the coder model from `config.yaml` is registered on the gateway and hot |
 | 3 | `sandbox-agent-volume` | the `sandbox-agent` named volume exists, its `models.json` is readable by the image uid, and that `models.json` seeds the coder id |
 | 4 | `role-prompt` | `<repo>/.pi/roles/coder.md` exists and is non-empty |
-| 5 | `coder-run` | one real coder run completes: exit 0, no timeout, and a non-empty event stream |
+| 5 | `coder-run` | one real coder run completes: exit 0, no timeout, and a non-empty event stream; the pass line always carries a compact event-type count, e.g. `coder run completed: 3 event record(s) (agent_start: 1, message: 2)` — types in first-seen order, a record with no type counted as `(unknown)` |
 | 6 | `failure-paths` | the two cheap failure paths still fire: a tag no image matches raises `DriverError`, and a missing prompt raises `RoleError` before any container starts |
 
 The layers are driven in order and fail-fast: a failing layer makes the
