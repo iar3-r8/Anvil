@@ -18,6 +18,7 @@ down. Together with ``--yes`` this makes Anvil scriptable.
 
 import json
 import os
+import subprocess
 import sys
 import time
 from datetime import datetime
@@ -27,8 +28,9 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import click
 import typer
 
-from . import compose, config, env, health, prompts, provision, render
+from . import compose, config, env, health, prompts, provision, render, smoke
 from .compose import Compose, ComposeError
+from .pi import pibakeoff
 from .config import ConfigError
 from .pi import piguard, piruleset
 from .pi.piruleset import RulesetError
@@ -1678,6 +1680,108 @@ def ruleset_write(
     shared.echo("Wrote the ruleset to {}:".format(written))
     for line in piruleset.import_steps(None, written):
         shared.echo("  - {}".format(line))
+
+
+# ---------------------------------------------------------------------------
+# smoke-test
+# ---------------------------------------------------------------------------
+
+
+def _docker_runner_factory() -> Callable[[List[str]], Tuple[int, str, str]]:
+    """The production docker seam: one list-form argv in, the three-tuple out.
+
+    ``cli.py`` constructs no docker argv and never invokes docker itself; the
+    ``smoke`` checks build every argv and this factory's product runs it - a
+    list-form ``subprocess.run`` (never a string, never ``shell=True``) with
+    stdout and stderr captured, returning ``(exit_code, stdout, stderr)``. A
+    missing docker binary surfaces as ``FileNotFoundError``, which the checks
+    already turn into a "not on PATH" failure rather than a traceback.
+    """
+    def docker_runner(argv: List[str]) -> Tuple[int, str, str]:
+        completed = subprocess.run(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout = completed.stdout.decode("utf-8", "replace")
+        stderr = completed.stderr.decode("utf-8", "replace")
+        return (completed.returncode, stdout, stderr)
+
+    return docker_runner
+
+
+def _pidriver_runner_factory() -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+    """The production pidriver seam: one invocation dict in, six-key result out.
+
+    Returns the module's own :func:`anvilkit.pi.pibakeoff.subprocess_runner` -
+    the same runner every other driver-backed command uses - so the six-key
+    result shape (``exit_code``, ``stdout``, ``stderr``, ``wall_time_s``,
+    ``timed_out``, ``evidence``) is the one pinned in ``anvilkit/pi/
+    pibakeoff.py`` and never re-implemented here.
+    """
+    return pibakeoff.subprocess_runner
+
+
+@app.command(name="smoke-test")
+def smoke_test(
+    ctx: typer.Context,
+    repo: Optional[Path] = typer.Option(
+        None, "--repo", help="Target repository; defaults to the current "
+                             "working directory."
+    ),
+    llm_port: Optional[int] = typer.Option(
+        None, "--llm-port", min=1, max=65535, help="Override the gateway port."
+    ),
+    fix: bool = typer.Option(
+        False, "--fix",
+        help="Chown the agent volume on a models.json permission failure and "
+             "retry the read once.",
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run",
+        help="Print what each layer would check; spawn no process and make "
+             "no HTTP call.",
+    ),
+) -> None:
+    """Prove the single-role stack: docker, gateway, agent volume, prompt, one real run, failure paths.
+
+    Runs the six smoke layers against ``--repo`` and exits with ``summarize``'
+    code: 0 when every layer passes, 4 when a docker-class layer (1-4)
+    fails, 1 when only the run-class layers (5-6) fail. ``--dry-run`` names
+    every layer without spawning or probing.
+    """
+    shared = _context(ctx)
+
+    # --repo defaults to the working directory, resolved at call time (not
+    # import time) so the default tracks where the operator actually stands.
+    target = repo if repo is not None else Path.cwd()
+
+    # The global --dry-run (set before the subcommand) and the local one are
+    # the same intent: name what would be checked, then stop.
+    dry = dry_run or shared.dry_run
+
+    try:
+        port = shared.resolve_port(llm_port)
+    except ConfigError as exc:
+        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+
+    docker_runner = _docker_runner_factory()
+    runner = _pidriver_runner_factory()
+
+    report, exit_code = smoke.run_smoke_test(
+        str(target),
+        port,
+        docker_runner,
+        runner,
+        fix=fix,
+        dry_run=dry,
+        check_gateway=health.check_gateway,
+        read_models=config.read_models,
+    )
+
+    typer.echo(report, nl=False)
+    raise typer.Exit(exit_code)
 
 
 # ---------------------------------------------------------------------------

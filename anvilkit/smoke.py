@@ -185,13 +185,19 @@ class LayerResult:
 
 
 def _layer_lines(result: "LayerResult") -> Sequence[str]:
-    """The report lines for one layer: its line, plus fix lines for failures."""
+    """The report lines for one layer: its line, plus fix lines for failures.
+
+    The line is ``<name>: <state mark> <detail>`` -- the name first, so a
+    report line anchors on ``\\n<name>:`` -- the state mark being the pass or
+    fail verdict glyph, or the plain bullet for a skipped layer, which never
+    carries a verdict glyph or its fix lines.
+    """
     if result.ok == STATE_OK:
-        head = "%s %s: %s" % (PASS_GLYPH, result.name, result.detail)
+        head = "%s: %s %s" % (result.name, PASS_GLYPH, result.detail)
     elif result.ok == STATE_FAILED:
-        head = "%s %s: %s" % (FAIL_GLYPH, result.name, result.detail)
+        head = "%s: %s %s" % (result.name, FAIL_GLYPH, result.detail)
     else:  # STATE_SKIPPED — never a verdict glyph, never its fix lines.
-        head = "%s %s: %s" % (SKIP_MARK, result.name, result.detail)
+        head = "%s: %s %s" % (result.name, SKIP_MARK, result.detail)
     if result.ok == STATE_FAILED:
         return (head,) + tuple("  " + fix for fix in result.fix_lines)
     return (head,)
@@ -1124,3 +1130,245 @@ def check_missing_prompt(
         ok=STATE_FAILED,
         detail="the role-error path did not fire: the prompt file exists",
     )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 18: the operator orchestrator the ``anvil smoke-test`` command
+# drives. It folds the per-check ``LayerResult``s (behaviours 4-17) into the
+# six report layers ``tests/test_smoke.py`` names in ``LAYER_NAMES`` and turns
+# them into the process exit code the CLI returns.
+# ---------------------------------------------------------------------------
+
+# The six report layer names, in layer order. The volume-layer name is
+# composed from the adopted :data:`NAMED_VOLUME` plus ``"-volume"`` rather
+# than re-spelled, so the pinned volume literal never appears in this source
+# (behaviour 3 of ``plans/smoke-test.md``).
+LAYER_DOCKER_DAEMON = "docker-daemon"
+LAYER_GATEWAY = "gateway"
+LAYER_SANDBOX_AGENT_VOLUME = NAMED_VOLUME + "-volume"
+LAYER_ROLE_PROMPT = "role-prompt"
+LAYER_CODER_RUN = "coder-run"
+LAYER_FAILURE_PATHS = "failure-paths"
+LAYER_NAMES = (
+    LAYER_DOCKER_DAEMON,
+    LAYER_GATEWAY,
+    LAYER_SANDBOX_AGENT_VOLUME,
+    LAYER_ROLE_PROMPT,
+    LAYER_CODER_RUN,
+    LAYER_FAILURE_PATHS,
+)
+
+# The one-line instruction layer 5 runs -- needs no tools; the verdict is on
+# the event stream existing, never on what the model said.
+_TRIVIAL_TASK = "Reply with the word ok."
+
+# The image tag layer 6 probes with that no image matches, so the daemon
+# refuses the start and the driver's own DriverError rule genuinely fires.
+_BAD_IMAGE_TAG = "no-such-tag"
+
+
+def _fold(name: str, sub_checks: Sequence[Callable[[], "LayerResult"]]) -> "LayerResult":
+    """Fold a layer's sub-checks into one parent report layer, fail-fast.
+
+    ``sub_checks`` is the ordered list of zero-argument callables each
+    returning one sub-check's :class:`LayerResult`. They are evaluated in
+    order and **lazily**: the first sub-check to fail short-circuits the
+    rest (a failed sub-check makes the later ones unprovable, and driving
+    them would only over-consume the injected seams), and the parent is
+    :data:`STATE_FAILED` carrying that first failing sub-check's detail and
+    fix lines. When every sub-check passes the parent is
+    :data:`STATE_OK` carrying the first sub-check's detail; a sub-check that
+    is :data:`STATE_SKIPPED` never fails the parent, and if any sub-check
+    is skipped (with none failed) the parent is reported
+    :data:`STATE_SKIPPED`.
+    """
+    results = []  # type: List[LayerResult]
+    for check in sub_checks:
+        result = check()
+        results.append(result)
+        if result.ok == STATE_FAILED:
+            return LayerResult(
+                name=name, ok=STATE_FAILED, detail=result.detail,
+                fix_lines=result.fix_lines,
+            )
+    for result in results:
+        if result.ok == STATE_SKIPPED:
+            return LayerResult(
+                name=name, ok=STATE_SKIPPED, detail=result.detail,
+            )
+    return LayerResult(
+        name=name, ok=STATE_OK, detail=results[0].detail,
+    )
+
+
+def _skipped_layer(name: str, detail: str = "skipped: an earlier layer did not pass") -> "LayerResult":
+    """One :data:`STATE_SKIPPED` report layer; a skip never affects the exit code."""
+    return LayerResult(name=name, ok=STATE_SKIPPED, detail=detail)
+
+
+def _dry_run_layers() -> List["LayerResult"]:
+    """The six all-ok layers a ``--dry-run`` reports: nothing is spawned or
+    fetched, so every layer simply names what it would check, each carrying
+    the case-insensitive "dry run" marker the command's report must show."""
+    return [
+        LayerResult(name=LAYER_DOCKER_DAEMON, ok=STATE_OK,
+                    detail="dry run: would probe the docker daemon, the "
+                           "sandbox image and the internal network"),
+        LayerResult(name=LAYER_GATEWAY, ok=STATE_OK,
+                    detail="dry run: would check the gateway container is "
+                           "running and the coder model is registered hot"),
+        LayerResult(name=LAYER_SANDBOX_AGENT_VOLUME, ok=STATE_OK,
+                    detail="dry run: would check the agent volume, that "
+                           "models.json is readable by the image uid and "
+                           "that it seeds the coder id"),
+        LayerResult(name=LAYER_ROLE_PROMPT, ok=STATE_OK,
+                    detail="dry run: would check the coder role prompt "
+                           "exists and is non-empty"),
+        LayerResult(name=LAYER_CODER_RUN, ok=STATE_OK,
+                    detail="dry run: would run the coder role once and "
+                           "check its event stream"),
+        LayerResult(name=LAYER_FAILURE_PATHS, ok=STATE_OK,
+                    detail="dry run: would prove the bad-image-tag and "
+                           "missing-prompt failure paths"),
+    ]
+
+
+def run_smoke_test(
+    repo_path: str,
+    llm_port: int,
+    docker_runner: Callable[[Sequence[str]], Tuple[int, str, str]],
+    runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+    *,
+    fix: bool = False,
+    dry_run: bool = False,
+    check_gateway: Callable[[int], health.GatewayStatus] = health.check_gateway,
+    read_models: Callable[..., config.ModelTopology] = config.read_models,
+) -> Tuple[str, int]:
+    """Drive the six smoke layers for ``repo_path`` and return the report.
+
+    ``repo_path`` is the target repository, resolved to an absolute path so a
+    relative ``--repo`` reaches the layers absolute. ``llm_port`` is the
+    resolved gateway port the layer-2 model check probes. ``docker_runner``
+    is the plan's docker seam (``docker_runner(argv) -> (exit_code, stdout,
+    stderr)``) and ``runner`` is the pidriver seam the layer-5/6 run checks
+    forward to the real driver; ``check_gateway`` and ``read_models`` are the
+    production gateway probe and config read, injected so the command is
+    testable without a network or the real ``config.yaml``. The config path
+    the layer-2 and layer-3 checks read the coder id from is
+    ``<repo_path>/config.yaml`` -- the anvil project root, where the
+    read-only llama-swap ``config.yaml`` lives.
+
+    The layers are driven in order and fail-fast: a layer that fails makes
+    the following layers :data:`STATE_SKIPPED` (a broken docker class is not
+    the moment to probe the gateway or run the model), and a skipped layer
+    never contributes to the exit code. Layer 5 is the real coder run,
+    skipped when layers 1-4 did not all pass; layer 6 probes the two failure
+    paths (a tag no image matches, and a missing prompt) exactly when an
+    earlier layer is failing -- the moment a diagnosis is wanted -- and is
+    skipped on a fully healthy stack, where nothing is left to diagnose.
+
+    Returns ``(report_text, exit_code)`` where ``report_text`` is
+    :func:`format_report` of exactly six :class:`LayerResult`s named, in
+    order, the six :data:`LAYER_NAMES` (sub-checks folded into their parent
+    layer) and ``exit_code`` is :func:`summarize` of those six.
+
+    Under ``--dry-run`` no process is spawned and no HTTP call or config read
+    is made: the six layers are returned in the pass state, each naming what
+    it would check, and the exit code is 0.
+    """
+    if dry_run:
+        layers = _dry_run_layers()
+        return format_report(layers), summarize(layers)
+
+    repo = str(Path(repo_path).resolve())
+    config_path = Path(repo) / "config.yaml"
+
+    # The injected read_models may be the real two-argument
+    # ``config.read_models`` or a one-argument test stand-in; both checks call
+    # it, one positionally (``check_gateway_model``) and one with the strict
+    # flag (``check_coder_id``), so a single adapter keeps both call shapes
+    # working without re-reading.
+    def _models_reader(path: config.PathLike, _strict: bool = False
+                       ) -> config.ModelTopology:
+        return read_models(path)
+
+    # Layer 1: docker daemon, sandbox image, internal network.
+    layer1 = _fold(LAYER_DOCKER_DAEMON, [
+        lambda: check_docker_daemon(docker_runner),
+        lambda: check_sandbox_image(docker_runner),
+        lambda: check_sandbox_network(docker_runner),
+    ])
+
+    # Layer 2: gateway container running, coder model registered and hot.
+    if layer1.ok == STATE_OK:
+        layer2 = _fold(LAYER_GATEWAY, [
+            lambda: check_gateway_container(docker_runner),
+            lambda: check_gateway_model(
+                llm_port, config_path,
+                check_gateway=check_gateway, read_models=_models_reader),
+        ])
+    else:
+        layer2 = _skipped_layer(LAYER_GATEWAY)
+
+    # Layer 3: agent volume present, models.json readable by the image uid
+    # (repaired when --fix), and -- only when a readable file was exposed --
+    # the coder id seeded into it.
+    models_content = None  # type: Optional[str]
+    if layer2.ok == STATE_OK:
+        def _models_read() -> "LayerResult":
+            nonlocal models_content
+            result, models_content = check_models_json(docker_runner)
+            if fix:
+                result, models_content = repair_models_json(
+                    docker_runner, tag=DEFAULT_IMAGE_TAG, fix=True,
+                    first_read=(result, models_content),
+                )
+            return result
+
+        layer3 = _fold(LAYER_SANDBOX_AGENT_VOLUME, [
+            lambda: check_agent_volume(docker_runner),
+            _models_read,
+            lambda: check_coder_id(
+                models_content, config_path, read_models=_models_reader),
+        ])
+    else:
+        layer3 = _skipped_layer(LAYER_SANDBOX_AGENT_VOLUME)
+
+    # Layer 4: the coder role prompt is present and non-empty.
+    if layer3.ok == STATE_OK:
+        layer4 = check_role_prompt(repo)
+    else:
+        layer4 = _skipped_layer(LAYER_ROLE_PROMPT)
+
+    earlier_ok = all(
+        layer.ok == STATE_OK
+        for layer in (layer1, layer2, layer3, layer4)
+    )
+
+    # Layer 5: the real coder run, skipped (never failed) when an earlier
+    # layer did not pass, so the runner is never driven in that case.
+    layer5 = check_coder_run(
+        runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK,
+        earlier_layers_ok=earlier_ok,
+    )
+
+    # Layer 6: prove the two cheap failure paths -- a tag no image matches
+    # (DriverError) and a missing prompt (RoleError, raised before any
+    # spawn) -- exactly when an earlier layer is failing; skipped on a fully
+    # healthy stack, where nothing is left to diagnose.
+    if not earlier_ok:
+        layer6 = _fold(LAYER_FAILURE_PATHS, [
+            lambda: check_bad_image_tag(
+                runner, repo, _BAD_IMAGE_TAG, _TRIVIAL_TASK),
+            lambda: check_missing_prompt(
+                runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK),
+        ])
+    else:
+        layer6 = _skipped_layer(
+            LAYER_FAILURE_PATHS,
+            "skipped: all earlier layers passed; the failure paths are "
+            "probed only when an earlier layer is failing",
+        )
+
+    layers = [layer1, layer2, layer3, layer4, layer5, layer6]
+    return format_report(layers), summarize(layers)
