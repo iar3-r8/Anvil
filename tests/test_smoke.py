@@ -4200,7 +4200,7 @@ class TestRunSmokeTestDumpEvents(unittest.TestCase):
             check_gateway=fakes.check_gateway,
             read_models=fakes.read_models,
             **kwargs
-        ), fakes
+        )
 
     def test_dump_events_all_ok_appends_the_raw_stream_verbatim(self):
         # Arrange: an all-ok script and a stream carrying the unique

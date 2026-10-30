@@ -937,6 +937,26 @@ def _default_coder_run_resolve_role(name: str) -> Dict[str, str]:
     return pirole.resolve(name, "coder-model", "frontier-model")
 
 
+def _event_type_summary(events: Sequence[Dict[str, Any]]) -> str:
+    """The compact event-type count summary the layer-5 pass detail carries.
+
+    Counts the parsed events keyed by ``event.get("type")``, a missing or
+    ``None`` type counting under the literal string ``(unknown)``; the
+    counts are joined ``"%s: %d"`` with types in first-seen stream order,
+    e.g. ``"agent_start: 1, message: 2"``.
+    """
+    seen: Dict[str, int] = {}
+    for event in events:
+        event_type = event.get("type")
+        if event_type is None:
+            event_type = "(unknown)"
+        if event_type not in seen:
+            seen[event_type] = 0
+        seen[event_type] += 1
+    return ", ".join("%s: %d" % (event_type, count)
+                     for event_type, count in seen.items())
+
+
 def check_coder_run(
     runner: Callable[[Dict[str, Any]], Dict[str, Any]],
     repo_path: str,
@@ -1015,7 +1035,8 @@ def check_coder_run(
     return LayerResult(
         name="coder-run",
         ok=STATE_OK,
-        detail="coder run completed: %d event record(s)" % len(events),
+        detail="coder run completed: %d event record(s) (%s)"
+               % (len(events), _event_type_summary(events)),
     )
 
 
@@ -1243,6 +1264,7 @@ def run_smoke_test(
     dry_run: bool = False,
     check_gateway: Callable[[int], health.GatewayStatus] = health.check_gateway,
     read_models: Callable[..., config.ModelTopology] = config.read_models,
+    dump_events: bool = False,
 ) -> Tuple[str, int]:
     """Drive the six smoke layers for ``repo_path`` and return the report.
 
@@ -1286,6 +1308,14 @@ def run_smoke_test(
     Under ``--dry-run`` no process is spawned and no HTTP call or config read
     is made: the six layers are returned in the pass state, each naming what
     it would check, and the exit code is 0.
+
+    The layer-5 pass detail always carries the compact parsed event-type
+    count summary. When ``dump_events`` is True and the layer-5 run check
+    ran and passed, the report is additionally followed by a section whose
+    first line contains ``"coder-run events"`` and then the run's raw
+    stdout verbatim (a single trailing newline stripped so the report ends
+    cleanly); when the layer was skipped or failed, or ``dump_events`` is
+    False, nothing is appended.
     """
     if dry_run:
         layers = _dry_run_layers()
@@ -1293,6 +1323,20 @@ def run_smoke_test(
 
     repo = str(Path(repo_path).resolve())
     config_path = Path(repo) / "config.yaml"
+
+    # The transparent recorder the ``dump_events`` dump reads: the injected
+    # runner is wrapped so every ``(invocation, result)`` the driver hands
+    # the seam is recorded -- the original is called and its result returned
+    # unchanged, so the wrapper adds and drops nothing and the fakes' own
+    # ``invocations`` recording still works because it is forwarded. When
+    # layer 5 passes, layer 6 is skipped and the runner is driven exactly
+    # once, so the last recorded result is the layer-5 run's.
+    recorded: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+
+    def recording_runner(invocation: Dict[str, Any]) -> Dict[str, Any]:
+        result = runner(invocation)
+        recorded.append((invocation, result))
+        return result
 
     # The injected read_models may be the real two-argument
     # ``config.read_models`` or a one-argument test stand-in; both checks call
@@ -1384,7 +1428,7 @@ def run_smoke_test(
     # Layer 5: the real coder run, skipped (never failed) when an earlier
     # layer did not pass, so the runner is never driven in that case.
     layer5 = check_coder_run(
-        runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK,
+        recording_runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK,
         earlier_layers_ok=earlier_ok,
         resolve_role=_resolve_role,
     )
@@ -1396,10 +1440,10 @@ def run_smoke_test(
     if not earlier_ok:
         layer6 = _fold(LAYER_FAILURE_PATHS, [
             lambda: check_bad_image_tag(
-                runner, repo, _BAD_IMAGE_TAG, _TRIVIAL_TASK,
+                recording_runner, repo, _BAD_IMAGE_TAG, _TRIVIAL_TASK,
                 resolve_role=_resolve_role),
             lambda: check_missing_prompt(
-                runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK,
+                recording_runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK,
                 resolve_role=_resolve_role),
         ])
     else:
@@ -1410,4 +1454,15 @@ def run_smoke_test(
         )
 
     layers = [layer1, layer2, layer3, layer4, layer5, layer6]
-    return format_report(layers), summarize(layers)
+    report = format_report(layers)
+    exit_code = summarize(layers)
+    if dump_events and layer5.ok == STATE_OK and recorded:
+        # The layer-5 run's raw stdout, verbatim -- never re-parsed or
+        # re-serialised; a single trailing newline is stripped so the
+        # report ends cleanly.
+        raw_stream = recorded[-1][1]["stdout"]
+        if raw_stream.endswith("\n"):
+            raw_stream = raw_stream[:-1]
+        report += "\ncoder-run events (raw JSONL stream, verbatim):\n"
+        report += raw_stream
+    return report, exit_code

@@ -1743,6 +1743,11 @@ def smoke_test(
         help="Print what each layer would check; spawn no process and make "
              "no HTTP call.",
     ),
+    dump_events: bool = typer.Option(
+        False, "--dump-events",
+        help="Append the layer-5 run's raw JSONL event stream to the report, "
+             "verbatim, when that run check ran and passed.",
+    ),
 ) -> None:
     """Prove the single-role stack: docker, gateway, agent volume, prompt, one real run, failure paths.
 
@@ -1787,6 +1792,7 @@ def smoke_test(
         dry_run=dry,
         check_gateway=health.check_gateway,
         read_models=config.read_models,
+        dump_events=dump_events,
     )
 
     typer.echo(report, nl=False)
