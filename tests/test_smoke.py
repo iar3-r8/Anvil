@@ -3967,5 +3967,339 @@ class TestMissingPromptCheckNeedsNoModel(unittest.TestCase):
         self.assertEqual(len(runner.invocations), 0)
 
 
+# Behaviour 22: the run's events, for an operator sanity check. The
+# public seam these tests pin:
+#
+#     smoke.check_coder_run(...).detail (on a PASS)
+#         "coder run completed: <n> event record(s)" followed by
+#         "(<type>: <count>, ...)" — the event-type counts, types in
+#         first-seen stream order, counted over pievents.parse's events;
+#         a parsed event lacking a "type" key counts under "(unknown)".
+#         Failure details are unchanged.
+#
+#     smoke.run_smoke_test(..., dump_events: bool = False)
+#         new keyword parameter, default False. When True AND the
+#         layer-5 check ran and passed, the returned report text is the
+#         six-layer report followed by a section whose first line
+#         contains "coder-run events" and then the run's raw stdout
+#         VERBATIM. When layer 5 was skipped or failed, or
+#         dump_events is False, no "coder-run events" marker and no
+#         stream line appear.
+DUMP_EVENTS_MARKER = "coder-run events"
+# A unique JSON line that pins the verbatim-raw-stream requirement: it
+# must appear in the dump exactly as emitted, never re-serialised.
+UNIQUE_STREAM_LINE = '{"type": "agent_start", "trace": "behaviour-22-verbatim-pin"}'
+
+
+class TestCoderRunPassDetailCarriesEventCounts(unittest.TestCase):
+    """Behaviour 22 (a): the layer-5 pass detail ALWAYS carries a
+    compact parsed summary — the event-type counts, types in first-seen
+    stream order — in addition to the existing record count."""
+
+    def test_coder_run_pass_detail_carries_the_event_type_counts(self):
+        # Arrange: a passing run whose stream has two types — one
+        # agent_start first, then two message records.
+        stdout = (
+            '{"type": "agent_start", "agent": "coder"}\n'
+            '{"type": "message", "id": "m1"}\n'
+            '{"type": "message", "id": "m2"}\n'
+        )
+        self.assertEqual(
+            [e["type"] for e in pievents.parse(stdout)["events"]],
+            ["agent_start", "message", "message"],
+            "the fixture stream must parse to the two types it spells",
+        )
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: still the pass state with the existing count phrase,
+        # now followed by the compact type-count summary.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(
+            "event record(s)",
+            result.detail,
+            "the pass detail must keep the existing record-count "
+            "phrase; got %r" % result.detail,
+        )
+        self.assertIn(
+            "agent_start: 1",
+            result.detail,
+            "the pass detail must carry the agent_start count 1; "
+            "got %r" % result.detail,
+        )
+        self.assertIn(
+            "message: 2",
+            result.detail,
+            "the pass detail must carry the message count 2; got %r"
+            % result.detail,
+        )
+
+    def test_coder_run_pass_detail_counts_a_typeless_record_as_unknown(self):
+        # Arrange: a passing run whose second record carries no "type"
+        # key at all — it must count under the literal (unknown) name.
+        stdout = (
+            '{"type": "message", "id": "m1"}\n'
+            '{"id": "no-type-key"}\n'
+        )
+        self.assertNotIn(
+            "type",
+            pievents.parse(stdout)["events"][1],
+            "the fixture's second record must lack a type key",
+        )
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: pass state; the typeless record counts under
+        # (unknown) and the typed one under its own name.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(
+            "(unknown)",
+            result.detail,
+            "a parsed event lacking a type key must count under the "
+            "literal (unknown) name; got %r" % result.detail,
+        )
+        self.assertIn(
+            "message: 1",
+            result.detail,
+            "the typed record must keep its own count; got %r"
+            % result.detail,
+        )
+
+    def test_coder_run_failure_details_are_unchanged_without_counts(self):
+        # Arrange: the three failure modes keep their existing, distinct
+        # details — the counts only join the pass detail.
+        nonzero, _ = self._run_fail(_runner_result(1, "output\n", ""))
+        timed_out, _ = self._run_fail(
+            _runner_result(0, '{"type": "session"}\n', "", timed_out=True),
+        )
+        empty, _ = self._run_fail(_runner_result(0, "", ""))
+
+        # Assert: the existing markers, and no count summary on a fail.
+        for result in (nonzero, timed_out, empty):
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertNotIn(
+                "agent_start:",
+                result.detail,
+                "failure details must stay unchanged (no type-count "
+                "summary); got %r" % result.detail,
+            )
+        self.assertIn(EXIT_CODE_MARKER, nonzero.detail.lower())
+        self.assertIn(TIMEOUT_MARKER, timed_out.detail.lower())
+        self.assertIn(EMPTY_STREAM_MARKER, empty.detail.lower())
+        self.assertNotEqual(nonzero.detail, timed_out.detail)
+        self.assertNotEqual(nonzero.detail, empty.detail)
+        self.assertNotEqual(timed_out.detail, empty.detail)
+
+    @staticmethod
+    def _run_fail(result_dict):
+        runner = _fake_runner(result_dict)
+        with tempfile.TemporaryDirectory() as repo:
+            return (
+                _coder_run_check()(
+                    runner, repo, "pi-sandbox", TRIVIAL_TASK,
+                ),
+                runner,
+            )
+
+
+class _OrchestratorFakes(object):
+    """Small local fakes for the behaviour-22 orchestrator tests.
+
+    ``docker_runner`` is scripted per ``(argv[1], argv[2])`` pair,
+    ``runner`` is the pidriver seam, ``check_gateway`` and
+    ``read_models`` stand in for the production collaborators with a
+    fixed coder id — nothing real is spawned, fetched or read.
+    """
+
+    CODER_ID = "unit/fake-coder-22"
+
+    def __init__(self, docker_script, pidriver_stdout):
+        remaining = {key: list(vals) for key, vals in docker_script.items()}
+        self.docker_calls = []
+
+        def docker_runner(argv):
+            self.docker_calls.append(list(argv))
+            key = (argv[1], argv[2] if len(argv) > 2 else "")
+            if key not in remaining or not remaining[key]:
+                raise AssertionError(
+                    "scripted docker runner exhausted for %r"
+                    % (list(argv),)
+                )
+            return remaining[key].pop(0)
+
+        self.docker_runner = docker_runner
+        self.runner = _fake_runner(
+            _runner_result(0, pidriver_stdout, "")
+        )
+
+        class _Topology(object):
+            coder_id = _OrchestratorFakes.CODER_ID
+            embedder_id = None
+
+        def read_models(path, strict_context_window=False):
+            return _Topology()
+
+        class _Model(object):
+            id = _OrchestratorFakes.CODER_ID
+            hot = True
+
+        class _Status(object):
+            online = True
+            models = [_Model()]
+            error = None
+
+        def check_gateway(port, timeout=2.0):
+            return _Status()
+
+        self.read_models = read_models
+        self.check_gateway = check_gateway
+
+    @staticmethod
+    def all_ok_docker_script():
+        return {
+            ("version", "--format"): [(0, "27.1.1", "")],
+            ("image", "inspect"): [(0, "[...]", "")],
+            ("network", "inspect"): [(0, "[...]", "")],
+            ("ps", "--filter"): [(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [(0, "[...]", "")],
+            ("run", "--rm"): [
+                (0, '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % _OrchestratorFakes.CODER_ID, "")
+            ],
+        }
+
+
+class TestRunSmokeTestDumpEvents(unittest.TestCase):
+    """Behaviour 22 (b): ``run_smoke_test(..., dump_events=True)`` appends
+    the run's raw stdout verbatim after a "coder-run events" marker line,
+    only when the layer-5 check ran and passed."""
+
+    def _repo_with_prompt(self):
+        repo = tempfile.TemporaryDirectory()
+        self.addCleanup(repo.cleanup)
+        prompt = Path(repo.name) / _coder_prompt_path()
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("You are the coder.\n", encoding="utf-8")
+        return repo.name
+
+    def _invoke(self, docker_script, stdout, **kwargs):
+        fakes = _OrchestratorFakes(docker_script, stdout)
+        return _require_smoke().run_smoke_test(
+            self._repo_with_prompt(),
+            18080,
+            fakes.docker_runner,
+            fakes.runner,
+            check_gateway=fakes.check_gateway,
+            read_models=fakes.read_models,
+            **kwargs
+        ), fakes
+
+    def test_dump_events_all_ok_appends_the_raw_stream_verbatim(self):
+        # Arrange: an all-ok script and a stream carrying the unique
+        # line, plus one more record.
+        stream = (
+            UNIQUE_STREAM_LINE + "\n"
+            '{"type": "message", "id": "m1"}\n'
+        )
+        # Act: the orchestrator with the new dump_events keyword, True.
+        report, exit_code = self._invoke(
+            _OrchestratorFakes.all_ok_docker_script(), stream,
+            dump_events=True,
+        )
+
+        # Assert: exit 0, the marker, and the unique line VERBATIM —
+        # every non-empty stream line appears exactly as emitted.
+        self.assertEqual(0, exit_code, "the all-ok report: %s" % report)
+        self.assertIn(
+            DUMP_EVENTS_MARKER,
+            report,
+            "dump_events=True on a passed layer-5 run must append the "
+            "section under a line containing %r; got: %s"
+            % (DUMP_EVENTS_MARKER, report),
+        )
+        self.assertIn(
+            UNIQUE_STREAM_LINE,
+            report,
+            "the run's raw stdout must be appended verbatim (the unique "
+            "line %r must appear exactly as emitted); got: %s"
+            % (UNIQUE_STREAM_LINE, report),
+        )
+        self.assertIn(
+            '{"type": "message", "id": "m1"}',
+            report,
+            "every non-empty stream line must be appended verbatim; "
+            "got: %s" % report,
+        )
+
+    def test_dump_events_false_appends_no_marker_and_no_stream_line(self):
+        # Arrange: the same all-ok stack; the flag left at its default
+        # (False) — the keyword must exist, so pass it explicitly here
+        # and rely on the default elsewhere.
+        report, exit_code = self._invoke(
+            _OrchestratorFakes.all_ok_docker_script(),
+            UNIQUE_STREAM_LINE + "\n",
+            dump_events=False,
+        )
+
+        # Assert: exit 0, but no dump section at all.
+        self.assertEqual(0, exit_code, "the all-ok report: %s" % report)
+        self.assertNotIn(
+            DUMP_EVENTS_MARKER,
+            report,
+            "dump_events=False must append no section; got: %s" % report,
+        )
+        self.assertNotIn(
+            UNIQUE_STREAM_LINE,
+            report,
+            "dump_events=False must not carry the raw stream line; "
+            "got: %s" % report,
+        )
+
+    def test_dump_events_with_layer2_failing_appends_nothing_and_exits_four(self):
+        # Arrange: the gateway container is not running — layer 2 fails,
+        # so layer 5 is SKIPPED (the runner is never driven) and the
+        # failure paths probe (layer 6) runs instead.
+        script = {
+            ("version", "--format"): [(0, "27.1.1", "")],
+            ("image", "inspect"): [(0, "[...]", "")],
+            ("network", "inspect"): [(0, "[...]", "")],
+            ("ps", "--filter"): [(0, "", "")],
+        }
+        report, exit_code = self._invoke(
+            script, UNIQUE_STREAM_LINE + "\n", dump_events=True,
+        )
+
+        # Assert: the docker-class exit, no dump section, and the
+        # pidriver seam only driven by the layer-6 failure-path proof
+        # (the bad-image-tag probe raises before the runner is reached,
+        # so the recording runner was never handed the layer-5
+        # invocation of the skipped layer).
+        self.assertEqual(
+            4,
+            exit_code,
+            "a layer-2 failure must exit 4; got %s: %s" % (exit_code, report),
+        )
+        self.assertNotIn(
+            DUMP_EVENTS_MARKER,
+            report,
+            "a skipped layer-5 run must not append the dump section; "
+            "got: %s" % report,
+        )
+        self.assertNotIn(
+            UNIQUE_STREAM_LINE,
+            report,
+            "a skipped layer-5 run must not append the stream line; "
+            "got: %s" % report,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

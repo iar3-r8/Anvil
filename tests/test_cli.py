@@ -5037,11 +5037,14 @@ class TestSmokeTestSubcommandRegistered(CliCase):
             "(command not registered yet, behaviour 18 of plans/smoke-test.md)"
             % result.exit_code,
         )
-        for token in ("smoke-test", "--repo", "--fix", "--llm-port", "--dry-run"):
+        for token in (
+            "smoke-test", "--repo", "--fix", "--llm-port",
+            "--dry-run", "--dump-events",
+        ):
             self.assertIn(
                 token,
                 result.output,
-                "smoke-test --help must name %r (behaviour 18 of "
+                "smoke-test --help must name %r (behaviour 18/22 of "
                 "plans/smoke-test.md); got: %s" % (token, result.output),
             )
 
@@ -5820,3 +5823,191 @@ class TestSmokeTestResolvesCoderModelId(CliCase):
                 "the topology's coder id %r (read once via read_models); "
                 "got %r in argv %s" % (expected, tokens, argv),
             )
+
+
+# ---------------------------------------------------------------------------
+# smoke-test --dump-events  (behaviour 22 of plans/smoke-test.md)
+# ---------------------------------------------------------------------------
+
+# The one unique JSONL line the pass-case dump stream carries: the dump
+# must reproduce it VERBATIM, never re-serialised.
+_DUMPER_STREAM_LINE = (
+    '{"type": "agent_start", "trace": "behaviour-22-verbatim-pin"}'
+)
+
+
+class TestSmokeTestDumpEvents(CliCase):
+    """Behaviour 22 (b): ``anvil smoke-test --dump-events`` appends the
+    run's full raw JSONL stream to the report, verbatim, under a line
+    containing the ``coder-run events`` marker — only when the layer-5
+    run check ran and passed."""
+
+    DUMP_EVENTS_MARKER = "coder-run events"
+
+    def _invoke(self, fakes, extra_argv, docker_script, stream, repo=None):
+        fakes.docker = _scripted_docker(docker_script)
+        fakes.runner = _recording_pidriver(
+            _pidriver_result(stdout=stream)
+        )
+        argv = ["smoke-test"] + list(extra_argv)
+        if repo is not None:
+            argv += ["--repo", str(repo)]
+        with fakes.install(self):
+            result = self.invoke(argv)
+        return result, fakes
+
+    def _all_ok_docker_script(self, fakes):
+        return {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+
+    def _write_prompt(self, repo=None):
+        base = repo if repo is not None else self.project
+        (Path(base) / ".pi" / "roles").mkdir(parents=True)
+        (Path(base) / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+
+    def test_dump_events_all_ok_appends_the_raw_stream_verbatim(self):
+        # Arrange: an all-ok stack, the run stream carrying the unique
+        # line plus one more record.
+        fakes = SmokeTestFakes()
+        self._write_prompt()
+        stream = _DUMPER_STREAM_LINE + "\n" + '{"type": "message", "id": "m1"}\n'
+        result, _fakes = self._invoke(
+            fakes,
+            ["--dump-events"],
+            self._all_ok_docker_script(fakes),
+            stream,
+        )
+
+        # Assert: exit 0, the marker, and every non-empty stream line
+        # VERBATIM in the report.
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertIn(
+            self.DUMP_EVENTS_MARKER,
+            result.output,
+            "--dump-events on a passed layer-5 run must append the "
+            "section under a line containing %r; got: %s"
+            % (self.DUMP_EVENTS_MARKER, result.output),
+        )
+        self.assertIn(
+            _DUMPER_STREAM_LINE,
+            result.output,
+            "the run's raw stdout must be appended verbatim (the unique "
+            "line must appear exactly as emitted); got: %s" % result.output,
+        )
+        self.assertIn(
+            '{"type": "message", "id": "m1"}',
+            result.output,
+            "every non-empty stream line must be appended verbatim; "
+            "got: %s" % result.output,
+        )
+
+    def test_without_dump_events_no_marker_and_no_raw_stream_line(self):
+        # Arrange: the same all-ok stack, the flag absent.
+        fakes = SmokeTestFakes()
+        self._write_prompt()
+        result, _ = self._invoke(
+            fakes,
+            [],
+            self._all_ok_docker_script(fakes),
+            _DUMPER_STREAM_LINE + "\n",
+        )
+
+        # Assert: exit 0; the compact counts stay in the layer-5 detail
+        # (which already names the record count) but the raw stream line
+        # and the marker are absent.
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertNotIn(
+            self.DUMP_EVENTS_MARKER,
+            result.output,
+            "without --dump-events no dump section may appear; got: %s"
+            % result.output,
+        )
+        self.assertNotIn(
+            _DUMPER_STREAM_LINE,
+            result.output,
+            "without --dump-events the raw stream line must not be in "
+            "the output (only the compact counts); got: %s" % result.output,
+        )
+
+    def test_dump_events_layer1_failing_exits_four_without_marker(self):
+        # Arrange: the docker daemon is down — layer 1 fails, so layer 5
+        # is skipped and the run never happens; --dump-events has
+        # nothing to dump and must not turn the failure into a
+        # traceback.
+        fakes = SmokeTestFakes()
+        fakes.docker = _scripted_docker(
+            {("version", "--format"): [_docker_result(1, "", "cannot connect")]}
+        )
+        self._write_prompt()
+        with fakes.install(self):
+            result = self.invoke(
+                ["smoke-test", "--dump-events", "--repo", str(self.project)]
+            )
+
+        # Assert: the docker-class exit, no marker, no stream line, no
+        # traceback.
+        self.assertEqual(
+            cli.EXIT_DOCKER,
+            result.exit_code,
+            "a docker-class layer failure with --dump-events must still "
+            "exit 4; got %s: %s" % (result.exit_code, result.output),
+        )
+        self.assertNotIn(
+            self.DUMP_EVENTS_MARKER,
+            result.output,
+            "a skipped layer-5 run must not append the dump section; "
+            "got: %s" % result.output,
+        )
+        self.assertNotIn(_DUMPER_STREAM_LINE, result.output)
+        self.assertNotIn(
+            "Traceback",
+            result.output,
+            "a layer-1 failure with --dump-events must not print a "
+            "traceback; got: %s" % result.output,
+        )
+
+    def test_dry_run_with_dump_events_exits_zero_without_marker(self):
+        # Arrange: --dry-run returns before any run, so --dump-events has
+        # no run to dump; the docker script is EMPTY (any call fails the
+        # test loudly).
+        fakes = SmokeTestFakes()
+        fakes.docker = _scripted_docker({})
+        fakes.runner = _recording_pidriver(
+            _pidriver_result(stdout=_DUMPER_STREAM_LINE + "\n")
+        )
+        with fakes.install(self):
+            result = self.invoke(
+                ["smoke-test", "--dry-run", "--dump-events",
+                 "--repo", str(self.project)]
+            )
+
+        # Assert: exit 0, no run reached the seam, no marker, no
+        # stream line.
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(
+            [], fakes.runner.invocations,
+            "--dry-run must not reach the pidriver seam; got %s"
+            % fakes.runner.invocations,
+        )
+        self.assertNotIn(
+            self.DUMP_EVENTS_MARKER,
+            result.output,
+            "--dry-run --dump-events must append nothing; got: %s"
+            % result.output,
+        )
+        self.assertNotIn(_DUMPER_STREAM_LINE, result.output)
