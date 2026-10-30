@@ -1757,6 +1757,15 @@ def smoke_test(
     # import time) so the default tracks where the operator actually stands.
     target = repo if repo is not None else Path.cwd()
 
+    # A mistyped path is a usage error before anything else runs - layers,
+    # docker, HTTP - regardless of --dry-run, so the failure cannot be
+    # mistaken for a layer report (behaviour 19).
+    if not target.is_dir():
+        raise _fail(
+            "❌ --repo names no existing directory: {}".format(target),
+            EXIT_USAGE,
+        )
+
     # The global --dry-run (set before the subcommand) and the local one are
     # the same intent: name what would be checked, then stop.
     dry = dry_run or shared.dry_run
