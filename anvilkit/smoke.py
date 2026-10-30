@@ -1258,6 +1258,17 @@ def run_smoke_test(
     ``<repo_path>/config.yaml`` -- the anvil project root, where the
     read-only llama-swap ``config.yaml`` lives.
 
+    The ``--model`` token in every driver invocation composed by this
+    orchestrator comes from that ``config.yaml``: the topology is read once
+    through the injected ``read_models`` (the model id the operator actually
+    runs, e.g. ``Qwen/Qwen3.8-27B-FP8``) and the layer-5 and layer-6 checks
+    are handed a ``resolve_role`` closure over it. The placeholder ids
+    (``coder-model`` / ``frontier-model``) are only the standalone checks'
+    own defaults, never used here. If the config is missing or unreadable
+    the orchestrator does not raise: the run-class layers fall back to those
+    placeholder defaults and layer 2's ``check_gateway_model`` fails in its
+    own layer detail -- the operator-facing path for a config problem.
+
     The layers are driven in order and fail-fast: a layer that fails makes
     the following layers :data:`STATE_SKIPPED` (a broken docker class is not
     the moment to probe the gateway or run the model), and a skipped layer
@@ -1291,6 +1302,31 @@ def run_smoke_test(
     def _models_reader(path: config.PathLike, _strict: bool = False
                        ) -> config.ModelTopology:
         return read_models(path)
+
+    # The model id every driver --model token is composed from: the coder id
+    # from <repo>/config.yaml, read once. A ConfigError (missing or bad
+    # file) leaves the topology None -- never a traceback out of the
+    # orchestrator: layer 2's check_gateway_model surfaces the config
+    # problem in its own layer detail, and the run-class checks keep their
+    # placeholder defaults.
+    topology = None  # type: Optional[config.ModelTopology]
+    try:
+        topology = _models_reader(config_path)
+    except config.ConfigError:
+        topology = None
+
+    # The real resolve_role for the layer-5/6 run checks, over the topology
+    # just read: the coder id drives every local-tier role (the coder role's
+    # --model token), the frontier id falls back to the coder id when no
+    # embedder is configured, and None never reaches pirole.resolve.
+    if topology is not None:
+        def _resolve_role(name: str) -> Dict[str, str]:
+            return pirole.resolve(
+                name, topology.coder_id,
+                topology.embedder_id or topology.coder_id,
+            )
+    else:
+        _resolve_role = _default_coder_run_resolve_role
 
     # Layer 1: docker daemon, sandbox image, internal network.
     layer1 = _fold(LAYER_DOCKER_DAEMON, [
@@ -1350,6 +1386,7 @@ def run_smoke_test(
     layer5 = check_coder_run(
         runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK,
         earlier_layers_ok=earlier_ok,
+        resolve_role=_resolve_role,
     )
 
     # Layer 6: prove the two cheap failure paths -- a tag no image matches
@@ -1359,9 +1396,11 @@ def run_smoke_test(
     if not earlier_ok:
         layer6 = _fold(LAYER_FAILURE_PATHS, [
             lambda: check_bad_image_tag(
-                runner, repo, _BAD_IMAGE_TAG, _TRIVIAL_TASK),
+                runner, repo, _BAD_IMAGE_TAG, _TRIVIAL_TASK,
+                resolve_role=_resolve_role),
             lambda: check_missing_prompt(
-                runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK),
+                runner, repo, DEFAULT_IMAGE_TAG, _TRIVIAL_TASK,
+                resolve_role=_resolve_role),
         ])
     else:
         layer6 = _skipped_layer(
