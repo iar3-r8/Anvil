@@ -294,6 +294,7 @@ class TestSubcommandsExist(CliCase):
         "stress",
         "verify-guards",
         "ruleset-write",
+        "smoke-test",
     )
 
     def registered_names(self):
@@ -5094,14 +5095,14 @@ class TestSmokeTestAllOk(CliCase):
 
     def test_all_layers_ok_exits_zero(self):
         self._write_prompt(self.project)
-        result, _ = self._invoke_all_ok()
+        result, _ = self._invoke_all_ok(repo=self.project)
         self.assertEqual(
             0, result.exit_code, result.output
         )
 
     def test_all_layers_ok_prints_header_and_all_six_layers_in_order(self):
         self._write_prompt(self.project)
-        result, _ = self._invoke_all_ok()
+        result, _ = self._invoke_all_ok(repo=self.project)
         self.assertEqual(0, result.exit_code, result.output)
         self.assertIn(
             smoke.HEADER,
@@ -5131,7 +5132,7 @@ class TestSmokeTestAllOk(CliCase):
 
     def test_passing_run_reaches_the_pidriver_seam(self):
         self._write_prompt(self.project)
-        result, fakes = self._invoke_all_ok()
+        result, fakes = self._invoke_all_ok(repo=self.project)
         self.assertEqual(0, result.exit_code, result.output)
         self.assertEqual(1, len(fakes.runner.invocations))
 
@@ -5179,7 +5180,9 @@ class TestSmokeTestExitCodes(CliCase):
         )
         self._write_prompt()
         with fakes.install(self):
-            result = self.invoke(["smoke-test"])
+            result = self.invoke(
+                ["smoke-test", "--repo", str(self.project)]
+            )
         self.assertEqual(
             cli.EXIT_ERROR,
             result.exit_code,
@@ -5300,7 +5303,7 @@ class TestSmokeTestLlmPort(CliCase):
         )
         with fakes.install(self):
             result = self.invoke(
-                ["smoke-test", "--llm-port", "18080"]
+                ["smoke-test", "--llm-port", "18080", "--repo", str(self.project)]
             )
         self.assertEqual(0, result.exit_code, result.output)
         self.assertEqual(
@@ -5334,7 +5337,14 @@ class TestSmokeTestFix(CliCase):
             ("network", "inspect"): [_docker_result(0, "[...]", "")],
             ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
             ("volume", "inspect"): [_docker_result(0, "[...]", "")],
-            ("run", "--rm"): [models_read] + (retry if with_retry_pass else []),
+            # With --fix and a retry, the ("run","--rm") key is consumed three
+            # times in order: first read (permission fail), the chown (also
+            # run --rm --user 0 ... chown ...), then the retried read.
+            ("run", "--rm"): (
+                [models_read, _docker_result(0, "", "")] + retry
+                if with_retry_pass
+                else [models_read]
+            ),
         }
         return _scripted_docker(script)
 
@@ -5347,12 +5357,20 @@ class TestSmokeTestFix(CliCase):
             "## Coder\nYou write and modify code.\n"
         )
         with fakes.install(self):
-            result = self.invoke(["smoke-test", "--fix"])
+            result = self.invoke(
+                ["smoke-test", "--repo", str(self.project), "--fix"]
+            )
         self.assertEqual(0, result.exit_code, result.output)
+        # The pinned chown argv is
+        #   ['docker','run','--rm','-v','<vol>:<home>','--user','0',tag,
+        #    'chown','-R','1001:1001',<home>]
+        # so the chown verb sits at index 8, not index 2 (see
+        # tests/test_smoke.py::test_repair_fix_permission_fail_chown_argv_is_
+        # exactly_the_pinned_one for the authoritative shape).
         chowns = [
             argv
             for argv in fakes.docker_argv
-            if len(argv) >= 3 and argv[2] == "chown"
+            if len(argv) >= 10 and argv[8] == "chown"
         ]
         self.assertEqual(
             1,
@@ -5378,10 +5396,12 @@ class TestSmokeTestFix(CliCase):
             "sandbox-agent-volume layer and exit 4; got %s: %s"
             % (result.exit_code, result.output),
         )
+        # Same corrected filter as the --fix test: in the pinned chown argv
+        # the chown verb sits at index 8, not index 2.
         chowns = [
             argv
             for argv in fakes.docker_argv
-            if len(argv) >= 3 and argv[2] == "chown"
+            if len(argv) >= 10 and argv[8] == "chown"
         ]
         self.assertEqual(
             0,
