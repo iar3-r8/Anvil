@@ -49,6 +49,10 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit import cli  # noqa: E402
+from anvilkit import smoke  # noqa: E402
+# The six layer names in layer order, pinned by tests/test_smoke.py and
+# imported (never re-spelled) so the two suites cannot drift.
+from tests.test_smoke import LAYER_NAMES  # noqa: E402
 
 # The keys the bash heredoc at anvil:64 wrote, in that order.
 ENV_KEYS = (
@@ -290,6 +294,7 @@ class TestSubcommandsExist(CliCase):
         "stress",
         "verify-guards",
         "ruleset-write",
+        "smoke-test",
     )
 
     def registered_names(self):
@@ -4862,3 +4867,1147 @@ class TestRulesetWrite(CliCase):
         self.assertEqual(0, result.exit_code, result.output)
         data = json.loads(existing.read_text(encoding="utf-8"))
         self.assertEqual(list(self.RULE_TYPES), [rule["type"] for rule in data["rules"]])
+
+
+# ---------------------------------------------------------------------------
+# smoke-test subcommand (behaviour 18 of plans/smoke-test.md)
+# ---------------------------------------------------------------------------
+#
+# Seam contract pinned here (the green step must satisfy exactly this):
+#
+# 1. ``anvilkit.smoke.run_smoke_test(repo_path, llm_port, docker_runner,
+#    runner, *, fix=False, dry_run=False, check_gateway, read_models) ->
+#    (report_text, exit_code)`` where report_text is ``format_report`` of
+#    exactly six ``LayerResult``s named, in order, the six ``LAYER_NAMES``
+#    (sub-checks folded into their parent layer's verdict) and exit_code is
+#    ``summarize`` of those six. ``docker_runner(argv) -> (exit_code,
+#    stdout, stderr)``; ``runner(invocation)`` is the six-key pidriver
+#    result dict; ``check_gateway(port)`` / ``read_models(path)`` are the
+#    production health/config functions in the real command, fakes here.
+# 2. A ``smoke-test`` subcommand with ``--repo`` (default cwd),
+#    ``--llm-port`` (resolved via ``Context.resolve_port``), ``--fix`` and
+#    ``--dry-run``; it prints the report to stdout and exits with the
+#    orchestrator's exit code.
+# 3. CLI testability: ``cli._docker_runner_factory()`` and
+#    ``cli._pidriver_runner_factory()`` are the only two seams the command
+#    calls to obtain its runners; cli.py constructs no docker argv and
+#    makes no HTTP call itself -- all docker/HTTP happens through the
+#    factories' products.
+#
+# Nothing here touches the real docker daemon, the network, or $HOME.
+
+
+def _require_run_smoke_test():
+    """Return the behaviour-18 orchestrator, or fail naming what is missing."""
+    check = getattr(smoke, "run_smoke_test", None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "run_smoke_test(repo_path, llm_port, docker_runner, runner, "
+            "*, fix=False, dry_run=False, check_gateway, read_models) yet "
+            "(behaviour 18 of plans/smoke-test.md)"
+        )
+    return check
+
+
+def _scripted_docker(script):
+    """A fake ``docker_runner``: scripted ``(exit_code, stdout, stderr)``
+    per argv key, recording every argv it is handed (list-form only)."""
+    remaining = {key: list(vals) for key, vals in script.items()}
+    calls = []
+
+    def runner(argv):
+        calls.append(list(argv))
+        key = (argv[1], argv[2] if len(argv) > 2 else "")
+        if key not in remaining or not remaining[key]:
+            raise AssertionError(
+                "scripted docker runner exhausted for %r" % (list(argv),)
+            )
+        return remaining[key].pop(0)
+
+    runner.calls = calls
+    return runner
+
+
+def _docker_result(exit_code, stdout="", stderr=""):
+    return (exit_code, stdout, stderr)
+
+
+def _pidriver_result(exit_code=0, stdout="", stderr="", timed_out=False):
+    """A six-key pidriver result dict, the shape tests/test_smoke.py pins."""
+    return {
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "wall_time_s": 1.0,
+        "timed_out": timed_out,
+        "evidence": [],
+    }
+
+
+def _recording_pidriver(result):
+    """A fake pidriver runner returning ``result``, recording every
+    invocation dict it is handed."""
+    invocations = []
+
+    def runner(invocation):
+        invocations.append(invocation)
+        return result
+
+    runner.invocations = invocations
+    return runner
+
+
+# The one JSONL record the pass-case stream carries: one valid event is
+# all ``check_coder_run`` requires (judged on the stream existing).
+_PASS_STREAM = '{"type": "agent_start"}\n'
+
+
+class SmokeTestFakes:
+    """Installs the behaviour-18 fakes on ``cli`` and hands them out.
+
+    Every collaborator is a recorder; nothing real is spawned or fetched.
+    The production ``check_gateway`` / ``read_models`` stand-ins default to
+    an online gateway whose single hot model carries the coder id the
+    real ``read_models`` returns for the temp project's config.yaml.
+    """
+
+    def __init__(self):
+        self.docker = _scripted_docker({})
+        self.runner = _recording_pidriver(_pidriver_result())
+        self.gateway_ports = []
+        self.models_paths = []
+
+        coder = cli.config.read_models(cli.REPO_ROOT / "config.yaml")
+        self.topology = coder
+
+        def check_gateway(port):
+            self.gateway_ports.append(port)
+            from anvilkit import health
+
+            return health.GatewayStatus(
+                port=port,
+                online=True,
+                models=[health.ModelStatus(coder.coder_id, True)],
+            )
+
+        def read_models(path):
+            self.models_paths.append(str(path))
+            return coder
+
+        self.check_gateway = check_gateway
+        self.read_models = read_models
+
+    @contextlib.contextmanager
+    def install(self, case):
+        # create=True: the factories do not exist yet (behaviour 18 is red);
+        # the command's missing registration is what the tests name, not an
+        # AttributeError from the patch itself.
+        with mock.patch.object(
+            cli, "_docker_runner_factory",
+            create=True, return_value=self.docker
+        ), mock.patch.object(
+            cli, "_pidriver_runner_factory",
+            create=True, return_value=self.runner
+        ), mock.patch.object(
+            cli.health, "check_gateway", self.check_gateway
+        ), mock.patch.object(
+            cli.config, "read_models", self.read_models
+        ):
+            yield
+
+    @property
+    def docker_argv(self):
+        return self.docker.calls
+
+
+class TestSmokeTestSubcommandRegistered(CliCase):
+    """The smoke-test command exists and its options are spelled as pinned."""
+
+    def test_orchestrator_guard(self):
+        # The behaviour-18 orchestrator the command must call.
+        _require_run_smoke_test()
+
+    def test_smoke_test_help_names_the_command_and_every_option(self):
+        result = self.invoke_allowing_exception(["smoke-test", "--help"])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "smoke-test --help must exit 0 with its usage text; got exit %s "
+            "(command not registered yet, behaviour 18 of plans/smoke-test.md)"
+            % result.exit_code,
+        )
+        for token in (
+            "smoke-test", "--repo", "--fix", "--llm-port",
+            "--dry-run", "--dump-events",
+        ):
+            self.assertIn(
+                token,
+                result.output,
+                "smoke-test --help must name %r (behaviour 18/22 of "
+                "plans/smoke-test.md); got: %s" % (token, result.output),
+            )
+
+
+class TestSmokeTestAllOk(CliCase):
+    """Every layer passes: exit 0 and the six report names, in order."""
+
+    def _invoke_all_ok(self, repo=None):
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [
+                _docker_result(0, "27.1.1", "")
+            ],
+            ("image", "inspect"): [
+                _docker_result(0, "[...]", "")
+            ],
+            ("network", "inspect"): [
+                _docker_result(0, "[...]", "")
+            ],
+            ("ps", "--filter"): [
+                _docker_result(0, "llama-swap-service\n", "")
+            ],
+            ("volume", "inspect"): [
+                _docker_result(0, "[...]", "")
+            ],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+        fakes.docker = _scripted_docker(script)
+        fakes.runner = _recording_pidriver(
+            _pidriver_result(stdout=_PASS_STREAM)
+        )
+        argv = ["smoke-test"]
+        if repo is not None:
+            argv += ["--repo", str(repo)]
+        with fakes.install(self):
+            result = self.invoke(argv)
+        return result, fakes
+
+    def _write_prompt(self, repo):
+        (Path(repo) / ".pi" / "roles").mkdir(parents=True)
+        (Path(repo) / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+
+    def test_all_layers_ok_exits_zero(self):
+        self._write_prompt(self.project)
+        result, _ = self._invoke_all_ok(repo=self.project)
+        self.assertEqual(
+            0, result.exit_code, result.output
+        )
+
+    def test_all_layers_ok_prints_header_and_all_six_layers_in_order(self):
+        self._write_prompt(self.project)
+        result, _ = self._invoke_all_ok(repo=self.project)
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertIn(
+            smoke.HEADER,
+            result.output,
+            "the report must carry the stable header; got: %s" % result.output,
+        )
+        positions = []
+        for name in LAYER_NAMES:
+            # The report line for a layer is "glyph <name>: detail"; the
+            # "\n<name>:" anchor cannot hit detail text of an earlier layer.
+            anchor = "\n%s:" % name
+            positions.append(result.output.find(anchor) + 1
+                             if anchor in result.output
+                             else -1)
+        self.assertTrue(
+            all(position >= 0 for position in positions),
+            "the report must name every layer in LAYER_NAMES %s; "
+            "missing positions for %s; got: %s"
+            % (LAYER_NAMES, [LAYER_NAMES[i] for i, p in enumerate(positions)
+                             if p < 0], result.output),
+        )
+        self.assertEqual(
+            positions, sorted(positions),
+            "the six layers must appear in LAYER_NAMES order %s; got "
+            "positions %s in: %s" % (LAYER_NAMES, positions, result.output),
+        )
+
+    def test_passing_run_reaches_the_pidriver_seam(self):
+        self._write_prompt(self.project)
+        result, fakes = self._invoke_all_ok(repo=self.project)
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(1, len(fakes.runner.invocations))
+
+
+class TestSmokeTestExitCodes(CliCase):
+    """summarize's classes: docker-class failure exits 4, run-class exits 1."""
+
+    def test_docker_daemon_failure_exits_docker_class(self):
+        fakes = SmokeTestFakes()
+        fakes.docker = _scripted_docker(
+            {("version", "--format"): [_docker_result(1, "", "cannot connect")]})
+        self._write_prompt()
+        with fakes.install(self):
+            result = self.invoke(["smoke-test"])
+        self.assertEqual(
+            cli.EXIT_DOCKER,
+            result.exit_code,
+            "a docker-class layer failure must exit 4; got %s: %s"
+            % (result.exit_code, result.output),
+        )
+
+    def test_agent_level_run_failure_exits_internal_class(self):
+        # Everything before the run passes; the run itself exits non-zero
+        # WITH output, so the driver returns (agent data) rather than
+        # raising DriverError, and layer 5 fails.
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+        fakes.docker = _scripted_docker(script)
+        fakes.runner = _recording_pidriver(
+            _pidriver_result(exit_code=1, stdout="pi: some agent error")
+        )
+        self._write_prompt()
+        with fakes.install(self):
+            result = self.invoke(
+                ["smoke-test", "--repo", str(self.project)]
+            )
+        self.assertEqual(
+            cli.EXIT_ERROR,
+            result.exit_code,
+            "a failed run with layers 1-4 ok must exit 1; got %s: %s"
+            % (result.exit_code, result.output),
+        )
+
+    def _write_prompt(self):
+        (self.project / ".pi" / "roles").mkdir(parents=True)
+        (self.project / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+
+
+class TestSmokeTestRepoOption(CliCase):
+    """--repo defaults to cwd and reaches the layers absolute."""
+
+    def _fakes_all_ok(self, fakes):
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+        fakes.docker = _scripted_docker(script)
+        fakes.runner = _recording_pidriver(_pidriver_result(stdout=_PASS_STREAM))
+
+    def test_default_repo_cwd_reaches_the_run_absolutely(self):
+        with self.runner.isolated_filesystem() as tmpdir:
+            # The prompt must exist in the cwd repo for layer 4 to pass.
+            (Path(tmpdir) / ".pi" / "roles").mkdir(parents=True)
+            (Path(tmpdir) / ".pi" / "roles" / "coder.md").write_text(
+                "## Coder\nYou write and modify code.\n"
+            )
+            fakes = SmokeTestFakes()
+            self._fakes_all_ok(fakes)
+            with fakes.install(self):
+                result = self.invoke(["smoke-test"])
+        self.assertEqual(0, result.exit_code, result.output)
+        invocations = fakes.runner.invocations
+        self.assertEqual(
+            1, len(invocations),
+            "the run layer must reach the pidriver seam once; got %s"
+            % len(invocations),
+        )
+        self.assertEqual(
+            Path(tmpdir).resolve(),
+            Path(invocations[0]["cwd"]).resolve(),
+            "the default --repo must be the working directory, absolute: "
+            "cwd=%r tmpdir=%s"
+            % (invocations[0]["cwd"], tmpdir),
+        )
+
+    def test_relative_repo_reaches_the_run_absolutely(self):
+        sub = self.project / "sub"
+        (sub / ".pi" / "roles").mkdir(parents=True)
+        (sub / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            # The repo is passed relative, resolved against the project cwd.
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(str(self.project))
+                result = self.invoke(["smoke-test", "--repo", "sub"])
+            finally:
+                os.chdir(old_cwd)
+        self.assertEqual(0, result.exit_code, result.output)
+        invocations = fakes.runner.invocations
+        self.assertEqual(1, len(invocations))
+        self.assertEqual(
+            sub.resolve(),
+            Path(invocations[0]["cwd"]).resolve(),
+            "a relative --repo must reach the run absolute: cwd=%r sub=%s"
+            % (invocations[0]["cwd"], sub),
+        )
+
+
+class TestSmokeTestLlmPort(CliCase):
+    """--llm-port resolves through the existing precedence and reaches the
+    gateway probe."""
+
+    def test_flag_port_reaches_check_gateway(self):
+        # 18080 cannot be the env value (no .env in the temp project) nor
+        # the anvil.yaml default, so only the flag can produce it.
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+        fakes.docker = _scripted_docker(script)
+        fakes.runner = _recording_pidriver(_pidriver_result(stdout=_PASS_STREAM))
+        (self.project / ".pi" / "roles").mkdir(parents=True)
+        (self.project / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+        with fakes.install(self):
+            result = self.invoke(
+                ["smoke-test", "--llm-port", "18080", "--repo", str(self.project)]
+            )
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(
+            [18080],
+            fakes.gateway_ports,
+            "the --llm-port flag must reach the gateway probe as 18080; "
+            "got %s" % fakes.gateway_ports,
+        )
+
+
+class TestSmokeTestFix(CliCase):
+    """--fix chowns the volume exactly once on a permission failure;
+    without --fix nothing is spawned and the layer fails."""
+
+    def _docker_with_permission(self, fakes, with_retry_pass):
+        read_argv_prefix = ["docker", "run", "--rm", "-v"]
+        models_read = _docker_result(1, "", "cat: /models.json: Permission denied")
+        retry = (
+            [_docker_result(
+                0,
+                '{"providers": {"local": {"models": '
+                '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                "",
+            )]
+            if with_retry_pass
+            else [models_read]
+        )
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            # With --fix and a retry, the ("run","--rm") key is consumed three
+            # times in order: first read (permission fail), the chown (also
+            # run --rm --user 0 ... chown ...), then the retried read.
+            ("run", "--rm"): (
+                [models_read, _docker_result(0, "", "")] + retry
+                if with_retry_pass
+                else [models_read]
+            ),
+        }
+        return _scripted_docker(script)
+
+    def test_fix_permission_failure_chowns_once_and_recovers(self):
+        fakes = SmokeTestFakes()
+        fakes.docker = self._docker_with_permission(fakes, with_retry_pass=True)
+        fakes.runner = _recording_pidriver(_pidriver_result(stdout=_PASS_STREAM))
+        (self.project / ".pi" / "roles").mkdir(parents=True)
+        (self.project / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+        with fakes.install(self):
+            result = self.invoke(
+                ["smoke-test", "--repo", str(self.project), "--fix"]
+            )
+        self.assertEqual(0, result.exit_code, result.output)
+        # The pinned chown argv is
+        #   ['docker','run','--rm','-v','<vol>:<home>','--user','0',tag,
+        #    'chown','-R','1001:1001',<home>]
+        # so the chown verb sits at index 8, not index 2 (see
+        # tests/test_smoke.py::test_repair_fix_permission_fail_chown_argv_is_
+        # exactly_the_pinned_one for the authoritative shape).
+        chowns = [
+            argv
+            for argv in fakes.docker_argv
+            if len(argv) >= 10 and argv[8] == "chown"
+        ]
+        self.assertEqual(
+            1,
+            len(chowns),
+            "--fix on a permission failure must spawn exactly one chown "
+            "argv; got %s in %s" % (chowns, fakes.docker_argv),
+        )
+        self.assertIn("--user", chowns[0])
+        self.assertIn("0", chowns[0])
+        self.assertIn("chown", chowns[0])
+        self.assertIn("-R", chowns[0])
+        self.assertIn("1001:1001", chowns[0])
+
+    def test_without_fix_no_chown_and_the_layer_fails(self):
+        fakes = SmokeTestFakes()
+        fakes.docker = self._docker_with_permission(fakes, with_retry_pass=False)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test"])
+        self.assertEqual(
+            cli.EXIT_DOCKER,
+            result.exit_code,
+            "without --fix a permission failure must fail the "
+            "sandbox-agent-volume layer and exit 4; got %s: %s"
+            % (result.exit_code, result.output),
+        )
+        # Same corrected filter as the --fix test: in the pinned chown argv
+        # the chown verb sits at index 8, not index 2.
+        chowns = [
+            argv
+            for argv in fakes.docker_argv
+            if len(argv) >= 10 and argv[8] == "chown"
+        ]
+        self.assertEqual(
+            0,
+            len(chowns),
+            "without --fix nothing is spawned; got %s in %s"
+            % (chowns, fakes.docker_argv),
+        )
+
+
+class TestSmokeTestDryRun(CliCase):
+    """--dry-run prints what it would check and spawns nothing."""
+
+    def test_dry_run_exits_zero_spawns_nothing_and_names_all_layers(self):
+        fakes = SmokeTestFakes()
+        # The docker script is EMPTY: any call to it fails the test loudly.
+        fakes.docker = _scripted_docker({})
+        fakes.runner = _recording_pidriver(_pidriver_result(stdout=_PASS_STREAM))
+        with fakes.install(self):
+            result = self.invoke(["--dry-run", "smoke-test"])
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(
+            [], fakes.docker_argv,
+            "--dry-run must not run any docker argv; got %s" % fakes.docker_argv,
+        )
+        self.assertEqual(
+            [], fakes.runner.invocations,
+            "--dry-run must not reach the pidriver seam; got %s"
+            % fakes.runner.invocations,
+        )
+        self.assertEqual(
+            [], fakes.gateway_ports,
+            "--dry-run must not call check_gateway; got %s" % fakes.gateway_ports,
+        )
+        self.assertEqual(
+            [], fakes.models_paths,
+            "--dry-run must not call read_models; got %s" % fakes.models_paths,
+        )
+        for name in LAYER_NAMES:
+            self.assertIn(
+                name,
+                result.output,
+                "--dry-run must still name every layer it would check; "
+                "missing %r in: %s" % (name, result.output),
+            )
+        self.assertIn(
+            "dry run",
+            result.output.lower(),
+            "--dry-run output must carry a dry-run marker; got: %s"
+            % result.output,
+        )
+
+
+class TestSmokeTestDockerArgvShape(CliCase):
+    """cli.py constructs no docker argv: every argv the docker seam receives
+    is list-form with 'docker' first."""
+
+    def test_every_docker_argv_is_list_form_starting_with_docker(self):
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(1, "", "daemon down")],
+        }
+        fakes.docker = _scripted_docker(script)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test"])
+        self.assertEqual(cli.EXIT_DOCKER, result.exit_code, result.output)
+        self.assertTrue(fakes.docker_argv, "the docker seam must be called")
+        for argv in fakes.docker_argv:
+            self.assertIsInstance(
+                argv,
+                list,
+                "every docker argv must be list-form, not a string: %r" % (argv,),
+            )
+            self.assertEqual(
+                "docker",
+                argv[0],
+                "every docker argv must start with 'docker' (built by the "
+                "smoke checks, not hand-built in cli): %r" % (argv,),
+            )
+
+
+class TestSmokeTestMissingRepo(CliCase):
+    """"--repo" naming a nonexistent path, or a file, is a usage error:
+    exit 2 naming the path, no docker spawn and no HTTP call, and no layer
+    report (behaviour 19 of plans/smoke-test.md)."""
+
+    def _fakes_all_ok(self, fakes):
+        # The script lets every layer reach its natural verdict, so the red
+        # state (no --repo validation yet) runs the layers to completion and
+        # exits with a layer-report code instead of tripping the docker fake;
+        # the green state consumes none of it.
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+        fakes.docker = _scripted_docker(script)
+        fakes.runner = _recording_pidriver(_pidriver_result(stdout=_PASS_STREAM))
+
+    def test_nonexistent_repo_exits_usage(self):
+        missing = str(self.project / "no-such-dir")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", missing])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "a nonexistent --repo must exit 2 (usage); got %s: %s"
+            % (result.exit_code, result.output),
+        )
+
+    def test_nonexistent_repo_message_names_the_path(self):
+        missing = str(self.project / "no-such-dir")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", missing])
+        self.assertIn(
+            missing,
+            result.output,
+            "the usage message must name the path %s; got: %s"
+            % (missing, result.output),
+        )
+
+    def test_nonexistent_repo_spawns_nothing(self):
+        missing = str(self.project / "no-such-dir")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            self.invoke(["smoke-test", "--repo", missing])
+        self.assertEqual(
+            [], fakes.docker_argv,
+            "a nonexistent --repo must not run any docker argv; got %s"
+            % fakes.docker_argv,
+        )
+        self.assertEqual(
+            [], fakes.runner.invocations,
+            "a nonexistent --repo must not reach the pidriver seam; got %s"
+            % fakes.runner.invocations,
+        )
+        self.assertEqual(
+            [], fakes.gateway_ports,
+            "a nonexistent --repo must not call check_gateway; got %s"
+            % fakes.gateway_ports,
+        )
+        self.assertEqual(
+            [], fakes.models_paths,
+            "a nonexistent --repo must not call read_models; got %s"
+            % fakes.models_paths,
+        )
+
+    def test_repo_that_is_a_file_exits_usage_and_names_it(self):
+        afile = self.project / "afile"
+        afile.write_text("not a repo\n", encoding="utf-8")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", str(afile)])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "a --repo naming a file must exit 2 (usage); got %s: %s"
+            % (result.exit_code, result.output),
+        )
+        self.assertIn(
+            str(afile),
+            result.output,
+            "the usage message must name the path %s; got: %s"
+            % (afile, result.output),
+        )
+
+    def test_repo_that_is_a_file_spawns_nothing(self):
+        afile = self.project / "afile"
+        afile.write_text("not a repo\n", encoding="utf-8")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            self.invoke(["smoke-test", "--repo", str(afile)])
+        self.assertEqual(
+            [], fakes.docker_argv,
+            "a --repo naming a file must not run any docker argv; got %s"
+            % fakes.docker_argv,
+        )
+        self.assertEqual(
+            [], fakes.runner.invocations,
+            "a --repo naming a file must not reach the pidriver seam; got %s"
+            % fakes.runner.invocations,
+        )
+        self.assertEqual(
+            [], fakes.gateway_ports,
+            "a --repo naming a file must not call check_gateway; got %s"
+            % fakes.gateway_ports,
+        )
+        self.assertEqual(
+            [], fakes.models_paths,
+            "a --repo naming a file must not call read_models; got %s"
+            % fakes.models_paths,
+        )
+
+    def test_missing_repo_output_is_not_a_layer_report(self):
+        missing = str(self.project / "no-such-dir")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", missing])
+        self.assertNotIn(
+            smoke.HEADER,
+            result.output,
+            "a missing --repo must fail before any layer runs, so the "
+            "output must not carry the report header %r; got: %s"
+            % (smoke.HEADER, result.output),
+        )
+
+
+def _model_tokens(argv):
+    """Every token immediately following a ``--model`` token in ``argv``.
+
+    ``pirole.role_argv`` is the only source of ``--model`` tokens in a
+    composed driver argv (the sandbox prefix ends at the image tag), so the
+    list is exactly the model ids the composed invocations would send to Pi.
+    """
+    return [
+        argv[i + 1]
+        for i, token in enumerate(argv[:-1])
+        if token == "--model"
+    ]
+
+
+class TestSmokeTestResolvesCoderModelId(CliCase):
+    """The command resolves the coder id from config.yaml (behaviour 21).
+
+    The user never named a model; the ``--model`` token in every composed
+    driver invocation must come from ``matrix.vars.coder`` of the repo's
+    ``config.yaml`` (``read_models`` -> ``ModelTopology.coder_id``), never
+    from the unit-test placeholder ids the standalone checks default to.
+    ``SmokeTestFakes.topology`` is built from the real repo-root
+    ``config.yaml``, so ``fakes.topology.coder_id`` carries a slash and is
+    a real model name, not the placeholder.
+    """
+
+    def _invoke_all_ok(self):
+        """The TestSmokeTestAllOk recipe: every layer passes, one run."""
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+        fakes.docker = _scripted_docker(script)
+        fakes.runner = _recording_pidriver(_pidriver_result(stdout=_PASS_STREAM))
+        (self.project / ".pi" / "roles").mkdir(parents=True)
+        (self.project / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", str(self.project)])
+        return result, fakes
+
+    def _invoke_gateway_fail(self):
+        """Layers 1 ok, layer 2's container check fails, the run-class
+        layers drive the pidriver seam for the failure-paths proof."""
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            # empty ps output: no line equals the gateway container name,
+            # so check_gateway_container fails and layer 2 folds to failed.
+            ("ps", "--filter"): [_docker_result(0, "", "")],
+        }
+        fakes.docker = _scripted_docker(script)
+        # Non-zero exit with EMPTY stdout: the driver's own DriverError
+        # rule fires for the bad-image-tag probe (the failure path is
+        # proved); the missing-prompt probe raises RoleError before the
+        # runner is invoked.
+        fakes.runner = _recording_pidriver(
+            _pidriver_result(exit_code=125, stdout="", stderr="no such tag")
+        )
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", str(self.project)])
+        return result, fakes
+
+    def test_all_ok_run_uses_the_config_coder_id_not_the_placeholder(self):
+        result, fakes = self._invoke_all_ok()
+        self.assertEqual(0, result.exit_code, result.output)
+        expected = fakes.topology.coder_id
+        self.assertTrue(
+            "/" in expected,
+            "the fakes must expose a real slash-carrying coder id from "
+            "config.yaml, not a placeholder; got %r" % expected,
+        )
+        self.assertEqual(
+            1,
+            len(fakes.runner.invocations),
+            "a healthy stack must drive the pidriver seam exactly once "
+            "(the layer-5 run; the failure paths are skipped); got %s"
+            % fakes.runner.invocations,
+        )
+        argv = fakes.runner.invocations[0]["argv"]
+        tokens = _model_tokens(argv)
+        self.assertEqual(
+            [expected],
+            tokens,
+            "the layer-5 --model token must be the topology's coder id %r "
+            "(matrix.vars.coder from config.yaml); got %r in argv %s"
+            % (expected, tokens, argv),
+        )
+        self.assertNotEqual(
+            ["coder-model"],
+            tokens,
+            "the unit-test placeholder id leaked into the composed "
+            "argv; got %r" % (argv,),
+        )
+
+    def test_failure_path_probes_also_use_the_config_coder_id(self):
+        result, fakes = self._invoke_gateway_fail()
+        self.assertEqual(
+            cli.EXIT_DOCKER,
+            result.exit_code,
+            "a layer-2 (docker-class) failure must exit 4; got %s: %s"
+            % (result.exit_code, result.output),
+        )
+        self.assertTrue(
+            fakes.runner.invocations,
+            "the layer-6 failure-path proof must drive the pidriver seam "
+            "(the bad-image-tag probe); got no invocations",
+        )
+        expected = fakes.topology.coder_id
+        for invocation in fakes.runner.invocations:
+            argv = invocation["argv"]
+            tokens = _model_tokens(argv)
+            self.assertEqual(
+                [expected],
+                tokens,
+                "every failure-path --model token must be the topology's "
+                "coder id %r; got %r in argv %s" % (expected, tokens, argv),
+            )
+
+    def test_placeholder_coder_model_never_appears_in_any_argv(self):
+        _result, fakes = self._invoke_all_ok()
+        self.assertTrue(
+            fakes.runner.invocations,
+            "the all-ok scenario must drive the pidriver seam; got none",
+        )
+        for invocation in fakes.runner.invocations:
+            argv = invocation["argv"]
+            self.assertNotIn(
+                "coder-model",
+                argv,
+                "the unit-test placeholder id leaked into the composed "
+                "driver argv; got %s" % (argv,),
+            )
+
+    def test_orchestrator_resolves_the_coder_id_from_read_models(self):
+        # Pins run_smoke_test itself, not just the CLI wiring: the
+        # orchestrator must read the topology once and compose every
+        # driver --model token from topology.coder_id.
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "", "")],
+        }
+        docker_runner = _scripted_docker(script)
+        runner = _recording_pidriver(
+            _pidriver_result(exit_code=125, stdout="", stderr="no such tag")
+        )
+        _report, exit_code = smoke.run_smoke_test(
+            str(self.project),
+            fakes.topology.gateway_port,
+            docker_runner,
+            runner,
+            check_gateway=fakes.check_gateway,
+            read_models=fakes.read_models,
+        )
+        self.assertEqual(
+            cli.EXIT_DOCKER,
+            exit_code,
+            "a layer-2 (docker-class) failure must exit 4; got %s"
+            % exit_code,
+        )
+        self.assertTrue(
+            runner.invocations,
+            "the layer-6 failure-path proof must drive the pidriver "
+            "seam; got no invocations",
+        )
+        expected = fakes.topology.coder_id
+        for invocation in runner.invocations:
+            argv = invocation["argv"]
+            tokens = _model_tokens(argv)
+            self.assertEqual(
+                [expected],
+                tokens,
+                "the orchestrator must compose the --model token from "
+                "the topology's coder id %r (read once via read_models); "
+                "got %r in argv %s" % (expected, tokens, argv),
+            )
+
+
+# ---------------------------------------------------------------------------
+# smoke-test --dump-events  (behaviour 22 of plans/smoke-test.md)
+# ---------------------------------------------------------------------------
+
+# The one unique JSONL line the pass-case dump stream carries: the dump
+# must reproduce it VERBATIM, never re-serialised.
+_DUMPER_STREAM_LINE = (
+    '{"type": "agent_start", "trace": "behaviour-22-verbatim-pin"}'
+)
+
+
+class TestSmokeTestDumpEvents(CliCase):
+    """Behaviour 22 (b): ``anvil smoke-test --dump-events`` appends the
+    run's full raw JSONL stream to the report, verbatim, under a line
+    containing the ``coder-run events`` marker — only when the layer-5
+    run check ran and passed."""
+
+    DUMP_EVENTS_MARKER = "coder-run events"
+
+    def _invoke(self, fakes, extra_argv, docker_script, stream, repo=None):
+        fakes.docker = _scripted_docker(docker_script)
+        fakes.runner = _recording_pidriver(
+            _pidriver_result(stdout=stream)
+        )
+        argv = ["smoke-test"] + list(extra_argv)
+        if repo is not None:
+            argv += ["--repo", str(repo)]
+        with fakes.install(self):
+            result = self.invoke(argv)
+        return result, fakes
+
+    def _all_ok_docker_script(self, fakes):
+        return {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+
+    def _write_prompt(self, repo=None):
+        base = repo if repo is not None else self.project
+        (Path(base) / ".pi" / "roles").mkdir(parents=True)
+        (Path(base) / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+
+    def test_dump_events_all_ok_appends_the_raw_stream_verbatim(self):
+        # Arrange: an all-ok stack, the run stream carrying the unique
+        # line plus one more record.
+        fakes = SmokeTestFakes()
+        self._write_prompt()
+        stream = _DUMPER_STREAM_LINE + "\n" + '{"type": "message", "id": "m1"}\n'
+        result, _fakes = self._invoke(
+            fakes,
+            ["--dump-events"],
+            self._all_ok_docker_script(fakes),
+            stream,
+        )
+
+        # Assert: exit 0, the marker, and every non-empty stream line
+        # VERBATIM in the report.
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertIn(
+            self.DUMP_EVENTS_MARKER,
+            result.output,
+            "--dump-events on a passed layer-5 run must append the "
+            "section under a line containing %r; got: %s"
+            % (self.DUMP_EVENTS_MARKER, result.output),
+        )
+        self.assertIn(
+            _DUMPER_STREAM_LINE,
+            result.output,
+            "the run's raw stdout must be appended verbatim (the unique "
+            "line must appear exactly as emitted); got: %s" % result.output,
+        )
+        self.assertIn(
+            '{"type": "message", "id": "m1"}',
+            result.output,
+            "every non-empty stream line must be appended verbatim; "
+            "got: %s" % result.output,
+        )
+
+    def test_without_dump_events_no_marker_and_no_raw_stream_line(self):
+        # Arrange: the same all-ok stack, the flag absent.
+        fakes = SmokeTestFakes()
+        self._write_prompt()
+        result, _ = self._invoke(
+            fakes,
+            [],
+            self._all_ok_docker_script(fakes),
+            _DUMPER_STREAM_LINE + "\n",
+        )
+
+        # Assert: exit 0; the compact counts stay in the layer-5 detail
+        # (which already names the record count) but the raw stream line
+        # and the marker are absent.
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertNotIn(
+            self.DUMP_EVENTS_MARKER,
+            result.output,
+            "without --dump-events no dump section may appear; got: %s"
+            % result.output,
+        )
+        self.assertNotIn(
+            _DUMPER_STREAM_LINE,
+            result.output,
+            "without --dump-events the raw stream line must not be in "
+            "the output (only the compact counts); got: %s" % result.output,
+        )
+
+    def test_dump_events_layer1_failing_exits_four_without_marker(self):
+        # Arrange: the docker daemon is down — layer 1 fails, so layer 5
+        # is skipped and the run never happens; --dump-events has
+        # nothing to dump and must not turn the failure into a
+        # traceback.
+        fakes = SmokeTestFakes()
+        fakes.docker = _scripted_docker(
+            {("version", "--format"): [_docker_result(1, "", "cannot connect")]}
+        )
+        self._write_prompt()
+        with fakes.install(self):
+            result = self.invoke(
+                ["smoke-test", "--dump-events", "--repo", str(self.project)]
+            )
+
+        # Assert: the docker-class exit, no marker, no stream line, no
+        # traceback.
+        self.assertEqual(
+            cli.EXIT_DOCKER,
+            result.exit_code,
+            "a docker-class layer failure with --dump-events must still "
+            "exit 4; got %s: %s" % (result.exit_code, result.output),
+        )
+        self.assertNotIn(
+            self.DUMP_EVENTS_MARKER,
+            result.output,
+            "a skipped layer-5 run must not append the dump section; "
+            "got: %s" % result.output,
+        )
+        self.assertNotIn(_DUMPER_STREAM_LINE, result.output)
+        self.assertNotIn(
+            "Traceback",
+            result.output,
+            "a layer-1 failure with --dump-events must not print a "
+            "traceback; got: %s" % result.output,
+        )
+
+    def test_dry_run_with_dump_events_exits_zero_without_marker(self):
+        # Arrange: --dry-run returns before any run, so --dump-events has
+        # no run to dump; the docker script is EMPTY (any call fails the
+        # test loudly).
+        fakes = SmokeTestFakes()
+        fakes.docker = _scripted_docker({})
+        fakes.runner = _recording_pidriver(
+            _pidriver_result(stdout=_DUMPER_STREAM_LINE + "\n")
+        )
+        with fakes.install(self):
+            result = self.invoke(
+                ["smoke-test", "--dry-run", "--dump-events",
+                 "--repo", str(self.project)]
+            )
+
+        # Assert: exit 0, no run reached the seam, no marker, no
+        # stream line.
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(
+            [], fakes.runner.invocations,
+            "--dry-run must not reach the pidriver seam; got %s"
+            % fakes.runner.invocations,
+        )
+        self.assertNotIn(
+            self.DUMP_EVENTS_MARKER,
+            result.output,
+            "--dry-run --dump-events must append nothing; got: %s"
+            % result.output,
+        )
+        self.assertNotIn(_DUMPER_STREAM_LINE, result.output)

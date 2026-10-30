@@ -1,0 +1,4305 @@
+"""Tests for anvilkit.smoke, behaviours 1–17 of plans/smoke-test.md.
+
+Written before the implementation (TDD red): ``anvilkit/smoke.py`` does not
+exist yet, so the guarded import below turns the missing module into a clear,
+named failure in each test instead of an import-time crash.
+
+Contract under test (from the plan): ``LayerResult`` is a small value type
+carrying ``name`` (str), ``ok`` (a state string: ``"ok"``, ``"failed"`` or
+``"skipped"``), ``detail`` (str) and ``fix_lines`` (sequence of str, default
+empty). ``format_report(results)`` renders a per-layer verdict for a human:
+one ``✅`` line per passing layer and one ``❌`` line per failing layer, each
+carrying the layer name and its detail; fix lines print indented (at least
+two spaces) under a failing layer only; a passing or skipped result never
+prints its fix lines, and a skipped result prints neither verdict glyph; an
+empty result list renders only the stable header ``"Anvil smoke test"`` and
+no layer lines.
+
+Behaviour 2: ``summarize(results)`` returns a process exit code — 0 when
+nothing failed, 4 (the docker class, ``EXIT_DOCKER`` in ``anvilkit/cli.py``)
+when any of layers 1–4 failed, 1 (the internal class, ``EXIT_ERROR``) when
+only layer 5 or 6 failed. The seam these tests pin: the layer number is the
+1-based position in the list, position 1 being layer 1 and position 6 layer
+6. A layer whose state is neither ``"ok"`` nor ``"skipped"`` counts as
+failed; a skipped layer never contributes to a non-zero exit.
+
+Behaviour 3 (PIN): ``smoke.py`` must adopt the four pinned names -- the
+named volume, the internal network, the image uid and the agent home -- as
+module-level constants taken from ``anvilkit.pi.pisandbox``; each must equal
+the corresponding private ``pisandbox`` attribute, and the raw source of
+``anvilkit/smoke.py`` must contain none of the four literal spellings.
+
+Behaviour 4: ``check_docker_daemon(docker_runner)`` is layer 1's daemon
+check, taking the plan's single injected docker seam --
+``docker_runner(argv) -> (exit_code, stdout, stderr)``, list-form argv,
+never ``shell=True``. It runs ``["docker", "version", "--format",
+"{{.Server.Version}}"]`` and returns a ``LayerResult`` named
+``"docker-daemon"``: exit 0 is the pass state with the trimmed server
+version in the detail; a non-zero exit is the fail state with the stderr in
+the detail; a ``FileNotFoundError`` from the runner is a fail saying docker
+is not on PATH -- never a traceback.
+
+Behaviour 5: ``check_sandbox_image(docker_runner, tag=...)`` is layer
+1's image-presence check, over the same injected seam, with the image
+tag defaulting to the plan's pinned ``pi-sandbox``. It runs
+``["docker", "image", "inspect", <tag>]`` and returns a ``LayerResult``:
+exit 0 is the pass state; a non-zero exit is the fail state whose fix
+lines are exactly ``[" ".join(pisandbox.build_argv(tag))]`` -- the fix
+line is derived from ``anvilkit.pi.pisandbox.build_argv``, never
+hand-typed, so a Dockerfile-path change cannot leave it stale.
+
+Behaviour 6: ``check_sandbox_network(docker_runner)`` is layer 1's
+internal-network-presence check, over the same injected seam. It runs
+``["docker", "network", "inspect", <name>]`` where ``<name>`` is the
+module's ``INTERNAL_NETWORK`` constant adopted from
+``anvilkit.pi.pisandbox._INTERNAL_NETWORK`` -- never a re-spelled literal,
+so a rename cannot desynchronise the check from the run. Exit 0 is the
+pass state; a non-zero exit is the fail state whose fix line carries the
+compose-up command ``docker compose --profile coder up -d`` and names
+that compose creates the network; a ``FileNotFoundError`` from the runner
+is a not-on-PATH fail, never a traceback.
+
+Behaviour 7: ``check_gateway_container(docker_runner)`` is layer 2's
+gateway container check, over the same injected seam. The container name
+is the module constant ``GATEWAY_CONTAINER`` -- the ``container_name``
+from ``docker-compose.yml`` (``llama-swap-service``); ``llama-swap`` is
+the service/DNS name only and must never be the match. It runs
+``["docker", "ps", "--filter", "name=<container>", "--format",
+"{{.Names}}"]`` and returns a ``LayerResult`` named
+``"gateway-container"``: exit 0 with a line that equals the container
+name exactly (after stripping) is the pass state; a non-zero exit, or an
+output with no such exact line (including empty output), is the fail
+state whose fix line carries the compose-up command
+``docker compose --profile coder up -d``. The match is exact per line,
+never a substring -- ``llama-swap-service-old`` alone is a fail; a
+``FileNotFoundError`` from the runner is a not-on-PATH fail, never a
+traceback.
+
+Behaviour 8: ``check_gateway_model(port, config_path,
+check_gateway=..., read_models=...)`` is layer 2's
+coder-model-registered-and-hot check. It reuses two in-repo
+collaborators that the plan names -- ``health.check_gateway`` and
+``config.read_models`` -- both injectable so the tests run without a
+network or a file. The coder id comes from
+``read_models(config_path).coder_id`` (``matrix.vars.coder``) and is
+never hard-coded. The gateway is online, the id present in
+``status.models`` and that entry's ``hot`` is ``True`` -- that is the
+pass state, named ``"gateway-model"``. The report always states the
+in-network port is 8080 regardless of the host ``LLM_PORT``, on the
+pass detail too. Offline, id absent, and id present-but-cold are three
+distinct details, each carrying the 8080 fact; a ``ConfigError`` from
+``read_models`` fails the layer naming the file -- never a traceback.
+
+Behaviour 9: ``check_agent_volume(docker_runner)`` is layer 3's
+agent-volume-presence check, over the same injected seam. It runs
+``["docker", "volume", "inspect", <name>]`` where ``<name>`` is the
+module's ``NAMED_VOLUME`` constant adopted from
+``anvilkit.pi.pisandbox._NAMED_VOLUME`` -- never a re-spelled literal,
+so a rename cannot desynchronise the check from the run. Exit 0 is the
+pass state, named ``"agent-volume"``; a non-zero exit is the fail state
+whose detail says the volume is created on first run and stays empty
+until seeded (one of the issue's known pitfalls); a
+``FileNotFoundError`` from the runner is a not-on-PATH fail, never a
+traceback.
+
+Behaviour 10: ``check_models_json(docker_runner, tag=...)`` is layer
+3's models.json-readability check, over the same injected seam, with
+the image tag defaulting to the module's ``DEFAULT_IMAGE_TAG``. It runs
+``["docker", "run", "--rm", "-v", <NAMED_VOLUME>:<AGENT_HOME>, "--user",
+<IMAGE_UID>, <tag>, "cat", <AGENT_HOME> + "/models.json"]`` -- every
+name from the adopted constants -- and returns a
+``(LayerResult, Optional[str])`` tuple: the ``LayerResult`` is named
+``"models-json"``, and the second element is the exact stdout the
+in-container cat printed on a pass -- the text behaviour 11 parses for
+the coder id -- or ``None`` on every fail. Exit 0 with non-empty stdout
+is the pass state; exit 0 with empty or whitespace-only stdout fails as
+unseeded, a distinct detail; a non-zero exit whose stderr carries a
+permission marker fails with the chown one-liner as its fix line, and
+one whose stderr carries a no-such-file marker fails with the seed
+instruction and no chown line; a ``FileNotFoundError`` from the runner
+is a not-on-PATH fail, never a traceback.
+
+Behaviour 11: ``check_coder_id(models_json_text, config_path,
+read_models=...)`` is layer 3's coder-id-match check. It takes the
+models.json text -- the exact stdout behaviour 10 exposed -- and the
+config path, reading the coder id from
+``read_models(config_path).coder_id`` (``matrix.vars.coder``) through
+an injectable ``read_models`` seam defaulting to the real
+``config.read_models`` -- the same pattern behaviour 8 pins, so
+neither id is hard-coded. It collects every
+``providers.<name>.models[].id``: the coder id present passes, the
+layer named ``"coder-id-match"``, the detail naming the provider
+carrying it; the id absent fails, printing both the expected coder id
+and the seeded ids found. Malformed JSON fails naming the parse
+error; a missing ``providers`` key or a provider with no ``models``
+list (or a ``models`` that is not a list) fails saying so -- never a
+``KeyError`` or ``TypeError`` escaping.
+"""
+
+import json
+import os
+import re
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+   sys.path.insert(0, str(REPO_ROOT))
+
+from anvilkit.pi import pidriver  # noqa: E402
+from anvilkit.pi import pievents  # noqa: E402
+from anvilkit.pi import pirole  # noqa: E402
+from anvilkit.pi import pisandbox  # noqa: E402
+
+# Behaviour 3 (PIN): the public names ``smoke.py`` must expose for the four
+# pinned names, each mapped to the private ``pisandbox`` attribute it adopts.
+PINNED_CONSTANTS = (
+   ("NAMED_VOLUME", "_NAMED_VOLUME"),
+   ("INTERNAL_NETWORK", "_INTERNAL_NETWORK"),
+   ("IMAGE_UID", "_IMAGE_UID"),
+   ("AGENT_HOME", "_AGENT_HOME"),
+)
+
+# The literal spellings that must never appear in ``anvilkit/smoke.py``'s
+# source: the names are imported from ``anvilkit.pi.pisandbox``, not
+# re-spelled (a comment re-typing one counts -- the pin is deliberately raw).
+PINNED_LITERALS = (
+   "sandbox-agent",
+   "sandbox-internal",
+   "1001",
+   "/home/sandbox/.pi/agent",
+)
+
+# Behaviour 1 (TDD red): this does not exist yet, so the import is guarded.
+# The tests below turn the missing import into a clear, named failure
+# instead of an import-time crash that would error every test in this module.
+_smoke_import_error = None
+try:  # noqa: E402
+    from anvilkit import smoke
+except ImportError as _err:
+    # ``except ... as`` deletes the exception variable when the block ends,
+    # so the message is copied out into a module-level name first.
+    _smoke_import_error = str(_err)
+    smoke = None
+
+# The stable header ``format_report`` renders when the result list is empty
+# (behaviour 1, error case). Later behaviours assert this same string.
+HEADER = "Anvil smoke test"
+
+# ``LayerResult.ok`` state values.
+STATE_OK = "ok"
+STATE_FAILED = "failed"
+STATE_SKIPPED = "skipped"
+
+PASS_GLYPH = "✅"
+FAIL_GLYPH = "❌"
+
+
+def _require_smoke():
+    """Return the ``smoke`` module, or fail naming what is missing."""
+    if smoke is None:
+        raise AssertionError(
+            "anvilkit.smoke is not implemented yet: "
+            + (_smoke_import_error or "missing")
+        )
+    return smoke
+
+
+def _layer(name, state, detail, fix_lines=None):
+    """A ``LayerResult`` for the given name, state, detail and fix lines."""
+    return _require_smoke().LayerResult(
+        name=name,
+        ok=state,
+        detail=detail,
+        fix_lines=tuple(fix_lines or ()),
+    )
+
+
+def _render(results):
+    """Render ``results`` with ``smoke.format_report``."""
+    return _require_smoke().format_report(results)
+
+
+def _summarize(results):
+    """Return ``smoke.summarize(results)``."""
+    return _require_smoke().summarize(results)
+
+
+# The six layer names in layer order (behaviours 4-17 of the plan), used to
+# build full six-layer result lists; the list position is the layer number.
+LAYER_NAMES = (
+    "docker-daemon",       # layer 1: docker
+    "gateway",             # layer 2: gateway
+    "sandbox-agent-volume",  # layer 3: agent volume
+    "role-prompt",         # layer 4: role prompt
+    "coder-run",           # layer 5: the run
+    "failure-paths",       # layer 6: the failure paths
+)
+
+
+def _layers(states):
+    """Six ``LayerResult``s in layer order, one per state in ``states``."""
+    return [
+        _layer(name, state, "detail for %s" % name)
+        for name, state in zip(LAYER_NAMES, states)
+    ]
+
+
+class TestFormatReportPassingLayer(unittest.TestCase):
+    """Behaviour 1: one ✅ line per passing layer, carrying name and detail."""
+
+    def test_format_report_single_passing_layer_prints_one_check_line_with_name_and_detail(self):
+        # Arrange: a single passing layer whose detail is distinct text.
+        results = [_layer("docker-daemon", STATE_OK, "server 27.1.1")]
+
+        # Act.
+        text = _render(results)
+
+        # Assert: exactly one ✅ line, no ❌, and that line carries both
+        # the layer name and its detail.
+        self.assertIsInstance(text, str)
+        self.assertEqual(text.count(PASS_GLYPH), 1)
+        self.assertNotIn(FAIL_GLYPH, text)
+        check_lines = [ln for ln in text.splitlines() if PASS_GLYPH in ln]
+        self.assertEqual(len(check_lines), 1)
+        self.assertIn("docker-daemon", check_lines[0])
+        self.assertIn("server 27.1.1", check_lines[0])
+
+    def test_format_report_two_passing_layers_prints_one_check_line_each_in_order(self):
+        # Arrange: two passing layers with distinct names and details.
+        results = [
+            _layer("docker-daemon", STATE_OK, "server 27.1.1"),
+            _layer("gateway", STATE_OK, "coder model hot"),
+        ]
+
+        # Act.
+        text = _render(results)
+
+        # Assert: one ✅ line per layer, in order, each carrying its own
+        # name and detail (not the other layer's).
+        self.assertEqual(text.count(PASS_GLYPH), 2)
+        self.assertNotIn(FAIL_GLYPH, text)
+        check_lines = [ln for ln in text.splitlines() if PASS_GLYPH in ln]
+        self.assertEqual(len(check_lines), 2)
+        self.assertIn("docker-daemon", check_lines[0])
+        self.assertIn("server 27.1.1", check_lines[0])
+        self.assertNotIn("gateway", check_lines[0])
+        self.assertIn("gateway", check_lines[1])
+        self.assertIn("coder model hot", check_lines[1])
+        self.assertNotIn("server 27.1.1", check_lines[1])
+
+
+class TestFormatReportFailingLayer(unittest.TestCase):
+    """Behaviour 1: one ❌ line per failing layer, with its fix lines
+    indented beneath it."""
+
+    def test_format_report_single_failing_layer_prints_one_cross_line_with_name_and_detail(self):
+        # Arrange: a single failing layer, no fix lines.
+        results = [_layer("gateway", STATE_FAILED, "coder model not hot")]
+
+        # Act.
+        text = _render(results)
+
+        # Assert: exactly one ❌ line, no ✅, carrying name and detail.
+        self.assertEqual(text.count(FAIL_GLYPH), 1)
+        self.assertNotIn(PASS_GLYPH, text)
+        cross_lines = [ln for ln in text.splitlines() if FAIL_GLYPH in ln]
+        self.assertEqual(len(cross_lines), 1)
+        self.assertIn("gateway", cross_lines[0])
+        self.assertIn("coder model not hot", cross_lines[0])
+
+    def test_format_report_failing_layer_prints_fix_lines_indented_beneath_it(self):
+        # Arrange: a failing layer with two distinct fix lines.
+        fix_lines = [
+            "docker build -f docker/Dockerfile.sandbox -t pi-sandbox docker/",
+            "docker compose --profile coder up -d",
+        ]
+        results = [
+            _layer("pi-sandbox-image", STATE_FAILED, "image missing",
+                   fix_lines=fix_lines),
+        ]
+
+        # Act.
+        text = _render(results)
+
+        # Assert: every fix line is present, on its own line, below the
+        # layer's ❌ line and indented by at least two characters.
+        lines = text.splitlines()
+        cross_idx = next(
+            i for i, ln in enumerate(lines) if FAIL_GLYPH in ln
+        )
+        for fix in fix_lines:
+            fix_idxs = [i for i, ln in enumerate(lines) if fix in ln]
+            self.assertTrue(fix_idxs, "fix line %r missing from report" % fix)
+            fix_line = lines[fix_idxs[0]]
+            self.assertGreater(
+                fix_idxs[0],
+                cross_idx,
+                "fix line %r must appear below the ❌ layer line" % fix,
+            )
+            indent = len(fix_line) - len(fix_line.lstrip(" \t"))
+            self.assertGreaterEqual(
+                indent,
+                2,
+                "fix line %r is not indented: %r" % (fix, fix_line),
+            )
+
+
+class TestFormatReportPassingLayerWithFixLines(unittest.TestCase):
+    """Behaviour 1 (error): a passing result with fix_lines prints none of
+    them."""
+
+    def test_format_report_passing_layer_with_fix_lines_prints_none_of_them(self):
+        # Arrange: a passing layer that carries fix lines it must not show.
+        results = [
+            _layer("sandbox-agent-volume", STATE_OK, "volume present",
+                   fix_lines=["must-not-appear-1", "must-not-appear-2"]),
+        ]
+
+        # Act.
+        text = _render(results)
+
+        # Assert: the layer still passes, and neither fix line leaks out.
+        self.assertEqual(text.count(PASS_GLYPH), 1)
+        self.assertNotIn("must-not-appear-1", text)
+        self.assertNotIn("must-not-appear-2", text)
+
+
+class TestFormatReportSkippedLayer(unittest.TestCase):
+    """Behaviour 1 (design intent): a skipped result renders distinctly —
+    neither verdict glyph, and never its fix lines."""
+
+    def test_format_report_skipped_layer_prints_no_fix_lines_and_no_verdict_glyph(self):
+        # Arrange: a skipped layer (earlier layers failed) with a fix line.
+        results = [
+            _layer("coder-run", STATE_SKIPPED, "earlier layer failed",
+                   fix_lines=["skipped-fix-must-not-show"]),
+        ]
+
+        # Act.
+        text = _render(results)
+
+        # Assert: no ✅ (not passed), no ❌ (not failed), no fix line;
+        # the layer is still named with its detail.
+        self.assertNotIn(PASS_GLYPH, text)
+        self.assertNotIn(FAIL_GLYPH, text)
+        self.assertNotIn("skipped-fix-must-not-show", text)
+        self.assertIn("coder-run", text)
+        self.assertIn("earlier layer failed", text)
+
+
+class TestFormatReportOrdering(unittest.TestCase):
+    """Behaviour 1: one glyph line per layer, in result order, fix lines
+    only under failures."""
+
+    def test_format_report_mixed_layers_prints_one_glyph_line_each_in_order(self):
+        # Arrange: pass, fail (with a fix line), pass.
+        results = [
+            _layer("docker-daemon", STATE_OK, "server 27.1.1"),
+            _layer("gateway", STATE_FAILED, "coder model not hot",
+                   fix_lines=["gw-fix-line"]),
+            _layer("role-prompt", STATE_OK, ".pi/roles/coder.md present"),
+        ]
+
+        # Act.
+        text = _render(results)
+
+        # Assert: exactly two ✅ lines and one ❌ line; the layer lines keep
+        # result order; the fix line sits below its failing layer only.
+        self.assertEqual(text.count(PASS_GLYPH), 2)
+        self.assertEqual(text.count(FAIL_GLYPH), 1)
+        lines = text.splitlines()
+        idx_daemon = next(i for i, ln in enumerate(lines)
+                          if "docker-daemon" in ln)
+        idx_gateway = next(i for i, ln in enumerate(lines)
+                           if "gateway" in ln)
+        idx_prompt = next(i for i, ln in enumerate(lines)
+                          if "role-prompt" in ln)
+        self.assertLess(idx_daemon, idx_gateway)
+        self.assertLess(idx_gateway, idx_prompt)
+        fix_idx = next(i for i, ln in enumerate(lines)
+                       if "gw-fix-line" in ln)
+        self.assertGreater(fix_idx, idx_gateway)
+
+
+class TestFormatReportEmptyList(unittest.TestCase):
+    """Behaviour 1 (error): an empty result list renders a header and no
+    layer lines."""
+
+    def test_format_report_empty_list_renders_header_and_no_layer_lines(self):
+        # Act: no results at all.
+        text = _render([])
+
+        # Assert: the output is exactly the stable header — no ✅, no ❌,
+        # no layer lines.
+        self.assertEqual(text.strip().splitlines(), [HEADER])
+        self.assertNotIn(PASS_GLYPH, text)
+        self.assertNotIn(FAIL_GLYPH, text)
+
+
+class TestSummarizeAllPassed(unittest.TestCase):
+    """Behaviour 2: nothing failed yields exit 0, including an empty list."""
+
+    def test_summarize_all_six_layers_ok_returns_zero(self):
+        # Arrange: every layer passed.
+        results = _layers([STATE_OK] * 6)
+
+        # Act + Assert: exit 0.
+        self.assertEqual(_summarize(results), 0)
+
+    def test_summarize_empty_list_returns_zero(self):
+        # Act + Assert: no results at all is not a failure.
+        self.assertEqual(_summarize([]), 0)
+
+
+class TestSummarizeDockerClassLayers(unittest.TestCase):
+    """Behaviour 2: any of layers 1-4 (the docker class) failing alone
+    yields 4, the docker exit code (``EXIT_DOCKER`` in ``anvilkit/cli.py``)."""
+
+    def test_summarize_layer_1_failed_alone_returns_four(self):
+        # Arrange: only layer 1 (docker) failed.
+        results = _layers([STATE_FAILED, STATE_OK, STATE_OK,
+                           STATE_OK, STATE_OK, STATE_OK])
+
+        # Act + Assert: docker class wins with exit 4.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_layer_2_failed_alone_returns_four(self):
+        # Arrange: only layer 2 (gateway) failed.
+        results = _layers([STATE_OK, STATE_FAILED, STATE_OK,
+                           STATE_OK, STATE_OK, STATE_OK])
+
+        # Act + Assert.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_layer_3_failed_alone_returns_four(self):
+        # Arrange: only layer 3 (agent volume) failed.
+        results = _layers([STATE_OK, STATE_OK, STATE_FAILED,
+                           STATE_OK, STATE_OK, STATE_OK])
+
+        # Act + Assert.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_layer_4_failed_alone_returns_four(self):
+        # Arrange: only layer 4 (role prompt) failed.
+        results = _layers([STATE_OK, STATE_OK, STATE_OK, STATE_FAILED,
+                           STATE_OK, STATE_OK])
+
+        # Act + Assert.
+        self.assertEqual(_summarize(results), 4)
+
+
+class TestSummarizeInternalClassLayers(unittest.TestCase):
+    """Behaviour 2: only layer 5 or 6 (the internal class) failing yields
+    1, the internal exit code (``EXIT_ERROR`` in ``anvilkit/cli.py``)."""
+
+    def test_summarize_layer_5_failed_alone_returns_one(self):
+        # Arrange: layers 1-4 passed, only layer 5 (the run) failed.
+        results = _layers([STATE_OK, STATE_OK, STATE_OK, STATE_OK,
+                           STATE_FAILED, STATE_OK])
+
+        # Act + Assert: internal class, exit 1 — not the docker class.
+        self.assertEqual(_summarize(results), 1)
+
+    def test_summarize_layer_6_failed_alone_returns_one(self):
+        # Arrange: layers 1-4 passed, only layer 6 (failure paths) failed.
+        results = _layers([STATE_OK, STATE_OK, STATE_OK, STATE_OK,
+                           STATE_OK, STATE_FAILED])
+
+        # Act + Assert.
+        self.assertEqual(_summarize(results), 1)
+
+
+class TestSummarizeDockerClassWins(unittest.TestCase):
+    """Behaviour 2 (error): when both classes fail, the docker class (4)
+    wins over the internal class (1)."""
+
+    def test_summarize_layers_2_and_5_both_failed_returns_four(self):
+        # Arrange: layer 2 (docker class) and layer 5 (internal class) both
+        # failed, the rest passed.
+        results = _layers([STATE_OK, STATE_FAILED, STATE_OK,
+                           STATE_OK, STATE_FAILED, STATE_OK])
+
+        # Act + Assert: 4, never 1.
+        self.assertEqual(_summarize(results), 4)
+
+
+class TestSummarizeSkippedNeverContributes(unittest.TestCase):
+    """Behaviour 2 (error): a skipped layer never contributes to a
+    non-zero exit — a skipped layer 5 must not push the exit to 1."""
+
+    def test_summarize_earlier_layers_failed_layer_5_skipped_returns_four(self):
+        # Arrange: layers 1-4 all failed, so layer 5 is reported skipped
+        # (never failed), and layer 6 passed.
+        results = _layers([STATE_FAILED, STATE_FAILED, STATE_FAILED,
+                           STATE_FAILED, STATE_SKIPPED, STATE_OK])
+
+        # Act + Assert: exit 4 from the docker class, never 1 from the
+        # skipped layer 5.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_all_six_layers_skipped_returns_zero(self):
+        # Arrange: no layer failed — every one is skipped.
+        results = _layers([STATE_SKIPPED] * 6)
+
+        # Act + Assert: skipping is not failing.
+        self.assertEqual(_summarize(results), 0)
+
+
+class TestSummarizeUnknownStateCountsAsFailed(unittest.TestCase):
+    """Behaviour 2 (design intent): a state that is neither ``"ok"`` nor
+    ``"skipped"`` counts as failed, in whatever class its position holds."""
+
+    def test_summarize_unknown_state_at_layer_1_position_returns_four(self):
+        # Arrange: layer 1 in an unrecognised state, the rest passed.
+        results = _layers(["error", STATE_OK, STATE_OK,
+                           STATE_OK, STATE_OK, STATE_OK])
+
+        # Act + Assert: counts as a layer-1 failure, docker class.
+        self.assertEqual(_summarize(results), 4)
+
+    def test_summarize_unknown_state_at_layer_6_position_returns_one(self):
+        # Arrange: layer 6 in an unrecognised state, the rest passed.
+        results = _layers([STATE_OK, STATE_OK, STATE_OK, STATE_OK,
+                           STATE_OK, "error"])
+
+        # Act + Assert: counts as a layer-6 failure, internal class.
+        self.assertEqual(_summarize(results), 1)
+
+
+class TestPinnedNameReuse(unittest.TestCase):
+    """Behaviour 3 (PIN): ``smoke.py`` adopts the four pinned names from
+    ``anvilkit.pi.pisandbox`` rather than re-spelling them as literals."""
+
+    def test_pinned_constants_are_exposed_at_module_level(self):
+        # Act: import smoke and look for the four public constants.
+        smoke_mod = _require_smoke()
+
+        # Assert: all four public names exist at module level.
+        for smoke_name, _pi_name in PINNED_CONSTANTS:
+            self.assertTrue(
+                hasattr(smoke_mod, smoke_name),
+                "anvilkit/smoke.py must expose module constant %s, the "
+                "pinned name from anvilkit/pi/pisandbox.py" % smoke_name,
+            )
+
+    def test_pinned_constants_equal_the_pisandbox_attributes(self):
+        # Arrange: the public smoke names mapped to the pisandbox attributes
+        # they must adopt.
+        smoke_mod = _require_smoke()
+
+        # Act + Assert: each public constant is exactly the pisandbox value.
+        for smoke_name, pi_name in PINNED_CONSTANTS:
+            self.assertTrue(
+                hasattr(smoke_mod, smoke_name),
+                "anvilkit/smoke.py must expose module constant %s" % smoke_name,
+            )
+            self.assertEqual(
+                getattr(smoke_mod, smoke_name),
+                getattr(pisandbox, pi_name),
+                "%s must be the value of anvilkit.pi.pisandbox.%s, not a "
+                "re-spelled literal" % (smoke_name, pi_name),
+            )
+
+    def test_source_never_re_spells_the_pinned_literals(self):
+        # Arrange: the raw source of anvilkit/smoke.py, located from the
+        # module's ``__file__`` (same source-reading approach as the
+        # rules-mirror tests).
+        smoke_mod = _require_smoke()
+        source = Path(smoke_mod.__file__).read_text(encoding="utf-8")
+
+        # Assert: none of the four literal spellings appears anywhere in the
+        # source, not even in a comment.
+        for literal in PINNED_LITERALS:
+            self.assertNotIn(
+                literal,
+                source,
+                "anvilkit/smoke.py re-spells the pinned literal %r; import "
+                "it from anvilkit.pi.pisandbox instead" % literal,
+            )
+    
+    
+# Behaviour 4: layer 1's daemon check. The plan's docker seam (recorded in
+# its Assumptions) is one injected ``docker_runner(argv) -> (exit_code,
+# stdout, stderr)`` with list-form argv; this check must take the runner so
+# it is testable without Docker installed. The public seam these tests pin:
+# ``smoke.check_docker_daemon(docker_runner)`` returns a ``LayerResult``.
+DAEMON_CHECK_NAME = "check_docker_daemon"
+DAEMON_ARGV = ["docker", "version", "--format", "{{.Server.Version}}"]
+
+
+def _daemon_check(runner):
+    """Call the behaviour-4 daemon check with ``runner`` as its seam."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, DAEMON_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner) yet "
+            "(behaviour 4 of plans/smoke-test.md)" % DAEMON_CHECK_NAME
+        )
+    return check(runner)
+
+
+def _recording_runner(exit_code, stdout, stderr):
+    """A fake ``docker_runner`` returning fixed values and recording argv."""
+    calls = []
+
+    def runner(argv):
+        calls.append(list(argv))
+        return (exit_code, stdout, stderr)
+
+    runner.calls = calls
+    return runner
+
+
+class TestDockerDaemonCheckPass(unittest.TestCase):
+    """Behaviour 4: exit 0 passes with the server version in the detail."""
+
+    def test_check_docker_daemon_exit_zero_passes_with_version_in_detail(self):
+        # Arrange: the injected runner answers the version probe with exit 0.
+        runner = _recording_runner(0, "27.1.1\n", "")
+
+        # Act.
+        result = _daemon_check(runner)
+
+        # Assert: the layer is the docker-daemon layer, in the pass state,
+        # and the detail carries the (trimmed) server version.
+        self.assertEqual(result.name, "docker-daemon")
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn("27.1.1", result.detail)
+
+    def test_check_docker_daemon_runs_the_version_probe_in_list_form(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "27.1.1", "")
+
+        # Act.
+        _daemon_check(runner)
+
+        # Assert: the check ran exactly the plan's argv, as a list.
+        self.assertEqual(runner.calls, [DAEMON_ARGV])
+
+
+class TestDockerDaemonCheckNonZeroExit(unittest.TestCase):
+    """Behaviour 4: a non-zero exit fails with the stderr in the detail."""
+
+    def test_check_docker_daemon_nonzero_exit_fails_with_stderr_in_detail(self):
+        # Arrange: the daemon is up but the probe fails non-zero with a
+        # stderr message.
+        stderr = "Cannot connect to the Docker daemon at unix:///var/run/docker.sock"
+        runner = _recording_runner(1, "", stderr)
+
+        # Act.
+        result = _daemon_check(runner)
+
+        # Assert: the layer failed, and its detail carries the stderr —
+        # not a bare exit code.
+        self.assertEqual(result.name, "docker-daemon")
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(stderr, result.detail)
+
+
+class TestDockerDaemonCheckNotOnPath(unittest.TestCase):
+    """Behaviour 4 (error): ``FileNotFoundError`` from the runner is a fail
+    saying docker is not on PATH — never a traceback."""
+
+    def test_check_docker_daemon_runner_not_found_fails_saying_not_on_path(self):
+        # Arrange: the runner raises ``FileNotFoundError`` as when docker is
+        # missing from PATH.
+        def runner(argv):
+            raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+        # Act: the exception must not escape the check — a traceback here
+        # fails the test.
+        result = _daemon_check(runner)
+
+        # Assert: the layer failed, and its detail says docker is not on PATH.
+        self.assertEqual(result.name, "docker-daemon")
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("path", result.detail.lower())
+
+
+# Behaviour 5: layer 1's pi-sandbox image check. It takes the same
+# injected docker seam as behaviour 4 plus an image tag whose default is
+# the plan's pinned default ``pi-sandbox``. The public seam these tests
+# pin: ``smoke.check_sandbox_image(docker_runner, tag=...)`` returns a
+# ``LayerResult``. Its fail fix line is derived as
+# ``" ".join(pisandbox.build_argv(tag))`` -- never hand-typed -- so a
+# Dockerfile-path change cannot leave the fix stale.
+IMAGE_CHECK_NAME = "check_sandbox_image"
+DEFAULT_IMAGE_TAG = "pi-sandbox"
+
+
+def _image_check():
+    """Return the behaviour-5 image check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, IMAGE_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner, tag=...) yet "
+            "(behaviour 5 of plans/smoke-test.md)" % IMAGE_CHECK_NAME
+        )
+    return check
+
+
+def _inspect_argv(tag):
+    """The list-form argv layer 1 uses to inspect the image for ``tag``."""
+    return ["docker", "image", "inspect", tag]
+
+
+def _derived_fix_line(tag):
+    """The fix line computed from ``pisandbox.build_argv``.
+
+    The test derives the expected fix line from the same public builder
+    the implementation must call, which is what proves the
+    derived-not-hand-typed rule rather than pinning a string that a
+    Dockerfile-path change could leave stale.
+    """
+    return " ".join(pisandbox.build_argv(tag))
+
+
+class TestSandboxImageCheckPass(unittest.TestCase):
+    """Behaviour 5: exit 0 from the image inspect is the pass state."""
+
+    def test_check_sandbox_image_exit_zero_passes(self):
+        # Arrange: the injected runner answers the image inspect with
+        # exit 0.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        result = _image_check()(runner, "anvil-pi:dev")
+
+        # Assert: the layer is in the pass state.
+        self.assertEqual(result.ok, STATE_OK)
+
+    def test_check_sandbox_image_default_tag_inspects_pi_sandbox(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "", "")
+
+        # Act: no tag passed -- the check's default must apply.
+        _image_check()(runner)
+
+        # Assert: the default tag is the plan's pinned ``pi-sandbox``,
+        # inspected through the plan's list-form argv, exactly once.
+        self.assertEqual(runner.calls, [_inspect_argv("pi-sandbox")])
+
+
+class TestSandboxImageCheckFail(unittest.TestCase):
+    """Behaviour 5: a non-zero inspect exit fails with exactly one fix
+    line, the derived build argv."""
+
+    def test_check_sandbox_image_nonzero_exit_fails_with_derived_fix_line_explicit_tag(self):
+        # Arrange: the image inspect fails for an explicit, non-default
+        # tag.
+        tag = "anvil-pi:dev"
+        runner = _recording_runner(
+            1, "", "Error: No such image: %s" % tag
+        )
+
+        # Act.
+        result = _image_check()(runner, tag)
+
+        # Assert: the layer failed, and its fix lines are exactly the one
+        # derived from ``pisandbox.build_argv(tag)`` -- computed here, not
+        # hand-typed, so check and fix cannot desynchronise.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertEqual(tuple(result.fix_lines), (_derived_fix_line(tag),))
+
+    def test_check_sandbox_image_nonzero_exit_fails_with_derived_fix_line_default_tag(self):
+        # Arrange: the image inspect fails and no tag is passed, so the
+        # default tag must drive the fix line.
+        runner = _recording_runner(
+            1, "", "Error: No such image: pi-sandbox"
+        )
+
+        # Act.
+        result = _image_check()(runner)
+
+        # Assert: the fix line is derived from the default tag.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertEqual(
+            tuple(result.fix_lines), (_derived_fix_line(DEFAULT_IMAGE_TAG),)
+        )
+
+
+class TestSandboxImageCheckArgv(unittest.TestCase):
+    """Behaviour 5: the check invokes the runner with the list-form
+    ``docker image inspect <tag>`` argv, exactly once."""
+
+    def test_check_sandbox_image_invokes_inspect_argv_in_list_form(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        tag = "anvil-pi:dev"
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        _image_check()(runner, tag)
+
+        # Assert: the check ran exactly the plan's argv, as a list, once.
+        self.assertEqual(runner.calls, [_inspect_argv(tag)])
+
+
+# Behaviour 6: layer 1's internal-network-presence check. It takes the
+# same injected docker seam as behaviours 4 and 5. The public seam these
+# tests pin: ``smoke.check_sandbox_network(docker_runner)`` returns a
+# ``LayerResult``. The network name must come from the module's adopted
+# ``INTERNAL_NETWORK`` constant, so a rename in ``pisandbox`` keeps the
+# check and the run in step.
+NETWORK_CHECK_NAME = "check_sandbox_network"
+# The plan's pinned fix command for a missing network: the compose-up that
+# creates it. The plan pins the command; the wording that names compose as
+# its creator is free, which is why the test asserts the command itself and
+# a create-verb reference separately.
+NETWORK_FIX_COMMAND = "docker compose --profile coder up -d"
+
+
+def _network_check():
+   """Return the behaviour-6 network check, or fail naming what is missing."""
+   smoke_mod = _require_smoke()
+   check = getattr(smoke_mod, NETWORK_CHECK_NAME, None)
+   if check is None:
+       raise AssertionError(
+           "anvilkit.smoke does not define %s(docker_runner) yet "
+           "(behaviour 6 of plans/smoke-test.md)" % NETWORK_CHECK_NAME
+       )
+   return check
+
+
+def _network_argv():
+   """The list-form argv layer 1 uses to inspect the internal network.
+
+   The name is read from ``smoke.INTERNAL_NETWORK`` -- the constant
+   adopted from ``anvilkit.pi.pisandbox._INTERNAL_NETWORK`` -- so this
+   test proves the check inspects the adopted name, not a re-spelled
+   literal.
+   """
+   smoke_mod = _require_smoke()
+   return ["docker", "network", "inspect", smoke_mod.INTERNAL_NETWORK]
+
+
+class TestSandboxNetworkCheckPass(unittest.TestCase):
+   """Behaviour 6: exit 0 from the network inspect is the pass state."""
+
+   def test_check_sandbox_network_exit_zero_passes(self):
+       # Arrange: the injected runner answers the network inspect with
+       # exit 0.
+       runner = _recording_runner(0, "", "")
+
+       # Act.
+       result = _network_check()(runner)
+
+       # Assert: the layer is the sandbox-network layer, in the pass state.
+       self.assertEqual(result.name, "sandbox-network")
+       self.assertEqual(result.ok, STATE_OK)
+
+
+class TestSandboxNetworkCheckArgv(unittest.TestCase):
+   """Behaviour 6: the check invokes the runner with the list-form
+   ``docker network inspect <name>`` argv, exactly once, where ``<name>``
+   is the module's adopted ``INTERNAL_NETWORK`` constant."""
+
+   def test_check_sandbox_network_invokes_inspect_argv_with_adopted_name(self):
+       # Arrange: the injected runner records whatever argv it is handed.
+       runner = _recording_runner(0, "", "")
+
+       # Act.
+       _network_check()(runner)
+
+       # Assert: the check ran exactly the plan's argv, as a list, once,
+       # with the name read from the adopted constant.
+       self.assertEqual(runner.calls, [_network_argv()])
+
+
+class TestSandboxNetworkCheckFail(unittest.TestCase):
+   """Behaviour 6: a non-zero inspect exit fails with the compose-up fix
+   line, which names that compose creates the network."""
+
+   def test_check_sandbox_network_nonzero_exit_fails_with_compose_up_fix_line(self):
+       # Arrange: the network inspect fails non-zero with a stderr
+       # message.
+       runner = _recording_runner(
+           1, "", "Error: network \"sandbox-internal\" not found"
+       )
+
+       # Act.
+       result = _network_check()(runner)
+
+       # Assert: the layer is the sandbox-network layer in the fail state,
+       # and one fix line carries the plan's pinned compose-up command.
+       self.assertEqual(result.name, "sandbox-network")
+       self.assertEqual(result.ok, STATE_FAILED)
+       self.assertTrue(
+           any(NETWORK_FIX_COMMAND in fix for fix in result.fix_lines),
+           "fix lines %r must include the compose-up command %r"
+           % (result.fix_lines, NETWORK_FIX_COMMAND),
+       )
+
+   def test_check_sandbox_network_fix_lines_name_that_compose_creates_the_network(self):
+       # Arrange: the network inspect fails non-zero.
+       runner = _recording_runner(1, "", "network not found")
+
+       # Act.
+       result = _network_check()(runner)
+
+       # Assert: beyond the pinned command, the fix text says compose
+       # creates the network -- a create-verb is the load-bearing word,
+       # since the command itself contains no such verb.
+       joined = " ".join(result.fix_lines).lower()
+       self.assertIn(NETWORK_FIX_COMMAND.lower(), joined)
+       self.assertIn(
+           "creat",
+           joined,
+           "fix lines %r must name that compose creates the network"
+           % (result.fix_lines,),
+       )
+
+
+class TestSandboxNetworkCheckNotOnPath(unittest.TestCase):
+   """Behaviour 6 (error): ``FileNotFoundError`` from the runner is a
+   not-on-PATH fail, never a traceback."""
+
+   def test_check_sandbox_network_runner_not_found_fails_saying_not_on_path(self):
+       # Arrange: the runner raises ``FileNotFoundError`` as when docker
+       # is missing from PATH.
+       def runner(argv):
+           raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+       # Act: the exception must not escape the check -- a traceback here
+       # fails the test.
+       result = _network_check()(runner)
+
+       # Assert: the layer failed, and its detail says docker is not on
+       # PATH.
+       self.assertEqual(result.name, "sandbox-network")
+       self.assertEqual(result.ok, STATE_FAILED)
+       self.assertIn("path", result.detail.lower())
+
+
+# Behaviour 7: layer 2's gateway container check. It takes the same
+# injected docker seam as behaviours 4-6. The public seam these tests
+# pin: ``smoke.check_gateway_container(docker_runner)`` returns a
+# ``LayerResult`` named ``"gateway-container"``. The container name must
+# come from a module-level constant ``GATEWAY_CONTAINER`` equal to the
+# ``container_name`` from ``docker-compose.yml`` (``llama-swap-service``);
+# ``llama-swap`` is the service/DNS name only and must never be the
+# match. The check matches a line of the ``docker ps`` output that equals
+# the container name exactly (after stripping surrounding whitespace) --
+# never a substring.
+GATEWAY_CHECK_NAME = "check_gateway_container"
+GATEWAY_LAYER_NAME = "gateway-container"
+GATEWAY_CONTAINER_NAME = "llama-swap-service"
+# The plan's pinned fix command for a missing gateway container: the
+# compose-up that starts it. The test pins the command string itself, not
+# any reuse of another module constant.
+GATEWAY_FIX_COMMAND = "docker compose --profile coder up -d"
+
+
+def _gateway_check():
+    """Return the behaviour-7 gateway container check, or fail naming what
+    is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, GATEWAY_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner) yet "
+            "(behaviour 7 of plans/smoke-test.md)" % GATEWAY_CHECK_NAME
+        )
+    return check
+
+
+def _gateway_container():
+    """The container name read from the module's ``GATEWAY_CONTAINER``
+    constant, or fail naming the missing constant.
+
+    The argv test builds its expected argv from this constant rather than
+    a re-spelled literal, so it proves the check filters on the adopted
+    name.
+    """
+    smoke_mod = _require_smoke()
+    container = getattr(smoke_mod, "GATEWAY_CONTAINER", None)
+    if container is None:
+        raise AssertionError(
+            "anvilkit.smoke does not expose module constant GATEWAY_CONTAINER "
+            "(behaviour 7 of plans/smoke-test.md)"
+        )
+    return container
+
+
+def _gateway_argv(container):
+    """The list-form argv layer 2 uses to list the gateway container.
+
+    The filter value is ``name=<container>`` -- never a ``--name`` flag --
+    per the plan.
+    """
+    return [
+        "docker",
+        "ps",
+        "--filter",
+        "name=" + container,
+        "--format",
+        "{{.Names}}",
+    ]
+
+
+class TestGatewayContainerConstant(unittest.TestCase):
+    """Behaviour 7 (PIN): the container name is pinned as the module-level
+    constant ``GATEWAY_CONTAINER``, the ``container_name`` from
+    ``docker-compose.yml`` -- not the service/DNS name."""
+
+    def test_gateway_container_constant_is_the_compose_container_name(self):
+        # Act: read the constant from the smoke module.
+        smoke_mod = _require_smoke()
+
+        # Assert: the constant exists and is exactly the compose
+        # container_name -- never the service/DNS name ``llama-swap``.
+        self.assertTrue(
+            hasattr(smoke_mod, "GATEWAY_CONTAINER"),
+            "anvilkit/smoke.py must expose module constant GATEWAY_CONTAINER, "
+            "the container_name from docker-compose.yml",
+        )
+        self.assertEqual(
+            smoke_mod.GATEWAY_CONTAINER,
+            GATEWAY_CONTAINER_NAME,
+            "GATEWAY_CONTAINER must be the compose container_name %r, not a "
+            "re-spelled or service-name literal" % GATEWAY_CONTAINER_NAME,
+        )
+
+
+class TestGatewayContainerCheckPass(unittest.TestCase):
+    """Behaviour 7: a ``docker ps`` line that equals the container name
+    exactly (after stripping) is the pass state."""
+
+    def test_check_gateway_container_exit_zero_with_exact_line_passes(self):
+        # Arrange: the runner answers with a single exact container-name
+        # line.
+        runner = _recording_runner(0, "llama-swap-service\n", "")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: the layer is the gateway-container layer in the pass
+        # state.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+
+    def test_check_gateway_container_exit_zero_with_exact_line_among_others_passes(self):
+        # Arrange: the exact container-name line sits among other running
+        # container names.
+        stdout = "coder_qdrant-service\nllama-swap-service\nother-container\n"
+        runner = _recording_runner(0, stdout, "")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: the exact line still passes, even with neighbours.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+
+
+class TestGatewayContainerCheckExactPerLine(unittest.TestCase):
+    """Behaviour 7 (error): the match is exact per line, never a
+    substring -- ``llama-swap-service-old`` alone is a fail."""
+
+    def test_check_gateway_container_exit_zero_with_superset_name_only_fails(self):
+        # Arrange: the only line is a longer name that contains the
+        # container name as a substring.
+        runner = _recording_runner(0, "llama-swap-service-old\n", "")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: a substring is not a match -- the layer failed.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+
+
+class TestGatewayContainerCheckFail(unittest.TestCase):
+    """Behaviour 7: a non-zero exit or an output with no exact line fails
+    with the compose-up fix line."""
+
+    def test_check_gateway_container_nonzero_exit_fails_with_compose_up_fix_line(self):
+        # Arrange: the ``docker ps`` invocation fails non-zero with a
+        # stderr message.
+        runner = _recording_runner(1, "", "Error: something went wrong")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: the layer is the gateway-container layer in the fail
+        # state, and one fix line carries the plan's pinned compose-up
+        # command.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertTrue(
+            any(GATEWAY_FIX_COMMAND in fix for fix in result.fix_lines),
+            "fix lines %r must include the compose-up command %r"
+            % (result.fix_lines, GATEWAY_FIX_COMMAND),
+        )
+
+    def test_check_gateway_container_exit_zero_empty_output_fails_with_compose_up_fix_line(self):
+        # Arrange: the daemon answers but nothing is running.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        result = _gateway_check()(runner)
+
+        # Assert: empty output is a fail, with the compose-up fix line.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertTrue(
+            any(GATEWAY_FIX_COMMAND in fix for fix in result.fix_lines),
+            "fix lines %r must include the compose-up command %r"
+            % (result.fix_lines, GATEWAY_FIX_COMMAND),
+        )
+
+
+class TestGatewayContainerCheckArgv(unittest.TestCase):
+    """Behaviour 7: the check invokes the runner with the list-form
+    ``docker ps --filter name=<container> --format {{.Names}}`` argv,
+    exactly once, where ``<container>`` is the module's
+    ``GATEWAY_CONTAINER`` constant."""
+
+    def test_check_gateway_container_invokes_ps_argv_in_list_form(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "llama-swap-service\n", "")
+
+        # Act.
+        _gateway_check()(runner)
+
+        # Assert: the check ran exactly the plan's argv, as a list, once,
+        # with the filter value read from the adopted constant -- not a
+        # ``--name`` flag.
+        self.assertEqual(runner.calls, [_gateway_argv(_gateway_container())])
+
+
+class TestGatewayContainerCheckNotOnPath(unittest.TestCase):
+    """Behaviour 7 (error): ``FileNotFoundError`` from the runner is a
+    not-on-PATH fail, never a traceback."""
+
+    def test_check_gateway_container_runner_not_found_fails_saying_not_on_path(self):
+        # Arrange: the runner raises ``FileNotFoundError`` as when docker
+        # is missing from PATH.
+        def runner(argv):
+            raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+        # Act: the exception must not escape the check -- a traceback here
+        # fails the test.
+        result = _gateway_check()(runner)
+
+        # Assert: the layer is the gateway-container layer in the fail
+        # state, and its detail says docker is not on PATH.
+        self.assertEqual(result.name, GATEWAY_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("path", result.detail.lower())
+
+
+# Behaviour 8: layer 2's coder-model-registered-and-hot check. Unlike
+# behaviours 4-7 it does not run docker; it reuses two in-repo collaborators
+# that the plan names: ``health.check_gateway`` and ``config.read_models``.
+# The public seam these tests pin:
+#
+#     smoke.check_gateway_model(port, config_path,
+#                               check_gateway=..., read_models=...)
+#
+# returns a ``LayerResult`` named ``"gateway-model"``. ``port`` is the resolved
+# host port; ``config_path`` is the path to llama-swap's read-only
+# ``config.yaml`` whose ``matrix.vars.coder`` supplies the model id. Both
+# collaborators are injectable callables defaulting to the real
+# ``health.check_gateway`` and ``config.read_models``; the tests inject fakes
+# for both so no network and no file is touched.
+#
+# The plan pins one fact the report always states, on pass and on every fail:
+# the in-network port is 8080 regardless of the host ``LLM_PORT``. The exact
+# wording is free, so the test pins the load-bearing token ``8080``.
+#
+# The three failure modes -- offline, id absent, id present-but-cold -- must be
+# three distinct details. The test pins one stable marker word each
+# (``OFFLINE_MARKER``, ``ABSENT_MARKER``, ``COLD_MARKER``) and asserts all
+# three details carry a different marker, so the layer cannot collapse two
+# modes into one detail.
+MODEL_CHECK_NAME = "check_gateway_model"
+MODEL_LAYER_NAME = "gateway-model"
+# The plan's pinned in-network fact, asserted as a load-bearing token.
+IN_NETWORK_PORT = "8080"
+# One stable marker word per failure mode, pinned here so the three fail
+# details are asserted to be distinguishable from each other.
+OFFLINE_MARKER = "offline"
+ABSENT_MARKER = "not registered"
+COLD_MARKER = "cold"
+
+
+def _model_check():
+    """Return the behaviour-8 model check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, MODEL_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(port, config_path, "
+            "check_gateway=..., read_models=...) yet "
+            "(behaviour 8 of plans/smoke-test.md)" % MODEL_CHECK_NAME
+        )
+    return check
+
+
+class _FakeTopology(object):
+    """A stand-in for ``config.ModelTopology``: only ``coder_id`` is read."""
+
+    def __init__(self, coder_id):
+        self.coder_id = coder_id
+
+
+class _FakeModel(object):
+    """A stand-in for ``health.ModelStatus``: ``id`` and ``hot``."""
+
+    def __init__(self, id, hot):
+        self.id = id
+        self.hot = hot
+
+
+class _FakeGatewayStatus(object):
+    """A stand-in for ``health.GatewayStatus``: ``online``, ``models``,
+    ``error``."""
+
+    def __init__(self, online, models, error=None):
+        self.online = online
+        self.models = list(models)
+        self.error = error
+
+
+def _fake_read_models(coder_id):
+    """A ``read_models`` fake returning a topology with ``coder_id``.
+
+    Records its calls so a test can assert the check read the config the
+    caller named, and that it never hard-coded the id.
+    """
+    calls = []
+
+    def read_models(path, strict_context_window=False):
+        calls.append((path, strict_context_window))
+        return _FakeTopology(coder_id)
+
+    read_models.calls = calls
+    return read_models
+
+
+def _fake_check_gateway(status):
+    """A ``check_gateway`` fake returning ``status`` and recording its port."""
+    calls = []
+
+    def check_gateway(port, timeout=2.0):
+        calls.append(port)
+        return status
+
+    check_gateway.calls = calls
+    return check_gateway
+
+
+class TestGatewayModelCheckPass(unittest.TestCase):
+    """Behaviour 8: the coder id present and hot passes, and the detail
+    states the in-network port is 8080."""
+
+    def test_check_gateway_model_id_present_and_hot_passes(self):
+        # Arrange: the coder id comes from the fake topology, the gateway is
+        # online and that id is hot.
+        coder_id = "meta-llama/Llama-3.1-8B-Instruct"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True,
+            models=[_FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer is the gateway-model layer in the pass state.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+
+    def test_check_gateway_model_pass_detail_states_in_network_port_8080(self):
+        # Arrange: a passing gateway (id hot).
+        coder_id = "some-coder-model"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the report always states the in-network port is 8080, on
+        # the pass detail too -- pinned to the load-bearing token.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(
+            IN_NETWORK_PORT,
+            result.detail,
+            "pass detail %r must state the in-network port is %s"
+            % (result.detail, IN_NETWORK_PORT),
+        )
+
+    def test_check_gateway_model_pass_detail_names_the_coder_id(self):
+        # Arrange: the coder id is supplied by the fake topology, not
+        # hard-coded in the check.
+        coder_id = "the-supplied-coder-id"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the pass detail carries the id the fake read_models
+        # supplied, proving the id is derived from config.yaml, not
+        # hard-coded.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(coder_id, result.detail)
+
+
+class TestGatewayModelCheckOffline(unittest.TestCase):
+    """Behaviour 8 (error): an offline gateway fails with an offline detail
+    carrying ``status.error`` when present, plus the in-network fact."""
+
+    def test_check_gateway_model_offline_fails_with_offline_detail(self):
+        # Arrange: the gateway reports offline with an error string.
+        coder_id = "some-coder-model"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=False, models=[],
+            error="Connection refused on port 18080",
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer failed with the offline marker, carrying the
+        # gateway error and the in-network fact.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(OFFLINE_MARKER, result.detail.lower())
+        self.assertIn("Connection refused", result.detail)
+        self.assertIn(IN_NETWORK_PORT, result.detail)
+
+
+class TestGatewayModelCheckIdAbsent(unittest.TestCase):
+    """Behaviour 8 (error): online but the coder id absent from the registry
+    fails with an id-absent detail naming the id, plus the in-network fact."""
+
+    def test_check_gateway_model_id_absent_fails_naming_the_id(self):
+        # Arrange: the gateway is online but registers a different model,
+        # not the coder id the config names.
+        coder_id = "the-coder-from-config"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel("some-other-model", True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer failed with the id-absent marker, naming the
+        # coder id from config.yaml, plus the in-network fact.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(ABSENT_MARKER, result.detail.lower())
+        self.assertIn(coder_id, result.detail)
+        self.assertIn(IN_NETWORK_PORT, result.detail)
+
+
+class TestGatewayModelCheckCold(unittest.TestCase):
+    """Behaviour 8 (error): online and the id present but not hot fails with
+    a cold detail, plus the in-network fact."""
+
+    def test_check_gateway_model_id_present_but_cold_fails(self):
+        # Arrange: the gateway is online and registers the coder id, but it
+        # is not loaded (cold).
+        coder_id = "the-coder-from-config"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel(coder_id, False)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer failed with the cold marker, naming the id, plus
+        # the in-network fact.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(COLD_MARKER, result.detail.lower())
+        self.assertIn(coder_id, result.detail)
+        self.assertIn(IN_NETWORK_PORT, result.detail)
+
+
+class TestGatewayModelCheckThreeDistinctDetails(unittest.TestCase):
+    """Behaviour 8 (error): the three failure details -- offline, id absent,
+    id present-but-cold -- are distinguishable from each other, each carrying
+    the in-network port fact."""
+
+    def _detail(self, status):
+        read_models = _fake_read_models("the-coder-from-config")
+        check_gateway = _fake_check_gateway(status)
+        return _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        ).detail
+
+    def test_three_failure_details_are_pairwise_distinct(self):
+        # Arrange: one gateway status per failure mode.
+        offline = self._detail(_FakeGatewayStatus(
+            online=False, models=[], error="conn refused"))
+        absent = self._detail(_FakeGatewayStatus(
+            online=True, models=[_FakeModel("some-other-model", True)]))
+        cold = self._detail(_FakeGatewayStatus(
+            online=True,
+            models=[_FakeModel("the-coder-from-config", False)]))
+
+        # Assert: each detail carries its own marker, and all three carry the
+        # in-network fact.
+        self.assertIn(OFFLINE_MARKER, offline.lower())
+        self.assertIn(ABSENT_MARKER, absent.lower())
+        self.assertIn(COLD_MARKER, cold.lower())
+        for detail in (offline, absent, cold):
+            self.assertIn(IN_NETWORK_PORT, detail)
+
+    def test_three_failure_details_are_not_all_identical(self):
+        # Arrange: the three failure details as above.
+        offline = self._detail(_FakeGatewayStatus(
+            online=False, models=[], error="conn refused"))
+        absent = self._detail(_FakeGatewayStatus(
+            online=True, models=[_FakeModel("some-other-model", True)]))
+        cold = self._detail(_FakeGatewayStatus(
+            online=True,
+            models=[_FakeModel("the-coder-from-config", False)]))
+
+        # Assert: no two failure modes collapse into the same detail.
+        self.assertNotEqual(offline, absent)
+        self.assertNotEqual(offline, cold)
+        self.assertNotEqual(absent, cold)
+
+
+class TestGatewayModelCheckConfigError(unittest.TestCase):
+    """Behaviour 8 (error): a ``ConfigError`` from ``read_models`` fails the
+    layer naming the file, never a traceback."""
+
+    def test_check_gateway_model_config_error_fails_naming_the_file(self):
+        # Arrange: the read_models fake raises ``ConfigError`` for a named
+        # file, as when matrix.vars.coder is missing.
+        from anvilkit.config import ConfigError
+
+        config_path = "config.yaml"
+
+        def read_models(path, strict_context_window=False):
+            raise ConfigError(
+                "matrix.vars.coder is not defined in %s" % path
+            )
+
+        status = _FakeGatewayStatus(online=True, models=[])
+        check_gateway = _fake_check_gateway(status)
+
+        # Act: the exception must not escape the check -- a traceback here
+        # fails the test.
+        result = _model_check()(
+            18080, config_path,
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the layer failed naming the file, with the in-network fact.
+        self.assertEqual(result.name, MODEL_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(config_path, result.detail)
+        self.assertIn(IN_NETWORK_PORT, result.detail)
+
+
+class TestGatewayModelCheckSeam(unittest.TestCase):
+    """Behaviour 8 (seam): the check calls the injected ``check_gateway``
+    with the resolved port and reads the id from the injected
+    ``read_models`` -- never a hard-coded id."""
+
+    def test_check_gateway_model_passes_the_resolved_port_to_check_gateway(self):
+        # Arrange: a recording check_gateway and a read_models supplying an
+        # id that also appears in the gateway.
+        coder_id = "the-coder-from-config"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True, models=[_FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the check called check_gateway exactly once, with the
+        # resolved port.
+        self.assertEqual(check_gateway.calls, [18080])
+
+    def test_check_gateway_model_reads_the_id_from_read_models(self):
+        # Arrange: a read_models supplying a slash-carrying id that also
+        # appears in the gateway; a second, hard-codeable-looking id that
+        # must not be the one matched.
+        coder_id = "org/repo/model-v2"
+        read_models = _fake_read_models(coder_id)
+        status = _FakeGatewayStatus(
+            online=True,
+            models=[_FakeModel("org/repo/model-v1", True),
+                    _FakeModel(coder_id, True)],
+        )
+        check_gateway = _fake_check_gateway(status)
+
+        # Act.
+        result = _model_check()(
+            18080, "config.yaml",
+            check_gateway=check_gateway, read_models=read_models,
+        )
+
+        # Assert: the check matched the id read from config.yaml (the v2 id),
+        # not a re-spelled literal, and read the config the caller named.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(coder_id, result.detail)
+        self.assertEqual(
+            read_models.calls, [("config.yaml", False)],
+            "read_models must be called with the config path the caller "
+            "named",
+        )
+
+
+# Behaviour 9: layer 3's agent-volume-presence check. It takes the same
+# injected docker seam as behaviours 4-7. The public seam these tests
+# pin: ``smoke.check_agent_volume(docker_runner)`` returns a
+# ``LayerResult`` named ``"agent-volume"``. The volume name must come
+# from the module's adopted ``NAMED_VOLUME`` constant, so a rename in
+# ``pisandbox`` keeps the check and the run in step. Exit 0 is the pass
+# state; a non-zero exit is the fail state whose detail says the volume
+# is created on first run and stays empty until seeded. The exact
+# wording is free, so the test pins two load-bearing marker words:
+# ``first run`` and ``empty``.
+VOLUME_CHECK_NAME = "check_agent_volume"
+VOLUME_LAYER_NAME = "agent-volume"
+# The two marker words the plan's fail detail must carry, pinned here so
+# the explanation cannot be dropped or reworded into something that no
+# longer says "created on first run" and "stays empty until seeded".
+FIRST_RUN_MARKER = "first run"
+EMPTY_VOLUME_MARKER = "empty"
+
+
+def _volume_check():
+    """Return the behaviour-9 volume check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, VOLUME_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner) yet "
+            "(behaviour 9 of plans/smoke-test.md)" % VOLUME_CHECK_NAME
+        )
+    return check
+
+
+def _volume_argv():
+    """The list-form argv layer 3 uses to inspect the agent volume.
+
+    The name is read from ``smoke.NAMED_VOLUME`` -- the constant adopted
+    from ``anvilkit.pi.pisandbox._NAMED_VOLUME`` -- so this test proves
+    the check inspects the adopted name, not a re-spelled literal.
+    """
+    smoke_mod = _require_smoke()
+    return ["docker", "volume", "inspect", smoke_mod.NAMED_VOLUME]
+
+
+class TestAgentVolumeCheckPass(unittest.TestCase):
+    """Behaviour 9: exit 0 from the volume inspect is the pass state."""
+
+    def test_check_agent_volume_exit_zero_passes(self):
+        # Arrange: the injected runner answers the volume inspect with
+        # exit 0.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        result = _volume_check()(runner)
+
+        # Assert: the layer is the agent-volume layer, in the pass state.
+        self.assertEqual(result.name, VOLUME_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+
+
+class TestAgentVolumeCheckArgv(unittest.TestCase):
+    """Behaviour 9: the check invokes the runner with the list-form
+    ``docker volume inspect <name>`` argv, exactly once, where ``<name>``
+    is the module's adopted ``NAMED_VOLUME`` constant."""
+
+    def test_check_agent_volume_invokes_inspect_argv_with_adopted_name(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        _volume_check()(runner)
+
+        # Assert: the check ran exactly the plan's argv, as a list, once,
+        # with the name read from the adopted constant.
+        self.assertEqual(runner.calls, [_volume_argv()])
+
+
+class TestAgentVolumeCheckFail(unittest.TestCase):
+    """Behaviour 9: a non-zero inspect exit fails with a detail saying the
+    volume is created on first run and stays empty until seeded."""
+
+    def test_check_agent_volume_nonzero_exit_fails_saying_created_on_first_run_and_stays_empty(self):
+        # Arrange: the volume inspect fails non-zero.
+        runner = _recording_runner(1, "", "Error: No such volume")
+
+        # Act.
+        result = _volume_check()(runner)
+
+        # Assert: the layer is the agent-volume layer in the fail state,
+        # and its detail carries both pinned marker words -- "created on
+        # first run" and "stays empty until seeded".
+        self.assertEqual(result.name, VOLUME_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        detail = result.detail.lower()
+        self.assertIn(
+            FIRST_RUN_MARKER,
+            detail,
+            "fail detail %r must say the volume is created on first run"
+            % (result.detail,),
+        )
+        self.assertIn(
+            EMPTY_VOLUME_MARKER,
+            detail,
+            "fail detail %r must say the volume stays empty until seeded"
+            % (result.detail,),
+        )
+
+
+class TestAgentVolumeCheckNotOnPath(unittest.TestCase):
+    """Behaviour 9 (error): ``FileNotFoundError`` from the runner is a
+    not-on-PATH fail, never a traceback."""
+
+    def test_check_agent_volume_runner_not_found_fails_saying_not_on_path(self):
+        # Arrange: the runner raises ``FileNotFoundError`` as when docker
+        # is missing from PATH.
+        def runner(argv):
+            raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+        # Act: the exception must not escape the check -- a traceback here
+        # fails the test.
+        result = _volume_check()(runner)
+
+        # Assert: the layer failed, and its detail says docker is not on
+        # PATH.
+        self.assertEqual(result.name, VOLUME_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("path", result.detail.lower())
+
+
+# Behaviour 10: layer 3's models.json-readability check. It takes the
+# same injected docker seam as behaviours 4-7 plus an image tag whose
+# default is the module's ``DEFAULT_IMAGE_TAG``. The public seam these
+# tests pin:
+#
+#     smoke.check_models_json(docker_runner, tag=...)
+#         -> (LayerResult, Optional[str])
+#
+# The ``LayerResult`` is named ``"models-json"``; the ``Optional[str]``
+# carries the models.json text the in-container cat printed, exposed so
+# behaviour 11 can parse it for the coder id -- the exact stdout on a
+# pass, ``None`` on every fail. The check runs exactly one list-form
+# argv whose names all come from the adopted constants. The two
+# non-zero-exit failure modes are told apart by the runner's stderr
+# content: a permission marker (``PERMISSION_MARKER``) fails with the
+# chown one-liner as its fix line; a no-such-file marker
+# (``NO_SUCH_FILE_MARKER``) fails with the seed instruction and no
+# chown line. A readable but empty file (exit 0, empty or
+# whitespace-only stdout) fails as ``UNSEEDED_MARKER``, a third,
+# distinct detail.
+MODELS_JSON_CHECK_NAME = "check_models_json"
+MODELS_JSON_LAYER_NAME = "models-json"
+# The marker the permission-denied stderr must carry, matched
+# case-insensitively; the fixture stderr is built to contain it.
+PERMISSION_MARKER = "permission"
+# The marker the no-such-file stderr must carry, matched
+# case-insensitively; the fixture stderr is built to contain it.
+NO_SUCH_FILE_MARKER = "no such file"
+# The marker word the unseeded (empty-file) fail detail must carry,
+# pinned so it cannot collapse into the permission or no-file details.
+UNSEEDED_MARKER = "unseeded"
+# The marker word the no-such-file fail detail must carry, pinned so
+# the missing file is told apart from the misowned one.
+SEED_MARKER = "seed"
+
+
+def _models_json_check():
+    """Return the behaviour-10 models.json check, or fail naming what
+    is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, MODELS_JSON_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner, tag=...) yet "
+            "(behaviour 10 of plans/smoke-test.md)" % MODELS_JSON_CHECK_NAME
+        )
+    return check
+
+
+def _models_json_argv(tag):
+    """The list-form argv layer 3 uses to cat the agent's models.json.
+
+    Every name is read from the adopted smoke constants -- the named
+    volume, the agent home and the image uid -- so this test proves the
+    check builds its argv from the adopted names, not re-spelled
+    literals.
+    """
+    smoke_mod = _require_smoke()
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        smoke_mod.NAMED_VOLUME + ":" + smoke_mod.AGENT_HOME,
+        "--user",
+        smoke_mod.IMAGE_UID,
+        tag,
+        "cat",
+        smoke_mod.AGENT_HOME + "/models.json",
+    ]
+
+
+def _chown_one_liner(tag):
+    """The chown one-liner the permission fail must offer as a fix.
+
+    Composed from the adopted smoke constants; only the root user id and
+    the ``chown`` verb are literals, per the plan.
+    """
+    smoke_mod = _require_smoke()
+    return " ".join([
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        smoke_mod.NAMED_VOLUME + ":" + smoke_mod.AGENT_HOME,
+        "--user",
+        "0",
+        tag,
+        "chown",
+        "-R",
+        smoke_mod.IMAGE_UID + ":" + smoke_mod.IMAGE_UID,
+        smoke_mod.AGENT_HOME,
+    ])
+
+
+class TestModelsJsonCheckPass(unittest.TestCase):
+    """Behaviour 10: exit 0 with non-empty stdout passes, and the read
+    text is exposed through the seam for behaviour 11 to parse."""
+
+    def test_check_models_json_exit_zero_non_empty_stdout_passes_and_exposes_content(self):
+        # Arrange: the in-container cat answers exit 0 with a seeded file;
+        # the trailing newline proves the exposed text is the exact
+        # stdout, not a stripped copy.
+        models_text = '{"providers": {"a": {"models": [{"id": "x"}]}}}\n'
+        runner = _recording_runner(0, models_text, "")
+
+        # Act: the pinned seam returns (LayerResult, Optional[str]).
+        result, content = _models_json_check()(runner)
+
+        # Assert: the layer is the models-json layer in the pass state,
+        # and the seam exposes the exact stdout for behaviour 11.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertEqual(content, models_text)
+
+
+class TestModelsJsonCheckArgv(unittest.TestCase):
+    """Behaviour 10: the check invokes the runner with the list-form
+    ``docker run --rm -v <volume>:<agent home> --user <uid> <tag> cat
+    <agent home>/models.json`` argv, exactly once, every name from the
+    adopted constants."""
+
+    def test_check_models_json_default_tag_invokes_cat_argv_in_list_form(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        runner = _recording_runner(0, "{}\n", "")
+
+        # Act: no tag passed -- the module's DEFAULT_IMAGE_TAG must apply.
+        _models_json_check()(runner)
+
+        # Assert: the check ran exactly the plan's argv, as a list, once,
+        # with the names read from the adopted constants and the tag read
+        # from the module's own default.
+        smoke_mod = _require_smoke()
+        self.assertEqual(
+            runner.calls, [_models_json_argv(smoke_mod.DEFAULT_IMAGE_TAG)]
+        )
+
+    def test_check_models_json_explicit_tag_invokes_cat_argv_with_that_tag(self):
+        # Arrange: the injected runner records whatever argv it is handed.
+        tag = "anvil-pi:dev"
+        runner = _recording_runner(0, "{}\n", "")
+
+        # Act.
+        _models_json_check()(runner, tag)
+
+        # Assert: the explicit tag is the image the cat runs in.
+        self.assertEqual(runner.calls, [_models_json_argv(tag)])
+
+
+class TestModelsJsonCheckUnseeded(unittest.TestCase):
+    """Behaviour 10 (error): exit 0 with an empty or whitespace-only
+    stdout fails as unseeded -- a distinct detail, distinct from the
+    permission and no-file fails -- and exposes no content."""
+
+    def test_check_models_json_exit_zero_empty_stdout_fails_as_unseeded(self):
+        # Arrange: cat reads a file that exists but is empty.
+        runner = _recording_runner(0, "", "")
+
+        # Act.
+        result, content = _models_json_check()(runner)
+
+        # Assert: the layer failed as unseeded, exposing no content.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(UNSEEDED_MARKER, result.detail.lower())
+        self.assertIsNone(content)
+
+    def test_check_models_json_exit_zero_whitespace_only_stdout_fails_as_unseeded(self):
+        # Arrange: cat reads a file holding only whitespace.
+        runner = _recording_runner(0, "   \n\t\n", "")
+
+        # Act.
+        result, content = _models_json_check()(runner)
+
+        # Assert: whitespace-only is still unseeded, not a pass.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(UNSEEDED_MARKER, result.detail.lower())
+        self.assertIsNone(content)
+
+
+class TestModelsJsonCheckPermissionDenied(unittest.TestCase):
+    """Behaviour 10 (error): a permission marker in the non-zero exit's
+    stderr fails with the chown one-liner as the fix line, composed
+    from the adopted constants."""
+
+    def test_check_models_json_permission_denied_fails_with_chown_one_liner(self):
+        # Arrange: cat cannot read the file; the non-zero stderr carries
+        # the permission marker.
+        smoke_mod = _require_smoke()
+        tag = "anvil-pi:dev"
+        stderr = "cat: %s/models.json: Permission denied" % smoke_mod.AGENT_HOME
+        runner = _recording_runner(1, "", stderr)
+
+        # Act.
+        result, content = _models_json_check()(runner, tag)
+
+        # Assert: the layer failed -- not unseeded, the file exists but is
+        # unreadable -- and one fix line carries the chown one-liner built
+        # from the adopted constants for this tag.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(
+            PERMISSION_MARKER, stderr.lower(),
+            "fixture stderr %r must carry the permission marker" % stderr,
+        )
+        self.assertNotIn(UNSEEDED_MARKER, result.detail.lower())
+        self.assertTrue(
+            any(_chown_one_liner(tag) in fix for fix in result.fix_lines),
+            "fix lines %r must carry the chown one-liner for tag %r"
+            % (result.fix_lines, tag),
+        )
+        self.assertIsNone(content)
+
+
+class TestModelsJsonCheckNoSuchFile(unittest.TestCase):
+    """Behaviour 10 (error): a no-such-file marker in the non-zero
+    stderr fails with the seed instruction and NO chown fix line --
+    the file is missing, not misowned."""
+
+    def test_check_models_json_no_such_file_fails_with_seed_instruction_and_no_chown(self):
+        # Arrange: cat cannot find the file; the non-zero stderr carries
+        # the no-such-file marker.
+        smoke_mod = _require_smoke()
+        stderr = (
+            "cat: %s/models.json: No such file or directory"
+            % smoke_mod.AGENT_HOME
+        )
+        runner = _recording_runner(1, "", stderr)
+
+        # Act.
+        result, content = _models_json_check()(runner)
+
+        # Assert: the layer failed with the seed instruction in the
+        # detail (not unseeded -- unseeded means present but empty), and
+        # no fix line offers a chown.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(
+            NO_SUCH_FILE_MARKER, stderr.lower(),
+            "fixture stderr %r must carry the no-such-file marker" % stderr,
+        )
+        self.assertIn(SEED_MARKER, result.detail.lower())
+        self.assertNotIn(UNSEEDED_MARKER, result.detail.lower())
+        self.assertFalse(
+            any("chown" in fix for fix in result.fix_lines),
+            "fix lines %r must not carry a chown line for a missing file"
+            % (result.fix_lines,),
+        )
+        self.assertIsNone(content)
+
+
+class TestModelsJsonCheckNotOnPath(unittest.TestCase):
+    """Behaviour 10 (error): ``FileNotFoundError`` from the runner is a
+    not-on-PATH fail, never a traceback."""
+
+    def test_check_models_json_runner_not_found_fails_saying_not_on_path(self):
+        # Arrange: the runner raises ``FileNotFoundError`` as when docker
+        # is missing from PATH.
+        def runner(argv):
+            raise FileNotFoundError("[Errno 2] No such file or directory: 'docker'")
+
+        # Act: the exception must not escape the check -- a traceback here
+        # fails the test.
+        result, content = _models_json_check()(runner)
+
+        # Assert: the layer failed, its detail says docker is not on
+        # PATH, and no content is exposed.
+        self.assertEqual(result.name, MODELS_JSON_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("path", result.detail.lower())
+        self.assertIsNone(content)
+
+
+# Behaviour 11: layer 3's coder-id-match check. Unlike behaviour 10 it
+# takes no docker seam: the models.json text is the exact stdout
+# behaviour 10's seam exposed, and the coder id is read from
+# ``read_models(config_path).coder_id`` (``matrix.vars.coder``) through
+# an injectable ``read_models`` seam that defaults to the real
+# ``config.read_models`` -- the same seam pattern behaviour 8 pins, so
+# neither id is hard-coded. The public seam these tests pin:
+#
+#     smoke.check_coder_id(models_json_text, config_path,
+#                          read_models=...) -> LayerResult
+#
+# The layer is named ``"coder-id-match"``. The models.json shape is the
+# one in ``tests/fixtures/golden_pi_models.json``: a top-level
+# ``providers`` mapping of provider name to provider object, each
+# provider carrying a ``models`` list, each model carrying an ``id``.
+# The coder id present as some ``providers.<name>.models[].id`` passes,
+# the detail naming the provider carrying it; the id absent fails,
+# printing both the expected coder id and the seeded ids found.
+# Malformed JSON fails naming the parse error; a missing ``providers``
+# key, a provider with no ``models`` key, or a ``models`` that is not a
+# list fails saying so -- never a ``KeyError`` or ``TypeError``
+# escaping.
+CODER_ID_CHECK_NAME = "check_coder_id"
+CODER_ID_LAYER_NAME = "coder-id-match"
+
+
+def _coder_id_check():
+    """Return the behaviour-11 coder-id check, or fail naming what is
+    missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, CODER_ID_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "%s(models_json_text, config_path, read_models=...) yet "
+            "(behaviour 11 of plans/smoke-test.md)" % CODER_ID_CHECK_NAME
+        )
+    return check
+
+
+def _models_json_text(providers):
+    """A models.json document built around the given ``providers``."""
+    return json.dumps({"providers": providers})
+
+
+def _provider(model_ids):
+    """A provider object with one model entry per id in ``model_ids``."""
+    return {
+        "baseUrl": "http://127.0.0.1:8000/v1",
+        "api": "openai-completions",
+        "models": [{"id": model_id} for model_id in model_ids],
+    }
+
+
+class TestCoderIdCheckPass(unittest.TestCase):
+    """Behaviour 11: the coder id present under a provider passes, the
+    detail naming that provider."""
+
+    def test_check_coder_id_id_present_under_one_provider_passes_naming_that_provider(self):
+        # Arrange: the injected read_models supplies the coder id and the
+        # seeded models.json carries it under one provider.
+        coder_id = "qwen3-coder"
+        text = _models_json_text({
+            "llamaswap": _provider([coder_id, "some-other-model"]),
+        })
+        read_models = _fake_read_models(coder_id)
+
+        # Act.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer is the coder-id-match layer in the pass
+        # state, naming the provider that carries the id and the id
+        # itself.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn("llamaswap", result.detail)
+        self.assertIn(coder_id, result.detail)
+
+    def test_check_coder_id_id_present_under_second_of_two_providers_names_that_provider(self):
+        # Arrange: the id sits under the second provider only.
+        coder_id = "the-coder-from-config"
+        text = _models_json_text({
+            "provider-a": _provider(["seeded-only-in-a"]),
+            "provider-b": _provider([coder_id]),
+        })
+        read_models = _fake_read_models(coder_id)
+
+        # Act.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the pass names the provider carrying the id, not the
+        # other one.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn("provider-b", result.detail)
+
+    def test_check_coder_id_reads_the_id_from_read_models_not_a_literal(self):
+        # Arrange: a slash-carrying, hard-codeable-looking id supplied by
+        # the fake topology; the seeded text carries only that id.
+        coder_id = "org/repo/model-v9"
+        text = _models_json_text({"llamaswap": _provider([coder_id])})
+        read_models = _fake_read_models(coder_id)
+
+        # Act.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the check matched the id read from config.yaml and read
+        # the config the caller named.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(coder_id, result.detail)
+        self.assertEqual(
+            read_models.calls, [("config.yaml", False)],
+            "read_models must be called with the config path the caller "
+            "named",
+        )
+
+
+class TestCoderIdCheckAbsent(unittest.TestCase):
+    """Behaviour 11 (error): the coder id absent fails, printing both the
+    expected id and the seeded ids found."""
+
+    def test_check_coder_id_id_absent_fails_naming_expected_id_and_seeded_ids(self):
+        # Arrange: the seeded text registers two models, neither the coder
+        # id the config names.
+        coder_id = "the-coder-from-config"
+        text = _models_json_text({
+            "llamaswap": _provider(["seeded-one", "seeded-two"]),
+        })
+        read_models = _fake_read_models(coder_id)
+
+        # Act.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, printing both the expected coder id
+        # and the seeded ids found.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(coder_id, result.detail)
+        self.assertIn("seeded-one", result.detail)
+        self.assertIn("seeded-two", result.detail)
+
+
+class TestCoderIdCheckMalformedJson(unittest.TestCase):
+    """Behaviour 11 (error): malformed JSON fails naming the parse error --
+    never a ``JSONDecodeError`` traceback escaping."""
+
+    def test_check_coder_id_malformed_json_fails_naming_the_parse_error(self):
+        # Arrange: a models.json that does not parse (a truncated object).
+        text = '{"providers": {'
+        # Derive the parse error text from the stdlib parser itself, so
+        # the assertion cites the exact clause the implementation must
+        # surface.
+        expected_error = None
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            expected_error = str(exc)
+        self.assertIsNotNone(
+            expected_error, "fixture text must not parse"
+        )
+        read_models = _fake_read_models("the-coder-from-config")
+
+        # Act: a JSONDecodeError escaping the check would error the test
+        # with a traceback; instead the layer must fail.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, and its detail names the parse error
+        # -- the word "parse" plus the error text the parser produced
+        # (its first clause, before the line and column, which the test
+        # does not re-derive).
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        detail = result.detail.lower()
+        self.assertIn("parse", detail)
+        clause = expected_error.split(":")[0].lower()
+        self.assertIn(
+            clause,
+            detail,
+            "fail detail %r must carry the parse error text %r"
+            % (result.detail, clause),
+        )
+        self.assertNotIn("Traceback", result.detail)
+
+
+class TestCoderIdCheckMissingProviders(unittest.TestCase):
+    """Behaviour 11 (error): a missing ``providers`` key fails saying so --
+    never a ``KeyError`` escaping."""
+
+    def test_check_coder_id_missing_providers_key_fails_saying_so(self):
+        # Arrange: valid JSON without the top-level providers key.
+        text = json.dumps({"models": []})
+        read_models = _fake_read_models("the-coder-from-config")
+
+        # Act: a KeyError escaping the check would error the test with a
+        # traceback; instead the layer must fail.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, and its detail says the providers key
+        # is missing.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("providers", result.detail.lower())
+
+
+class TestCoderIdCheckProviderWithoutModels(unittest.TestCase):
+    """Behaviour 11 (error): a provider with no ``models`` key, or a
+    ``models`` that is not a list, fails saying so -- never a
+    ``KeyError`` or ``TypeError`` escaping."""
+
+    def test_check_coder_id_provider_without_models_key_fails_saying_so(self):
+        # Arrange: a provider object without the models key.
+        text = json.dumps({
+            "providers": {
+                "llamaswap": {"baseUrl": "http://127.0.0.1:8000/v1"},
+            },
+        })
+        read_models = _fake_read_models("the-coder-from-config")
+
+        # Act: a KeyError escaping the check would error the test with a
+        # traceback; instead the layer must fail.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, and its detail says the models list
+        # is missing.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("models", result.detail.lower())
+
+    def test_check_coder_id_provider_models_not_a_list_fails_saying_so(self):
+        # Arrange: a provider whose models value is not a list.
+        text = json.dumps({
+            "providers": {"llamaswap": {"models": "not-a-list"}},
+        })
+        read_models = _fake_read_models("the-coder-from-config")
+
+        # Act: a TypeError escaping the check would error the test with a
+        # traceback; instead the layer must fail.
+        result = _coder_id_check()(
+            text, "config.yaml", read_models=read_models,
+        )
+
+        # Assert: the layer failed, and its detail says the models value
+        # is not a list.
+        self.assertEqual(result.name, CODER_ID_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn("models", result.detail.lower())
+
+
+# Behaviour 12: ``--fix`` chowns the volume only. The repair is a function
+# the operator command (behaviour 18) calls for layer 3 when ``--fix`` is set
+# and the models.json check (behaviour 10) failed with a permission failure.
+# The public seam these tests pin:
+#
+#     smoke.repair_models_json(docker_runner, tag=..., fix=...,
+#                              first_read=(LayerResult, Optional[str]))
+#         -> (LayerResult, Optional[str])
+#
+# It takes the injected docker runner, the image tag, a flag for whether fix
+# is requested, and the first-read result (the ``(LayerResult, Optional[str])``
+# tuple behaviour 10's ``check_models_json`` returns). It returns the final
+# verdict as the same ``(LayerResult, Optional[str])`` tuple. The chown argv
+# is composed from the adopted constants; the read argv is behaviour 10's
+# cat argv. The tests assert spawn counts on the fake's recorded calls:
+#
+# - ``--fix`` + permission failure: exactly ONE chown spawn, then the read is
+#   retried exactly ONCE; if the retry passes, the final verdict is pass.
+# - Without ``--fix``: NO chown spawn ever; the verdict is whatever the read
+#   produced (fail with the one-liner fix line printed, per behaviour 10).
+# - ``--fix`` + missing-file failure: NO chown spawn, final verdict fail.
+# - ``--fix`` + a generic other non-zero exit: NO chown spawn, final fail.
+# - ``--fix`` + permission failure + chown-itself-fails: one chown spawn,
+#   fail with the chown stderr, and the read is NOT retried a second time
+#   (at most one retry total).
+
+
+REPAIR_CHECK_NAME = "repair_models_json"
+
+
+def _repair_check():
+    """Return the behaviour-12 repair seam, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, REPAIR_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(docker_runner, tag=..., "
+            "fix=..., first_read=...) yet "
+            "(behaviour 12 of plans/smoke-test.md)" % REPAIR_CHECK_NAME
+        )
+    return check
+
+
+def _chown_argv(tag):
+    """The list-form argv the repair chowns the volume with.
+
+    Composed from the adopted smoke constants -- the named volume, the agent
+    home and the image uid -- with the root user id ``"0"`` and the ``chown``
+    verb the only literals, per the plan.
+    """
+    smoke_mod = _require_smoke()
+    return [
+        "docker",
+        "run",
+        "--rm",
+        "-v",
+        smoke_mod.NAMED_VOLUME + ":" + smoke_mod.AGENT_HOME,
+        "--user",
+        "0",
+        tag,
+        "chown",
+        "-R",
+        smoke_mod.IMAGE_UID + ":" + smoke_mod.IMAGE_UID,
+        smoke_mod.AGENT_HOME,
+    ]
+
+
+def _scripted_runner(script):
+    """A fake ``docker_runner`` that returns results from ``script`` in
+    order and records every argv it is handed.
+
+    ``script`` is a sequence of ``(exit_code, stdout, stderr)`` tuples; each
+    invocation pops the next one. When the script is exhausted the runner
+    raises ``AssertionError`` -- a test that drives more invocations than it
+    scripted has over-driven the seam, and that is a test bug, not a
+    silent repeat of the last result.
+    """
+    remaining = list(script)
+    calls = []
+
+    def runner(argv):
+        calls.append(list(argv))
+        if not remaining:
+            raise AssertionError(
+                "scripted runner exhausted: the repair over-drove the seam "
+                "(invoked %d times, only %d scripted)"
+                % (len(calls), len(script))
+            )
+        return remaining.pop(0)
+
+    runner.calls = calls
+    return runner
+
+
+def _permission_read_result(tag=None):
+    """A behaviour-10 permission-failure ``(LayerResult, None)`` to feed
+    the repair as its ``first_read``; the chown one-liner fix line is built
+    for ``tag`` (defaulting to the module's default tag)."""
+    smoke_mod = _require_smoke()
+    if tag is None:
+        tag = smoke_mod.DEFAULT_IMAGE_TAG
+    result = smoke_mod.LayerResult(
+        name=MODELS_JSON_LAYER_NAME,
+        ok=STATE_FAILED,
+        detail="cat: %s/models.json: Permission denied" % smoke_mod.AGENT_HOME,
+        fix_lines=(_chown_one_liner(tag),),
+    )
+    return (result, None)
+
+
+def _missing_file_read_result():
+    """A behaviour-10 missing-file ``(LayerResult, None)`` to feed the
+    repair as its ``first_read``."""
+    smoke_mod = _require_smoke()
+    result = smoke_mod.LayerResult(
+        name=MODELS_JSON_LAYER_NAME,
+        ok=STATE_FAILED,
+        detail="%s/models.json is missing; seed it" % smoke_mod.AGENT_HOME,
+    )
+    return (result, None)
+
+
+def _generic_failure_read_result():
+    """A behaviour-10 generic-other-failure ``(LayerResult, None)`` -- a
+    non-zero exit whose stderr carries neither the permission nor the
+    no-such-file marker -- to feed the repair as its ``first_read``."""
+    smoke_mod = _require_smoke()
+    result = smoke_mod.LayerResult(
+        name=MODELS_JSON_LAYER_NAME,
+        ok=STATE_FAILED,
+        detail="some other opaque error",
+    )
+    return (result, None)
+
+
+class TestRepairPermissionFixRetriesAndPasses(unittest.TestCase):
+    """Behaviour 12: ``--fix`` + a permission failure spawns exactly ONE
+    chown, retries the read exactly ONCE, and passes when the retry
+    succeeds."""
+
+    def test_repair_fix_permission_fail_chowns_once_retries_once_and_passes(self):
+        # Arrange: a permission failure is the first read; the script is
+        # chown-exit-0 then the retried cat-exit-0 with a seeded file.
+        tag = "anvil-pi:dev"
+        models_text = '{"providers": {"a": {"models": [{"id": "x"}]}}}\n'
+        runner = _scripted_runner([
+            (0, "", ""),            # the chown
+            (0, models_text, ""),   # the retried read
+        ])
+        first_read = _permission_read_result()
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=True, first_read=first_read,
+        )
+
+        # Assert: the chown was spawned exactly once with the pinned argv,
+        # the read was retried exactly once with the cat argv, and the final
+        # verdict is pass carrying the retried read's stdout.
+        self.assertEqual(len(runner.calls), 2)
+        self.assertEqual(runner.calls[0], _chown_argv(tag))
+        self.assertEqual(runner.calls[1], _models_json_argv(tag))
+        self.assertEqual(final.ok, STATE_OK)
+        self.assertEqual(content, models_text)
+
+    def test_repair_fix_permission_fail_chown_argv_is_exactly_the_pinned_one(self):
+        # Arrange: a permission failure; the script is chown-exit-0 then a
+        # failing retried read, so the only spawn is the chown.
+        tag = "anvil-pi:dev"
+        runner = _scripted_runner([
+            (0, "", ""),
+            (1, "", "still permission denied"),
+        ])
+        first_read = _permission_read_result()
+
+        # Act.
+        _repair_check()(runner, tag=tag, fix=True, first_read=first_read)
+
+        # Assert: the chown argv is exactly the pinned one -- there is no way
+        # to "repair silently" or chown a different path.
+        chown_calls = [
+            call for call in runner.calls if call == _chown_argv(tag)
+        ]
+        self.assertEqual(
+            len(chown_calls), 1,
+            "expected exactly one chown spawn with the pinned argv, got %r"
+            % (runner.calls,),
+        )
+
+
+class TestRepairNoFixSpawnsNothing(unittest.TestCase):
+    """Behaviour 12 (error): without ``--fix`` NO chown is spawned ever, and
+    the verdict is whatever the first read produced -- a fail with the
+    chown one-liner fix line, per behaviour 10."""
+
+    def test_repair_no_fix_permission_fail_spawns_nothing_and_returns_first_read(self):
+        # Arrange: a permission failure, but ``fix=False``. The script is
+        # empty -- if the repair spawns anything, the runner raises.
+        tag = "anvil-pi:dev"
+        runner = _scripted_runner([])
+        first_read = _permission_read_result(tag)
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=False, first_read=first_read,
+        )
+
+        # Assert: nothing was spawned, the verdict is the first read's fail
+        # (a permission fail), and no content is exposed.
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(final.ok, STATE_FAILED)
+        self.assertIsNone(content)
+        self.assertTrue(
+            any(_chown_one_liner(tag) in fix for fix in final.fix_lines),
+            "without --fix the fail must still carry the chown one-liner "
+            "fix line; got %r" % (final.fix_lines,),
+        )
+
+
+class TestRepairMissingFileSpawnsNothing(unittest.TestCase):
+    """Behaviour 12 (error): ``--fix`` + a missing-file failure spawns NO
+    chown, and the final verdict is fail."""
+
+    def test_repair_fix_missing_file_spawns_no_chown_and_fails(self):
+        # Arrange: a missing-file failure, ``fix=True``. The script is empty
+        # -- if the repair chowns, the runner raises.
+        tag = "anvil-pi:dev"
+        runner = _scripted_runner([])
+        first_read = _missing_file_read_result()
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=True, first_read=first_read,
+        )
+
+        # Assert: no chown spawn, final verdict fail, no content.
+        chown_calls = [
+            call for call in runner.calls if call == _chown_argv(tag)
+        ]
+        self.assertEqual(
+            chown_calls, [],
+            "a missing-file failure must not chown the volume; got %r"
+            % (runner.calls,),
+        )
+        self.assertEqual(final.ok, STATE_FAILED)
+        self.assertIsNone(content)
+
+
+class TestRepairGenericFailureSpawnsNothing(unittest.TestCase):
+    """Behaviour 12 (error): ``--fix`` + a generic other non-zero exit
+    (neither permission nor missing-file) spawns NO chown, and the final
+    verdict is fail."""
+
+    def test_repair_fix_generic_failure_spawns_no_chown_and_fails(self):
+        # Arrange: a generic other failure, ``fix=True``. The script is empty
+        # -- if the repair chowns, the runner raises.
+        tag = "anvil-pi:dev"
+        runner = _scripted_runner([])
+        first_read = _generic_failure_read_result()
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=True, first_read=first_read,
+        )
+
+        # Assert: no chown spawn, final verdict fail, no content.
+        chown_calls = [
+            call for call in runner.calls if call == _chown_argv(tag)
+        ]
+        self.assertEqual(
+            chown_calls, [],
+            "a generic other failure must not chown the volume; got %r"
+            % (runner.calls,),
+        )
+        self.assertEqual(final.ok, STATE_FAILED)
+        self.assertIsNone(content)
+
+
+class TestRepairFailingChownFailsWithoutSecondRetry(unittest.TestCase):
+    """Behaviour 12 (error): a failing chown (non-zero exit) fails the layer
+    with the chown's stderr in the detail, and the read is NOT retried a
+    second time -- at most one retry total, and here none."""
+
+    def test_repair_fix_permission_fail_chown_fails_fails_layer_with_chown_stderr_and_no_retry(self):
+        # Arrange: a permission failure, ``fix=True``; the chown itself
+        # fails non-zero with its own stderr. The script is chown-exit-1 only
+        # -- if the repair retries the read, the runner raises (the script
+        # is exhausted) and the test errors.
+        tag = "anvil-pi:dev"
+        chown_stderr = "chown: cannot read directory: Permission denied"
+        runner = _scripted_runner([
+            (1, "", chown_stderr),
+        ])
+        first_read = _permission_read_result()
+
+        # Act.
+        final, content = _repair_check()(
+            runner, tag=tag, fix=True, first_read=first_read,
+        )
+
+        # Assert: exactly one chown spawn (no read retry), the layer failed
+        # with the chown's stderr in the detail, and no content is exposed.
+        self.assertEqual(len(runner.calls), 1)
+        self.assertEqual(runner.calls[0], _chown_argv(tag))
+        self.assertEqual(final.ok, STATE_FAILED)
+        self.assertIn(chown_stderr, final.detail)
+        self.assertIsNone(content)
+
+
+# Behaviour 13: layer 4's role-prompt-presence check. Unlike layers 1-3 it
+# takes no docker runner: it is a plain filesystem check on the target
+# repo. The prompt path is never spelled in ``smoke.py``: the check derives
+# it from the role definition an injected ``resolve_role`` seam returns --
+# ``resolve_role("coder")["prompt_path"]`` -- and joins it onto the repo
+# path. The real ``pirole.resolve(name, coder_model_id, frontier_model_id)``
+# needs the two model ids, which only the command (behaviour 18) has after
+# reading the config, so the seam is a one-argument
+# ``resolve_role(name) -> definition dict`` that the caller wraps around
+# ``pirole.resolve``; the tests inject a fake carrying a known
+# ``prompt_path``. The public seam these tests pin:
+#
+#     smoke.check_role_prompt(repo_path, resolve_role=...) -> LayerResult
+#
+# The layer is named ``"role-prompt"``. An existing non-empty file at
+# ``<repo>/<prompt_path>`` passes, the detail carrying the absolute path; a
+# missing path fails, the detail saying it is missing, with a fix line
+# carrying the minimal content to write (a minimal valid role markdown,
+# pinned here by its markdown heading); an empty or whitespace-only file
+# fails with a detail distinct from the missing one (pinned by the word
+# "empty"); a directory at the path fails saying it is not a file (pinned
+# by "not a file"). The tests build the repo in a ``tempfile`` directory
+# and derive every prompt path from the resolver's ``prompt_path``; a PIN
+# test asserts the literal spelling never appears in ``smoke.py``'s source.
+ROLE_PROMPT_CHECK_NAME = "check_role_prompt"
+ROLE_PROMPT_LAYER_NAME = "role-prompt"
+# Stable markers the fail details and fix lines must carry.
+MISSING_MARKER = "missing"
+EMPTY_MARKER = "empty"
+NOT_A_FILE_MARKER = "not a file"
+# A minimal valid role markdown carries at least a heading; the fix line
+# with the content to write must carry one.
+MINIMAL_CONTENT_HEADING = "##"
+
+
+def _role_prompt_check():
+    """Return the behaviour-13 check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, ROLE_PROMPT_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s(repo_path, resolve_role=...) "
+            "yet (behaviour 13 of plans/smoke-test.md)"
+            % ROLE_PROMPT_CHECK_NAME
+        )
+    return check
+
+
+def _fake_resolve_role(prompt_path):
+    """A ``resolve_role`` fake mapping any role name to a definition dict in
+    the shape ``pirole.resolve`` returns, carrying ``prompt_path``.
+
+    Records the names it is asked for so a test can assert the check asked
+    for the coder role.
+    """
+    calls = []
+
+    def resolve_role(name):
+        calls.append(name)
+        return {
+            "model_id": "the-model-from-config",
+            "tier": "local",
+            "prompt_path": prompt_path,
+            "tools": "read,bash,edit,write",
+        }
+
+    resolve_role.calls = calls
+    return resolve_role
+
+
+def _real_coder_prompt_path():
+    """The coder role's prompt path from the real ``pirole.resolve``, so the
+    tests exercise the known value without re-spelling it."""
+    return pirole.resolve(
+        "coder", "coder-model", "frontier-model"
+    )["prompt_path"]
+
+
+def _missing_prompt_result(repo, prompt_path):
+    """Run the behaviour-13 check against a repo that has no prompt file at
+    ``prompt_path`` -- the missing-file result every distinct-detail test
+    compares against.
+
+    The check runs against its own fresh temp repo, guaranteed to contain no
+    prompt file anywhere: the caller's repo must not leak into the verdict,
+    because a read-only check reports what is actually present (so a caller
+    repo that still holds an empty or whitespace-only prompt file would
+    yield the empty detail, not the missing one). ``repo`` is accepted for
+    call-site compatibility and ignored.
+    """
+    with tempfile.TemporaryDirectory() as missing_repo:
+        return _role_prompt_check()(
+            str(missing_repo), resolve_role=_fake_resolve_role(prompt_path),
+        )
+
+
+class TestRolePromptCheckPass(unittest.TestCase):
+    """Behaviour 13: an existing non-empty prompt file passes, the detail
+    carrying the absolute path."""
+
+    def test_check_role_prompt_existing_nonempty_file_passes_with_absolute_path(self):
+        # Arrange: a tmp repo with the coder prompt file at the path the
+        # fake resolver names (the real ``pirole.resolve`` value).
+        prompt_path = _real_coder_prompt_path()
+        resolver = _fake_resolve_role(prompt_path)
+        with tempfile.TemporaryDirectory() as repo:
+            prompt_file = Path(repo) / prompt_path
+            prompt_file.parent.mkdir(parents=True)
+            prompt_file.write_text(
+                "# Coder\n\nYou write and modify code.\n", encoding="utf-8"
+            )
+
+            # Act.
+            result = _role_prompt_check()(str(repo), resolve_role=resolver)
+
+            # Assert: the check asked for the coder role, the layer passed,
+            # and its detail carries the absolute joined path.
+            self.assertEqual(resolver.calls, ["coder"])
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_OK)
+            expected = str(Path(repo) / prompt_path)
+            self.assertTrue(
+                expected.startswith("/"), "the tmp repo path is absolute"
+            )
+            self.assertIn(
+                expected,
+                result.detail,
+                "pass detail %r must carry the absolute path %r"
+                % (result.detail, expected),
+            )
+
+
+class TestRolePromptCheckMissing(unittest.TestCase):
+    """Behaviour 13 (error): a missing prompt path fails, the detail saying
+    it is missing, with a fix line carrying the minimal content to write."""
+
+    def test_check_role_prompt_missing_file_fails_saying_missing(self):
+        # Arrange: a tmp repo with no prompt file anywhere.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            self.assertFalse((Path(repo) / prompt_path).exists())
+
+            # Act.
+            result = _missing_prompt_result(repo, prompt_path)
+
+            # Assert: the layer failed and its detail says it is missing.
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertIn(
+                MISSING_MARKER,
+                result.detail.lower(),
+                "the missing-file fail detail %r must say it is missing"
+                % result.detail,
+            )
+
+    def test_check_role_prompt_missing_file_fail_fix_lines_carry_minimal_content(self):
+        # Arrange: a tmp repo with no prompt file anywhere.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            self.assertFalse((Path(repo) / prompt_path).exists())
+
+            # Act.
+            result = _missing_prompt_result(repo, prompt_path)
+
+            # Assert: at least one fix line carries the minimal content to
+            # write -- a minimal valid role markdown, pinned by its heading.
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertTrue(
+                result.fix_lines,
+                "a missing prompt must carry fix lines with the content "
+                "to write; got none",
+            )
+            self.assertTrue(
+                any(MINIMAL_CONTENT_HEADING in fix for fix in result.fix_lines),
+                "a fix line must carry the minimal markdown content (a "
+                "heading); got %r" % (result.fix_lines,),
+            )
+
+
+class TestRolePromptCheckEmptyDistinct(unittest.TestCase):
+    """Behaviour 13 (error): an empty or whitespace-only prompt file fails
+    with a detail distinct from the missing one."""
+
+    def test_check_role_prompt_empty_file_fails_distinct_from_missing(self):
+        # Arrange: a tmp repo with an empty prompt file.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            prompt_file = Path(repo) / prompt_path
+            prompt_file.parent.mkdir(parents=True)
+            prompt_file.write_text("", encoding="utf-8")
+
+            # Act.
+            result = _role_prompt_check()(
+                str(repo), resolve_role=_fake_resolve_role(prompt_path),
+            )
+
+            # Assert: failed, the detail says empty, and it is not the
+            # missing-file detail.
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertIn(
+                EMPTY_MARKER,
+                result.detail.lower(),
+                "the empty-file fail detail %r must say the file is empty"
+                % result.detail,
+            )
+            self.assertNotEqual(
+                result.detail,
+                _missing_prompt_result(repo, prompt_path).detail,
+                "an empty file must fail distinctly from a missing one",
+            )
+
+    def test_check_role_prompt_whitespace_only_file_fails_distinct_from_missing(self):
+        # Arrange: a prompt file holding only whitespace.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            prompt_file = Path(repo) / prompt_path
+            prompt_file.parent.mkdir(parents=True)
+            prompt_file.write_text("   \n\t\n  ", encoding="utf-8")
+
+            # Act + Assert: as the empty case -- failed, says empty, and
+            # distinct from the missing-file detail.
+            result = _role_prompt_check()(
+                str(repo), resolve_role=_fake_resolve_role(prompt_path),
+            )
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertIn(EMPTY_MARKER, result.detail.lower())
+            self.assertNotEqual(
+                result.detail,
+                _missing_prompt_result(repo, prompt_path).detail,
+                "a whitespace-only file must fail distinctly from a "
+                "missing one",
+            )
+
+
+class TestRolePromptCheckDirectory(unittest.TestCase):
+    """Behaviour 13 (error): a directory at the prompt path fails saying it
+    is not a file."""
+
+    def test_check_role_prompt_directory_at_path_fails_saying_not_a_file(self):
+        # Arrange: the prompt path is a directory in a tmp repo.
+        prompt_path = _real_coder_prompt_path()
+        with tempfile.TemporaryDirectory() as repo:
+            (Path(repo) / prompt_path).mkdir(parents=True)
+
+            # Act.
+            result = _role_prompt_check()(
+                str(repo), resolve_role=_fake_resolve_role(prompt_path),
+            )
+
+            # Assert: the layer failed, saying it is not a file.
+            self.assertEqual(result.name, ROLE_PROMPT_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertIn(
+                NOT_A_FILE_MARKER,
+                result.detail.lower(),
+                "a directory at the prompt path must fail saying it is not "
+                "a file; got %r" % result.detail,
+            )
+
+
+class TestRolePromptCheckDerivesPath(unittest.TestCase):
+    """Behaviour 13: the path is derived from ``resolve_role``'s
+    ``prompt_path`` -- changing the fake's value changes the path the check
+    looks at, so no literal spelling can satisfy it."""
+
+    def test_check_role_prompt_looks_at_the_resolved_prompt_path_not_a_literal(self):
+        # Arrange: a tmp repo with a prompt file at a CUSTOM path the fake
+        # resolver names -- deliberately not the coder role's real path, so
+        # a check hard-coding the real spelling cannot pass.
+        custom = "custom/roles/some-role.md"
+        real = _real_coder_prompt_path()
+        self.assertNotEqual(custom, real)
+        with tempfile.TemporaryDirectory() as repo:
+            custom_file = Path(repo) / custom
+            custom_file.parent.mkdir(parents=True)
+            custom_file.write_text("# Some role\n", encoding="utf-8")
+
+            # Act: the resolver names the custom path (present) and, in a
+            # second run, a different absent one.
+            pass_result = _role_prompt_check()(
+                str(repo), resolve_role=_fake_resolve_role(custom),
+            )
+            fail_result = _role_prompt_check()(
+                str(repo),
+                resolve_role=_fake_resolve_role("custom/roles/other-role.md"),
+            )
+
+            # Assert: the check looked at exactly the resolved path.
+            self.assertEqual(
+                pass_result.ok,
+                STATE_OK,
+                "the check must look at the resolver's prompt_path %r, not "
+                "a spelled literal (the real coder path %r is absent)"
+                % (custom, real),
+            )
+            self.assertIn(str(Path(repo) / custom), pass_result.detail)
+            self.assertEqual(fail_result.ok, STATE_FAILED)
+            self.assertIn(
+                MISSING_MARKER, fail_result.detail.lower()
+            )
+
+
+class TestRolePromptSourcePin(unittest.TestCase):
+    """Behaviour 13 (PIN): ``smoke.py`` never spells the coder prompt path
+    literally -- it derives it from ``pirole.resolve``'s ``prompt_path``."""
+
+    def test_source_never_spells_the_coder_prompt_path_literally(self):
+        # Arrange: the raw source of anvilkit/smoke.py (the same
+        # source-reading approach as the behaviour-3 pin).
+        smoke_mod = _require_smoke()
+        source = Path(smoke_mod.__file__).read_text(encoding="utf-8")
+        # The literal the pin forbids, read from pirole itself so the test
+        # does not re-type it either.
+        literal = pirole.resolve("coder", "x", "y")["prompt_path"]
+
+        # Assert: the spelling appears nowhere in the source, not even in a
+        # comment.
+        self.assertNotIn(
+            literal,
+            source,
+            "anvilkit/smoke.py re-spells the coder prompt path %r; derive "
+            "it from pirole.resolve instead" % literal,
+        )
+
+
+# Behaviour 14: fresh session id per invocation. Given nothing, the
+# generator must hand out a new id every time, so no old Pi session is
+# ever resumed. The public seam these tests pin:
+#
+#     smoke.new_session_id() -> str
+#
+# No arguments; returns a string of the shape ``smoke-<UTC timestamp>
+# -<random suffix>`` -- the plan pins the ``smoke-`` prefix and the
+# dash-separated shape; the exact timestamp format and suffix length are
+# NOT pinned by the tests, which stay robust to the format the
+# implementation chooses (``secrets`` is the intended randomness source).
+# Every id must pass the REAL ``pirole`` session-id validation --
+# ``role_argv`` (the validator at ``pirole.py:72-101``) raises
+# ``RoleError`` on an id outside letters, numbers, ``.``, ``_`` and ``-``,
+# or one that does not start and end with a letter or number -- so Pi
+# can never reject one. Two calls must differ.
+NEW_SESSION_ID_NAME = "new_session_id"
+# The plan's pinned shape: the ``smoke-`` prefix, then only the
+# session-id body characters -- letters, numbers, ``.``, ``_`` and ``-``.
+SESSION_ID_SHAPE = re.compile(r"^smoke-[A-Za-z0-9._-]+$")
+
+
+def _new_session_id():
+    """Call the behaviour-14 generator once, or fail naming what is
+    missing."""
+    smoke_mod = _require_smoke()
+    gen = getattr(smoke_mod, NEW_SESSION_ID_NAME, None)
+    if gen is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define %s() yet "
+            "(behaviour 14 of plans/smoke-test.md)" % NEW_SESSION_ID_NAME
+        )
+    return gen()
+
+
+def _coder_definition():
+    """The real coder role definition from ``pirole.resolve`` -- the same
+    definition the production run uses, so the validator is exercised
+    against the real role table, not a fake."""
+    return pirole.resolve("coder", "coder-model", "frontier-model")
+
+
+class TestNewSessionIdReturnsString(unittest.TestCase):
+    """Behaviour 14: the generator exists, takes no arguments, and
+    returns a non-empty string."""
+
+    def test_new_session_id_returns_a_non_empty_string(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert.
+        self.assertIsInstance(session_id, str)
+        self.assertTrue(session_id, "the session id must not be empty")
+
+
+class TestNewSessionIdShape(unittest.TestCase):
+    """Behaviour 14: the id starts with ``smoke-``, is the dash-separated
+    ``smoke-<UTC timestamp>-<random suffix>``, carries only
+    ``[A-Za-z0-9._-]`` besides, and starts and ends alphanumeric."""
+
+    def test_new_session_id_carries_the_smoke_prefix(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert: the plan's pinned prefix.
+        self.assertTrue(
+            session_id.startswith("smoke-"),
+            "the id %r must carry the plan's pinned 'smoke-' prefix"
+            % session_id,
+        )
+
+    def test_new_session_id_is_dash_separated_prefix_timestamp_suffix(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert: the plan's shape is smoke-<UTC timestamp>-<random
+        # suffix>: the prefix dash plus at least the separator between
+        # timestamp and suffix, whatever dashes the timestamp format
+        # itself carries.
+        self.assertGreaterEqual(
+            session_id.count("-"),
+            2,
+            "the id %r must be dash-separated smoke-<timestamp>-<suffix>"
+            % session_id,
+        )
+
+    def test_new_session_id_matches_the_pinned_shape(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert: prefix plus only the session-id body characters.
+        self.assertRegex(
+            session_id,
+            SESSION_ID_SHAPE,
+            "the id %r must match the plan's shape "
+            "smoke-<UTC timestamp>-<random suffix> with only the "
+            "session-id body characters" % session_id,
+        )
+
+    def test_new_session_id_starts_and_ends_alphanumeric(self):
+        # Act.
+        session_id = _new_session_id()
+
+        # Assert: the start and end are letters or numbers -- the rule
+        # the real validator at pirole.py:72-101 enforces.
+        self.assertTrue(
+            session_id[0].isalnum(),
+            "the id %r must start with a letter or number" % session_id,
+        )
+        self.assertTrue(
+            session_id[-1].isalnum(),
+            "the id %r must end with a letter or number" % session_id,
+        )
+
+
+class TestNewSessionIdFreshPerInvocation(unittest.TestCase):
+    """Behaviour 14: two calls yield two different ids, so no old
+    session is ever resumed."""
+
+    def test_new_session_id_two_calls_differ(self):
+        # Act: the plan's exact scenario -- the generator called twice.
+        first = _new_session_id()
+        second = _new_session_id()
+
+        # Assert.
+        self.assertNotEqual(
+            first,
+            second,
+            "two invocations must produce different session ids "
+            "(got %r twice)" % first,
+        )
+
+
+class TestNewSessionIdPassesPiroleValidation(unittest.TestCase):
+    """Behaviour 14: every generated id is accepted by the REAL
+    ``pirole.role_argv`` session-id validation -- the validator at
+    ``pirole.py:72-101``, not a re-implemented regex."""
+
+    def test_new_session_id_is_accepted_by_the_real_role_argv_validator(self):
+        # Arrange: the real coder definition from the real role table.
+        definition = _coder_definition()
+
+        # Act + Assert: each of two generated ids crosses the real
+        # validator -- a RoleError escaping role_argv would error the
+        # test with a traceback, so reaching the assert is the pass.
+        for session_id in (_new_session_id(), _new_session_id()):
+            argv = pirole.role_argv(definition, session_id, "trivial task")
+            # The id crosses byte-identical: it is the value right after
+            # the --session-id flag, exactly once.
+            self.assertEqual(
+                argv.count("--session-id"), 1,
+                "the real validator must accept %r and emit it once; "
+                "got argv %r" % (session_id, argv),
+            )
+            self.assertEqual(
+                argv[argv.index("--session-id") + 1], session_id,
+                "a valid session id crosses role_argv verbatim; %r was "
+                "rewritten" % session_id,
+            )
+
+
+# Behaviour 15: the real coder run — layer 5. The check is a function the
+# operator command (behaviour 18) calls ONLY after layers 1–4 have all
+# passed. The public seam these tests pin:
+#
+#     smoke.check_coder_run(runner, repo_path, tag, task,
+#                          earlier_layers_ok=True, resolve_role=...)
+#         -> LayerResult
+#
+# - ``runner`` is the injected pidriver runner — the SAME seam
+#   ``pidriver.run_role`` takes (one invocation dict in, the six-key
+#   result dict out: ``exit_code``, ``stdout``, ``stderr``,
+#   ``wall_time_s``, ``timed_out``, ``evidence``). It is NEVER a real
+#   process in this suite: the fake records the invocation and returns a
+#   scripted six-key dict, and the REAL ``pidriver.run_role`` is what the
+#   check must call with it — so the driver's own ``DriverError`` rule
+#   (non-zero exit with EMPTY stdout) is genuinely hit, not re-implemented.
+# - ``repo_path`` / ``tag``: the target repo and the sandbox image tag,
+#   forwarded to ``run_role`` unchanged.
+# - ``task``: the trivial task — a one-line instruction needing no tools;
+#   the run is judged on the event stream existing, never on what the
+#   model said.
+# - ``earlier_layers_ok``: a flag telling the check whether layers 1–4 all
+#   passed. When it is ``False`` the layer is ``STATE_SKIPPED`` (NEVER
+#   ``STATE_OK`` or ``STATE_FAILED``) and the runner is NEVER called.
+# - ``resolve_role``: an injectable seam returning the resolved role
+#   definition dict (the real ``pirole.resolve("coder", ...)`` shape —
+#   ``tier``, ``prompt_path``, etc.); defaulting to the real resolver with
+#   placeholder ids, like ``check_role_prompt``'s default.
+#
+# The layer is named ``"coder-run"`` (the plan's layer-5 name in the
+# report set, matching ``LAYER_NAMES`` above). The pass condition is
+# exactly three, all of them: ``exit_code == 0`` AND ``timed_out is
+# False`` AND ``len(pievents.parse(stdout)["events"]) >= 1`` — judged on
+# the stream existing, never on stderr. The three failure modes are three
+# distinct details, each naming itself (exit code / timeout / empty
+# stream); a ``DriverError`` from ``run_role`` fails the layer with the
+# exception's message — never a traceback; and a stderr line like
+# "No project session found ... creating a new session" is first-run
+# noise that never fails the layer.
+CODER_RUN_CHECK_NAME = "check_coder_run"
+CODER_RUN_LAYER_NAME = "coder-run"
+# The plan's layer-5 name, exactly as spelled in LAYER_NAMES.
+# The trivial task: one line, no tools needed; the verdict is on the
+# stream, never on the model's answer content.
+TRIVIAL_TASK = "Reply with the word ok."
+# Marker words each failing condition must name in its own detail.
+EXIT_CODE_MARKER = "exit"
+TIMEOUT_MARKER = "timeout"
+EMPTY_STREAM_MARKER = "stream"
+# The first-run noise line a fresh session prints to stderr; it must
+# never fail the layer.
+NOISE_STDERR = (
+    "No project session found at .pi/sessions/; creating a new session."
+)
+
+
+def _coder_run_check():
+    """Return the behaviour-15 check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, CODER_RUN_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "%s(runner, repo_path, tag, task, earlier_layers_ok=True, "
+            "resolve_role=...) yet (behaviour 15 of plans/smoke-test.md)"
+            % CODER_RUN_CHECK_NAME
+        )
+    return check
+
+
+def _runner_result(exit_code, stdout, stderr, timed_out=False):
+    """A six-key pidriver result dict for a scripted runner outcome."""
+    return {
+        "exit_code": exit_code,
+        "stdout": stdout,
+        "stderr": stderr,
+        "wall_time_s": 1.0,
+        "timed_out": timed_out,
+        "evidence": [],
+    }
+
+
+def _fake_runner(result):
+    """A fake pidriver runner returning ``result`` and recording the
+    invocation dicts it is handed.
+
+    Records every invocation so a test can assert the ``session_id`` the
+    check used (via ``--session-id`` in the recorded ``argv``), the task
+    that reached the end of the argv, and the runner's call count.
+    """
+    invocations = []
+
+    def runner(invocation):
+        invocations.append(invocation)
+        return result
+
+    runner.invocations = invocations
+    return runner
+
+
+def _default_coder_definition():
+    """The real coder role definition — the same shape the production
+    run uses, so ``role_argv``'s session-id validation is exercised
+    against the real role table."""
+    return pirole.resolve("coder", "coder-model", "frontier-model")
+
+
+def _session_id_from_invocation(invocation):
+    """The session id the driver's argv carried: the token right after
+    the single ``--session-id`` flag."""
+    argv = invocation["argv"]
+    return argv[argv.index("--session-id") + 1]
+
+
+class TestCoderRunCheckPass(unittest.TestCase):
+    """Behaviour 15: exit 0, not timed out, and a non-empty parseable
+    stream is the pass state — the layer is named ``coder-run``."""
+
+    def test_coder_run_exit_zero_not_timed_out_with_events_passes(self):
+        # Arrange: a passing run — exit 0, a JSONL event stream with one
+        # record, clean stderr.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        self.assertGreaterEqual(
+            len(pievents.parse(stdout)["events"]), 1,
+            "fixture stdout must yield at least one record",
+        )
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+            # Assert: the layer is the coder-run layer in the pass state.
+            self.assertEqual(result.name, CODER_RUN_LAYER_NAME)
+            self.assertEqual(result.ok, STATE_OK)
+            # The runner was driven exactly once, through run_role.
+            self.assertEqual(len(runner.invocations), 1)
+
+
+class TestCoderRunCheckNamesFailureModes(unittest.TestCase):
+    """Behaviour 15 (error): each failing condition names itself — exit
+    code, timeout, empty stream — three distinct details."""
+
+    def _run(self, result_dict):
+        runner = _fake_runner(result_dict)
+        with tempfile.TemporaryDirectory() as repo:
+            return _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            ), runner
+
+    def test_coder_run_nonzero_exit_with_output_fails_naming_the_exit_code(self):
+        # Arrange: the agent produced output but exited non-zero.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        result, runner = self._run(_runner_result(1, stdout, ""))
+
+        # Assert: failed, the detail names the exit code, and it is NOT
+        # the timeout or empty-stream detail.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(EXIT_CODE_MARKER, result.detail.lower())
+        self.assertNotIn(TIMEOUT_MARKER, result.detail.lower())
+        self.assertEqual(len(runner.invocations), 1)
+
+    def test_coder_run_timed_out_fails_naming_the_timeout(self):
+        # Arrange: the run timed out (exit code zero or not, the timeout
+        # is its own failure mode).
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        result, _runner = self._run(
+            _runner_result(0, stdout, "", timed_out=True),
+        )
+
+        # Assert: failed, the detail names the timeout, and it is NOT the
+        # exit-code or empty-stream detail.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(TIMEOUT_MARKER, result.detail.lower())
+        self.assertNotIn(EXIT_CODE_MARKER, result.detail.lower())
+
+    def test_coder_run_empty_stream_fails_naming_the_empty_stream(self):
+        # Arrange: exit 0, not timed out, but the stdout parses to zero
+        # records — the stream does not exist.
+        result, _runner = self._run(_runner_result(0, "", ""))
+
+        # Assert: failed, the detail names the empty stream, and it is
+        # NOT the exit-code or timeout detail.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(EMPTY_STREAM_MARKER, result.detail.lower())
+        self.assertNotIn(EXIT_CODE_MARKER, result.detail.lower())
+        self.assertNotIn(TIMEOUT_MARKER, result.detail.lower())
+
+    def test_coder_run_three_failure_details_are_pairwise_distinct(self):
+        # Arrange: one scripted outcome per failure mode.
+        exit_fail, _ = self._run(_runner_result(1, "output\n", ""))
+        timeout_fail, _ = self._run(
+            _runner_result(0, '{"type": "session"}\n', "", timed_out=True),
+        )
+        empty_fail, _ = self._run(_runner_result(0, "", ""))
+
+        # Assert: no two failure modes collapse into the same detail.
+        self.assertNotEqual(exit_fail.detail, timeout_fail.detail)
+        self.assertNotEqual(exit_fail.detail, empty_fail.detail)
+        self.assertNotEqual(timeout_fail.detail, empty_fail.detail)
+
+
+class TestCoderRunCheckDriverError(unittest.TestCase):
+    """Behaviour 15 (error): a non-zero exit with EMPTY stdout makes the
+    REAL ``pidriver.run_role`` raise ``DriverError``; the layer catches it
+    and fails with the exception's message — never a traceback."""
+
+    def test_coder_run_nonzero_exit_empty_stdout_catches_driver_error_with_its_message(self):
+        # Arrange: the scripted outcome is a container start failure —
+        # non-zero exit, empty stdout, a stderr the driver's message
+        # carries. The real run_role raises DriverError for exactly this.
+        stderr = "docker: Error response from daemon: No such image: pi-sandbox"
+        runner = _fake_runner(_runner_result(1, "", stderr))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act: a DriverError escaping the check would error the test
+            # with a traceback; instead the layer must fail.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: the layer failed, carrying the driver's message — which
+        # carries the tag and the stderr — and no traceback text.
+        self.assertEqual(result.name, CODER_RUN_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(stderr, result.detail)
+        self.assertIn("pi-sandbox", result.detail)
+        self.assertNotIn("Traceback", result.detail)
+        self.assertEqual(len(runner.invocations), 1)
+
+
+class TestCoderRunCheckSkippedWhenEarlierLayersFailed(unittest.TestCase):
+    """Behaviour 15 (error): when the earlier layers did not all pass, the
+    layer is ``STATE_SKIPPED`` — NEVER passed, NEVER failed — and the
+    runner is NEVER called."""
+
+    def test_coder_run_earlier_layers_not_ok_reports_skipped_with_runner_uncalled(self):
+        # Arrange: a runner that would answer if driven; the earlier
+        # layers have NOT all passed.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+                earlier_layers_ok=False,
+            )
+
+        # Assert: skipped — not ok, not failed — and the runner was
+        # driven zero times.
+        self.assertEqual(result.name, CODER_RUN_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_SKIPPED)
+        self.assertNotEqual(result.ok, STATE_OK)
+        self.assertNotEqual(result.ok, STATE_FAILED)
+        self.assertEqual(
+            runner.invocations, [],
+            "the runner must never be called when the earlier layers "
+            "did not all pass",
+        )
+
+
+class TestCoderRunCheckStderrNoiseIgnored(unittest.TestCase):
+    """Behaviour 15 (design intent): a stderr line like
+    "No project session found ... creating a new session" is first-run
+    noise — it never fails the layer, because the pass condition is on
+    exit_code / timed_out / stream, never on stderr."""
+
+    def test_coder_run_passing_run_with_session_noise_on_stderr_still_passes(self):
+        # Arrange: a passing run whose stderr carries the first-run noise
+        # line.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        self.assertIn("No project session found", NOISE_STDERR)
+        runner = _fake_runner(
+            _runner_result(0, stdout, NOISE_STDERR),
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: the noise line must not have failed the layer.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertNotIn("Traceback", result.detail)
+
+
+class TestCoderRunCheckFreshSessionId(unittest.TestCase):
+    """Behaviour 15: the check uses a FRESH ``smoke-``-shaped session id
+    from ``new_session_id`` — observed as the value after ``--session-id``
+    in the argv the real ``run_role`` handed the fake runner, so the id
+    crossed the real ``role_argv`` validator untouched."""
+
+    def test_coder_run_uses_a_fresh_smoke_shaped_session_id(self):
+        # Arrange: a passing run; the fake runner records the invocation.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: exactly one invocation; its argv carries exactly one
+        # --session-id; the id after it is a fresh ``smoke-``-shaped id —
+        # the same shape ``new_session_id`` mints, so it passes the real
+        # pirole validator (which run_role already enforced).
+        self.assertEqual(len(runner.invocations), 1)
+        argv = runner.invocations[0]["argv"]
+        self.assertEqual(argv.count("--session-id"), 1)
+        session_id = _session_id_from_invocation(runner.invocations[0])
+        self.assertRegex(
+            session_id, SESSION_ID_SHAPE,
+            "the session id %r must be the fresh smoke- shaped id from "
+            "new_session_id" % session_id,
+        )
+        # The id the driver used is a genuine new_session_id() product:
+        # it is accepted by the real validator (run_role already proved
+        # that by not raising) and is not a hard-coded id — two invocations
+        # of the check yield two different ids.
+        runner2 = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo2:
+            _coder_run_check()(
+                runner2, repo2, "pi-sandbox", TRIVIAL_TASK,
+            )
+        second_id = _session_id_from_invocation(runner2.invocations[0])
+        self.assertNotEqual(
+            session_id, second_id,
+            "each run must mint a fresh session id (got %r twice)"
+            % session_id,
+        )
+
+
+class TestCoderRunCheckForwardsTaskAndRepo(unittest.TestCase):
+    """Behaviour 15: the check forwards the trivial task and the repo
+    path through to the real ``run_role`` — the task arrives after the
+    ``--`` terminator, byte-identical, and the driver's ``cwd`` is the
+    repo path."""
+
+    def test_coder_run_forwards_the_trivial_task_after_the_terminator_and_the_repo_as_cwd(self):
+        # Arrange: a passing run.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: the invocation's cwd is the repo path, and the full argv
+        # is exactly the real composition — the sandbox container argv plus
+        # the role argv the real builders produce, with the trivial task
+        # after the ``--`` terminator, byte-identical.
+        invocation = runner.invocations[0]
+        self.assertEqual(invocation["cwd"], repo)
+        argv = invocation["argv"]
+        session_id = _session_id_from_invocation(invocation)
+        expected = pisandbox.run_argv(repo, "pi-sandbox") + pirole.role_argv(
+            _default_coder_definition(), session_id, TRIVIAL_TASK,
+        )
+        self.assertEqual(
+            argv,
+            expected,
+            "the argv must be the real run_role composition "
+            "(container argv + role argv); got %r" % (argv,),
+        )
+        self.assertEqual(
+            argv[-2:], ["--", TRIVIAL_TASK],
+            "the task must reach the end of the argv after the -- "
+            "terminator, byte-identical; got %r" % (argv[-2:],),
+        )
+        # The argv begins with the sandbox container argv the real
+        # run_role composes — docker run, not a hand-rolled prefix.
+        self.assertEqual(argv[0], "docker")
+        self.assertEqual(argv[1], "run")
+
+
+class TestCoderRunCheckLayerName(unittest.TestCase):
+    """Behaviour 15: the layer is named ``coder-run`` — the plan's
+    layer-5 name in the report set, exactly as ``LAYER_NAMES`` spells it."""
+
+    def test_coder_run_layer_is_named_coder_run(self):
+        # Arrange: any scripted outcome; the name is asserted regardless
+        # of the verdict.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: the layer name is exactly the plan's layer-5 name.
+        self.assertEqual(result.name, "coder-run")
+        self.assertIn(
+            result.name, LAYER_NAMES,
+            "the layer name %r must be the plan's report-set name"
+            % result.name,
+        )
+
+
+# Behaviour 16: bad image tag raises DriverError — layer 6. The check is a
+# function the operator command (behaviour 18) calls for the failure-paths
+# layer. It exists to prove the driver's failure path actually fires, using
+# a tag no image matches, so it needs NO model and runs on a GPU-less host.
+# The public seam these tests pin:
+#
+#     smoke.check_bad_image_tag(runner, repo_path, tag, task,
+#                               resolve_role=...)
+#         -> LayerResult
+#
+# - ``runner`` is the injected pidriver runner — the SAME seam
+#   ``pidriver.run_role`` takes (one invocation dict in, the six-key result
+#   dict out). The fake is production-shaped: for a bad tag the docker
+#   daemon refuses the start — non-zero exit, EMPTY stdout, a
+#   "No such image" stderr line — and the REAL ``pidriver.run_role`` raises
+#   its ``DriverError`` for exactly that outcome. The driver is NEVER
+#   wrapped or mocked.
+# - ``tag``: an image tag no image matches; ``task`` and ``repo_path`` are
+#   forwarded to ``run_role`` unchanged.
+# - When the driver's ``DriverError`` fires, the layer PASSES (the failure
+#   path is proved) and its detail names the ``DriverError`` and the bad
+#   tag. When the run returns exit 0 instead, the image clearly exists, the
+#   path did not fire, and the layer FAILS saying so — the opposite verdict
+#   of behaviour 15, whose ``DriverError`` is a failure.
+#
+# The layer is the bad-image-tag sub-check of the plan's layer-6 report
+# name ``failure-paths`` (position 5 in ``LAYER_NAMES`` above), named the
+# way behaviour 15's ``coder-run`` sub-check is named for layer 5.
+BAD_IMAGE_TAG_CHECK_NAME = "check_bad_image_tag"
+BAD_IMAGE_TAG_LAYER_NAME = "bad-image-tag"
+# The layer-6 report name this sub-check belongs to, as spelled in
+# LAYER_NAMES above.
+FAILURE_PATHS_LAYER_NAME = "failure-paths"
+# The image tag no image matches.
+BAD_TAG = "no-such-tag"
+# The production-shaped daemon refusal: non-zero exit, empty stdout, the
+# "No such image" stderr line docker prints for the bad tag.
+NO_SUCH_IMAGE_STDERR = (
+    "docker: Error response from daemon: No such image: %s" % BAD_TAG
+)
+# The detail marker the plan's error case pins: a run returning exit 0
+# means the failure path did not fire.
+PATH_NOT_FIRED_MARKER = "did not fire"
+# The placeholder coder model id the default ``resolve_role`` seam
+# composes (the behaviour-15 default seam's ids) — the no-model-needed
+# fact the plan pins for this layer.
+PLACEHOLDER_CODER_MODEL_ID = "coder-model"
+
+
+def _bad_image_tag_check():
+    """Return the behaviour-16 check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, BAD_IMAGE_TAG_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "%s(runner, repo_path, tag, task, resolve_role=...) yet "
+            "(behaviour 16 of plans/smoke-test.md)"
+            % BAD_IMAGE_TAG_CHECK_NAME
+        )
+    return check
+
+
+def _run_bad_tag(result_dict):
+    """Drive the behaviour-16 check once against a scripted runner outcome
+    in a throwaway repo; return ``(result, runner)``."""
+    runner = _fake_runner(result_dict)
+    with tempfile.TemporaryDirectory() as repo:
+        result = _bad_image_tag_check()(
+            runner, repo, BAD_TAG, TRIVIAL_TASK,
+        )
+    return result, runner
+
+
+class TestBadImageTagCheckPassesOnDriverError(unittest.TestCase):
+    """Behaviour 16: a tag no image matches makes the REAL
+    ``pidriver.run_role`` raise ``DriverError``; the check catches it and
+    the layer PASSES, having proved the failure path fired."""
+
+    def test_bad_tag_nonzero_exit_empty_stdout_passes_proving_the_driver_error(self):
+        # Arrange: the production-shaped daemon refusal — non-zero exit,
+        # empty stdout, the "No such image" stderr the driver's message
+        # carries. The real run_role raises DriverError for exactly this.
+        runner = _fake_runner(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act: a DriverError escaping the check would error the test
+            # with a traceback; instead the layer must pass.
+            result = _bad_image_tag_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the failure path fired — the layer passed, its detail
+        # names the DriverError and the bad tag, and no traceback escaped.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn("DriverError", result.detail)
+        self.assertIn(BAD_TAG, result.detail)
+        self.assertNotIn("Traceback", result.detail)
+        self.assertEqual(len(runner.invocations), 1)
+
+    def test_bad_tag_passing_detail_carries_the_daemon_stderr(self):
+        # Arrange: the same production-shaped refusal; the driver's message
+        # carries the stderr, which the proof should surface.
+        result, _runner = _run_bad_tag(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+
+        # Assert: the proof names what the daemon said about the bad tag.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(NO_SUCH_IMAGE_STDERR, result.detail)
+
+
+class TestBadImageTagCheckFailsWhenPathDidNotFire(unittest.TestCase):
+    """Behaviour 16 (error): a run returning exit 0 instead means the
+    failure path did NOT fire — the image clearly exists — so the layer
+    FAILS saying so. The opposite verdict of behaviour 15."""
+
+    def test_bad_tag_exit_zero_fails_saying_the_path_did_not_fire(self):
+        # Arrange: the "bad" tag unexpectedly runs — exit 0, an event
+        # stream, clean stderr.
+        stdout = '{"type": "session", "id": "smoke-x"}\n'
+        result, runner = _run_bad_tag(_runner_result(0, stdout, ""))
+
+        # Assert: the path did not fire — the layer failed, naming it.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(PATH_NOT_FIRED_MARKER, result.detail.lower())
+        self.assertEqual(len(runner.invocations), 1)
+
+    def test_bad_tag_exit_zero_empty_stdout_also_fails_saying_the_path_did_not_fire(self):
+        # Arrange: exit 0 with no stream at all — run_role still returns
+        # (its DriverError rule needs a non-zero exit), so the path still
+        # did not fire.
+        result, _runner = _run_bad_tag(_runner_result(0, "", ""))
+
+        # Assert: same did-not-fire verdict.
+        self.assertEqual(result.ok, STATE_FAILED)
+        self.assertIn(PATH_NOT_FIRED_MARKER, result.detail.lower())
+
+    def test_bad_tag_exit_zero_detail_does_not_claim_a_driver_error(self):
+        # Arrange: the exit-0 outcome; a detail claiming the DriverError
+        # fired would be a lie.
+        result, _runner = _run_bad_tag(
+            _runner_result(0, '{"type": "session"}\n', ""),
+        )
+
+        # Assert: the did-not-fire detail is not a DriverError proof.
+        self.assertNotIn("DriverError", result.detail)
+
+
+class TestBadImageTagCheckLayerName(unittest.TestCase):
+    """Behaviour 16: the layer is the bad-image-tag sub-check of the
+    plan's layer-6 report name ``failure-paths`` — named the way
+    behaviour 15's ``coder-run`` sub-check is named for layer 5."""
+
+    def test_bad_image_tag_layer_is_named_bad_image_tag(self):
+        # Arrange: the production-shaped refusal; the name is asserted
+        # regardless of the verdict.
+        runner = _fake_runner(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _bad_image_tag_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the sub-check carries the plan's bad-image-tag name, and
+        # the layer-6 report name it belongs to is the one the report set
+        # spells.
+        self.assertEqual(result.name, BAD_IMAGE_TAG_LAYER_NAME)
+        self.assertIn(
+            FAILURE_PATHS_LAYER_NAME, LAYER_NAMES,
+            "the layer-6 report name %r must stay in the report set "
+            "(LAYER_NAMES); the bad-image-tag sub-check belongs to it"
+            % FAILURE_PATHS_LAYER_NAME,
+        )
+
+
+class TestBadImageTagCheckNeedsNoModel(unittest.TestCase):
+    """Behaviour 16: no model is needed — the check works with the
+    default ``resolve_role`` seam's placeholder ids, so this runs on a
+    GPU-less host."""
+
+    def test_bad_tag_with_the_default_resolve_seam_placeholder_ids_proves_the_path(self):
+        # Arrange: the production-shaped refusal; the check is called with
+        # NO ``resolve_role`` override, so the default seam's placeholder
+        # ids are what the driver composes.
+        runner = _fake_runner(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _bad_image_tag_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the placeholder --model token crossed the real driver
+        # untouched — the run never touches a real model — and the path
+        # still fired.
+        self.assertEqual(result.ok, STATE_OK)
+        argv = runner.invocations[0]["argv"]
+        self.assertIn("--model", argv)
+        self.assertEqual(
+            argv[argv.index("--model") + 1], PLACEHOLDER_CODER_MODEL_ID,
+            "the default resolve_role seam must compose the placeholder "
+            "model id %r; got argv %r"
+            % (PLACEHOLDER_CODER_MODEL_ID, argv),
+        )
+
+
+class TestBadImageTagCheckForwardsTagAndRepo(unittest.TestCase):
+    """Behaviour 16: the bad tag and the repo path are forwarded through
+    to the real ``run_role`` — the tag is the sandbox container argv's
+    last token and the driver's ``cwd`` is the repo path, so the daemon
+    refusal is about exactly this tag."""
+
+    def test_bad_tag_forwards_the_bad_tag_in_the_container_argv_and_the_repo_as_cwd(self):
+        # Arrange: the production-shaped refusal; the fake runner records
+        # the invocation.
+        runner = _fake_runner(_runner_result(1, "", NO_SUCH_IMAGE_STDERR))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            _bad_image_tag_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: exactly one invocation; its cwd is the repo path, and
+        # the argv is the real run_role composition whose container part
+        # ends at the bad tag.
+        self.assertEqual(len(runner.invocations), 1)
+        invocation = runner.invocations[0]
+        self.assertEqual(invocation["cwd"], repo)
+        argv = invocation["argv"]
+        self.assertEqual(argv[0], "docker")
+        self.assertEqual(argv[1], "run")
+        session_id = _session_id_from_invocation(invocation)
+        container_argv = pisandbox.run_argv(repo, BAD_TAG)
+        self.assertEqual(container_argv[-1], BAD_TAG)
+        self.assertEqual(
+            argv[:len(container_argv)], container_argv,
+            "the container argv must be the real run_argv ending at the "
+            "bad tag; got %r" % (argv[:len(container_argv)],),
+        )
+        expected = container_argv + pirole.role_argv(
+            _default_coder_definition(), session_id, TRIVIAL_TASK,
+        )
+        self.assertEqual(
+            argv, expected,
+            "the argv must be the real run_role composition "
+            "(container argv + role argv); got %r" % (argv,),
+        )
+
+
+# Behaviour 17: missing prompt raises RoleError with no spawn — the
+# missing-prompt sub-check of the layer-6 report name ``failure-paths``.
+# The check is a function the operator command (behaviour 18) calls for
+# the failure-paths layer, over a repo with NO ``.pi/roles/coder.md``:
+# it exists to prove the driver's role-definition failure path fires
+# BEFORE any spawn. The public seam these tests pin:
+#
+#     smoke.check_missing_prompt(runner, repo_path, tag, task,
+#                                 resolve_role=...)
+#         -> LayerResult
+#
+# - The check must call the REAL ``pidriver.run_role`` with
+#   ``check_prompt_file=True`` and the resolved coder definition (via the
+#   same injectable ``resolve_role`` seam as behaviours 15/16, whose
+#   ``prompt_path`` is id-independent, so the default seam's placeholder
+#   model ids mean no real model is ever needed) — the driver is NEVER
+#   wrapped or mocked, so the driver's own missing-prompt rule (a
+#   ``pirole.RoleError`` naming the absolute prompt path) genuinely fires.
+# - ``runner`` is the same injected pidriver runner seam; because the
+#   driver raises before the runner is invoked, the fake's call count is
+#   the spawn assertion: it must be ZERO.
+# - When the ``RoleError`` fires, the layer PASSES (the failure path is
+#   proved), its detail naming the ``RoleError`` and carrying the
+#   exception's message — which names the absolute prompt path. When
+#   ``run_role`` returns instead (the prompt file exists, so the path
+#   could not fire), the layer must NOT pass via RoleError — the
+#   ``DriverError`` of behaviour 16 and the ``RoleError`` here are
+#   deliberately distinct.
+# - The check is read-only with respect to the repo: it creates the
+#   scenario's absence, never the prompt file itself (the
+#   diagnose-and-print rule, behaviour 13).
+MISSING_PROMPT_CHECK_NAME = "check_missing_prompt"
+MISSING_PROMPT_LAYER_NAME = "missing-prompt"
+# The marker words the plan's Then/Error pin in the pass detail: the
+# RoleError that fired, and the absence of the DriverError that must NOT
+# be claimed (the two failure paths are deliberately distinct).
+ROLE_ERROR_MARKER = "RoleError"
+DRIVER_ERROR_MARKER = "DriverError"
+
+
+def _missing_prompt_check():
+    """Return the behaviour-17 check, or fail naming what is missing."""
+    smoke_mod = _require_smoke()
+    check = getattr(smoke_mod, MISSING_PROMPT_CHECK_NAME, None)
+    if check is None:
+        raise AssertionError(
+            "anvilkit.smoke does not define "
+            "%s(runner, repo_path, tag, task, resolve_role=...) yet "
+            "(behaviour 17 of plans/smoke-test.md)"
+            % MISSING_PROMPT_CHECK_NAME
+        )
+    return check
+
+
+def _coder_prompt_path():
+    """The coder role's prompt path from the real role table — the same
+    path the driver's missing-prompt check resolves (id-independent)."""
+    return _default_coder_definition()["prompt_path"]
+
+
+class TestMissingPromptCheckPassesOnRoleError(unittest.TestCase):
+    """Behaviour 17: a repo with no ``.pi/roles/coder.md`` makes the REAL
+    ``pidriver.run_role`` (with ``check_prompt_file=True``) raise
+    ``RoleError``; the check catches it and the layer PASSES, having
+    proved the failure path fired — without spawning anything."""
+
+    def test_missing_prompt_catches_role_error_and_passes(self):
+        # Arrange: a fresh repo with NO .pi/roles/coder.md. The scripted
+        # runner outcome is irrelevant — the driver raises before the
+        # runner is ever invoked.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act: a RoleError escaping the check would error the test
+            # with a traceback; instead the layer must pass.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the failure path fired — the layer passed, its detail
+        # names the absolute prompt path (the repo's absolute path joined
+        # with the role table's prompt path), and no traceback escaped.
+        self.assertEqual(result.name, MISSING_PROMPT_LAYER_NAME)
+        self.assertEqual(result.ok, STATE_OK)
+        expected_path = str(Path(repo) / _coder_prompt_path())
+        self.assertIn(
+            expected_path, result.detail,
+            "the pass detail must name the absolute prompt path %r; "
+            "got %r" % (expected_path, result.detail),
+        )
+        self.assertNotIn("Traceback", result.detail)
+
+    def test_missing_prompt_pass_does_not_invoke_the_runner(self):
+        # Arrange: the scenario of the behaviour — the repo has no prompt
+        # file; the no-spawn assertion is on the fake's call count.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the layer proved the path, and the runner was driven
+        # ZERO times — the driver raises before the runner is invoked.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertEqual(
+            runner.invocations, [],
+            "the runner must not have been called when the prompt file "
+            "is missing; got %d invocation(s)" % len(runner.invocations),
+        )
+
+    def test_missing_prompt_pass_detail_names_role_error_not_driver_error(self):
+        # Arrange: the missing-prompt scenario; the detail must claim the
+        # RoleError that fired and must not claim the DriverError that
+        # must not be confused with it — the two are deliberately distinct.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the RoleError marker is present, the DriverError marker
+        # is not.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(ROLE_ERROR_MARKER, result.detail)
+        self.assertNotIn(
+            DRIVER_ERROR_MARKER, result.detail,
+            "the missing-prompt detail must not claim a DriverError; "
+            "the two failure paths are deliberately distinct; got %r"
+            % result.detail,
+        )
+
+
+class TestMissingPromptCheckReadsRepoOnly(unittest.TestCase):
+    """Behaviour 17: the check is read-only with respect to the repo — it
+    diagnoses and prints (the behaviour-13 rule), it never creates the
+    prompt file the scenario is missing."""
+
+    def test_missing_prompt_check_creates_no_files_in_the_repo(self):
+        # Arrange: a fresh repo; its (empty) contents before the call.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            before = sorted(os.listdir(repo))
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+            after = sorted(os.listdir(repo))
+
+        # Assert: the check proved the path without writing anything —
+        # the repo's contents are byte-for-byte the same set.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertEqual(
+            after, before,
+            "the check must not create, modify or delete anything in "
+            "the repo; contents changed from %r to %r" % (before, after),
+        )
+
+
+class TestMissingPromptCheckForwardsRepoPath(unittest.TestCase):
+    """Behaviour 17: the raised RoleError names the absolute path for the
+    repo the check was given — the driver composes ``str(Path(repo_path) /
+    prompt_path)``, and the pass detail carries that exact string, so a
+    different repo yields a different path in the detail."""
+
+    def test_missing_prompt_detail_names_the_given_repo_joined_with_the_prompt_path(self):
+        # Arrange: two distinct repos, both without the prompt file.
+        with tempfile.TemporaryDirectory() as repo_a, \
+                tempfile.TemporaryDirectory() as repo_b:
+            runner_a = _fake_runner(_runner_result(0, "", ""))
+            result_a = _missing_prompt_check()(
+                runner_a, repo_a, BAD_TAG, TRIVIAL_TASK,
+            )
+            runner_b = _fake_runner(_runner_result(0, "", ""))
+            result_b = _missing_prompt_check()(
+                runner_b, repo_b, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: each detail names the absolute path for exactly the
+        # repo that check was given — repo_a's path in detail_a, repo_b's
+        # in detail_b, and neither the other's.
+        path_a = str(Path(repo_a) / _coder_prompt_path())
+        path_b = str(Path(repo_b) / _coder_prompt_path())
+        self.assertEqual(result_a.ok, STATE_OK)
+        self.assertEqual(result_b.ok, STATE_OK)
+        self.assertIn(path_a, result_a.detail)
+        self.assertNotIn(path_b, result_a.detail)
+        self.assertIn(path_b, result_b.detail)
+        self.assertNotIn(path_a, result_b.detail)
+
+
+class TestMissingPromptCheckFailsWhenPromptPresent(unittest.TestCase):
+    """Behaviour 17 (error): a repo WITH a non-empty prompt file makes
+    ``run_role`` proceed to the runner, so the RoleError path could not
+    fire — the check must NOT pass via RoleError, and its detail must not
+    claim one. The distinctness the plan pins: a ``DriverError`` instead
+    fails the layer, since the two are deliberately distinct."""
+
+    def test_prompt_present_does_not_pass_via_role_error(self):
+        # Arrange: the prompt file exists and is non-empty, so the
+        # driver's check passes and the runner is genuinely driven with a
+        # scripted, non-DriverError outcome (exit 0).
+        runner = _fake_runner(
+            _runner_result(0, '{"type": "session"}\n', ""),
+        )
+        with tempfile.TemporaryDirectory() as repo:
+            prompt = Path(repo) / _coder_prompt_path()
+            prompt.parent.mkdir(parents=True)
+            prompt.write_text("You are the coder.\n", encoding="utf-8")
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the driver was driven to the runner (the prompt file
+        # was found), and the verdict never passes via a RoleError claim
+        # — the detail carries no RoleError marker.
+        self.assertEqual(len(runner.invocations), 1)
+        self.assertNotIn(
+            ROLE_ERROR_MARKER, result.detail,
+            "with the prompt file present the RoleError path did not "
+            "fire; the detail must not claim one; got %r" % result.detail,
+        )
+
+
+class TestMissingPromptCheckLayerName(unittest.TestCase):
+    """Behaviour 17: the layer is the missing-prompt sub-check of the
+    plan's layer-6 report name ``failure-paths`` — named the way
+    behaviour 16's ``bad-image-tag`` sub-check is named for it."""
+
+    def test_missing_prompt_layer_is_named_missing_prompt(self):
+        # Arrange: the missing-prompt scenario; the name is asserted
+        # regardless of the verdict.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the sub-check carries the plan's missing-prompt name,
+        # and the layer-6 report name it belongs to is the one the report
+        # set spells.
+        self.assertEqual(result.name, MISSING_PROMPT_LAYER_NAME)
+        self.assertIn(
+            FAILURE_PATHS_LAYER_NAME, LAYER_NAMES,
+            "the layer-6 report name %r must stay in the report set "
+            "(LAYER_NAMES); the missing-prompt sub-check belongs to it"
+            % FAILURE_PATHS_LAYER_NAME,
+        )
+
+
+class TestMissingPromptCheckNeedsNoModel(unittest.TestCase):
+    """Behaviour 17: no model is needed — the check works with the
+    default ``resolve_role`` seam's placeholder ids (no override), so this
+    runs on a GPU-less host: the driver raises before the placeholder
+    ``--model`` token could ever reach a real model."""
+
+    def test_missing_prompt_with_the_default_resolve_seam_proves_the_path(self):
+        # Arrange: the missing-prompt scenario; the check is called with
+        # NO ``resolve_role`` override, so the default seam's placeholder
+        # ids are what the check uses.
+        runner = _fake_runner(_runner_result(0, "", ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _missing_prompt_check()(
+                runner, repo, BAD_TAG, TRIVIAL_TASK,
+            )
+
+        # Assert: the path fired with the placeholder-id seam, and the
+        # runner was still never called.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertEqual(len(runner.invocations), 0)
+
+
+# Behaviour 22: the run's events, for an operator sanity check. The
+# public seam these tests pin:
+#
+#     smoke.check_coder_run(...).detail (on a PASS)
+#         "coder run completed: <n> event record(s)" followed by
+#         "(<type>: <count>, ...)" — the event-type counts, types in
+#         first-seen stream order, counted over pievents.parse's events;
+#         a parsed event lacking a "type" key counts under "(unknown)".
+#         Failure details are unchanged.
+#
+#     smoke.run_smoke_test(..., dump_events: bool = False)
+#         new keyword parameter, default False. When True AND the
+#         layer-5 check ran and passed, the returned report text is the
+#         six-layer report followed by a section whose first line
+#         contains "coder-run events" and then the run's raw stdout
+#         VERBATIM. When layer 5 was skipped or failed, or
+#         dump_events is False, no "coder-run events" marker and no
+#         stream line appear.
+DUMP_EVENTS_MARKER = "coder-run events"
+# A unique JSON line that pins the verbatim-raw-stream requirement: it
+# must appear in the dump exactly as emitted, never re-serialised.
+UNIQUE_STREAM_LINE = '{"type": "agent_start", "trace": "behaviour-22-verbatim-pin"}'
+
+
+class TestCoderRunPassDetailCarriesEventCounts(unittest.TestCase):
+    """Behaviour 22 (a): the layer-5 pass detail ALWAYS carries a
+    compact parsed summary — the event-type counts, types in first-seen
+    stream order — in addition to the existing record count."""
+
+    def test_coder_run_pass_detail_carries_the_event_type_counts(self):
+        # Arrange: a passing run whose stream has two types — one
+        # agent_start first, then two message records.
+        stdout = (
+            '{"type": "agent_start", "agent": "coder"}\n'
+            '{"type": "message", "id": "m1"}\n'
+            '{"type": "message", "id": "m2"}\n'
+        )
+        self.assertEqual(
+            [e["type"] for e in pievents.parse(stdout)["events"]],
+            ["agent_start", "message", "message"],
+            "the fixture stream must parse to the two types it spells",
+        )
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: still the pass state with the existing count phrase,
+        # now followed by the compact type-count summary.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(
+            "event record(s)",
+            result.detail,
+            "the pass detail must keep the existing record-count "
+            "phrase; got %r" % result.detail,
+        )
+        self.assertIn(
+            "agent_start: 1",
+            result.detail,
+            "the pass detail must carry the agent_start count 1; "
+            "got %r" % result.detail,
+        )
+        self.assertIn(
+            "message: 2",
+            result.detail,
+            "the pass detail must carry the message count 2; got %r"
+            % result.detail,
+        )
+
+    def test_coder_run_pass_detail_counts_a_typeless_record_as_unknown(self):
+        # Arrange: a passing run whose second record carries no "type"
+        # key at all — it must count under the literal (unknown) name.
+        stdout = (
+            '{"type": "message", "id": "m1"}\n'
+            '{"id": "no-type-key"}\n'
+        )
+        self.assertNotIn(
+            "type",
+            pievents.parse(stdout)["events"][1],
+            "the fixture's second record must lack a type key",
+        )
+        runner = _fake_runner(_runner_result(0, stdout, ""))
+        with tempfile.TemporaryDirectory() as repo:
+            # Act.
+            result = _coder_run_check()(
+                runner, repo, "pi-sandbox", TRIVIAL_TASK,
+            )
+
+        # Assert: pass state; the typeless record counts under
+        # (unknown) and the typed one under its own name.
+        self.assertEqual(result.ok, STATE_OK)
+        self.assertIn(
+            "(unknown)",
+            result.detail,
+            "a parsed event lacking a type key must count under the "
+            "literal (unknown) name; got %r" % result.detail,
+        )
+        self.assertIn(
+            "message: 1",
+            result.detail,
+            "the typed record must keep its own count; got %r"
+            % result.detail,
+        )
+
+    def test_coder_run_failure_details_are_unchanged_without_counts(self):
+        # Arrange: the three failure modes keep their existing, distinct
+        # details — the counts only join the pass detail.
+        nonzero, _ = self._run_fail(_runner_result(1, "output\n", ""))
+        timed_out, _ = self._run_fail(
+            _runner_result(0, '{"type": "session"}\n', "", timed_out=True),
+        )
+        empty, _ = self._run_fail(_runner_result(0, "", ""))
+
+        # Assert: the existing markers, and no count summary on a fail.
+        for result in (nonzero, timed_out, empty):
+            self.assertEqual(result.ok, STATE_FAILED)
+            self.assertNotIn(
+                "agent_start:",
+                result.detail,
+                "failure details must stay unchanged (no type-count "
+                "summary); got %r" % result.detail,
+            )
+        self.assertIn(EXIT_CODE_MARKER, nonzero.detail.lower())
+        self.assertIn(TIMEOUT_MARKER, timed_out.detail.lower())
+        self.assertIn(EMPTY_STREAM_MARKER, empty.detail.lower())
+        self.assertNotEqual(nonzero.detail, timed_out.detail)
+        self.assertNotEqual(nonzero.detail, empty.detail)
+        self.assertNotEqual(timed_out.detail, empty.detail)
+
+    @staticmethod
+    def _run_fail(result_dict):
+        runner = _fake_runner(result_dict)
+        with tempfile.TemporaryDirectory() as repo:
+            return (
+                _coder_run_check()(
+                    runner, repo, "pi-sandbox", TRIVIAL_TASK,
+                ),
+                runner,
+            )
+
+
+class _OrchestratorFakes(object):
+    """Small local fakes for the behaviour-22 orchestrator tests.
+
+    ``docker_runner`` is scripted per ``(argv[1], argv[2])`` pair,
+    ``runner`` is the pidriver seam, ``check_gateway`` and
+    ``read_models`` stand in for the production collaborators with a
+    fixed coder id — nothing real is spawned, fetched or read.
+    """
+
+    CODER_ID = "unit/fake-coder-22"
+
+    def __init__(self, docker_script, pidriver_stdout):
+        remaining = {key: list(vals) for key, vals in docker_script.items()}
+        self.docker_calls = []
+
+        def docker_runner(argv):
+            self.docker_calls.append(list(argv))
+            key = (argv[1], argv[2] if len(argv) > 2 else "")
+            if key not in remaining or not remaining[key]:
+                raise AssertionError(
+                    "scripted docker runner exhausted for %r"
+                    % (list(argv),)
+                )
+            return remaining[key].pop(0)
+
+        self.docker_runner = docker_runner
+        self.runner = _fake_runner(
+            _runner_result(0, pidriver_stdout, "")
+        )
+
+        class _Topology(object):
+            coder_id = _OrchestratorFakes.CODER_ID
+            embedder_id = None
+
+        def read_models(path, strict_context_window=False):
+            return _Topology()
+
+        class _Model(object):
+            id = _OrchestratorFakes.CODER_ID
+            hot = True
+
+        class _Status(object):
+            online = True
+            models = [_Model()]
+            error = None
+
+        def check_gateway(port, timeout=2.0):
+            return _Status()
+
+        self.read_models = read_models
+        self.check_gateway = check_gateway
+
+    @staticmethod
+    def all_ok_docker_script():
+        return {
+            ("version", "--format"): [(0, "27.1.1", "")],
+            ("image", "inspect"): [(0, "[...]", "")],
+            ("network", "inspect"): [(0, "[...]", "")],
+            ("ps", "--filter"): [(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [(0, "[...]", "")],
+            ("run", "--rm"): [
+                (0, '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % _OrchestratorFakes.CODER_ID, "")
+            ],
+        }
+
+
+class TestRunSmokeTestDumpEvents(unittest.TestCase):
+    """Behaviour 22 (b): ``run_smoke_test(..., dump_events=True)`` appends
+    the run's raw stdout verbatim after a "coder-run events" marker line,
+    only when the layer-5 check ran and passed."""
+
+    def _repo_with_prompt(self):
+        repo = tempfile.TemporaryDirectory()
+        self.addCleanup(repo.cleanup)
+        prompt = Path(repo.name) / _coder_prompt_path()
+        prompt.parent.mkdir(parents=True)
+        prompt.write_text("You are the coder.\n", encoding="utf-8")
+        return repo.name
+
+    def _invoke(self, docker_script, stdout, **kwargs):
+        fakes = _OrchestratorFakes(docker_script, stdout)
+        return _require_smoke().run_smoke_test(
+            self._repo_with_prompt(),
+            18080,
+            fakes.docker_runner,
+            fakes.runner,
+            check_gateway=fakes.check_gateway,
+            read_models=fakes.read_models,
+            **kwargs
+        )
+
+    def test_dump_events_all_ok_appends_the_raw_stream_verbatim(self):
+        # Arrange: an all-ok script and a stream carrying the unique
+        # line, plus one more record.
+        stream = (
+            UNIQUE_STREAM_LINE + "\n"
+            '{"type": "message", "id": "m1"}\n'
+        )
+        # Act: the orchestrator with the new dump_events keyword, True.
+        report, exit_code = self._invoke(
+            _OrchestratorFakes.all_ok_docker_script(), stream,
+            dump_events=True,
+        )
+
+        # Assert: exit 0, the marker, and the unique line VERBATIM —
+        # every non-empty stream line appears exactly as emitted.
+        self.assertEqual(0, exit_code, "the all-ok report: %s" % report)
+        self.assertIn(
+            DUMP_EVENTS_MARKER,
+            report,
+            "dump_events=True on a passed layer-5 run must append the "
+            "section under a line containing %r; got: %s"
+            % (DUMP_EVENTS_MARKER, report),
+        )
+        self.assertIn(
+            UNIQUE_STREAM_LINE,
+            report,
+            "the run's raw stdout must be appended verbatim (the unique "
+            "line %r must appear exactly as emitted); got: %s"
+            % (UNIQUE_STREAM_LINE, report),
+        )
+        self.assertIn(
+            '{"type": "message", "id": "m1"}',
+            report,
+            "every non-empty stream line must be appended verbatim; "
+            "got: %s" % report,
+        )
+
+    def test_dump_events_false_appends_no_marker_and_no_stream_line(self):
+        # Arrange: the same all-ok stack; the flag left at its default
+        # (False) — the keyword must exist, so pass it explicitly here
+        # and rely on the default elsewhere.
+        report, exit_code = self._invoke(
+            _OrchestratorFakes.all_ok_docker_script(),
+            UNIQUE_STREAM_LINE + "\n",
+            dump_events=False,
+        )
+
+        # Assert: exit 0, but no dump section at all.
+        self.assertEqual(0, exit_code, "the all-ok report: %s" % report)
+        self.assertNotIn(
+            DUMP_EVENTS_MARKER,
+            report,
+            "dump_events=False must append no section; got: %s" % report,
+        )
+        self.assertNotIn(
+            UNIQUE_STREAM_LINE,
+            report,
+            "dump_events=False must not carry the raw stream line; "
+            "got: %s" % report,
+        )
+
+    def test_dump_events_with_layer2_failing_appends_nothing_and_exits_four(self):
+        # Arrange: the gateway container is not running — layer 2 fails,
+        # so layer 5 is SKIPPED (the runner is never driven) and the
+        # failure paths probe (layer 6) runs instead.
+        script = {
+            ("version", "--format"): [(0, "27.1.1", "")],
+            ("image", "inspect"): [(0, "[...]", "")],
+            ("network", "inspect"): [(0, "[...]", "")],
+            ("ps", "--filter"): [(0, "", "")],
+        }
+        report, exit_code = self._invoke(
+            script, UNIQUE_STREAM_LINE + "\n", dump_events=True,
+        )
+
+        # Assert: the docker-class exit, no dump section, and the
+        # pidriver seam only driven by the layer-6 failure-path proof
+        # (the bad-image-tag probe raises before the runner is reached,
+        # so the recording runner was never handed the layer-5
+        # invocation of the skipped layer).
+        self.assertEqual(
+            4,
+            exit_code,
+            "a layer-2 failure must exit 4; got %s: %s" % (exit_code, report),
+        )
+        self.assertNotIn(
+            DUMP_EVENTS_MARKER,
+            report,
+            "a skipped layer-5 run must not append the dump section; "
+            "got: %s" % report,
+        )
+        self.assertNotIn(
+            UNIQUE_STREAM_LINE,
+            report,
+            "a skipped layer-5 run must not append the stream line; "
+            "got: %s" % report,
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
