@@ -5480,3 +5480,147 @@ class TestSmokeTestDockerArgvShape(CliCase):
                 "every docker argv must start with 'docker' (built by the "
                 "smoke checks, not hand-built in cli): %r" % (argv,),
             )
+
+
+class TestSmokeTestMissingRepo(CliCase):
+    """"--repo" naming a nonexistent path, or a file, is a usage error:
+    exit 2 naming the path, no docker spawn and no HTTP call, and no layer
+    report (behaviour 19 of plans/smoke-test.md)."""
+
+    def _fakes_all_ok(self, fakes):
+        # The script lets every layer reach its natural verdict, so the red
+        # state (no --repo validation yet) runs the layers to completion and
+        # exits with a layer-report code instead of tripping the docker fake;
+        # the green state consumes none of it.
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+        fakes.docker = _scripted_docker(script)
+        fakes.runner = _recording_pidriver(_pidriver_result(stdout=_PASS_STREAM))
+
+    def test_nonexistent_repo_exits_usage(self):
+        missing = str(self.project / "no-such-dir")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", missing])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "a nonexistent --repo must exit 2 (usage); got %s: %s"
+            % (result.exit_code, result.output),
+        )
+
+    def test_nonexistent_repo_message_names_the_path(self):
+        missing = str(self.project / "no-such-dir")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", missing])
+        self.assertIn(
+            missing,
+            result.output,
+            "the usage message must name the path %s; got: %s"
+            % (missing, result.output),
+        )
+
+    def test_nonexistent_repo_spawns_nothing(self):
+        missing = str(self.project / "no-such-dir")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            self.invoke(["smoke-test", "--repo", missing])
+        self.assertEqual(
+            [], fakes.docker_argv,
+            "a nonexistent --repo must not run any docker argv; got %s"
+            % fakes.docker_argv,
+        )
+        self.assertEqual(
+            [], fakes.runner.invocations,
+            "a nonexistent --repo must not reach the pidriver seam; got %s"
+            % fakes.runner.invocations,
+        )
+        self.assertEqual(
+            [], fakes.gateway_ports,
+            "a nonexistent --repo must not call check_gateway; got %s"
+            % fakes.gateway_ports,
+        )
+        self.assertEqual(
+            [], fakes.models_paths,
+            "a nonexistent --repo must not call read_models; got %s"
+            % fakes.models_paths,
+        )
+
+    def test_repo_that_is_a_file_exits_usage_and_names_it(self):
+        afile = self.project / "afile"
+        afile.write_text("not a repo\n", encoding="utf-8")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", str(afile)])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "a --repo naming a file must exit 2 (usage); got %s: %s"
+            % (result.exit_code, result.output),
+        )
+        self.assertIn(
+            str(afile),
+            result.output,
+            "the usage message must name the path %s; got: %s"
+            % (afile, result.output),
+        )
+
+    def test_repo_that_is_a_file_spawns_nothing(self):
+        afile = self.project / "afile"
+        afile.write_text("not a repo\n", encoding="utf-8")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            self.invoke(["smoke-test", "--repo", str(afile)])
+        self.assertEqual(
+            [], fakes.docker_argv,
+            "a --repo naming a file must not run any docker argv; got %s"
+            % fakes.docker_argv,
+        )
+        self.assertEqual(
+            [], fakes.runner.invocations,
+            "a --repo naming a file must not reach the pidriver seam; got %s"
+            % fakes.runner.invocations,
+        )
+        self.assertEqual(
+            [], fakes.gateway_ports,
+            "a --repo naming a file must not call check_gateway; got %s"
+            % fakes.gateway_ports,
+        )
+        self.assertEqual(
+            [], fakes.models_paths,
+            "a --repo naming a file must not call read_models; got %s"
+            % fakes.models_paths,
+        )
+
+    def test_missing_repo_output_is_not_a_layer_report(self):
+        missing = str(self.project / "no-such-dir")
+        fakes = SmokeTestFakes()
+        self._fakes_all_ok(fakes)
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", missing])
+        self.assertNotIn(
+            smoke.HEADER,
+            result.output,
+            "a missing --repo must fail before any layer runs, so the "
+            "output must not carry the report header %r; got: %s"
+            % (smoke.HEADER, result.output),
+        )
