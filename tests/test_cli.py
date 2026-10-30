@@ -5624,3 +5624,199 @@ class TestSmokeTestMissingRepo(CliCase):
             "output must not carry the report header %r; got: %s"
             % (smoke.HEADER, result.output),
         )
+
+
+def _model_tokens(argv):
+    """Every token immediately following a ``--model`` token in ``argv``.
+
+    ``pirole.role_argv`` is the only source of ``--model`` tokens in a
+    composed driver argv (the sandbox prefix ends at the image tag), so the
+    list is exactly the model ids the composed invocations would send to Pi.
+    """
+    return [
+        argv[i + 1]
+        for i, token in enumerate(argv[:-1])
+        if token == "--model"
+    ]
+
+
+class TestSmokeTestResolvesCoderModelId(CliCase):
+    """The command resolves the coder id from config.yaml (behaviour 21).
+
+    The user never named a model; the ``--model`` token in every composed
+    driver invocation must come from ``matrix.vars.coder`` of the repo's
+    ``config.yaml`` (``read_models`` -> ``ModelTopology.coder_id``), never
+    from the unit-test placeholder ids the standalone checks default to.
+    ``SmokeTestFakes.topology`` is built from the real repo-root
+    ``config.yaml``, so ``fakes.topology.coder_id`` carries a slash and is
+    a real model name, not the placeholder.
+    """
+
+    def _invoke_all_ok(self):
+        """The TestSmokeTestAllOk recipe: every layer passes, one run."""
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "llama-swap-service\n", "")],
+            ("volume", "inspect"): [_docker_result(0, "[...]", "")],
+            ("run", "--rm"): [
+                _docker_result(
+                    0,
+                    '{"providers": {"local": {"models": '
+                    '[{"id": "%s"}]}}}' % fakes.topology.coder_id,
+                    "",
+                )
+            ],
+        }
+        fakes.docker = _scripted_docker(script)
+        fakes.runner = _recording_pidriver(_pidriver_result(stdout=_PASS_STREAM))
+        (self.project / ".pi" / "roles").mkdir(parents=True)
+        (self.project / ".pi" / "roles" / "coder.md").write_text(
+            "## Coder\nYou write and modify code.\n"
+        )
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", str(self.project)])
+        return result, fakes
+
+    def _invoke_gateway_fail(self):
+        """Layers 1 ok, layer 2's container check fails, the run-class
+        layers drive the pidriver seam for the failure-paths proof."""
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            # empty ps output: no line equals the gateway container name,
+            # so check_gateway_container fails and layer 2 folds to failed.
+            ("ps", "--filter"): [_docker_result(0, "", "")],
+        }
+        fakes.docker = _scripted_docker(script)
+        # Non-zero exit with EMPTY stdout: the driver's own DriverError
+        # rule fires for the bad-image-tag probe (the failure path is
+        # proved); the missing-prompt probe raises RoleError before the
+        # runner is invoked.
+        fakes.runner = _recording_pidriver(
+            _pidriver_result(exit_code=125, stdout="", stderr="no such tag")
+        )
+        with fakes.install(self):
+            result = self.invoke(["smoke-test", "--repo", str(self.project)])
+        return result, fakes
+
+    def test_all_ok_run_uses_the_config_coder_id_not_the_placeholder(self):
+        result, fakes = self._invoke_all_ok()
+        self.assertEqual(0, result.exit_code, result.output)
+        expected = fakes.topology.coder_id
+        self.assertTrue(
+            "/" in expected,
+            "the fakes must expose a real slash-carrying coder id from "
+            "config.yaml, not a placeholder; got %r" % expected,
+        )
+        self.assertEqual(
+            1,
+            len(fakes.runner.invocations),
+            "a healthy stack must drive the pidriver seam exactly once "
+            "(the layer-5 run; the failure paths are skipped); got %s"
+            % fakes.runner.invocations,
+        )
+        argv = fakes.runner.invocations[0]["argv"]
+        tokens = _model_tokens(argv)
+        self.assertEqual(
+            [expected],
+            tokens,
+            "the layer-5 --model token must be the topology's coder id %r "
+            "(matrix.vars.coder from config.yaml); got %r in argv %s"
+            % (expected, tokens, argv),
+        )
+        self.assertNotEqual(
+            ["coder-model"],
+            tokens,
+            "the unit-test placeholder id leaked into the composed "
+            "argv; got %r" % (argv,),
+        )
+
+    def test_failure_path_probes_also_use_the_config_coder_id(self):
+        result, fakes = self._invoke_gateway_fail()
+        self.assertEqual(
+            cli.EXIT_DOCKER,
+            result.exit_code,
+            "a layer-2 (docker-class) failure must exit 4; got %s: %s"
+            % (result.exit_code, result.output),
+        )
+        self.assertTrue(
+            fakes.runner.invocations,
+            "the layer-6 failure-path proof must drive the pidriver seam "
+            "(the bad-image-tag probe); got no invocations",
+        )
+        expected = fakes.topology.coder_id
+        for invocation in fakes.runner.invocations:
+            argv = invocation["argv"]
+            tokens = _model_tokens(argv)
+            self.assertEqual(
+                [expected],
+                tokens,
+                "every failure-path --model token must be the topology's "
+                "coder id %r; got %r in argv %s" % (expected, tokens, argv),
+            )
+
+    def test_placeholder_coder_model_never_appears_in_any_argv(self):
+        _result, fakes = self._invoke_all_ok()
+        self.assertTrue(
+            fakes.runner.invocations,
+            "the all-ok scenario must drive the pidriver seam; got none",
+        )
+        for invocation in fakes.runner.invocations:
+            argv = invocation["argv"]
+            self.assertNotIn(
+                "coder-model",
+                argv,
+                "the unit-test placeholder id leaked into the composed "
+                "driver argv; got %s" % (argv,),
+            )
+
+    def test_orchestrator_resolves_the_coder_id_from_read_models(self):
+        # Pins run_smoke_test itself, not just the CLI wiring: the
+        # orchestrator must read the topology once and compose every
+        # driver --model token from topology.coder_id.
+        fakes = SmokeTestFakes()
+        script = {
+            ("version", "--format"): [_docker_result(0, "27.1.1", "")],
+            ("image", "inspect"): [_docker_result(0, "[...]", "")],
+            ("network", "inspect"): [_docker_result(0, "[...]", "")],
+            ("ps", "--filter"): [_docker_result(0, "", "")],
+        }
+        docker_runner = _scripted_docker(script)
+        runner = _recording_pidriver(
+            _pidriver_result(exit_code=125, stdout="", stderr="no such tag")
+        )
+        _report, exit_code = smoke.run_smoke_test(
+            str(self.project),
+            fakes.topology.gateway_port,
+            docker_runner,
+            runner,
+            check_gateway=fakes.check_gateway,
+            read_models=fakes.read_models,
+        )
+        self.assertEqual(
+            cli.EXIT_DOCKER,
+            exit_code,
+            "a layer-2 (docker-class) failure must exit 4; got %s"
+            % exit_code,
+        )
+        self.assertTrue(
+            runner.invocations,
+            "the layer-6 failure-path proof must drive the pidriver "
+            "seam; got no invocations",
+        )
+        expected = fakes.topology.coder_id
+        for invocation in runner.invocations:
+            argv = invocation["argv"]
+            tokens = _model_tokens(argv)
+            self.assertEqual(
+                [expected],
+                tokens,
+                "the orchestrator must compose the --model token from "
+                "the topology's coder id %r (read once via read_models); "
+                "got %r in argv %s" % (expected, tokens, argv),
+            )
