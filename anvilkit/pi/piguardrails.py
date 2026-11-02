@@ -22,6 +22,13 @@ emitted key at its level.
 
 from typing import Any, Dict, FrozenSet, List, Optional
 
+# The pinned npm source for the Pi runtime to install
+# (doc/external/pi-dev/packages.md — "Versioned npm specifications
+# are pinned"); 0.21.0 because 0.20.0 fixed upstream #123 (a
+# path-extraction false positive); source-reviewed per Pi's package
+# warning (verdict on issue #67).
+PACKAGE_SOURCE = "npm:@aliou/pi-guardrails@0.21.0"
+
 # The schema's exact feature-key set (``doc/external/pi-guardrails/schema.md``:
 # ``features`` allows exactly these four booleans, ``additionalProperties:
 # false``). Behaviour 4 checks this level; behaviour 9's top-level check
