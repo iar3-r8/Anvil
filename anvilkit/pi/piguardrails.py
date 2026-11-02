@@ -20,7 +20,7 @@ per-level allowed-key constants (``TOP_LEVEL_KEYS``, ``FEATURE_KEYS``,
 emitted key at its level.
 """
 
-from typing import Any, Dict, FrozenSet, List
+from typing import Any, Dict, FrozenSet, List, Optional
 
 # The schema's exact feature-key set (``doc/external/pi-guardrails/schema.md``:
 # ``features`` allows exactly these four booleans, ``additionalProperties:
@@ -226,7 +226,9 @@ def validate_document(document: Dict[str, Any]) -> None:
     _validate(document)
 
 
-def build_document() -> Dict[str, Any]:
+def build_document(
+    overrides: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """The guardrails document, fixed by construction (behaviour 3).
 
     Returns a dict that equals ``tests/fixtures/golden_pi_guardrails.json``
@@ -240,6 +242,13 @@ def build_document() -> Dict[str, Any]:
     required ``pattern`` key (documented default is substring match);
     ``onlyIfExists`` is an explicit ``true``; no ``$schema``/``version``
     keys (``version`` is "stamped by migrations").
+
+    ``overrides`` (behaviour 12, manager-pinned) is an optional dict whose
+    ``autoDenyPatterns`` key - the only override surface - replaces the
+    built ``permissionGate.autoDenyPatterns`` list before validation runs.
+    The no-argument call is unchanged, so behaviour 3's golden parity is
+    unaffected. ``validate_document`` still runs on the result, so an
+    invalid override (e.g. a pattern-less entry) is refused, not emitted.
     """
     document: Dict[str, Any] = {
         "enabled": True,
@@ -284,5 +293,9 @@ def build_document() -> Dict[str, Any]:
             ],
         },
     }
+    if overrides is not None and "autoDenyPatterns" in overrides:
+        document["permissionGate"]["autoDenyPatterns"] = overrides[
+            "autoDenyPatterns"
+        ]
     _validate(document)
     return document
