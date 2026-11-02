@@ -10,13 +10,15 @@ runtime. The schema source of truth is
 ``doc/external/pi-guardrails/schema.md``.
 
 One exception type: ``GuardrailsError``. ``build_document`` calls the
-public ``validate_document`` seam (behaviour 4 ledger decision); this
-cycle validates the ``features`` level only. Behaviour 9 (unknown-key
-rejection) and behaviour 10 (emitted-keys drift guard) extend the
-per-level allowed-key checks in their later red/green cycles.
+public ``validate_document`` seam (behaviour 4 ledger decision); the
+seam currently validates the ``features`` level (behaviour 4) and the
+``permissionGate.autoDenyPatterns`` entries (behaviour 5). Behaviour 9
+(unknown-key rejection) and behaviour 10 (emitted-keys drift guard)
+extend the per-level allowed-key checks in their later red/green
+cycles, following the ``FEATURE_KEYS`` module-constant pattern.
 """
 
-from typing import Any, Dict, FrozenSet
+from typing import Any, Dict, FrozenSet, List
 
 # The schema's exact feature-key set (``doc/external/pi-guardrails/schema.md``:
 # ``features`` allows exactly these four booleans, ``additionalProperties:
@@ -60,15 +62,44 @@ def _validate_features(features: Dict[str, Any]) -> None:
             )
 
 
+def _validate_auto_deny_patterns(auto_deny: List[Dict[str, Any]]) -> None:
+    """Check ``permissionGate.autoDenyPatterns`` (behaviour 5).
+
+    Every entry must be an object (schema: ``PatternConfig``) carrying
+    a non-empty ``pattern`` string - the required key of the schema.
+    ``regex``/``description``/``terminate`` are optional and out of
+    scope here; the other ``permissionGate`` keys are not checked
+    either (behaviour 10's emitted-key drift guard owns the breadth).
+    Raises ``GuardrailsError`` naming the offending entry.
+    """
+    for index, entry in enumerate(auto_deny):
+        if not isinstance(entry, dict):
+            raise GuardrailsError(
+                "guardrails permissionGate.autoDenyPatterns[%d] must be "
+                "an object (PatternConfig), got %s"
+                % (index, type(entry).__name__)
+            )
+        pattern = entry.get("pattern")
+        if not isinstance(pattern, str) or not pattern:
+            raise GuardrailsError(
+                "guardrails permissionGate.autoDenyPatterns[%d] must carry "
+                "a non-empty 'pattern' string, got %r" % (index, pattern)
+            )
+
+
 def _validate(document: Dict[str, Any]) -> None:
     """Check the built document before it is returned.
 
     Called by ``build_document``; currently validates the ``features``
-    level only (behaviour 4). Behaviour 9 (unknown-key rejection at the
+    level (behaviour 4) and the ``permissionGate.autoDenyPatterns``
+    entries (behaviour 5). Behaviour 9 (unknown-key rejection at the
     top level) and behaviour 10 (emitted-keys drift guard) add their
     per-level checks here in their later red/green cycles.
     """
     _validate_features(document["features"])
+    _validate_auto_deny_patterns(
+        document["permissionGate"]["autoDenyPatterns"]
+    )
 
 
 def validate_document(document: Dict[str, Any]) -> None:
@@ -76,9 +107,9 @@ def validate_document(document: Dict[str, Any]) -> None:
 
     Raises ``GuardrailsError`` naming the offending key when the document
     violates the schema; returns ``None`` when it passes. ``build_document``
-    calls it on every built document, and behaviour 4's error-clause tests
-    call it directly with malformed deep copies - its error case is
-    unreachable through the no-argument builder.
+    calls it on every built document, and behaviours 4 and 5's
+    error-clause tests call it directly with malformed deep copies -
+    their error cases are unreachable through the no-argument builder.
     """
     _validate(document)
 
