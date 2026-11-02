@@ -39,10 +39,13 @@ as the production default)::
 - ``argv``: exactly
   ``["pi", "--mode", "json", "-e", <extension_path>, "--model",
   <model_id>, "--tools", "read,edit,write,team", "-a",
-  "--no-session", "--", pibakeoff.BAKEOFF_PROMPT]`` - the goal prompt is
-  the bake-off trivial task, reused verbatim so the crew run is comparable
-  to the recorded bake-off configurations (``-e`` and ``--tools`` are the
-  pi CLI flags, doc/external/pi-dev/cli.md);
+  "--no-session", "--", picrew.CREW_SPIKE_PROMPT]`` - the goal prompt is
+  the module constant ``anvilkit.pi.picrew.CREW_SPIKE_PROMPT``, a harder
+  multi-part task on ``bakeoff_fixture/`` that instructs the model to hand
+  the work to the ``team`` tool; ``pibakeoff.BAKEOFF_PROMPT`` is untouched
+  - it belongs to the bake-off, not the spike (plans/pi-crew-spike.md
+  behaviour 5) (``-e`` and ``--tools`` are the pi CLI flags,
+  doc/external/pi-dev/cli.md);
 - ``cwd``: ``str(<base>/fixture)`` - the fixture directory, verbatim;
 - ``stdin``: ``"/dev/null"``;
 - ``timeout_s``: the ``timeout_s`` argument passed to ``run_spike``;
@@ -263,6 +266,32 @@ class PicrewTestCase(unittest.TestCase):
         )
         return crew_spike_error
 
+    def _get_crew_spike_prompt(self) -> str:
+        """Fetch ``anvilkit.pi.picrew.CREW_SPIKE_PROMPT``, failing clearly if absent.
+
+        Referenced lazily through ``getattr`` (the ``_get_run_spike``
+        pattern): the constant does not exist yet, so a module-level import
+        would turn this whole file red with a collection error instead of
+        an assertion failure inside the test bodies.
+        """
+        picrew = self._picrew()
+        prompt = getattr(picrew, "CREW_SPIKE_PROMPT", None)
+        self.assertIsInstance(
+            prompt,
+            str,
+            "anvilkit.pi.picrew.CREW_SPIKE_PROMPT is missing or not a "
+            "string; the harder crew-spike goal prompt has not been "
+            "implemented yet (plans/pi-crew-spike.md behaviour 5)",
+        )
+        self.assertNotEqual(
+            "",
+            prompt,
+            "anvilkit.pi.picrew.CREW_SPIKE_PROMPT is empty; the harder "
+            "crew-spike goal prompt has not been implemented yet "
+            "(plans/pi-crew-spike.md behaviour 5)",
+        )
+        return prompt
+
     def _fake(
         self,
         result: Optional[Dict[str, Any]] = None,
@@ -326,9 +355,15 @@ class PicrewTestCase(unittest.TestCase):
             "agent_home": root / "agent-home",
         }
 
-    @staticmethod
-    def _expected_argv(model_id: str, extension_path: str) -> List[str]:
-        """The exact argv the crew-spike invocation must carry."""
+    def _expected_argv(self, model_id: str, extension_path: str) -> List[str]:
+        """The exact argv the crew-spike invocation must carry.
+
+        The goal (the final ``--`` argument) is the module constant
+        ``anvilkit.pi.picrew.CREW_SPIKE_PROMPT`` - fetched lazily (the
+        ``_get_run_spike`` pattern) so the red fails at assertion level
+        naming the missing constant, not with a file-level collection
+        error.
+        """
         return [
             "pi",
             "--mode",
@@ -342,7 +377,7 @@ class PicrewTestCase(unittest.TestCase):
             "-a",
             "--no-session",
             "--",
-            pibakeoff.BAKEOFF_PROMPT,
+            self._get_crew_spike_prompt(),
         ]
 
     @staticmethod
@@ -449,6 +484,57 @@ class TestFixtureAndInvocation(PicrewTestCase):
         self.assertTrue((fixture / "bakeoff_fixture" / "adder.py").is_file())
         self.assertTrue((fixture / "tests" / "test_adder.py").is_file())
         self.assertTrue((fixture / "TASK.md").is_file())
+
+
+class TestCrewSpikePrompt(PicrewTestCase):
+    """CREW_SPIKE_PROMPT - the harder goal (plans/pi-crew-spike.md
+    behaviour 5).
+
+    Recorded run 1 measured load only: the model solved the trivial
+    bake-off task directly and never called ``team``, so the run-half of
+    unknown 1 is still unmeasured. The goal prompt is the variable:
+    ``CREW_SPIKE_PROMPT`` is a harder, multi-part task on
+    ``bakeoff_fixture/`` that instructs the model to hand the work to the
+    ``team`` tool. ``pibakeoff.BAKEOFF_PROMPT`` is untouched - it belongs
+    to the bake-off, not the spike.
+
+    The constant is fetched lazily (the ``_get_run_spike`` pattern): it
+    does not exist yet, so a module-level reference would turn this file
+    red with a collection error instead of an assertion failure inside
+    the test bodies.
+    """
+
+    def test_crew_spike_prompt_is_distinct_from_bakeoff_prompt(self):
+        prompt = self._get_crew_spike_prompt()
+        self.assertNotEqual(
+            pibakeoff.BAKEOFF_PROMPT,
+            prompt,
+            "anvilkit.pi.picrew.CREW_SPIKE_PROMPT is the bake-off trivial "
+            "task verbatim; it must be a harder, multi-part goal so the "
+            "model is forced to delegate (plans/pi-crew-spike.md "
+            "behaviour 5)",
+        )
+
+    def test_crew_spike_prompt_names_team_tool_as_delegation_mechanism(self):
+        prompt = self._get_crew_spike_prompt()
+        self.assertIn(
+            "team",
+            prompt,
+            "anvilkit.pi.picrew.CREW_SPIKE_PROMPT must instruct the model "
+            "to hand the work to the ``team`` tool - the package's "
+            "delegation surface - or the run-half of unknown 1 cannot be "
+            "measured (plans/pi-crew-spike.md behaviour 5)",
+        )
+
+    def test_crew_spike_prompt_references_bakeoff_fixture_files(self):
+        prompt = self._get_crew_spike_prompt()
+        self.assertIn(
+            "bakeoff_fixture",
+            prompt,
+            "anvilkit.pi.picrew.CREW_SPIKE_PROMPT must be a task on the "
+            "``bakeoff_fixture/`` files the pifixture writes into "
+            "<base>/fixture (plans/pi-crew-spike.md behaviour 5)",
+        )
 
 
 class TestCapturedArtifacts(PicrewTestCase):
