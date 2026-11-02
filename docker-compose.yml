@@ -67,6 +67,30 @@ services:
     networks:
       - llm-network
 
+  pi-crewspike:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.crewspike
+    profiles: [ "crewspike" ]
+    command: ["python3", "-m", "anvilkit.pi.picrew"]
+    environment:
+      PI_GATEWAY_HOST: llama-swap
+      PI_GATEWAY_PORT: "8080"
+      PI_CREW_BROKER: "0"
+    volumes:
+      - type: volume
+        source: crewspike-agent
+        target: /home/crewspike/.pi/agent
+      - type: bind
+        source: ./results
+        target: /workspace/results
+      - type: bind
+        source: ./config.yaml
+        target: /app/config.yaml
+        read_only: true
+    networks:
+      - llm-network
+
 networks:
   llm-network:
     name: llm-network
@@ -76,3 +100,4 @@ networks:
 
 volumes:
   pi-bakeoff-agent:
+  crewspike-agent:
