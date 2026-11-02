@@ -11,23 +11,45 @@ runtime. The schema source of truth is
 
 One exception type: ``GuardrailsError``. ``build_document`` calls the
 public ``validate_document`` seam (behaviour 4 ledger decision); the
-seam currently validates the ``features`` level (behaviour 4), the
-``permissionGate.autoDenyPatterns`` entries (behaviour 5) and the
-``policies.rules`` entries (behaviour 6). Behaviour 9
-(unknown-key rejection) and behaviour 10 (emitted-keys drift guard)
-extend the per-level allowed-key checks in their later red/green
-cycles, following the ``FEATURE_KEYS`` module-constant pattern.
+seam validates the top-level key set (behaviour 9), the ``features``
+level (behaviour 4), the ``permissionGate.autoDenyPatterns`` entries
+(behaviour 5) and the ``policies.rules`` entries (behaviour 6).
+Behaviour 10 (emitted-keys drift guard) is pin-skip per the ledger: the
+per-level allowed-key constants (``TOP_LEVEL_KEYS``, ``FEATURE_KEYS``,
+``PROTECTION_VALUES``) and the golden parity already constrain every
+emitted key at its level.
 """
 
 from typing import Any, Dict, FrozenSet, List
 
 # The schema's exact feature-key set (``doc/external/pi-guardrails/schema.md``:
 # ``features`` allows exactly these four booleans, ``additionalProperties:
-# false``). Behaviour 4 checks this level; behaviours 9/10 add their own
-# per-level constants (top level, then the emitted-key drift guard) that
-# follow this pattern.
+# false``). Behaviour 4 checks this level; behaviour 9's top-level check
+# follows this pattern with ``TOP_LEVEL_KEYS``.
 FEATURE_KEYS: FrozenSet[str] = frozenset(
     ["pathAccess", "permissionGate", "policies", "protectEnvFiles"]
+)
+
+# The schema's exact top-level key set (``doc/external/pi-guardrails/
+# schema.md``: ``GuardrailsConfig`` is ``additionalProperties: false``,
+# allowing exactly these ten keys). Behaviour 9 checks this level; the
+# built document uses a subset (``enabled``, ``features``,
+# ``permissionGate``, ``policies``), and the check is one-way - it
+# rejects unlisted keys, it does not require the allowed ones
+# (behaviour 10's drift guard is pin-skip per the ledger).
+TOP_LEVEL_KEYS: FrozenSet[str] = frozenset(
+    [
+        "$schema",
+        "version",
+        "enabled",
+        "applyBuiltinDefaults",
+        "onboarding",
+        "features",
+        "policies",
+        "pathAccess",
+        "envFiles",
+        "permissionGate",
+    ]
 )
 
 # The schema's ``Protection`` enum values (``doc/external/pi-guardrails/
@@ -45,6 +67,26 @@ class GuardrailsError(Exception):
     clause and translates to ``RenderError``. The message names the
     offending value so the caller knows which key to fix.
     """
+
+
+def _validate_top_level(document: Dict[str, Any]) -> None:
+    """Check the top-level key set against the schema (behaviour 9).
+
+    Every top-level key must be in ``TOP_LEVEL_KEYS`` (schema
+    ``GuardrailsConfig``, ``additionalProperties: false``). The check
+    is one-way: unlisted keys are rejected, missing allowed keys are
+    not - the built document uses a subset of the allowed keys and
+    must stay valid. The ``features`` level is not re-checked here;
+    ``_validate_features`` owns it (behaviour 4), so behaviour 9's
+    nested clause is enforced exactly once. Raises
+    ``GuardrailsError`` naming the offending key and its level.
+    """
+    for key in sorted(document):
+        if key not in TOP_LEVEL_KEYS:
+            raise GuardrailsError(
+                "guardrails has unlisted top-level key %r; allowed: %s"
+                % (key, sorted(TOP_LEVEL_KEYS))
+            )
 
 
 def _validate_features(features: Dict[str, Any]) -> None:
@@ -158,13 +200,13 @@ def _validate_policy_rules(rules: List[Dict[str, Any]]) -> None:
 def _validate(document: Dict[str, Any]) -> None:
     """Check the built document before it is returned.
 
-    Called by ``build_document``; currently validates the ``features``
-    level (behaviour 4), the ``permissionGate.autoDenyPatterns``
-    entries (behaviour 5) and the ``policies.rules`` entries
-    (behaviour 6). Behaviour 9 (unknown-key rejection at the top level)
-    and behaviour 10 (emitted-keys drift guard) add their per-level
-    checks here in their later red/green cycles.
+    Called by ``build_document``; validates the top-level key set
+    (behaviour 9), the ``features`` level (behaviour 4), the
+    ``permissionGate.autoDenyPatterns`` entries (behaviour 5) and the
+    ``policies.rules`` entries (behaviour 6). Behaviour 10 (emitted-keys
+    drift guard) is pin-skip per the ledger.
     """
+    _validate_top_level(document)
     _validate_features(document["features"])
     _validate_auto_deny_patterns(
         document["permissionGate"]["autoDenyPatterns"]
