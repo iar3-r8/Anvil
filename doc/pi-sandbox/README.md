@@ -140,3 +140,14 @@ component by name.
   ([`doc/external/docker/network-create-internal.md`](../external/docker/network-create-internal.md)).
 - **The image has no VCS client**, so the agent cannot push: a nested
   `git push` inside a script finds no binary, and the driver owns git.
+- **The container is one of three bounding layers, not the only one.**
+  History is fenced server-side by the importable GitHub main-branch
+  ruleset, and the tool call itself is fenced in-process by the
+  `@aliou/pi-guardrails` extension, configured from
+  `.pi/extensions/guardrails.json` — the document
+  [`anvilkit/render.py`](../../anvilkit/render.py)'s
+  `guardrails_settings` renders, and whose git deny patterns are the
+  second line for containers that do carry git, such as the devcontainer.
+  That document leaves the `pathAccess` gate off; the reason is recorded
+  next to the setting in
+  [`anvilkit/pi/piguardrails.py`](../../anvilkit/pi/piguardrails.py).
