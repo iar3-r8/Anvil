@@ -11,8 +11,9 @@ runtime. The schema source of truth is
 
 One exception type: ``GuardrailsError``. ``build_document`` calls the
 public ``validate_document`` seam (behaviour 4 ledger decision); the
-seam currently validates the ``features`` level (behaviour 4) and the
-``permissionGate.autoDenyPatterns`` entries (behaviour 5). Behaviour 9
+seam currently validates the ``features`` level (behaviour 4), the
+``permissionGate.autoDenyPatterns`` entries (behaviour 5) and the
+``policies.rules`` entries (behaviour 6). Behaviour 9
 (unknown-key rejection) and behaviour 10 (emitted-keys drift guard)
 extend the per-level allowed-key checks in their later red/green
 cycles, following the ``FEATURE_KEYS`` module-constant pattern.
@@ -27,6 +28,13 @@ from typing import Any, Dict, FrozenSet, List
 # follow this pattern.
 FEATURE_KEYS: FrozenSet[str] = frozenset(
     ["pathAccess", "permissionGate", "policies", "protectEnvFiles"]
+)
+
+# The schema's ``Protection`` enum values (``doc/external/pi-guardrails/
+# schema.md``: ``Protection`` is exactly ``none | readOnly | noAccess``).
+# Behaviour 6 checks every ``PolicyRule.protection`` against this set.
+PROTECTION_VALUES: FrozenSet[str] = frozenset(
+    ["none", "readOnly", "noAccess"]
 )
 
 class GuardrailsError(Exception):
@@ -62,28 +70,88 @@ def _validate_features(features: Dict[str, Any]) -> None:
             )
 
 
+def _validate_pattern_config(entry: Any, where: str) -> None:
+    """Check one ``PatternConfig`` entry against the schema.
+
+    Shared by ``_validate_auto_deny_patterns`` (behaviour 5) and
+    ``_validate_policy_rules`` (behaviour 6): every entry must be an
+    object carrying a non-empty ``pattern`` string - the required key
+    of the schema. ``regex``/``description``/``terminate`` are optional
+    and out of scope here. ``where`` is the caller-supplied location,
+    named in the error message. Raises ``GuardrailsError`` naming the
+    offending entry.
+    """
+    if not isinstance(entry, dict):
+        raise GuardrailsError(
+            "guardrails %s must be an object (PatternConfig), got %s"
+            % (where, type(entry).__name__)
+        )
+    pattern = entry.get("pattern")
+    if not isinstance(pattern, str) or not pattern:
+        raise GuardrailsError(
+            "guardrails %s must carry a non-empty 'pattern' string, got %r"
+            % (where, pattern)
+        )
+
+
 def _validate_auto_deny_patterns(auto_deny: List[Dict[str, Any]]) -> None:
     """Check ``permissionGate.autoDenyPatterns`` (behaviour 5).
 
-    Every entry must be an object (schema: ``PatternConfig``) carrying
-    a non-empty ``pattern`` string - the required key of the schema.
-    ``regex``/``description``/``terminate`` are optional and out of
-    scope here; the other ``permissionGate`` keys are not checked
-    either (behaviour 10's emitted-key drift guard owns the breadth).
-    Raises ``GuardrailsError`` naming the offending entry.
+    Every entry must be a ``PatternConfig`` (schema) - see
+    ``_validate_pattern_config``. The other ``permissionGate`` keys are
+    not checked (behaviour 10's emitted-key drift guard owns the
+    breadth). Raises ``GuardrailsError`` naming the offending entry.
     """
     for index, entry in enumerate(auto_deny):
-        if not isinstance(entry, dict):
+        _validate_pattern_config(
+            entry, "permissionGate.autoDenyPatterns[%d]" % index
+        )
+
+
+def _validate_policy_rules(rules: List[Dict[str, Any]]) -> None:
+    """Check ``policies.rules`` (behaviour 6).
+
+    Every rule must be an object (schema: ``PolicyRule``) carrying the
+    three schema-required keys: a non-empty ``id`` string, a
+    ``patterns`` list whose entries are ``PatternConfig`` objects, and
+    a ``protection`` value from the schema's ``Protection`` enum. The
+    optional ``PolicyRule`` keys (``allowedPatterns``, ``blockMessage``,
+    ``description``, ``enabled``, ``name``, ``onlyIfExists``,
+    ``respectCwd``) are not checked - behaviour 10's emitted-key drift
+    guard owns the breadth. Raises ``GuardrailsError`` naming the rule
+    by id when one is available, by index otherwise.
+    """
+    for index, rule in enumerate(rules):
+        if not isinstance(rule, dict):
             raise GuardrailsError(
-                "guardrails permissionGate.autoDenyPatterns[%d] must be "
-                "an object (PatternConfig), got %s"
-                % (index, type(entry).__name__)
+                "guardrails policies.rules[%d] must be an object "
+                "(PolicyRule), got %s" % (index, type(rule).__name__)
             )
-        pattern = entry.get("pattern")
-        if not isinstance(pattern, str) or not pattern:
+        rule_id = rule.get("id")
+        if isinstance(rule_id, str) and rule_id:
+            label = "policies.rules[%r]" % rule_id
+        else:
+            label = "policies.rules[%d]" % index
+        if not isinstance(rule_id, str) or not rule_id:
             raise GuardrailsError(
-                "guardrails permissionGate.autoDenyPatterns[%d] must carry "
-                "a non-empty 'pattern' string, got %r" % (index, pattern)
+                "guardrails %s must carry a non-empty 'id' string, got %r"
+                % (label, rule_id)
+            )
+        patterns = rule.get("patterns")
+        if not isinstance(patterns, list):
+            raise GuardrailsError(
+                "guardrails %s must carry a 'patterns' list, got %r"
+                % (label, patterns)
+            )
+        for pindex, entry in enumerate(patterns):
+            _validate_pattern_config(
+                entry, "%s.patterns[%d]" % (label, pindex)
+            )
+        protection = rule.get("protection")
+        if not isinstance(protection, str) or protection not in PROTECTION_VALUES:
+            raise GuardrailsError(
+                "guardrails %s must carry 'protection' one of %s, got %r"
+                % (label, sorted(PROTECTION_VALUES), protection)
             )
 
 
@@ -91,15 +159,17 @@ def _validate(document: Dict[str, Any]) -> None:
     """Check the built document before it is returned.
 
     Called by ``build_document``; currently validates the ``features``
-    level (behaviour 4) and the ``permissionGate.autoDenyPatterns``
-    entries (behaviour 5). Behaviour 9 (unknown-key rejection at the
-    top level) and behaviour 10 (emitted-keys drift guard) add their
-    per-level checks here in their later red/green cycles.
+    level (behaviour 4), the ``permissionGate.autoDenyPatterns``
+    entries (behaviour 5) and the ``policies.rules`` entries
+    (behaviour 6). Behaviour 9 (unknown-key rejection at the top level)
+    and behaviour 10 (emitted-keys drift guard) add their per-level
+    checks here in their later red/green cycles.
     """
     _validate_features(document["features"])
     _validate_auto_deny_patterns(
         document["permissionGate"]["autoDenyPatterns"]
     )
+    _validate_policy_rules(document["policies"]["rules"])
 
 
 def validate_document(document: Dict[str, Any]) -> None:
