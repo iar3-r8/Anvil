@@ -2,8 +2,9 @@
 
 Written before the implementation (TDD, ``plans/pi-guardrails.md``;
 behaviours 3 "guardrails-document-golden-parity", 4
-"features-toggles-are-the-four-schema-booleans" and 5
-"autodeny-blocks-the-four-git-subcommands"). Module and attribute
+"features-toggles-are-the-four-schema-booleans", 5
+"autodeny-blocks-the-four-git-subcommands" and 6
+"secret-policy-rule-refuses-env-pem-key"). Module and attribute
 lookups run **inside the test methods** through the
 ``PiguardrailsTestCase`` helpers, so a missing module or missing
 attribute surfaces as a named-test error rather than a collection error.
@@ -49,6 +50,7 @@ import copy
 import importlib
 import importlib.util
 import json
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -436,6 +438,250 @@ class TestAutoDenyBlocksTheFourGitSubcommands(PiguardrailsTestCase):
             "GuardrailsError must name the offending section "
             "(autoDenyPatterns) or its index/entry",
         )
+
+
+def _glob_match(pattern, path):
+    """Manager-settled glob semantics for policy-rule file paths.
+
+    ``plans/pi-guardrails.md`` ledger (behaviour 6 note): a glob ``*``
+    matches any run of characters that does not cross a path separator,
+    ``?`` matches one character that is not a separator, and a bare-name
+    pattern (``.env`` - no glob characters, no separator) matches the
+    basename at any depth, so ``.env`` also refuses ``.env.local`` and
+    ``secrets/.env``. This is the same "glob for files" default the
+    package applies to tool-call paths (doc/external/pi-guardrails/
+    schema.md, doc/external/pi-guardrails/readme.md), made precise by the
+    manager so the red pins one rule instead of any regex the coder
+    could satisfy.
+    """
+    candidate = path.rsplit("/", 1)[-1] if "/" not in pattern else path
+    if "/" not in pattern and "*" not in pattern and "?" not in pattern:
+        # A bare-name pattern matches the basename at any depth.
+        return candidate.startswith(pattern)
+    regex = ""
+    for char in pattern:
+        if char == "*":
+            regex += r"[^/]*"
+        elif char == "?":
+            regex += r"[^/]"
+        else:
+            regex += re.escape(char)
+    return re.match(regex + r"$", candidate) is not None
+
+
+class TestSecretPolicyRuleRefusesEnvPemKey(PiguardrailsTestCase):
+    """Behaviour 6: secret-policy-rule-refuses-env-pem-key.
+
+    Given: the paths ``.env``, ``server.pem``, ``id_rsa.key`` and
+    ``README.md``. When: the ``noAccess`` rule's globs are applied.
+    Then: the first three match and ``README.md`` does not; the rule
+    carries ``id``, ``patterns`` and ``protection`` as the schema
+    requires (doc/external/pi-guardrails/schema.md: ``PolicyRule``).
+    Error: a rule missing any required key raises ``GuardrailsError``
+    naming the rule id via ``validate_document`` (the seam behaviours 4
+    and 5 established; the manager-settled ledger note pins the glob
+    semantics).
+
+    The rule-shape and glob-coverage tests pass today against the
+    existing golden - they pin the patterns plus the settled semantics.
+    The three error-clause tests are the red: ``validate_document`` does
+    not check ``policies.rules`` yet, so ``assertRaises`` catches nothing
+    and each fails with AssertionError ("not raised"), never a
+    collection error.
+    """
+
+    _SECRET_GLOBS = frozenset([".env", "*.pem", "*.key"])
+
+    def _secrets_rule(self):
+        """The built document's ``policies.rules`` entry with id ``secrets``."""
+        built = self._get_build_document()()
+        policies = built.get("policies")
+        self.assertIsInstance(
+            policies,
+            dict,
+            "the built document must carry a policies object",
+        )
+        rules = policies.get("rules")
+        self.assertIsInstance(
+            rules,
+            list,
+            "policies must carry a rules list",
+        )
+        for rule in rules:
+            if isinstance(rule, dict) and rule.get("id") == "secrets":
+                return rule
+        self.fail("policies.rules must carry a rule with id 'secrets'")
+
+    def _secrets_patterns(self):
+        """The secrets rule's pattern strings, in document order."""
+        rule = self._secrets_rule()
+        patterns = rule.get("patterns")
+        self.assertIsInstance(
+            patterns,
+            list,
+            "the secrets rule must carry a patterns list",
+        )
+        return [entry["pattern"] for entry in patterns]
+
+    def _delete_secrets_rule_key(self, key):
+        """A mutation deleting ``key`` from the secrets rule (for ``_mutated``)."""
+        def mutate(document):
+            for rule in document["policies"]["rules"]:
+                if isinstance(rule, dict) and rule.get("id") == "secrets":
+                    del rule[key]
+                    return
+            raise AssertionError("secrets rule not found in the built document")
+        return mutate
+
+    def test_secrets_rule_carries_required_keys_and_exactly_the_three_globs(self):
+        """id 'secrets', protection 'noAccess', patterns exactly {.env, *.pem, *.key}."""
+        rule = self._secrets_rule()
+        self.assertEqual(
+            rule.get("id"),
+            "secrets",
+            "the noAccess rule must carry id 'secrets' (schema: PolicyRule.id)",
+        )
+        self.assertEqual(
+            rule.get("protection"),
+            "noAccess",
+            "the secrets rule's protection must be noAccess (schema: PolicyRule)",
+        )
+        patterns = rule.get("patterns")
+        self.assertIsInstance(
+            patterns,
+            list,
+            "the secrets rule must carry a patterns list "
+            "(schema: PolicyRule.patterns)",
+        )
+        for entry in patterns:
+            self.assertIsInstance(
+                entry,
+                dict,
+                "each secrets patterns entry must be an object "
+                "(schema: PatternConfig), not a bare string",
+            )
+            self.assertIn(
+                "pattern",
+                entry,
+                "each secrets patterns entry must carry the required "
+                "'pattern' key",
+            )
+        self.assertEqual(
+            {entry["pattern"] for entry in patterns},
+            set(self._SECRET_GLOBS),
+            "the secrets rule's globs must be exactly "
+            "{.env, *.pem, *.key} - no extra, none missing",
+        )
+
+    def test_env_glob_refuses_env_files_at_any_depth(self):
+        """.env refuses .env, .env.local and secrets/.env (ledger note)."""
+        patterns = self._secrets_patterns()
+        for path in [".env", ".env.local", "secrets/.env"]:
+            self.assertTrue(
+                any(_glob_match(pattern, path) for pattern in patterns),
+                "%r must be refused by a secrets glob under the "
+                "manager-settled semantics" % path,
+            )
+
+    def test_pem_glob_refuses_pem_files_at_any_depth(self):
+        """*.pem refuses server.pem and keys/server.pem (ledger note)."""
+        patterns = self._secrets_patterns()
+        for path in ["server.pem", "keys/server.pem"]:
+            self.assertTrue(
+                any(_glob_match(pattern, path) for pattern in patterns),
+                "%r must be refused by a secrets glob under the "
+                "manager-settled semantics" % path,
+            )
+
+    def test_key_glob_refuses_key_files_at_any_depth(self):
+        """*.key refuses id_rsa.key and secrets/id_rsa.key (ledger note)."""
+        patterns = self._secrets_patterns()
+        for path in ["id_rsa.key", "secrets/id_rsa.key"]:
+            self.assertTrue(
+                any(_glob_match(pattern, path) for pattern in patterns),
+                "%r must be refused by a secrets glob under the "
+                "manager-settled semantics" % path,
+            )
+
+    def test_readme_matches_no_secret_glob(self):
+        """None of the three globs matches README.md (the plan's negative)."""
+        patterns = self._secrets_patterns()
+        self.assertFalse(
+            any(_glob_match(pattern, "README.md") for pattern in patterns),
+            "README.md must be refused by none of the secrets globs",
+        )
+
+    def test_validate_document_rejects_secrets_rule_missing_patterns_naming_the_rule(self):
+        """A secrets rule without 'patterns' raises GuardrailsError naming the rule.
+
+        The red: validate_document currently checks only the features
+        level and permissionGate.autoDenyPatterns, so it does not check
+        policies.rules - assertRaises catches nothing and this fails
+        with AssertionError ("not raised").
+        """
+        validate_document = self._get_validate_document()
+        bad = self._mutated(self._delete_secrets_rule_key("patterns"))
+        self.assertNotEqual(
+            bad,
+            self._get_build_document()(),
+            "the malformed document must differ from the built document "
+            "in exactly one place (secrets rule without 'patterns')",
+        )
+        with self.assertRaises(
+            self._piguardrails().GuardrailsError,
+        ) as ctx:
+            validate_document(bad)
+        self.assertIn(
+            "secrets",
+            str(ctx.exception),
+            "GuardrailsError must name the rule id (secrets)",
+        )
+
+    def test_validate_document_rejects_secrets_rule_missing_protection_naming_the_rule(self):
+        """A secrets rule without 'protection' raises GuardrailsError naming the rule.
+
+        The red: validate_document does not check policies.rules yet -
+        assertRaises catches nothing and this fails with AssertionError
+        ("not raised").
+        """
+        validate_document = self._get_validate_document()
+        bad = self._mutated(self._delete_secrets_rule_key("protection"))
+        self.assertNotEqual(
+            bad,
+            self._get_build_document()(),
+            "the malformed document must differ from the built document "
+            "in exactly one place (secrets rule without 'protection')",
+        )
+        with self.assertRaises(
+            self._piguardrails().GuardrailsError,
+        ) as ctx:
+            validate_document(bad)
+        self.assertIn(
+            "secrets",
+            str(ctx.exception),
+            "GuardrailsError must name the rule id (secrets)",
+        )
+
+    def test_validate_document_rejects_secrets_rule_missing_id(self):
+        """A secrets rule without 'id' raises GuardrailsError.
+
+        There is no id left to name in the message, so only the error
+        type is asserted. The red: validate_document does not check
+        policies.rules yet - assertRaises catches nothing and this
+        fails with AssertionError ("not raised").
+        """
+        validate_document = self._get_validate_document()
+        bad = self._mutated(self._delete_secrets_rule_key("id"))
+        self.assertNotEqual(
+            bad,
+            self._get_build_document()(),
+            "the malformed document must differ from the built document "
+            "in exactly one place (secrets rule without 'id')",
+        )
+        with self.assertRaises(
+            self._piguardrails().GuardrailsError,
+        ):
+            validate_document(bad)
 
 
 if __name__ == "__main__":
