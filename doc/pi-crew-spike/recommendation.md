@@ -26,8 +26,20 @@ captured event stream shows the tool executing, and the `.crew/` tree
 under `./results/fixture/.crew/` is present only if the crew state machine
 actually ran.
 
-The run has not been performed in this commit — the verdict lands when the
-recorded run does.
+**GO**.
+The recorded run 2 (driven by the harder delegation goal,
+`CREW_SPIKE_PROMPT` — run 1, driven by the trivial goal, solved the task
+directly without calling `team`, which is why the goal was hardened) shows
+the tool loaded and ran: the top-level model's only executed tools were the
+two `team` actions — `run` and `summary` — no direct read or edit, so the
+work was delegated to the crew, not done by the parent. Model routing hit the
+local gateway throughout, every model call addressing
+`llamaswap/Qwen/Qwen3.8-27B-FP8`. The crew executed the full 3-task
+`fast-fix` workflow headless — `01_explore` (explorer), `02_execute`
+(executor), `03_verify` (verifier), all completed — and wrote a live `.crew/`
+state tree; `record.json` carries `team_tool_seen: true`, `completed: true`,
+exit 0 and a wall time of 298.2 s, with the populated `crew_tree`
+(`README.md`, `state/metrics/2026-11-02.jsonl`, …).
 
 ## 2. Postinstall and `--ignore-scripts`
 
@@ -75,8 +87,21 @@ Whether the documented shape is what a single `team run` actually writes,
 and what each field contains, is measured by the recorded run — not
 assumed here.
 
-The run has not been performed in this commit — the verdict lands when the
-recorded run does.
+**GO**, with a finding on the shape.
+The prior-art shape is largely met. The `team` tool result's `details.metrics`
+carries `runId`, `timestamp` (not the prior art's `at`), `taskCount`,
+`completedCount`, `failedCount`, `totalCost`, `durationMs` and
+`consistencyScore`. The record is not a single flat file: it lives embedded
+in the event-stream tool result, and the crew state machine appends a
+Prometheus-style metrics JSONL under `.crew/state/metrics/` — while
+`.crew/state/runs/` was empty in the recorded run.
+
+The finding is the orchestration overhead on a task this small: the 3-task
+run consumed 33,789 tokens in 253,086 ms, and the package's preflight
+advised that the sequential chain was 5.7× slower and 1.9× costlier than
+three raw Agent calls. `totalCost` is 0 — the local model reports no price,
+so the cost figure is unavailable rather than free
+([`doc/external/pi-dev/packages/pi-crew.md`](../external/pi-dev/packages/pi-crew.md)).
 
 ---
 
