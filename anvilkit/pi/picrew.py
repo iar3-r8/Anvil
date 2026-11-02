@@ -2,9 +2,12 @@
 
 ``plans/pi-crew-spike.md`` behaviour 2 drives the one recorded ``pi-crew``
 spike: a single ``pi --mode json`` invocation with the crew extension loaded
-(``-e``) and the ``team`` tool allowlisted, against the ``pifixture`` trivial
-red task reused verbatim from ``pibakeoff.BAKEOFF_PROMPT`` so the crew run is
-comparable to the three recorded bake-off configurations.
+(``-e``) and the ``team`` tool allowlisted, against the module's own
+``CREW_SPIKE_PROMPT`` - the harder delegation goal on the ``pifixture``
+fixture, which instructs the model to hand the red-task fix to the ``team``
+tool. Recorded run 1 (the trivial goal, behaviour 5) was solved directly
+without calling ``team``, leaving the run-half of the spike's unknown
+unmeasured; the goal prompt is the variable.
 
 The driver decides nothing about tokens: the models document comes from
 ``anvilkit.pi.piargv.models_document``, the fixture and the red/green
@@ -53,6 +56,21 @@ _DEFAULT_EXTENSION_PATH = "/usr/local/lib/node_modules/pi-crew/index.ts"
 # spawned per task), not the bake-off's 600 s.
 CREW_SPIKE_MAX_TOKENS = 4096
 CREW_SPIKE_TIMEOUT_S = 1800.0
+
+# The harder goal the one recorded run is driven against
+# (plans/pi-crew-spike.md behaviour 5): a multi-part task on
+# ``bakeoff_fixture/`` that instructs the model to hand the work to the
+# ``team`` tool rather than solve it directly. Recorded run 1 reused
+# ``pibakeoff.BAKEOFF_PROMPT`` and was solved directly without calling
+# ``team``, so the run-half of unknown 1 is the variable this goal measures.
+CREW_SPIKE_PROMPT = (
+    "Hand this work to the `team` tool rather than doing it yourself: "
+    "run a team workflow over `bakeoff_fixture/` that (1) reads "
+    "`bakeoff_fixture/adder.py`, (2) edits `add` so it returns `a + b` "
+    "instead of `a - b`, and (3) runs the fixture tests to confirm the "
+    "assertion `add(2, 3) == 5` in `tests/test_adder.py` now passes. "
+    "Do not edit the test file."
+)
 
 # The locked pi-crew user-config values the agent dir must carry
 # (doc/external/pi-dev/packages/pi-crew.md: ``runtime.mode`` and
@@ -237,7 +255,7 @@ def run_spike(
                 "-a",
                 "--no-session",
                 "--",
-                pibakeoff.BAKEOFF_PROMPT,
+                CREW_SPIKE_PROMPT,
             ],
             "cwd": str(fixture_dir),
             "stdin": "/dev/null",
