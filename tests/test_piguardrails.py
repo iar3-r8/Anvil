@@ -98,6 +98,25 @@ class PiguardrailsTestCase(unittest.TestCase):
         )
         return build_document
 
+    def _get_package_source(self):
+        """Fetch ``anvilkit.pi.piguardrails.PACKAGE_SOURCE``, failing clearly if absent.
+
+        The module "owns the pinned package source" (``plans/
+        pi-guardrails.md``, Scope): the constant is the exact pinned
+        source string for ``@aliou/pi-guardrails``. Fetching it here -
+        not at module level - keeps a missing attribute a named-test
+        failure (behaviour 13's red), never a collection error.
+        """
+        piguardrails = self._piguardrails()
+        package_source = getattr(piguardrails, "PACKAGE_SOURCE", None)
+        self.assertIsNotNone(
+            package_source,
+            "anvilkit.pi.piguardrails.PACKAGE_SOURCE is missing; the "
+            "module must own the pinned package source (behaviour 13, "
+            "plans/pi-guardrails.md)",
+        )
+        return package_source
+
     def _get_validate_document(self):
         """Fetch ``anvilkit.pi.piguardrails.validate_document``, failing clearly if absent.
 
@@ -1131,6 +1150,71 @@ class TestHostilePatternSurvivesJsonDumps(PiguardrailsTestCase):
             "the round-trip must keep the document's booleans real "
             "booleans (json validity by construction)",
         )
+
+
+class TestPackagePinIsExact(PiguardrailsTestCase):
+    """Behaviour 13: package-pin-is-exact.
+
+    Given: the module's package source constant. When: it is read.
+    Then: it is exactly ``npm:@aliou/pi-guardrails@0.21.0`` — a pinned
+    version, never a range or a bare name. Error: a bare or
+    range-pinned spelling fails the test.
+
+    The shape ``npm:<name>@<version>`` is the Pi package source form
+    and "Versioned npm specifications are pinned" (doc/external/
+    pi-dev/packages.md, "Choose a source"); the adopted pin 0.21.0 is
+    manager-settled (0.20.0 fixed upstream #123, ``plans/
+    pi-guardrails.md`` Reuse check).
+
+    Red: the module has no ``PACKAGE_SOURCE`` constant yet, so both
+    tests fail at the ``assertIsNotNone`` guard inside the fetch
+    helper — a named-test failure on the missing attribute, never a
+    collection error.
+    """
+
+    _EXPECTED_PIN = "npm:@aliou/pi-guardrails@0.21.0"
+
+    # Range operators that would turn the pin into a range. The
+    # leading ``=`` covers ``>=``/``<=``/``=``; ``*`` is the bare
+    # wildcard.
+    _RANGE_OPERATORS = ("^", "~", ">=", "<=", ">", "<", "=", "*")
+
+    def test_package_source_is_exactly_the_pinned_version(self):
+        package_source = self._get_package_source()
+        self.assertEqual(
+            package_source,
+            self._EXPECTED_PIN,
+            "PACKAGE_SOURCE must be exactly the pinned source "
+            "npm:@aliou/pi-guardrails@0.21.0 - a pinned version, "
+            "never a range or a bare name",
+        )
+
+    def test_package_source_is_not_bare_or_range(self):
+        package_source = self._get_package_source()
+        self.assertEqual(
+            package_source,
+            self._EXPECTED_PIN,
+            "PACKAGE_SOURCE must match the exact pinned shape "
+            "npm:@aliou/pi-guardrails@0.21.0",
+        )
+        # A bare name carries nothing after the last ``@``; the version
+        # part must be present.
+        version = package_source.rsplit("@", 1)[-1]
+        self.assertNotEqual(
+            version,
+            "",
+            "PACKAGE_SOURCE must carry a version after the last @; a "
+            "bare name (no version) is not a pin",
+        )
+        # A range operator anywhere in the version part is a drift to a
+        # range, not an exact pin.
+        for operator in self._RANGE_OPERATORS:
+            self.assertNotIn(
+                operator,
+                version,
+                "PACKAGE_SOURCE must be a pinned version; %r is a range "
+                "operator, never an exact pin" % operator,
+            )
 
 
 if __name__ == "__main__":
