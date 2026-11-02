@@ -54,10 +54,13 @@ import re
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from anvilkit import render  # noqa: E402
 
 FIXTURES = REPO_ROOT / "tests" / "fixtures"
 
@@ -116,6 +119,28 @@ class PiguardrailsTestCase(unittest.TestCase):
             "plans/pi-guardrails.md ledger) has not been implemented yet",
         )
         return validate_document
+
+    def _get_guardrails_settings(self):
+        """Fetch ``anvilkit.render.guardrails_settings``, failing clearly if absent.
+
+        The manager-pinned render seam (behaviour 11, ``plans/
+        pi-guardrails.md`` ledger): ``render.guardrails_settings() -> str``,
+        no arguments, delegates to ``build_document``, calls
+        ``validate_document`` on the result and returns the rendered string
+        (the dict + ``json.dumps`` path mirroring the other renderers in
+        ``anvilkit/render.py``). ``anvilkit.render`` exists, so the module is
+        imported at module level above; the function itself is fetched
+        inside the test body so its absence is a named-test failure, never
+        a collection error.
+        """
+        guardrails_settings = getattr(render, "guardrails_settings", None)
+        self.assertTrue(
+            callable(guardrails_settings),
+            "anvilkit.render.guardrails_settings is not callable; the "
+            "render seam for the guardrails document (behaviour 11, "
+            "plans/pi-guardrails.md ledger) has not been implemented yet",
+        )
+        return guardrails_settings
 
     def _mutated(self, mutate):
         """A deep copy of the built document with exactly one mutation.
@@ -875,6 +900,236 @@ class TestUnknownKeyRaisesRenderError(PiguardrailsTestCase):
             "the gate-config rule's protection must be 'readOnly' "
             "(manager decision note: blocks the edit without blocking "
             "reads)",
+        )
+
+
+class TestRenderDelegatesAndTranslates(PiguardrailsTestCase):
+    """Behaviour 11: render-delegates-and-translates.
+
+    Given: the same inputs to ``render.guardrails_settings()`` and the
+    delegate. When: both are compared, then the delegate is made to
+    fail. Then: the rendered string parses to exactly the delegate's
+    document. Error: ``GuardrailsError`` surfaces as ``RenderError``;
+    the two types are unrelated, so no delegate error leaks.
+
+    The seam is manager-pinned by the ledger: ``render.guardrails_settings()
+    -> str``, no arguments, delegates to ``piguardrails.build_document()``
+    (fetched as a module attribute, the same seam ``render.pi_models_settings``
+    uses for ``piargv.models_document``), calls ``validate_document`` on the
+    result, and returns the rendered string — the dict + ``json.dumps`` path
+    mirroring the other renderers in ``anvilkit/render.py``.
+
+    The delegate is made to fail by patching ``piguardrails.build_document``
+    (the module attribute the render module looks up at call time, so the
+    patch sits at exactly the seam the production code goes through) to
+    raise ``GuardrailsError``.
+
+    Both tests FAIL today for the right reason: ``render.guardrails_settings``
+    does not exist, so the lazy fetch inside each test body fails with a
+    named AssertionError, never a collection error.
+    """
+
+    def test_rendered_string_parses_to_exactly_the_delegate_document(self):
+        """The rendered string parses to exactly build_document()'s output.
+
+        The comparison is on parsed structures (full parsed equality —
+        key ordering and whitespace are not part of the contract, per
+        tests/fixtures/README.md), and the parse result's ``enabled``
+        must be the boolean ``True`` (behaviour 3's settled value,
+        carried through the seam unchanged).
+        """
+        guardrails_settings = self._get_guardrails_settings()
+        build_document = self._get_build_document()
+
+        rendered = guardrails_settings()
+        self.assertIsInstance(
+            rendered,
+            str,
+            "render.guardrails_settings must return the rendered "
+            "document as a string (the dict + json.dumps path the "
+            "other renderers use)",
+        )
+        parsed = json.loads(rendered)
+        self.assertEqual(
+            parsed,
+            build_document(),
+            "the rendered guardrails document must parse to exactly "
+            "the delegate's (build_document's) document",
+        )
+        self.assertIs(
+            True,
+            parsed.get("enabled"),
+            "the parse result's enabled must be the boolean True "
+            "(the golden's settled value, carried through the seam)",
+        )
+
+    def test_guardrails_error_surfaces_as_render_error_and_never_leaks(self):
+        """A delegate GuardrailsError surfaces as RenderError; no leak.
+
+        ``GuardrailsError`` is translated to ``RenderError`` at the seam
+        — the two types are unrelated (neither subclasses the other),
+        so ``assertRaises(RenderError)`` proves the delegate's error was
+        translated rather than leaked past.
+        """
+        guardrails_settings = self._get_guardrails_settings()
+        piguardrails = self._piguardrails()
+
+        self.assertFalse(
+            issubclass(render.RenderError, piguardrails.GuardrailsError),
+            "the leak guard is only meaningful because the two exception "
+            "types are unrelated",
+        )
+        self.assertFalse(
+            issubclass(piguardrails.GuardrailsError, render.RenderError),
+            "the leak guard is only meaningful because the two exception "
+            "types are unrelated",
+        )
+
+        def boom():
+            raise piguardrails.GuardrailsError("delegate refused")
+
+        with mock.patch.object(piguardrails, "build_document", boom):
+            with self.assertRaises(render.RenderError) as ctx:
+                guardrails_settings()
+        self.assertNotIsInstance(
+            ctx.exception,
+            piguardrails.GuardrailsError,
+            "the surfaced error must be a RenderError, never a leaked "
+            "GuardrailsError",
+        )
+
+
+class TestHostilePatternSurvivesJsonDumps(PiguardrailsTestCase):
+    """Behaviour 12: hostile-pattern-survives-json-dumps.
+
+    Given: a pattern containing a quote, a backslash and a newline.
+    When: the rendered string is parsed back. Then: the value is
+    byte-identical — valid by construction via ``json.dumps``, never
+    string substitution. Error: none.
+
+    Because ``render.guardrails_settings()`` takes no arguments, the
+    hostile value is injected through the manager-pinned ``overrides``
+    argument on ``build_document`` (behaviour 12 ledger note):
+    ``build_document(overrides={"autoDenyPatterns": [...]})``. The
+    no-argument call is unchanged, so behaviour 3's golden parity stays
+    green.
+
+    The red is split by the manager, because the seam cannot carry the
+    hostile value directly (no arguments):
+
+    - (a) ``test_hostile_pattern_round_trips_through_json_dumps`` pins
+      the round-trip itself: a document whose ``autoDenyPatterns``
+      carries the hostile pattern, serialized with ``json.dumps`` (any
+      style — whitespace is not part of the contract) and parsed back,
+      carries the pattern byte-identical. This PASSES today — it pins
+      ``json.dumps``'s validity-by-construction for this value (the
+      injection into the document is test-side for now; the green's
+      ``overrides`` parameter is the production path for the same
+      value).
+    - (b) ``test_build_document_respects_the_overrides_argument`` pins
+      the injection path: ``build_document`` accepts the optional
+      ``overrides`` keyword and respects it (the overridden
+      ``autoDenyPatterns`` appears in the built document). This FAILS
+      today with ``TypeError`` — the ``overrides`` parameter does not
+      exist yet. That is the named red: the injection path does not
+      exist.
+
+    Once the green lands (the ``overrides`` parameter implemented),
+    both assertions pass in one step.
+    """
+
+    # A pattern containing a double quote, a backslash and a newline —
+    # the value the plan names. As a real Python string, ``x"\\y\nz``
+    # carries all three characters.
+    _HOSTILE_PATTERN = 'x"\\y\nz'
+
+    def _document_with_hostile_pattern(self):
+        """A deep copy of the built document carrying the hostile pattern.
+
+        The copy differs from the built document in exactly one place
+        (``permissionGate.autoDenyPatterns`` now carries the hostile
+        pattern), so the round-trip assertion targets exactly the
+        hostile value. Test-side injection: once the green lands,
+        ``build_document(overrides=...)`` is the production path for
+        the same value.
+        """
+        built = self._get_build_document()()
+        document = copy.deepcopy(built)
+        document["permissionGate"]["autoDenyPatterns"] = [
+            {"pattern": self._HOSTILE_PATTERN},
+        ]
+        return document
+
+    def test_build_document_respects_the_overrides_argument(self):
+        """build_document(overrides=...) is accepted and respected.
+
+        THE RED of behaviour 12: ``build_document`` takes no arguments
+        today, so the keyword call raises ``TypeError`` — the injection
+        path does not exist yet. When the green lands (the optional
+        ``overrides`` keyword, default ``None``, implemented), the
+        built document must carry exactly the overridden
+        ``autoDenyPatterns`` list, and the no-argument call (behaviour
+        3's golden parity) must be unaffected.
+        """
+        build_document = self._get_build_document()
+        overridden = build_document(
+            overrides={
+                "autoDenyPatterns": [{"pattern": self._HOSTILE_PATTERN}],
+            }
+        )
+        self.assertEqual(
+            overridden.get("permissionGate", {}).get("autoDenyPatterns"),
+            [{"pattern": self._HOSTILE_PATTERN}],
+            "build_document must respect the overrides argument: the "
+            "built document must carry exactly the overridden "
+            "autoDenyPatterns list",
+        )
+        # The no-argument call is unchanged: behaviour 3's golden parity
+        # must stay green (the overrides argument must default to None,
+        # not mutate the fixed document).
+        self.assertEqual(
+            build_document(),
+            self._get_build_document()(),
+            "the no-argument call must be unchanged when the overrides "
+            "argument is absent (behaviour 3's golden parity)",
+        )
+
+    def test_hostile_pattern_round_trips_through_json_dumps(self):
+        """The hostile pattern survives json.dumps -> json.loads byte-identical.
+
+        (a) of the manager's split: a document carrying the hostile
+        pattern is serialized with ``json.dumps`` (the same dict +
+        ``json.dumps`` path the seam will use — any style, whitespace
+        is not part of the contract) and parsed back; the hostile
+        pattern value must be byte-identical in the parsed result.
+        This PASSES today: ``json.dumps`` is valid by construction, so
+        a value containing a quote, a backslash and a newline
+        round-trips exactly. It stays green once the green lands,
+        pinning the property the whole behaviour exists for — never
+        string substitution.
+        """
+        document = self._document_with_hostile_pattern()
+        rendered = json.dumps(document, indent=2)
+        parsed = json.loads(rendered)
+        patterns = parsed.get("permissionGate", {}).get("autoDenyPatterns")
+        self.assertIsInstance(
+            patterns,
+            list,
+            "the parsed document must carry the overridden "
+            "autoDenyPatterns list",
+        )
+        self.assertEqual(
+            [entry.get("pattern") for entry in patterns],
+            [self._HOSTILE_PATTERN],
+            "a pattern containing a quote, a backslash and a newline "
+            "must parse back byte-identical - valid by construction "
+            "via json.dumps, never string substitution",
+        )
+        self.assertIsInstance(
+            parsed.get("enabled"),
+            bool,
+            "the round-trip must keep the document's booleans real "
+            "booleans (json validity by construction)",
         )
 
 
