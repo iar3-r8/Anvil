@@ -9,13 +9,23 @@ the document is built by construction here, never read from the fixture at
 runtime. The schema source of truth is
 ``doc/external/pi-guardrails/schema.md``.
 
-One exception type: ``GuardrailsError``. This cycle builds only the fixed
-document; behaviour 9 (unknown-key rejection) and behaviour 10 (emitted-keys
-drift guard) extend ``_validate`` in their later red/green cycles.
+One exception type: ``GuardrailsError``. ``build_document`` calls the
+public ``validate_document`` seam (behaviour 4 ledger decision); this
+cycle validates the ``features`` level only. Behaviour 9 (unknown-key
+rejection) and behaviour 10 (emitted-keys drift guard) extend the
+per-level allowed-key checks in their later red/green cycles.
 """
 
-from typing import Any, Dict
+from typing import Any, Dict, FrozenSet
 
+# The schema's exact feature-key set (``doc/external/pi-guardrails/schema.md``:
+# ``features`` allows exactly these four booleans, ``additionalProperties:
+# false``). Behaviour 4 checks this level; behaviours 9/10 add their own
+# per-level constants (top level, then the emitted-key drift guard) that
+# follow this pattern.
+FEATURE_KEYS: FrozenSet[str] = frozenset(
+    ["pathAccess", "permissionGate", "policies", "protectEnvFiles"]
+)
 
 class GuardrailsError(Exception):
     """Any refusal to build the guardrails document.
@@ -27,14 +37,50 @@ class GuardrailsError(Exception):
     """
 
 
+def _validate_features(features: Dict[str, Any]) -> None:
+    """Check the ``features`` level against the schema (behaviour 4).
+
+    Every value must be a real boolean - ``type(value) is bool`` rejects
+    the truthy non-booleans JSON can carry - and the key set must be
+    exactly ``FEATURE_KEYS`` (schema ``additionalProperties: false``).
+    Raises ``GuardrailsError`` naming the offending key, checking unlisted
+    keys before type errors so a single mutation surfaces a single cause.
+    """
+    for key in sorted(features):
+        if key not in FEATURE_KEYS:
+            raise GuardrailsError(
+                "guardrails features has unlisted key %r; allowed: %s"
+                % (key, sorted(FEATURE_KEYS))
+            )
+    for key in sorted(features):
+        if type(features[key]) is not bool:
+            raise GuardrailsError(
+                "guardrails features.%s must be a boolean, got %r"
+                % (key, type(features[key]).__name__)
+            )
+
+
 def _validate(document: Dict[str, Any]) -> None:
     """Check the built document before it is returned.
 
-    A no-op this cycle: behaviour 3 builds the fixed document and
-    ``_validate`` exists as the explicit seam where behaviour 9 (unknown-key
-    rejection) and behaviour 10 (schema drift guard) will check key sets,
-    so ``build_document`` does not grow in those cycles.
+    Called by ``build_document``; currently validates the ``features``
+    level only (behaviour 4). Behaviour 9 (unknown-key rejection at the
+    top level) and behaviour 10 (emitted-keys drift guard) add their
+    per-level checks here in their later red/green cycles.
     """
+    _validate_features(document["features"])
+
+
+def validate_document(document: Dict[str, Any]) -> None:
+    """Public validation seam (behaviour 4, manager-pinned by the ledger).
+
+    Raises ``GuardrailsError`` naming the offending key when the document
+    violates the schema; returns ``None`` when it passes. ``build_document``
+    calls it on every built document, and behaviour 4's error-clause tests
+    call it directly with malformed deep copies - its error case is
+    unreachable through the no-argument builder.
+    """
+    _validate(document)
 
 
 def build_document() -> Dict[str, Any]:
