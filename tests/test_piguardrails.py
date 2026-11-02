@@ -1,8 +1,9 @@
 """Tests for anvilkit.pi.piguardrails - the guardrails document builder.
 
 Written before the implementation (TDD, ``plans/pi-guardrails.md``;
-behaviour 3 "guardrails-document-golden-parity" and behaviour 4
-"features-toggles-are-the-four-schema-booleans"). Module and attribute
+behaviours 3 "guardrails-document-golden-parity", 4
+"features-toggles-are-the-four-schema-booleans" and 5
+"autodeny-blocks-the-four-git-subcommands"). Module and attribute
 lookups run **inside the test methods** through the
 ``PiguardrailsTestCase`` helpers, so a missing module or missing
 attribute surfaces as a named-test error rather than a collection error.
@@ -92,6 +93,40 @@ class PiguardrailsTestCase(unittest.TestCase):
         )
         return build_document
 
+    def _get_validate_document(self):
+        """Fetch ``anvilkit.pi.piguardrails.validate_document``, failing clearly if absent.
+
+        The manager-pinned document validator (behaviour 4 seam,
+        ``plans/pi-guardrails.md`` ledger): it raises
+        ``GuardrailsError`` naming the offending key and is called by
+        ``build_document``. Because ``build_document`` takes no
+        arguments its error case is unreachable through it, so the
+        error-clause tests (behaviours 4 and 5) call it directly with
+        malformed documents. Fetching it here - not at module level -
+        keeps a missing attribute a named-test failure.
+        """
+        piguardrails = self._piguardrails()
+        validate_document = getattr(piguardrails, "validate_document", None)
+        self.assertTrue(
+            callable(validate_document),
+            "anvilkit.pi.piguardrails.validate_document is not callable; "
+            "the manager-pinned document validator (behaviour 4 seam, "
+            "plans/pi-guardrails.md ledger) has not been implemented yet",
+        )
+        return validate_document
+
+    def _mutated(self, mutate):
+        """A deep copy of the built document with exactly one mutation.
+
+        The valid document comes from ``build_document()`` itself, so the
+        malformed document differs from the one the validator must accept
+        in exactly one way.
+        """
+        built = self._get_build_document()()
+        document = copy.deepcopy(built)
+        mutate(document)
+        return document
+
 
 class TestBuildDocumentGoldenParity(PiguardrailsTestCase):
     """Behaviour 3: guardrails-document-golden-parity.
@@ -158,36 +193,6 @@ class TestFeaturesTogglesAreTheFourSchemaBooleans(PiguardrailsTestCase):
     _SCHEMA_FEATURE_KEYS = frozenset(
         ["permissionGate", "policies", "pathAccess", "protectEnvFiles"]
     )
-
-    def _get_validate_document(self):
-        """Fetch ``anvilkit.pi.piguardrails.validate_document``, failing clearly if absent.
-
-        Behaviour 4's error clause is unreachable through the no-argument
-        ``build_document`` (the document is fixed by construction), so the
-        validator is the seam under test. Fetching it here - not at module
-        level - keeps a missing attribute a named-test failure.
-        """
-        piguardrails = self._piguardrails()
-        validate_document = getattr(piguardrails, "validate_document", None)
-        self.assertTrue(
-            callable(validate_document),
-            "anvilkit.pi.piguardrails.validate_document is not callable; "
-            "the manager-pinned document validator (behaviour 4 seam, "
-            "plans/pi-guardrails.md ledger) has not been implemented yet",
-        )
-        return validate_document
-
-    def _mutated(self, mutate):
-        """A deep copy of the built document with exactly one mutation.
-
-        The valid document comes from ``build_document()`` itself, so the
-        malformed document differs from the one the validator must accept
-        in exactly one way.
-        """
-        built = self._get_build_document()()
-        document = copy.deepcopy(built)
-        mutate(document)
-        return document
 
     def test_features_carry_exactly_the_four_schema_keys(self):
         built = self._get_build_document()()
@@ -269,6 +274,167 @@ class TestFeaturesTogglesAreTheFourSchemaBooleans(PiguardrailsTestCase):
             "shell",
             str(ctx.exception),
             "GuardrailsError must name the offending key (shell)",
+        )
+
+
+def _matches(pattern, command):
+    """Manager-settled substring rule (plans/pi-guardrails.md ledger).
+
+    A pattern matches a command iff the command equals the pattern, or
+    starts with the pattern followed by whitespace. The package matches
+    command strings, not ASTs, so the boundary is on the caller side;
+    this helper pins that rule so the negative tests are precise (a raw
+    substring match would let ``git reset`` match ``git push --reset-author``).
+    """
+    return command == pattern or command.startswith(pattern + " ")
+
+
+class TestAutoDenyBlocksTheFourGitSubcommands(PiguardrailsTestCase):
+    """Behaviour 5: autodeny-blocks-the-four-git-subcommands.
+
+    Given: the commands ``git commit -m x``, ``git push``,
+    ``git reset --hard``, ``git rebase -i``. When: each is matched
+    against ``permissionGate.autoDenyPatterns`` by the documented
+    substring rule. Then: every one matches an entry; ``git status``
+    and ``git diff`` match none. The ledger's added negative pins the
+    rule itself: ``git reset`` must NOT match ``git push
+    --reset-author`` (the false positive a raw substring rule would
+    produce), while ``git push`` still matches that command.
+    Error: an entry missing its required ``pattern`` key raises
+    ``GuardrailsError`` via ``validate_document`` (the seam behaviour 4
+    established; the manager-settled ledger note pins the matching rule).
+
+    The matching-rule tests pass today against the existing golden -
+    they pin the rule. The error-clause test is the red: it fails
+    because ``validate_document`` does not check ``permissionGate``
+    yet (assertRaises catches nothing -> AssertionError).
+    """
+
+    _REQUIRED_PATTERNS = frozenset(
+        ["git commit", "git push", "git reset", "git rebase"]
+    )
+
+    def _auto_deny_patterns(self):
+        """The built document's ``permissionGate.autoDenyPatterns`` list."""
+        built = self._get_build_document()()
+        gate = built.get("permissionGate")
+        self.assertIsInstance(
+            gate,
+            dict,
+            "the built document must carry a permissionGate object",
+        )
+        patterns = gate.get("autoDenyPatterns")
+        self.assertIsInstance(
+            patterns,
+            list,
+            "permissionGate must carry an autoDenyPatterns list",
+        )
+        return patterns
+
+    def test_auto_deny_patterns_are_exactly_the_four_git_patterns(self):
+        """The entries are pattern-only objects carrying exactly the four patterns."""
+        patterns = self._auto_deny_patterns()
+        for entry in patterns:
+            self.assertIsInstance(
+                entry,
+                dict,
+                "each autoDenyPatterns entry must be an object "
+                "(schema: PatternConfig), not a bare string",
+            )
+            self.assertEqual(
+                set(entry),
+                {"pattern"},
+                "each autoDenyPatterns entry must carry only the "
+                "required 'pattern' key (manager decision note)",
+            )
+        self.assertEqual(
+            {entry["pattern"] for entry in patterns},
+            set(self._REQUIRED_PATTERNS),
+            "autoDenyPatterns must be exactly {git commit, git push, "
+            "git reset, git rebase} - no extra, none missing",
+        )
+
+    def test_each_of_the_four_git_subcommands_matches_an_entry(self):
+        """git commit -m x / git push / git reset --hard / git rebase -i all match."""
+        patterns = [entry["pattern"] for entry in self._auto_deny_patterns()]
+        for command in [
+            "git commit -m x",
+            "git push",
+            "git reset --hard",
+            "git rebase -i",
+        ]:
+            self.assertTrue(
+                any(_matches(pattern, command) for pattern in patterns),
+                "%r must match an autoDenyPatterns entry under the "
+                "documented substring rule" % command,
+            )
+
+    def test_git_status_and_git_diff_match_no_entry(self):
+        """git status / git diff (the plan's own negatives) match no entry."""
+        patterns = [entry["pattern"] for entry in self._auto_deny_patterns()]
+        for command in ["git status", "git diff"]:
+            self.assertFalse(
+                any(_matches(pattern, command) for pattern in patterns),
+                "%r must match no autoDenyPatterns entry" % command,
+            )
+
+    def test_git_reset_does_not_match_git_push_with_reset_author_flag(self):
+        """git reset (the ledger's added negative) must not match git push --reset-author.
+
+        Raw substring has a false positive inside our own set: ``git reset``
+        is a substring of ``git push --reset-author``. The package matches
+        command strings, not ASTs, so the boundary is on the caller side -
+        the manager-settled rule (equal, or pattern + whitespace) is what
+        pins it. ``git push`` must still match the same command.
+        """
+        self.assertFalse(
+            _matches("git reset", "git push --reset-author"),
+            "under the manager-settled rule, 'git reset' must not match "
+            "'git push --reset-author' - a naive substring rule would",
+        )
+        self.assertTrue(
+            _matches("git push", "git push --reset-author"),
+            "'git push' must still match 'git push --reset-author' "
+            "under the manager-settled rule",
+        )
+        patterns = [entry["pattern"] for entry in self._auto_deny_patterns()]
+        self.assertTrue(
+            any(_matches(pattern, "git push --reset-author")
+                for pattern in patterns),
+            "git push --reset-author must match an entry (git push), "
+            "so the gate blocks it for the right reason",
+        )
+
+    def test_validate_document_rejects_entry_missing_pattern_key(self):
+        """An entry without its required 'pattern' key raises GuardrailsError.
+
+        The red: validate_document currently checks only the features
+        level, so it does not reject a pattern-less entry - assertRaises
+        catches nothing and this fails with AssertionError.
+        """
+        validate_document = self._get_validate_document()
+
+        def mutate(document):
+            document["permissionGate"]["autoDenyPatterns"][0] = {
+                "description": "commits",
+            }
+
+        bad = self._mutated(mutate)
+        self.assertNotEqual(
+            bad,
+            self._get_build_document()(),
+            "the malformed document must differ from the built document "
+            "in exactly one place (autoDenyPatterns[0] without a pattern key)",
+        )
+        with self.assertRaises(
+            self._piguardrails().GuardrailsError,
+        ) as ctx:
+            validate_document(bad)
+        self.assertIn(
+            "autoDenyPatterns",
+            str(ctx.exception),
+            "GuardrailsError must name the offending section "
+            "(autoDenyPatterns) or its index/entry",
         )
 
 
