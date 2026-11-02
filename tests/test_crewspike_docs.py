@@ -19,9 +19,9 @@ Four files are data under test, read exactly as committed:
   the ``--ignore-scripts`` verdict for it.
 - ``doc/pi-crew-spike/README.md`` and ``doc/pi-crew-spike/recommendation.md``
   — the reproduce recipe as literal lines, the artifact layout, the three
-  unknowns with headings, the recorded-run marker in the two run-dependent
-  sections (no verdict yet, no invented numbers), and the back-link to the
-  intake issue.
+  unknowns with headings, the recorded-run verdicts in the two run-dependent
+  sections (measured facts only, no invented numbers), and the back-link to
+  the intake issue.
 
 The Dockerfile, the two spike doc pages and (in part) the Compose service do
 not exist yet; until they are added the guards below report the missing file
@@ -73,8 +73,9 @@ REPRODUCE_COMMANDS = (
 )
 ARTIFACT_NAMES = ("record.json", ".crew/", "./results/")
 
-# The canonical recorded-run marker: the two run-dependent sections of the
-# recommendation page carry this line (not a verdict) until the run exists.
+# The recorded-run marker, retired: the two run-dependent sections of the
+# recommendation page carried this line (not a verdict) until the recorded
+# run; the re-anchored tests pin its absence now that the verdicts landed.
 RECORDED_RUN_MARKER = "not been performed"
 BACK_LINK = "iar3-r8/anvil#84"
 
@@ -848,55 +849,139 @@ class TestRecommendationUnknowns(RecommendationCase):
             "the per-run record shape unknown; headings: %r" % headings,
         )
 
-    def test_recommendation_headless_team_section_carries_no_verdict_yet(self):
+    def test_recommendation_headless_team_section_carries_the_recorded_go_verdict(self):
         sections = self._sections_for(r"team.*?(headless|load)|(headless|load).*?team")
         self.assertTrue(sections, "no headless 'team' tool load section found")
         body = "\n".join(s["body"] for s in sections)
 
-        self.assertNotIn(
+        self.assertIn(
             "**GO**",
             body,
-            "the headless 'team' section must not carry a GO verdict before "
-            "the run; body: %r" % body[:400],
+            "the headless 'team' section must carry the recorded **GO** "
+            "verdict (the recorded run shows the tool loaded and ran); "
+            "body: %r" % body[:400],
         )
         self.assertNotIn(
             "NO-GO",
             body,
-            "the headless 'team' section must not carry a NO-GO verdict "
-            "before the run; body: %r" % body[:400],
+            "the headless 'team' verdict is the recorded GO; a NO-GO "
+            "verdict must not appear in the same section; body: %r"
+            % body[:400],
         )
-        self.assertIn(
+        self.assertNotIn(
             RECORDED_RUN_MARKER,
             body,
-            "the headless 'team' section must carry the recorded-run marker "
-            "line containing %r (no invented results); body: %r"
-            % (RECORDED_RUN_MARKER, body[:400]),
+            "the recorded-run marker line is retired once the verdict "
+            "lands; the headless 'team' section must not still carry %r; "
+            "body: %r" % (RECORDED_RUN_MARKER, body[:400]),
+        )
+        self.assertIn(
+            "fast-fix",
+            body,
+            "the GO verdict must name the 3-task fast-fix workflow the "
+            "crew ran; body: %r" % body[:400],
+        )
+        for task in ("01_explore", "02_execute", "03_verify"):
+            self.assertIn(
+                task,
+                body,
+                "the GO verdict must name the three fast-fix tasks that "
+                "completed; %r is missing; body: %r" % (task, body[:400]),
+            )
+        self.assertTrue(
+            re.search(r"delegat", body, re.IGNORECASE),
+            "the GO verdict must state that the top-level model delegated "
+            "to the team tool (its only executed tools were team actions "
+            "run and summary, no direct read/edit); body: %r" % body[:400],
+        )
+        self.assertIn(
+            "summary",
+            body,
+            "the GO verdict must name the team actions executed (run and "
+            "summary); 'summary' is missing; body: %r" % body[:400],
+        )
+        self.assertIn(
+            ".crew/",
+            body,
+            "the GO verdict must name the live .crew/ state tree the crew "
+            "wrote; body: %r" % body[:400],
+        )
+        self.assertTrue(
+            re.search(r"llamaswap", body, re.IGNORECASE),
+            "the GO verdict must note that model routing hit the local "
+            "gateway (the llamaswap coder model); body: %r" % body[:400],
         )
 
-    def test_recommendation_record_section_carries_no_verdict_yet(self):
+    def test_recommendation_record_section_carries_the_recorded_verdict(self):
         sections = self._sections_for(r"record")
         self.assertTrue(sections, "no per-run record section found")
         body = "\n".join(s["body"] for s in sections)
 
-        self.assertNotIn(
+        self.assertIn(
             "**GO**",
             body,
-            "the per-run record section must not carry a GO verdict before "
-            "the run; body: %r" % body[:400],
+            "the per-run record section must carry the recorded **GO** "
+            "verdict; body: %r" % body[:400],
         )
         self.assertNotIn(
             "NO-GO",
             body,
-            "the per-run record section must not carry a NO-GO verdict "
-            "before the run; body: %r" % body[:400],
+            "the per-run record verdict is the recorded GO; a NO-GO "
+            "verdict must not appear in the same section; body: %r"
+            % body[:400],
         )
-        self.assertIn(
+        self.assertNotIn(
             RECORDED_RUN_MARKER,
             body,
-            "the per-run record section must carry the recorded-run marker "
-            "line containing %r (no invented results); body: %r"
-            % (RECORDED_RUN_MARKER, body[:400]),
+            "the recorded-run marker line is retired once the verdict "
+            "lands; the per-run record section must not still carry %r; "
+            "body: %r" % (RECORDED_RUN_MARKER, body[:400]),
         )
+        for key in (
+            "runId",
+            "durationMs",
+            "totalCost",
+            "timestamp",
+            "taskCount",
+            "completedCount",
+            "failedCount",
+            "consistencyScore",
+        ):
+            self.assertIn(
+                key,
+                body,
+                "the recorded verdict must name the metrics key %r from the "
+                "team tool result's details.metrics; body: %r"
+                % (key, body[:400]),
+            )
+        self.assertIn(
+            ".crew/state/metrics/",
+            body,
+            "the recorded verdict must name the metrics JSONL location "
+            ".crew/state/metrics/; body: %r" % body[:400],
+        )
+        self.assertIn(
+            ".crew/state/runs/",
+            body,
+            "the recorded verdict must name .crew/state/runs/ (empty in "
+            "the recorded run, so the record is not a single flat file); "
+            "body: %r" % body[:400],
+        )
+        self.assertTrue(
+            re.search(r"event[- ]stream", body, re.IGNORECASE),
+            "the recorded verdict must state that the record lives embedded "
+            "in the event-stream tool result, not in a single flat file; "
+            "body: %r" % body[:400],
+        )
+        for figure in ("33,789", "253,086", "5.7", "1.9"):
+            self.assertIn(
+                figure,
+                body,
+                "the recorded overhead finding must carry the measured "
+                "figure %r (the 3-task run's tokens and ms, and the "
+                "package preflight's slower/costlier multipliers); body: %r"
+                % (figure, body[:400]),
+            )
 
 
 class TestRecommendationBackLink(RecommendationCase):
