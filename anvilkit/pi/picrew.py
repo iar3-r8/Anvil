@@ -32,6 +32,7 @@ are all **recorded outcomes** in the record, never exceptions.
 
 import json
 import os
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -237,6 +238,14 @@ def run_spike(
     (agent_dir / "pi-crew.json").write_text(
         json.dumps(_PI_CREW_USER_CONFIG, sort_keys=True), encoding="utf-8"
     )
+
+    # A re-run into the same results base: the operator re-runs in the same
+    # repo, the base dir is the spike's own working directory, so a previous
+    # run's fixture is replaced and its .crew/ state must not leak into the
+    # new record (plans/pi-crew-spike.md, behaviour 6). A missing fixture dir
+    # is the no-op case; pifixture's refusal is untouched for the bake-off.
+    if fixture_dir.exists():
+        shutil.rmtree(fixture_dir)
 
     pifixture.write_fixture(fixture_dir)
 
