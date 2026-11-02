@@ -1,0 +1,269 @@
+# Guardrails config schema — `@aliou/pi-guardrails` `schema.json`
+
+Source URL: https://github.com/aliou/pi-guardrails/blob/main/schema.json
+Raw: https://raw.githubusercontent.com/aliou/pi-guardrails/main/schema.json
+Fetched: 2026-11-02 (oxylabs universal_scraper, `main` branch)
+
+Why this page is saved: it is the **config surface source of truth** for
+`.pi/extensions/guardrails.json`. The facts issue #67 depends on, all of which
+the prose README does not state precisely:
+
+- `GuardrailsConfig` is `additionalProperties: false` — an unknown top-level key
+  is schema-invalid. So is every nested object (`features`, `policies`,
+  `permissionGate`, `pathAccess`, `PolicyRule`, `PatternConfig`).
+- The allowed top-level keys are exactly: `$schema`, `version`, `enabled`,
+  `applyBuiltinDefaults`, `onboarding`, `features`, `policies`, `pathAccess`,
+  `envFiles`, `permissionGate`.
+- `features` allows exactly four booleans: `protectEnvFiles`, `policies`,
+  `permissionGate`, `pathAccess`.
+- `PolicyRule` **requires** `id`, `patterns`, `protection`. `onlyIfExists`
+  "Default true", `respectCwd` "Default true", `enabled` "Default true".
+- `patterns` items are `PatternConfig` **objects**, not bare strings:
+  `{ pattern (required), description?, regex?, terminate? }`.
+- `protection` is the enum `none | readOnly | noAccess`.
+- `permissionGate.autoDenyPatterns` items are `PatternConfig` — "Command
+  patterns that are always blocked without prompting" — so `pattern` alone is
+  valid and `description` is optional. (`permissionGate.patterns` and
+  `customPatterns` are `DangerousPattern`, which requires **both** `description`
+  and `pattern`.)
+- Default pattern matching: "glob for files, substring for commands"; `regex:
+  true` switches to full regex.
+- `pathAccess.mode` is `allow | ask | block`; `pathAccess.alwaysScope` default
+  `local` persists grants to `{project}/.pi/extensions/guardrails.json`.
+
+---
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$ref": "#/definitions/GuardrailsConfig",
+  "definitions": {
+    "GuardrailsConfig": {
+      "type": "object",
+      "properties": {
+        "$schema": { "type": "string" },
+        "version": {
+          "anyOf": [
+            { "type": "integer", "minimum": 0 },
+            { "type": "string", "pattern": "^\\d{1,15}(\\.\\d{1,15})?(\\.\\d{1,15})?$" }
+          ],
+          "description": "Config schema version, stamped by migrations."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable or disable all Guardrails checks."
+        },
+        "applyBuiltinDefaults": {
+          "type": "boolean",
+          "description": "When true, include Guardrails built-in policy rules before user rules are merged."
+        },
+        "onboarding": {
+          "type": "object",
+          "properties": {
+            "completed": { "type": "boolean", "description": "Whether onboarding is complete." },
+            "completedAt": { "type": "string", "description": "ISO timestamp for when onboarding completed." },
+            "version": { "type": "string", "description": "Package semver marker stored when onboarding completed." }
+          },
+          "additionalProperties": false,
+          "description": "Tracks whether the setup wizard has been completed. Usually managed by Guardrails."
+        },
+        "features": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "protectEnvFiles": { "type": "boolean" },
+            "policies": { "type": "boolean" },
+            "permissionGate": { "type": "boolean" },
+            "pathAccess": { "type": "boolean" }
+          },
+          "description": "Enable or disable individual Guardrails feature extensions."
+        },
+        "policies": {
+          "type": "object",
+          "properties": {
+            "rules": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/PolicyRule" },
+              "description": "Named policy rules. Rules with the same id override earlier rules across scopes."
+            }
+          },
+          "additionalProperties": false,
+          "description": "File protection policies."
+        },
+        "pathAccess": {
+          "$ref": "#/definitions/PathAccessConfig",
+          "description": "Outside-workspace path access settings."
+        },
+        "envFiles": {
+          "type": "object",
+          "properties": {
+            "protectedPatterns": { "type": "array", "items": { "$ref": "#/definitions/PatternConfig" } },
+            "allowedPatterns": { "type": "array", "items": { "$ref": "#/definitions/PatternConfig" } },
+            "protectedDirectories": { "type": "array", "items": { "$ref": "#/definitions/PatternConfig" } },
+            "protectedTools": { "type": "array", "items": { "type": "string" } },
+            "onlyBlockIfExists": { "type": "boolean" },
+            "blockMessage": { "type": "string" }
+          },
+          "additionalProperties": false
+        },
+        "permissionGate": {
+          "type": "object",
+          "properties": {
+            "patterns": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/DangerousPattern" },
+              "description": "Additional dangerous command patterns."
+            },
+            "customPatterns": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/DangerousPattern" },
+              "description": "If set, replaces the default dangerous command patterns entirely."
+            },
+            "requireConfirmation": {
+              "type": "boolean",
+              "description": "When true, prompt before running dangerous commands. When false, only warn."
+            },
+            "allowedPatterns": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/PatternConfig" },
+              "description": "Command patterns that bypass dangerous command prompts."
+            },
+            "autoDenyPatterns": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/PatternConfig" },
+              "description": "Command patterns that are always blocked without prompting."
+            }
+          },
+          "additionalProperties": false,
+          "description": "Dangerous bash command detection and confirmation settings."
+        }
+      },
+      "additionalProperties": false
+    },
+    "PolicyRule": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Stable identifier used for deduplication across scopes." },
+        "name": { "type": "string", "description": "Optional display name for settings/UI." },
+        "description": { "type": "string", "description": "Human-readable description." },
+        "patterns": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/PatternConfig" },
+          "description": "File patterns to protect."
+        },
+        "allowedPatterns": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/PatternConfig" },
+          "description": "Optional exceptions."
+        },
+        "protection": { "$ref": "#/definitions/Protection", "description": "Protection level." },
+        "onlyIfExists": { "type": "boolean", "description": "Block only when file exists on disk. Default true." },
+        "respectCwd": {
+          "type": "boolean",
+          "description": "Skip location-anchored patterns (`~`- or `/`-prefixed globs) for targets inside the session's cwd. Basename globs, relative path globs, and regex patterns still apply. Default true."
+        },
+        "blockMessage": { "type": "string", "description": "Message shown when blocked; supports {file} placeholder." },
+        "enabled": { "type": "boolean", "description": "Per-rule toggle. Default true." }
+      },
+      "required": ["id", "patterns", "protection"],
+      "additionalProperties": false,
+      "description": "A named policy rule. Matches files by patterns and enforces a protection level."
+    },
+    "PatternConfig": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string" },
+        "description": {
+          "type": "string",
+          "description": "Optional description surfaced to the agent when the pattern triggers (e.g. auto-deny reason)."
+        },
+        "regex": { "type": "boolean" },
+        "terminate": {
+          "type": "boolean",
+          "description": "When a blocked call matches this pattern, hint the agent to end its turn instead of retrying (pi >= 0.84.1). Only used by consumers that block on match."
+        }
+      },
+      "required": ["pattern"],
+      "additionalProperties": false,
+      "description": "A pattern with explicit matching mode. Default: glob for files, substring for commands. regex: true means full regex matching."
+    },
+    "Protection": {
+      "type": "string",
+      "enum": ["none", "readOnly", "noAccess"],
+      "description": "Protection level for a policy rule."
+    },
+    "PathAccessConfig": {
+      "type": "object",
+      "properties": {
+        "mode": { "$ref": "#/definitions/PathAccessMode" },
+        "applyTo": {
+          "$ref": "#/definitions/PathAccessApplyTo",
+          "description": "Which operations the gate applies to. Default: \"all\"."
+        },
+        "allowedPaths": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/AllowedPath" },
+          "description": "Paths always allowed, regardless of cwd. Each entry carries an explicit `kind`: `file` matches the exact path, `directory` matches the directory and its descendants."
+        },
+        "alwaysScope": {
+          "$ref": "#/definitions/PathAccessAlwaysScope",
+          "description": "Config scope used when the user picks \"Allow … always\" in the prompt. Default: \"local\"."
+        }
+      },
+      "additionalProperties": false
+    },
+    "PathAccessMode": { "type": "string", "enum": ["allow", "ask", "block"] },
+    "PathAccessApplyTo": {
+      "type": "string",
+      "enum": ["all", "write"],
+      "description": "Which operations the outside-workspace gate applies to.\n- `all`: gate every tool call that touches a path outside cwd (default).\n- `write`: gate only writes. Read-only tools (`read`, `grep`, `find`, `ls`) pass freely, so skill/config files outside the project stay readable. Bash commands are still gated: a command can write."
+    },
+    "AllowedPath": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "file" },
+            "path": { "type": "string" }
+          },
+          "required": ["kind", "path"],
+          "additionalProperties": false
+        },
+        {
+          "type": "object",
+          "properties": {
+            "kind": { "type": "string", "const": "directory" },
+            "path": { "type": "string" }
+          },
+          "required": ["kind", "path"],
+          "additionalProperties": false
+        }
+      ],
+      "description": "A path grant with an explicit kind.\n\n`file` matches the exact path only. `directory` matches the directory itself and any descendant (boundary/prefix match).\n\nThis replaces the previous trailing-slash convention on a flat `string[]`, where the kind was inferred from whether a path ended in `/`."
+    },
+    "PathAccessAlwaysScope": {
+      "type": "string",
+      "enum": ["local", "global"],
+      "description": "Where \"Allow … always\" grants from the prompt are persisted.\n- `local`: project config (`{project}/.pi/extensions/guardrails.json`).\n- `global`: user-wide config (`~/.pi/agent/extensions/guardrails.json`), so the same grant applies in every project."
+    },
+    "DangerousPattern": {
+      "type": "object",
+      "properties": {
+        "pattern": { "type": "string" },
+        "description": {
+          "type": "string",
+          "description": "Optional description surfaced to the agent when the pattern triggers (e.g. auto-deny reason)."
+        },
+        "regex": { "type": "boolean" },
+        "terminate": {
+          "type": "boolean",
+          "description": "When a blocked call matches this pattern, hint the agent to end its turn instead of retrying (pi >= 0.84.1). Only used by consumers that block on match."
+        }
+      },
+      "required": ["description", "pattern"],
+      "additionalProperties": false,
+      "description": "Permission gate pattern. When regex is false (default), the pattern is matched as substring against the raw command string. When regex is true, uses full regex against the raw string."
+    }
+  }
+}
+```
