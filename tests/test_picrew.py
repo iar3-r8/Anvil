@@ -486,6 +486,78 @@ class TestFixtureAndInvocation(PicrewTestCase):
         self.assertTrue((fixture / "TASK.md").is_file())
 
 
+class TestRerunReplacement(PicrewTestCase):
+    """A re-run into the same results base replaces the previous run's
+    fixture (plans/pi-crew-spike.md behaviour 6, added 2026-11-02).
+
+    Recorded spike run 1 left its fixture at ``results/fixture/``; the
+    operator re-runs in the same repo, and the spike's base dir is its own
+    working directory - so the driver must clear its previous fixture
+    (including any ``.crew/`` state inside it) before writing the fresh
+    one. The bake-off's refusal semantics stay untouched: only the spike
+    driver's own working directory is cleared, never a destination the
+    bake-off would refuse to overwrite. A missing base dir is still
+    created as today (the other test classes pre-seed nothing and pass
+    into a fresh base).
+    """
+
+    def _seed_stale_fixture(self, dirs) -> Path:
+        """Pre-seed <base>/fixture with a previous run's fixture and .crew state."""
+        fixture = dirs["base"] / "fixture"
+        (fixture / "bakeoff_fixture").mkdir(parents=True)
+        # A deliberately wrong implementation: the stale run "solved" the
+        # task, so the content differs from the generated red task.
+        (fixture / "bakeoff_fixture" / "adder.py").write_text(
+            "def add(a, b):\n    return a + b\n", encoding="utf-8"
+        )
+        (fixture / "tests").mkdir(parents=True)
+        (fixture / "tests" / "test_adder.py").write_text(
+            "def test_add():\n    assert add(2, 3) == 5\n", encoding="utf-8"
+        )
+        (fixture / "TASK.md").write_text("# stale task\n", encoding="utf-8")
+        (fixture / ".crew").mkdir()
+        (fixture / ".crew" / "stale-manifest.json").write_text(
+            "stale crew state\n", encoding="utf-8"
+        )
+        return fixture
+
+    def test_run_spike_rerun_clears_previous_fixture_and_invokes_runner_once(self):
+        run_spike = self._get_run_spike()
+        dirs = self._fresh()
+        fixture = self._seed_stale_fixture(dirs)
+        fake = self._fake()
+        # Today this raises pifixture.FixtureError ("Fixture already exists
+        # at ...; refusing to overwrite it") before the runner is ever
+        # invoked; the green run_spike removes the stale fixture dir
+        # whole before writing the fresh one.
+        record = self._run(run_spike, dirs, fake)
+        self.assertEqual(1, len(fake._calls))  # type: ignore[attr-defined]
+        # The fixture is the fresh generated red task, not the stale one.
+        adder_text = (fixture / "bakeoff_fixture" / "adder.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("return a - b", adder_text)
+        self.assertNotIn("return a + b", adder_text)
+        # The previous run's .crew/ state does not survive into the new
+        # record's crew_tree: the fake runner produces none, so it is [].
+        self.assertFalse((fixture / ".crew").exists())
+        self.assertEqual([], record["crew_tree"])
+
+    def test_run_spike_rerun_crew_tree_contains_only_fresh_state(self):
+        run_spike = self._get_run_spike()
+        dirs = self._fresh()
+        self._seed_stale_fixture(dirs)
+        fake = self._fake(crew_tree=["tasks/task-1.json"])
+        record = self._run(run_spike, dirs, fake)
+        self.assertEqual(1, len(fake._calls))  # type: ignore[attr-defined]
+        self.assertEqual(
+            ["tasks/task-1.json"],
+            record["crew_tree"],
+            "the new record's crew_tree must carry only the fresh run's "
+            "state, not the previous run's .crew/ files",
+        )
+
+
 class TestCrewSpikePrompt(PicrewTestCase):
     """CREW_SPIKE_PROMPT - the harder goal (plans/pi-crew-spike.md
     behaviour 5).
