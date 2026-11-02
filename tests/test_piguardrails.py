@@ -684,5 +684,199 @@ class TestSecretPolicyRuleRefusesEnvPemKey(PiguardrailsTestCase):
             validate_document(bad)
 
 
+class TestUnknownKeyRaisesRenderError(PiguardrailsTestCase):
+    """Behaviour 9: unknown-key-raises-render-error.
+
+    Given: a document carrying a key outside the schema's allowed set, at
+    top level and nested inside ``features``. When: the builder validates
+    it. Then: nothing is returned and nothing is written. Error:
+    ``GuardrailsError`` naming the offending key and its level - never
+    silently emitted.
+
+    The two levels of the schema's ``additionalProperties: false`` are
+    asserted separately so each clause of behaviour 9 is named:
+
+    - the top level is THIS red: ``validate_document`` does not check
+      top-level keys yet, so ``assertRaises`` catches nothing and the
+      top-level test fails with AssertionError ("not raised") - a
+      named-test failure, never a collection error.
+    - the ``features`` level is a passing cross-reference: behaviour 4's
+      green already enforces it (an unlisted fifth feature key raises),
+      and this test proves behaviour 9's features clause is covered by
+      an explicitly named test.
+
+    "Nothing is returned and nothing is written" is exercised through
+    the manager-pinned seam: ``build_document`` is fixed by construction,
+    so the tests assert the raise through ``validate_document`` on a
+    mutated deep copy (the seam behaviours 4-6 established); the module
+    is render-only - it has no disk writes, so the "nothing written"
+    clause is a non-goal here (plan: no provisioning or CLI wiring
+    this slice).
+    """
+
+    # The schema's allowed top-level keys (doc/external/pi-guardrails/
+    # schema.md: GuardrailsConfig is additionalProperties: false, allowed
+    # top-level keys are exactly these). The built document uses a subset
+    # (enabled, features, permissionGate, policies); the test mutates the
+    # built document to add an unlisted key.
+    _SCHEMA_TOP_LEVEL_KEYS = frozenset(
+        [
+            "$schema",
+            "version",
+            "enabled",
+            "applyBuiltinDefaults",
+            "onboarding",
+            "features",
+            "policies",
+            "pathAccess",
+            "envFiles",
+            "permissionGate",
+        ]
+    )
+
+    def _guardrails_config_rule(self):
+        """The built document's ``policies.rules`` entry for the gate config.
+
+        The rule whose patterns cover ``.pi/extensions/guardrails.json``
+        (the schema's own project-config path, doc/external/pi-guardrails/
+        readme.md Configuration) - the ledger pins it by id
+        ``guardrails-config``.
+        """
+        built = self._get_build_document()()
+        policies = built.get("policies")
+        self.assertIsInstance(
+            policies,
+            dict,
+            "the built document must carry a policies object",
+        )
+        rules = policies.get("rules")
+        self.assertIsInstance(
+            rules,
+            list,
+            "policies must carry a rules list",
+        )
+        for rule in rules:
+            if not isinstance(rule, dict):
+                continue
+            patterns = rule.get("patterns")
+            if not isinstance(patterns, list):
+                continue
+            for entry in patterns:
+                if (
+                    isinstance(entry, dict)
+                    and entry.get("pattern") == ".pi/extensions/guardrails.json"
+                ):
+                    return rule
+        self.fail(
+            "policies.rules must carry a rule whose patterns include "
+            "'.pi/extensions/guardrails.json' (the golden's "
+            "'guardrails-config' rule)"
+        )
+
+    def test_validate_document_rejects_unlisted_top_level_key_naming_the_key(self):
+        """A top-level key outside the schema's allowed set raises GuardrailsError.
+
+        THE RED of behaviour 9: validate_document currently checks the
+        features level, permissionGate.autoDenyPatterns and policies.rules
+        only - it has no top-level key check, so assertRaises catches
+        nothing and this fails with AssertionError ("not raised"), for the
+        right reason (the check does not exist yet), never a collection
+        error. The message, once raised, must name the offending key and
+        its level (top level).
+        """
+        validate_document = self._get_validate_document()
+        self.assertNotIn(
+            "shellGuard",
+            self._SCHEMA_TOP_LEVEL_KEYS,
+            "the test key must be unlisted in the schema's allowed "
+            "top-level set, or it tests nothing",
+        )
+
+        def mutate(document):
+            document["shellGuard"] = {}
+
+        bad = self._mutated(mutate)
+        self.assertNotEqual(
+            bad,
+            self._get_build_document()(),
+            "the malformed document must differ from the built document "
+            "in exactly one place (an unlisted top-level key: shellGuard)",
+        )
+        with self.assertRaises(
+            self._piguardrails().GuardrailsError,
+        ) as ctx:
+            validate_document(bad)
+        self.assertIn(
+            "shellGuard",
+            str(ctx.exception),
+            "GuardrailsError must name the offending key (shellGuard)",
+        )
+
+    def test_validate_document_rejects_unlisted_features_key_naming_the_key(self):
+        """A key nested inside features outside the allowed set raises GuardrailsError.
+
+        The cross-reference proving behaviour 9's second clause (the
+        features level): behaviour 4's green already enforces it, so this
+        PASSES today - a failing result here would mean behaviour 4's
+        enforcement regressed, not that behaviour 9's red is wrong.
+        """
+        validate_document = self._get_validate_document()
+
+        def mutate(document):
+            document["features"]["shell"] = True
+
+        bad = self._mutated(mutate)
+        self.assertNotEqual(
+            bad,
+            self._get_build_document()(),
+            "the malformed document must differ from the built document "
+            "in exactly one place (a fifth features key: shell)",
+        )
+        with self.assertRaises(
+            self._piguardrails().GuardrailsError,
+        ) as ctx:
+            validate_document(bad)
+        self.assertIn(
+            "shell",
+            str(ctx.exception),
+            "GuardrailsError must name the offending key (shell)",
+        )
+
+    def test_guardrails_config_rule_protects_its_own_gate_config(self):
+        """Behaviour 8 boundary pin: the gate config is covered by its own policy.
+
+        Given: the path ``.pi/extensions/guardrails.json``. When: the
+        policy rules are applied to it. Then: it matches a rule whose
+        ``protection`` is not ``none``, so the agent cannot quietly
+        weaken its own gate. The ledger pins the rule's protection to
+        ``readOnly`` (blocks the edit without blocking reads) - pin it
+        exactly.
+
+        BOUNDARY PIN - no production change: the golden already carries
+        the ``guardrails-config`` rule with ``protection: readOnly``, so
+        this passes today and must keep passing.
+        """
+        rule = self._guardrails_config_rule()
+        self.assertEqual(
+            rule.get("id"),
+            "guardrails-config",
+            "the gate-config rule must carry the golden's id "
+            "'guardrails-config'",
+        )
+        self.assertNotEqual(
+            rule.get("protection"),
+            "none",
+            "the gate-config rule's protection must not be 'none' - "
+            "the agent must not be able to quietly weaken its own gate",
+        )
+        self.assertEqual(
+            rule.get("protection"),
+            "readOnly",
+            "the gate-config rule's protection must be 'readOnly' "
+            "(manager decision note: blocks the edit without blocking "
+            "reads)",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
