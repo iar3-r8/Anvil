@@ -14,7 +14,7 @@ commits is built by ``picommit``; the verdict it acts on is decided by
 House discipline, as ``anvilkit.pi.piverdict`` and
 ``anvilkit.pi.picommit`` use it: one behaviour lands per red/green
 cycle, and the docstring says which ones have landed. Behaviours 8, 9,
-10 and 11 of ``plans/pi-phase9-redgreen.md`` are implemented here:
+10, 11 and 13 of ``plans/pi-phase9-redgreen.md`` are implemented here:
 ``red_step(repo_path, scope, behaviour, number, plan_slug, reason,
 runner, git, issue=None)`` invokes the injected tester delegation
 exactly once, classifies its suite run with
@@ -23,7 +23,11 @@ exactly once, classifies its suite run with
 ``picommit.add_argv`` and then commits with ``picommit.commit_argv`` in
 the red message built by ``picommit.red_message`` - both through the
 seam, in that order, so the red step owns the whole commit step and a
-genuine red commits exactly once. On a ``"reason_mismatch"`` it does
+genuine red commits exactly once - and its ``"red"`` verdict result
+carries the delegation's changed paths under ``"changed_paths"``
+(behaviour 13 added the key, additively: those paths ARE the cycle's
+test files, so ``run_cycle`` derives its ``test_paths`` from the red
+result without a new parameter). On a ``"reason_mismatch"`` it does
 nothing - no add, no commit - and returns the mismatch for
 re-delegation, carrying the failure's traceback text verbatim. On a
 ``"wrong_kind"`` it does the same for the error - no add, no commit; a
@@ -39,11 +43,18 @@ a ``"red"`` verdict, judges each green attempt with the same single
 judge the red step uses: a green attempt succeeds iff
 ``piverdict.classify`` of the coder delegation's suite run (the same
 non-empty ``reason``) returns ``"green"``. On a successful attempt it
-commits the green: the green message built by
-``picommit.green_message(scope, behaviour, number, plan_slug, kind,
-issue=issue)``, staged with ``picommit.add_argv`` on that attempt's
-changed paths and then committed with ``picommit.commit_argv``, the
-same stage-then-commit order the red step uses. Behaviour 12
+routes the green commit through :func:`green_step` - one check, one
+place: the coder delegation's result dict is handed over as the
+``report`` and the red step's changed paths
+(``red_result["changed_paths"]``) as ``test_paths``. Behaviour 13
+(driver-side enforcement) landed: if the coder touched the cycle's
+test file, ``green_step`` refuses - nothing is committed on the green
+half, zero seam invocations of its own - and ``run_cycle`` returns
+THAT refusal dict unchanged as the whole cycle result, the coder's
+argument verbatim the cycle's terminal answer; otherwise
+``green_step`` commits the green once and ``run_cycle`` returns the
+completed-cycle shape with ``green_step``'s dict under ``"green"``.
+Behaviour 12
 (two-failed-greens-halt) landed: a failed attempt - any verdict but
 ``"green"`` - commits nothing, zero git calls, and carries its
 failure text verbatim (the first failure entry's text, or the first
@@ -59,11 +70,10 @@ and the escalation target the manager's loop-control rule names for
 a second green failure. A completed cycle commits exactly twice, in
 order - the red commit in the red format, then the green commit in
 the green format - and returns ``{"verdict": "green", "red": <the
-red step's result dict verbatim>, "green": {"committed": True,
-"message": <the green message>}}``. Behaviours 13-14 have not
-landed yet; the green half stays inlined as behaviour 10 left it,
-and a later behaviour reshapes it to delegate to ``green_step``. A
-red step that returns anything but a genuine red (``"red"``) cannot
+red step's result dict verbatim>, "green": <green_step's result
+dict, ``{"verdict": "green", "committed": True, "message": <the
+green message>}``>}}``. Behaviour 14 has not landed yet. A red step
+that returns anything but a genuine red (``"red"``) cannot
 be committed green on and raises ``CycleError`` naming the verdict.
 ``green_step(repo_path, scope, behaviour, number, plan_slug, kind,
 report, test_paths, git, issue=None)`` is the standalone green step
@@ -75,13 +85,17 @@ the test-change refusal ``{"verdict": "test_change_requested",
 "argument": <verbatim>}``: the test file is never edited by the
 loop, a changed test is a new red step, and the coder's argument is
 carried verbatim so the caller's new red step is informed by the
-coder's justification. Otherwise it commits the green once - the
-message built by ``picommit.green_message``, staged with
-``picommit.add_argv`` on the coder's changed paths and then committed
-with ``picommit.commit_argv``, the same builders and the same
-stage-then-commit order ``run_cycle``'s inline green half uses, so
-the format cannot drift from it - and returns ``{"verdict": "green",
-"committed": True, "message": <the green message>}``.
+coder's justification. It reads ``report["argument"]`` only on that
+refusal path. Otherwise it commits the green once - the message built
+by ``picommit.green_message``, staged with ``picommit.add_argv`` on
+the coder's changed paths and then committed with
+``picommit.commit_argv``, the same builders and the same
+stage-then-commit order the red step uses, so the green format cannot
+drift from it - and returns ``{"verdict": "green", "committed": True,
+"message": <the green message>}``. Behaviour 13 made this step the
+driver's enforcement point too: ``run_cycle`` routes its green commit
+through here, so the check and the commit live in exactly one place -
+there is no second inline stage+commit in ``run_cycle``.
 
 Stdlib only. One exception type: ``CycleError``.
 """
@@ -148,7 +162,11 @@ def red_step(
     ``picommit.red_message`` with ``assertion`` the stated ``reason``,
     the ``Refs`` trailer coming from ``issue``. The result is
     ``{"verdict": "red", "committed": True, "message": <the red
-    message>}``.
+    message>, "changed_paths": <the delegation's changed paths>}``:
+    behaviour 13 added ``"changed_paths"`` additively - the tester
+    delegation's paths, which ARE the cycle's test files - so
+    :func:`run_cycle` can derive its ``test_paths`` from the red
+    result without a new parameter.
 
     Error: a ``"reason_mismatch"`` commits nothing - no add, no commit,
     zero seam invocations - and returns
@@ -187,7 +205,12 @@ def red_step(
         )
         git(picommit.add_argv(repo_path, changed_paths))
         git(picommit.commit_argv(repo_path, message))
-        return {"verdict": "red", "committed": True, "message": message}
+        return {
+            "verdict": "red",
+            "committed": True,
+            "message": message,
+            "changed_paths": changed_paths,
+        }
     if verdict == "reason_mismatch":
         return {
             "verdict": "reason_mismatch",
@@ -236,19 +259,23 @@ def run_cycle(
     "coder"``) and judges the attempt's suite run with
     ``piverdict.classify`` - the same single judge the red step uses,
     the same non-empty ``reason``: a green attempt succeeds iff its
-    verdict is ``"green"``. On a successful attempt the cycle commits
-    the green: the message built by
-    ``picommit.green_message(scope, behaviour, number, plan_slug,
-    kind, issue=issue)``, staged with ``picommit.add_argv(repo_path,
-    changed_paths)`` on that attempt's changed paths and then
-    committed with ``picommit.commit_argv(repo_path, green_msg)`` -
-    both through the seam, in that order, the same stage-then-commit
-    order the red step uses. A completed cycle commits exactly twice,
-    in order - the red commit precedes the green commit, and the red
-    is never amended or squashed into its green. The result is
+    verdict is ``"green"``. On a successful attempt the cycle routes
+    the green commit through :func:`green_step` - behaviour 13
+    (driver-side enforcement): one check, one place, no second inline
+    stage+commit - passing the coder delegation's result dict as the
+    ``report`` and the red step's changed paths
+    (``red_result["changed_paths"]``) as ``test_paths``. If
+    :func:`green_step` refuses (the coder touched the cycle's test
+    file) the cycle commits nothing on the green half and returns
+    THAT refusal dict unchanged as the whole cycle result - the
+    coder's argument is the cycle's terminal answer. Otherwise
+    :func:`green_step` commits the green once and the cycle returns
     ``{"verdict": "green", "red": <the red step's result dict
-    verbatim>, "green": {"committed": True, "message": <the green
-    message>}}``.
+    verbatim>, "green": <green_step's result dict,
+    ``{"verdict": "green", "committed": True, "message": <the green
+    message>}``>}}``. A completed cycle commits exactly twice,
+    in order - the red commit precedes the green commit, and the red
+    is never amended or squashed into its green.
 
     Behaviour 12 (two-failed-greens-halt): a failed attempt - any
     verdict but ``"green"`` - commits nothing on that attempt, zero
@@ -302,18 +329,24 @@ def run_cycle(
         runner_result: Dict[str, Any] = runner(context)
         attempt_result: unittest.TestResult = runner_result["result"]
         if piverdict.classify(attempt_result, reason) == "green":
-            coder_changed_paths: List[str] = list(
-                runner_result["changed_paths"]
+            green_result: Dict[str, Any] = green_step(
+                repo_path,
+                scope,
+                behaviour,
+                number,
+                plan_slug,
+                kind,
+                report=runner_result,
+                test_paths=red_result["changed_paths"],
+                git=git,
+                issue=issue,
             )
-            green_msg: str = picommit.green_message(
-                scope, behaviour, number, plan_slug, kind, issue=issue
-            )
-            git(picommit.add_argv(repo_path, coder_changed_paths))
-            git(picommit.commit_argv(repo_path, green_msg))
+            if green_result.get("verdict") == "test_change_requested":
+                return green_result
             return {
                 "verdict": "green",
                 "red": red_result,
-                "green": {"committed": True, "message": green_msg},
+                "green": green_result,
             }
         failure_outputs.append(_green_failure_text(attempt_result))
     return {
@@ -373,17 +406,20 @@ def green_step(
     ``{"verdict": "test_change_requested", "argument": <verbatim>}``:
     the test file is never edited by the loop, a changed test is a new
     red step, and the coder's argument is carried verbatim so the
-    caller's new red step is informed by the coder's justification.
+    caller's new red step is informed by the coder's justification. It
+    reads ``report["argument"]`` only on that refusal path.
     Otherwise it commits the green once: the message built by
     ``picommit.green_message(scope, behaviour, number, plan_slug,
     kind, issue=issue)``, staged with ``picommit.add_argv(repo_path,
     changed_paths)`` on the coder's changed paths and then committed
     with ``picommit.commit_argv(repo_path, message)`` - both through
     the seam, in that order, the same builders and the same
-    stage-then-commit order ``run_cycle``'s inline green half uses, so
-    the green format cannot drift from it. The result is
-    ``{"verdict": "green", "committed": True, "message": <the green
-    message>}``.
+    stage-then-commit order the red step uses. This step is the single
+    implementation of the green commit: behaviour 13 made
+    :func:`run_cycle` route its green commit through here, so the
+    check and the commit live in one place and the green format
+    cannot drift. The result is ``{"verdict": "green",
+    "committed": True, "message": <the green message>}``.
     """
     changed_paths: List[str] = list(report["changed_paths"])
     for path in changed_paths:
