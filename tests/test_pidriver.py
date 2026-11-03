@@ -30,10 +30,9 @@ Pinned signature::
 - the invocation's ``cwd`` value is not pinned by the plan (``docker run``
   does not depend on it); the tests pin its presence and string type only.
 
-The ``pidriver`` import is deferred into each test so that, while
-``anvilkit/pi/pidriver.py`` does not yet exist, the tests fail at the
-import step (ModuleNotFoundError) instead of breaking collection of the
-module.
+The ``pidriver`` import is deferred into each test: if the module is
+missing, each test fails at its import step (ModuleNotFoundError)
+rather than breaking collection of the whole file.
 
 Container-start-failure detection and the exit-status recording are later
 behaviours in the same plan and are not asserted here; the driver's
@@ -107,12 +106,12 @@ def _architect_definition() -> Dict[str, str]:
 
 
 class RunRoleTestCase(unittest.TestCase):
-    """Shared deferred import of the not-yet-existing ``pidriver`` module.
+    """Shared deferred import of the ``pidriver`` module.
 
-    The import happens inside each test, not at module top level, so that
-    while ``anvilkit/pi/pidriver.py`` does not yet exist the tests fail
-    at the import step (ModuleNotFoundError) instead of breaking
-    collection.
+    The import happens inside each test, not at module top level: if the
+    module is missing, each test fails at its import step
+    (ModuleNotFoundError) rather than breaking collection of the whole
+    file.
     """
 
     def _import_pidriver(self):
@@ -1410,3 +1409,68 @@ class TestRunRoleTimeoutTierAware(RunRoleTestCase):
             "an explicit caller budget must override the tier default "
             "for the frontier tier; got: %r" % (invocation["timeout_s"],),
         )
+
+
+class RoleInvocationCarriesNoGitTestCase(RunRoleTestCase):
+    """No token in a composed role argv is or begins with ``git``.
+
+    plans/pi-phase9-redgreen.md, behaviour 17 (PIN): the structural-block
+    proof for the red/green slice is "git out of the worker", and the
+    worker's whole surface is the composed argv - the container command
+    plus the role argv. A future edit to ``pirole.role_argv`` or
+    ``pisandbox.run_argv`` that smuggles a git invocation (a ``--tools
+    git`` entry, a git flag, a git binary token) must fail this pin with
+    the role named in the message. The invariant holds today - the role
+    table's tools are ``read,bash,edit,write`` and the container argv
+    carries no pi tokens - so this pin is expected to pass on first run;
+    a failure here is a real invariant break, not a red step.
+    """
+
+    def test_run_role_composed_argv_carries_no_git_token_for_each_role(self):
+        # Arrange: the driver, and the pinned inputs shared by every role.
+        pidriver = self._import_pidriver()
+        # Anti-vacuity: the pin scans a real four-role table; if ROLES
+        # shrank below four, the "each of the four roles" given would no
+        # longer hold and this test would prove less than it claims.
+        self.assertEqual(
+            4,
+            len(pirole.ROLES),
+            "the given is each of the four roles; got %r" % (pirole.ROLES,),
+        )
+        # Act / Assert: for EACH role, compose through run_role with a
+        # capturing fake runner and inspect the recorded argv.
+        for role in pirole.ROLES:
+            definition = pirole.resolve(
+                role, CODER_MODEL_ID, FRONTIER_MODEL_ID
+            )
+            fake = FakeRunner()
+            pidriver.run_role(
+                definition=definition,
+                repo_path=REPO_PATH,
+                tag=TAG,
+                session_id=SESSION_ID,
+                task=TASK,
+                runner=fake,
+            )
+            # The existing contract: exactly one runner invocation, so a
+            # zero-invocation drift cannot pass the pin silently.
+            self.assertEqual(
+                1,
+                len(fake.calls),
+                "the role %r must reach the runner exactly once; got %d "
+                "calls" % (role, len(fake.calls)),
+            )
+            argv = fake.calls[0]["argv"]
+            for token in argv:
+                self.assertNotEqual(
+                    "git",
+                    token,
+                    "the composed argv for the role %r must carry no "
+                    "token that is 'git'; got: %r" % (role, argv),
+                )
+                self.assertFalse(
+                    token.startswith("git"),
+                    "the composed argv for the role %r must carry no "
+                    "token that begins with 'git'; got: %r"
+                    % (role, argv),
+                )

@@ -28,4 +28,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `pi/pisandbox.py` | sandbox image argv builders — one job: turn inputs into `docker` command lines |
 | `pi/pirole.py` | single-role role table and role argv builder — one job: resolve a role name to its model id, tier, prompt path and tools, and build the per-role `pi` invocation |
 | `pi/pidriver.py` | single-role run driver — one job: compose the sandbox container argv with the role argv and invoke the injected runner once |
+| `pi/piverdict.py` | red/green classification — one job: turn one suite result into green, red, wrong-kind-of-red or reason-mismatch |
+| `pi/picommit.py` | red and green commit messages and the `git` argv — builds them, never executes |
+| `pi/picycle.py` | the red/green loop driver — the only module that invokes a git mutation |
 | `pi/pitrust.py` | write the project-local `.pi/` fixture for the phase-2 trust probe |
