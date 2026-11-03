@@ -1,13 +1,14 @@
 """Markdown prompt bodies and role documents for ``.pi/roles``.
 
 One job: build and validate the markdown body of a ``.pi/roles/*.md``
-prompt document, and assemble the complete role document - frontmatter
-plus body - for one named role, and nothing else.
+prompt document, assemble the complete role document - frontmatter
+plus body - for one named role, and build the shared chain-root
+document from the three tracked rule sources, and nothing else.
 
 House discipline, as ``anvilkit.pi.piverdict`` uses it: one behaviour
 lands per red/green cycle, and the docstring says which ones have
-landed. Two behaviours of ``plans/pi-role-prompts.md`` are implemented
-here. Behaviour 4 (xml-to-prompt-body): ``body_from_xml(text)``
+landed. Three behaviours of ``plans/pi-role-prompts.md`` are
+implemented here. Behaviour 4 (xml-to-prompt-body): ``body_from_xml(text)``
 parses ``text`` as one ``<instructions>`` document (or the
 docs-manager source's ``<guidelines>`` document, the plan's source
 map's fourth tracked root) and returns a markdown body -
@@ -31,6 +32,21 @@ as literal text - ``yamlio`` stays the only module that touches
 tracked template sources itself; the write seam for the finished
 documents lives in ``anvilkit.render`` (behaviour 11).
 
+Behaviour 7 (shared-prompt-is-root): ``shared_document()`` returns the
+complete ``shared-agents`` document - one frontmatter block of its own
+(a non-empty ``description``, no ``extends`` - it is the chain root -
+and no ``model``/``thinking``/``tools``) over the bodies of the three
+tracked rule sources under ``templates/roo_template/rules/``,
+concatenated in the fixed order ``AGENTS.md``, ``architecture.md``,
+``coding-guidelines.md`` - so it is the layer every role extends. Each
+source's own Zoo frontmatter block is stripped: ``trigger:``/
+``always_on`` is dispatch metadata for the Zoo renderer, not a rule,
+and every markdown content line of each source's body survives in the
+output. Deterministic - the same inputs twice give a byte-identical
+document. The optional ``rules_dir`` parameter defaults to the tracked
+directory; it exists so the missing-source error is testable against a
+temp dir.
+
 Error: empty or whitespace-only ``text`` raises ``PromptError``;
 malformed XML raises ``PromptError`` naming the parse position the
 parser reported; a root that is neither an ``<instructions>`` nor a
@@ -40,8 +56,9 @@ parses but carries no text raises ``PromptError`` too - never a
 partial body, never a silent empty-string return.
 ``role_document`` raises ``PromptError`` for ``shared-agents`` - the
 chain root has no parent to extend, and is built by behaviour 7's
-``shared_body`` - and for an unknown role name, naming the role and
-listing the known ones.
+``shared_document`` - and for an unknown role name, naming the role
+and listing the known ones. ``shared_document`` raises ``PromptError``
+naming a missing source file - never a partial document.
 
 Stdlib only. One exception type: ``PromptError``.
 """
@@ -150,8 +167,20 @@ _ROLE_DESCRIPTIONS = {
 
 # The role names role_document serves, in the order the error message
 # lists them. shared-agents is not here: it is the chain root, built by
-# behaviour 7's shared_body, and refused by role_document.
+# behaviour 7's shared_document, and refused by role_document.
 _ROLE_NAMES = tuple(_ROLE_SOURCES) + ("coder",)
+
+# The three shared rule sources, in the fixed order behaviour 7 pins:
+# the shared document concatenates them in exactly this order, and the
+# default rules dir the parameter falls back to.
+_SHARED_SOURCES = ("AGENTS.md", "architecture.md", "coding-guidelines.md")
+_SHARED_RULES_DIR = _REPO_ROOT / "templates" / "roo_template" / "rules"
+
+# The shared document's own frontmatter description: the chain root
+# every role extends. One non-empty plain YAML scalar, no characters
+# that need quoting, so the literal-text frontmatter parses back by
+# construction. No extends (it is the root) and no routing keys.
+_SHARED_DESCRIPTION = "Shared rules every role extends."
 
 
 def role_document(name: str) -> str:
@@ -192,6 +221,89 @@ def role_document(name: str) -> str:
         body += "\n"
     frontmatter = "description: %s\nextends: shared-agents" % _ROLE_DESCRIPTIONS[name]
     return "---\n" + frontmatter + "\n---\n" + body
+
+
+def shared_document(rules_dir: Optional[Path] = None) -> str:
+    """Build the complete ``shared-agents`` chain-root document.
+
+    Behaviour 7 of ``plans/pi-role-prompts.md``
+    (shared-prompt-is-root): the return is the finished
+    ``.pi/roles/shared-agents.md`` document - a single YAML
+    frontmatter block of its own, delimited by ``---`` lines, carrying
+    only a non-empty ``description`` (no ``extends`` - it is the chain
+    root and has no parent to extend - and no ``model``, ``thinking``
+    or ``tools``; routing stays in ``pirole.ROLES``), then the bodies
+    of the three tracked rule sources under ``rules_dir`` -
+    ``AGENTS.md``, ``architecture.md``, ``coding-guidelines.md`` -
+    concatenated in that fixed order, one blank line between sources,
+    so it is the layer every role document extends.
+
+    Each source's own Zoo frontmatter block is stripped: its
+    ``trigger:``/``always_on`` is dispatch metadata for the Zoo
+    renderer, not a rule, and every markdown content line of each
+    source's body survives in the output. Deterministic - the same
+    inputs twice give a byte-identical document.
+
+    ``rules_dir`` defaults to the tracked
+    ``templates/roo_template/rules/``; it exists so the missing-source
+    error is testable against a temp dir.
+
+    Error: a missing source file raises ``PromptError`` naming it -
+    never a partial document.
+    """
+    if rules_dir is None:
+        rules_dir = _SHARED_RULES_DIR
+    bodies = []
+    for name in _SHARED_SOURCES:
+        path = rules_dir / name
+        if not path.is_file():
+            raise PromptError(
+                "shared source %s is missing from %s: the shared "
+                "document is built from all three sources, so no "
+                "partial document is returned" % (name, rules_dir)
+            )
+        bodies.append(_strip_source_frontmatter(path.read_text(encoding="utf-8")))
+    # One blank line between sources: the deterministic separator.
+    body = "\n\n".join(bodies)
+    if not body.endswith("\n"):
+        body += "\n"
+    return (
+        "---\n"
+        "description: %s\n"
+        "---\n" % _SHARED_DESCRIPTION
+    ) + body
+
+
+def _strip_source_frontmatter(text: str) -> str:
+    """One rule source's markdown body, its own frontmatter stripped.
+
+    The frontmatter block is the leading ``---`` line, the lines up to
+    and including the first closing ``---`` after it - the same
+    extraction ``tests/test_piprompt_frontmatter.py`` pins for the
+    generated documents - and the body is the remainder, whitespace-
+    trimmed. Raises ``PromptError`` naming the problem when the
+    delimiters are missing, so a source whose body cannot be located
+    fails loudly rather than leaking its own frontmatter into the
+    shared document.
+    """
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        raise PromptError(
+            "a shared rule source does not open with a '---' "
+            "frontmatter delimiter on line 1 (first line: %r)"
+            % (lines[0] if lines else None)
+        )
+    close_index = None
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            close_index = index
+            break
+    if close_index is None:
+        raise PromptError(
+            "a shared rule source has no closing '---' delimiter after "
+            "line 1, so its body cannot be located"
+        )
+    return "\n".join(lines[close_index + 1 :]).strip("\n")
 
 
 def _role_body(name: str) -> str:
