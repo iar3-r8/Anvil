@@ -48,6 +48,21 @@ naming the behaviour, both failure outputs and the escalation
 target. Error: a first failure re-delegates once - a second coder
 delegation - and nothing is committed on either green attempt.
 
+``plans/pi-phase9-redgreen.md``, behaviour 13
+(nothing-committed-on-a-failure-path): each failure path (wrong kind,
+reason mismatch, test-file edit, double green failure), driven
+through its owning entry point with a recording git seam, records
+ZERO git mutations of its own. The load-bearing NEW part is the
+test-file-edit path driven through ``run_cycle``: a coder delegation
+whose changed paths include the cycle's test file must produce a
+cycle in which the ONLY recorded commit is the red's, and the
+returned result is the test-change refusal ``green_step`` returns,
+carrying the coder's argument verbatim. Error: the test-file-edit
+path is a REAL red - ``run_cycle`` today commits the coder's edit of
+the cycle's test file; the green routes the green commit through
+``green_step``, passing the red step's changed paths as
+``test_paths`` and returning the refusal unchanged.
+
 The manager-confirmed design (do not re-litigate): a green attempt
 succeeds iff ``piverdict.classify(coder_result, reason)`` returns
 ``"green"`` - the same single judge the red step uses, with the same
@@ -339,6 +354,64 @@ HALT_SECOND_ERROR_TEXT = (
     '  File "./anvilkit/pi/picycle.py", line 1, in <module>\n'
     "    import anvilkit.pi.picycle\n"
     "ImportError: cannot import name 'rejudge' from 'anvilkit.pi'\n"
+)
+
+# The inputs of behaviour 13 (nothing-committed-on-a-failure-path),
+# each a module constant so the expected argvs below are reproducible
+# by eye. The cycle lands its own behaviour (strict TDD: this test IS
+# the red, the green's routing of the green commit through
+# green_step is the green), so scope, behaviour and number are the
+# cycle's own - behaviour 13 of the same plan, issue #56 per the plan
+# header.
+NOTHING_SCOPE = "pi"
+NOTHING_BEHAVIOUR = "nothing-committed-on-a-failure-path"
+NOTHING_NUMBER = 13
+NOTHING_PLAN_SLUG = "pi-phase9-redgreen"
+NOTHING_ISSUE = 56
+NOTHING_KIND = "feature"
+
+# The stated expected-failure reason of behaviour 13's genuine red: the
+# driver hole itself - run_cycle commits the green even when the coder
+# edited the cycle's test file (the plan's interface-facts pin the hole
+# at run_cycle's inline green commit, picycle.py:311).
+NOTHING_REASON = (
+    "run_cycle commits the green even when the coder edited the "
+    "cycle's test file"
+)
+
+# The verbatim traceback text of behaviour 13's genuine red's single
+# failure entry, in the shape ``TestResult.addFailure`` produces. It is
+# deterministic by construction (a module constant, not a real run) and
+# MUST contain the reason as a substring - that is behaviour 4's match
+# rule, the one that makes this a genuine red rather than a mismatch.
+NOTHING_RED_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "./tests/test_picycle.py", line 1, in test_run_cycle\n'
+    "    picycle.run_cycle(...)\n"
+    "AssertionError: run_cycle commits the green even when the coder "
+    "edited the cycle's test file\n"
+)
+assert NOTHING_REASON in NOTHING_RED_TRACEBACK
+
+# The cycle's test file: the tester delegation's changed paths, the
+# list the green half must hold as ``test_paths`` once it routes its
+# commit through ``green_step``. A coder report touching it is the
+# refusal trigger; a changed test is a new red step, never an edit of
+# the loop's own test.
+NOTHING_TEST_FILE = "tests/test_picycle.py"
+NOTHING_TESTER_CHANGED_PATHS = [NOTHING_TEST_FILE]
+
+# The coder's changed paths when the driver hole fires: the
+# implementation plus the cycle's test file - the test file's presence
+# is what must be refused.
+NOTHING_CODER_CHANGED_PATHS = ["anvilkit/pi/picycle.py", NOTHING_TEST_FILE]
+
+# The coder's stated argument/justification, carried verbatim in the
+# test-change request the refusal returns. Deterministic by
+# construction (a module constant, not a real run).
+NOTHING_CODER_ARGUMENT = (
+    "the red assertion is too narrow; widening it is part of the fix, "
+    "so I adjusted the test alongside the implementation"
 )
 
 
@@ -1593,6 +1666,261 @@ class TwoFailedGreensHaltTestCase(unittest.TestCase):
             result.get("verdict"),
             "a green attempt that passes on the second delegation "
             "returns the completed-cycle verdict; got: %r" % (result,),
+        )
+
+
+class ArgumentCycleRunner:
+    """The delegation seam for behaviour 13's driver-hole test, keyed
+    on the context's ``"role"`` field.
+
+    ``CycleRunner`` returns exactly the two keys the landed fakes pin
+    (``"result"`` and ``"changed_paths"``). Behaviour 13's plan
+    amendment pins the delegation contract: the coder delegation
+    result must carry ``"argument"`` so the refusal ``green_step``
+    returns carries it verbatim - and the landed fakes stay unchanged,
+    which is why this seam exists. The tester role keeps the same
+    canned shape; the coder role is one canned result whose dict
+    additionally carries ``"argument"``. The record is a copy of each
+    context, so the loop cannot mutate what the test asserts on; the
+    tests also assert on the recorded ``"role"`` values to pin that
+    the two delegations arrived in order, tester then coder.
+    """
+
+    def __init__(
+        self,
+        tester_result: unittest.TestResult,
+        tester_changed_paths: List[str],
+        coder_result: unittest.TestResult,
+        coder_changed_paths: List[str],
+        coder_argument: str,
+    ) -> None:
+        self.calls: List[Dict[str, Any]] = []
+        self._results: Dict[str, Dict[str, Any]] = {
+            "tester": {
+                "result": tester_result,
+                "changed_paths": list(tester_changed_paths),
+            },
+            "coder": {
+                "result": coder_result,
+                "changed_paths": list(coder_changed_paths),
+                "argument": coder_argument,
+            },
+        }
+
+    def __call__(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        self.calls.append(dict(context))
+        canned = self._results[context["role"]]
+        return {
+            "result": canned["result"],
+            "changed_paths": list(canned["changed_paths"]),
+            "argument": canned.get("argument"),
+        }
+
+
+class NothingCommittedOnAFailurePathTestCase(unittest.TestCase):
+    """Behaviour 13 (nothing-committed-on-a-failure-path): each
+    failure path, driven through its owning entry point with a
+    recording git seam, records ZERO git mutations of its own -
+    ``red_step``'s two paths zero in total, and inside ``run_cycle``
+    the only recorded commit is the red's, never the failing green's.
+
+    The load-bearing NEW part is the test-file-edit path driven
+    through the DRIVER, the plan's interface-facts pin at
+    ``run_cycle``'s inline green commit (picycle.py:311): a coder
+    delegation whose changed paths include the cycle's test file must
+    commit nothing green, and the cycle must return the test-change
+    refusal ``green_step`` returns. Error: the test-file-edit path is
+    a REAL red - ``run_cycle`` today commits the coder's edit of the
+    cycle's test file. The green routes the green commit through
+    ``green_step`` (one check, one place), passing the red step's
+    changed paths as ``test_paths`` and the coder delegation result
+    as ``report``, and returning the refusal unchanged.
+
+    The plan pins ``green_step``'s refusal shape (behaviour 11,
+    landed)::
+
+        {"verdict": "test_change_requested", "argument": <verbatim>}
+
+    The plan's wording for ``run_cycle`` is "returning the refusal
+    unchanged", and this test pins that reading - the whole returned
+    result IS that refusal dict - not a looser "the refusal is a
+    sub-dict of the result" reading: the refusal's ``"argument"`` must
+    be the cycle's terminal answer, so a caller re-delegating the
+    coder's new red step can read it from the cycle result directly.
+    FLAGGED for the coder.
+    """
+
+    def _picycle(self):
+        """Import ``anvilkit.pi.picycle``."""
+        return importlib.import_module("anvilkit.pi.picycle")
+
+    def test_run_cycle_coder_edit_of_test_file_commits_only_the_red(
+        self,
+    ) -> None:
+        # Arrange: a cycle whose red step is a genuine red (one failure
+        # whose text contains the reason, no errors) and whose green
+        # attempt runs the suite green (no failures, no errors) BUT
+        # whose coder changed paths INCLUDE the cycle's test file -
+        # the driver hole. A role-keyed delegation seam whose coder
+        # result carries "argument" (the landed fakes do not; this
+        # fake is new for behaviour 13), and a recording git seam.
+        runner = ArgumentCycleRunner(
+            _suite_result(NOTHING_RED_TRACEBACK),
+            NOTHING_TESTER_CHANGED_PATHS,
+            unittest.TestResult(),
+            NOTHING_CODER_CHANGED_PATHS,
+            NOTHING_CODER_ARGUMENT,
+        )
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        result = picycle.run_cycle(
+            REPO,
+            NOTHING_SCOPE,
+            NOTHING_BEHAVIOUR,
+            NOTHING_NUMBER,
+            NOTHING_PLAN_SLUG,
+            NOTHING_REASON,
+            kind=NOTHING_KIND,
+            runner=runner,
+            git=git,
+            issue=NOTHING_ISSUE,
+        )
+
+        # Assert: the refusal happens on the green half, AFTER the red
+        # committed - two delegations in order, tester (the red step)
+        # then coder (the green step).
+        self.assertEqual(
+            ["tester", "coder"],
+            [call.get("role") for call in runner.calls],
+            "the cycle must delegate to the tester then the coder, in "
+            "that order; got: %r" % (runner.calls,),
+        )
+
+        # Assert: EXACTLY ONE commit argv - the RED commit - and no
+        # green commit. The single commit argv is red format (the red
+        # subject, the plan file, the behaviour and the Refs trailer),
+        # so a green commit cannot have been made.
+        commit_argv = [
+            argv
+            for argv in git.calls
+            if argv[:5] == ["git", "-C", REPO, "commit", "-m"]
+        ]
+        self.assertEqual(
+            1,
+            len(commit_argv),
+            "the only recorded commit inside run_cycle is the red's, "
+            "never the failing green's; got %d commit argvs: %r"
+            % (len(commit_argv), git.calls),
+        )
+        red_message = commit_argv[0][5]
+        self.assertEqual(
+            "test(%s): cover %s, failing" % (NOTHING_SCOPE, NOTHING_BEHAVIOUR),
+            red_message.splitlines()[0],
+            "the only commit must be the red commit in the red "
+            "subject; got: %r" % red_message,
+        )
+        self.assertIn(
+            "plans/%s.md" % NOTHING_PLAN_SLUG,
+            red_message,
+            "the red message must cite the plan file; got: %r"
+            % red_message,
+        )
+        self.assertIn(
+            NOTHING_BEHAVIOUR,
+            red_message,
+            "the red message must name the behaviour; got: %r"
+            % red_message,
+        )
+        self.assertIn(
+            "Refs #%d" % NOTHING_ISSUE,
+            red_message,
+            "the red message must carry the Refs trailer; got: %r"
+            % red_message,
+        )
+        for argv in git.calls:
+            self.assertNotIn("--amend", argv)
+            self.assertNotIn("--no-verify", argv)
+
+        # Assert: the returned result IS the test-change refusal
+        # green_step returns, UNCHANGED - the whole result is the
+        # refusal dict (flagged reading, class docstring), the
+        # distinguishable verdict marker, and the coder's argument
+        # verbatim so the caller's new red step is informed by the
+        # coder's justification.
+        self.assertEqual(
+            {
+                "verdict": "test_change_requested",
+                "argument": NOTHING_CODER_ARGUMENT,
+            },
+            result,
+            "run_cycle must return the test-change refusal unchanged "
+            "- the whole result is the refusal dict; got: %r"
+            % (result,),
+        )
+
+    def test_red_step_reason_mismatch_records_no_git(self) -> None:
+        # Arrange: a tester delegation whose failure text does NOT
+        # contain the reason - classify yields reason_mismatch, never
+        # red - with a recording git seam.
+        fake = FakeRunner(_suite_result(MISMATCH_TRACEBACK))
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        picycle.red_step(
+            REPO,
+            SCOPE,
+            BEHAVIOUR,
+            NUMBER,
+            PLAN_SLUG,
+            REASON,
+            runner=fake,
+            git=git,
+            issue=ISSUE,
+        )
+
+        # Assert: ZERO git invocations - the failing step records no
+        # mutation of its own.
+        self.assertEqual(
+            0,
+            len(git.calls),
+            "a reason_mismatch red_step records no git mutation of its "
+            "own; got %d git calls: %r" % (len(git.calls), git.calls),
+        )
+
+    def test_red_step_wrong_kind_records_no_git(self) -> None:
+        # Arrange: a tester delegation whose suite run classifies
+        # wrong_kind (one error entry, no failures) with a recording
+        # git seam.
+        result = unittest.TestResult()
+        errored_test = object()
+        result.errors.append((errored_test, WRONG_KIND_ERROR_TEXT))
+        fake = FakeRunner(result)
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        picycle.red_step(
+            REPO,
+            SCOPE,
+            BEHAVIOUR,
+            NUMBER,
+            PLAN_SLUG,
+            REASON,
+            runner=fake,
+            git=git,
+            issue=ISSUE,
+        )
+
+        # Assert: ZERO git invocations - the failing step records no
+        # mutation of its own.
+        self.assertEqual(
+            0,
+            len(git.calls),
+            "a wrong_kind red_step records no git mutation of its own; "
+            "got %d git calls: %r" % (len(git.calls), git.calls),
         )
 
 
