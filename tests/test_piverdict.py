@@ -21,8 +21,9 @@ Pinned signature::
 - the verdict is one of ``"green"`` / ``"red"`` / ``"wrong_kind"`` /
   ``"reason_mismatch"``.
 
-Behaviours 1-3 are pinned here. Behaviour 4 (reason-must-match) gets its
-own red/green cycle and is not asserted in this file yet.
+Behaviours 1-4 are pinned here. Behaviour 4's red is the mismatch and
+empty-reason rules: ``ClassifyReasonMatchTestCase`` currently fails those
+two tests until the matching lands.
 """
 
 import importlib
@@ -201,6 +202,90 @@ class ClassifyWrongKindTestCase(unittest.TestCase):
 
         # Assert: the error outranks the failure.
         self.assertEqual(verdict, "wrong_kind")
+
+
+class ClassifyReasonMatchTestCase(unittest.TestCase):
+    """Behaviour 4 (verdict-reason-must-match): for a genuine red,
+    ``classify`` compares the stated expected-failure ``reason``
+    against the failure text: a match yields ``"red"``, a mismatch
+    yields ``"reason_mismatch"`` - never ``"red"``. On this
+    genuine-red matching path only, an empty ``reason`` raises
+    ``VerdictError`` naming it: an unstated reason cannot be
+    verified. The plan's Assumptions bullet pins that the
+    empty-``reason`` raise does not apply to the green path, so no
+    green-path empty-reason test lives here (behaviour 1 owns it).
+
+    Matching semantics follow the plan's "compares the reason against
+    the failure text" - exact text (the reason found in the failure
+    text), no regex, no case-folding.
+
+    The first test is a boundary, not a red: while ``classify``
+    accepts any reason on the red path it passes now, and it must
+    stay valid after matching lands. The red for this behaviour
+    comes from the mismatch and empty-reason tests: today
+    ``classify`` returns ``"red"`` for a mismatched reason and for
+    an empty one alike, so those two fail - the former on the
+    verdict assertion, the latter because nothing is raised.
+    """
+
+    def test_classify_matching_reason_returns_red(self) -> None:
+        # Arrange: a genuine red (one failure, no errors) and a
+        # reason that is exactly the failure text - a match by any
+        # sensible reading of "compares the reason against the
+        # failure text".
+        result = unittest.TestResult()
+        failing_test = object()
+        result.failures.append((failing_test, FAILURE_TRACEBACK))
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [(failing_test, FAILURE_TRACEBACK)])
+
+        # Act
+        verdict = anvilkit.pi.piverdict.classify(result, FAILURE_TRACEBACK)
+
+        # Assert
+        self.assertEqual(verdict, "red")
+
+    def test_classify_mismatched_reason_returns_reason_mismatch(self) -> None:
+        # Arrange: the same genuine red, but the reason is another
+        # pinned constant - ERROR_TRACEBACK, which as a whole does
+        # not occur in the failure text (its ModuleNotFoundError
+        # line is not in FAILURE_TRACEBACK), so it is clearly
+        # absent under exact matching.
+        result = unittest.TestResult()
+        failing_test = object()
+        result.failures.append((failing_test, FAILURE_TRACEBACK))
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [(failing_test, FAILURE_TRACEBACK)])
+
+        # Act
+        verdict = anvilkit.pi.piverdict.classify(result, ERROR_TRACEBACK)
+
+        # Assert: a mismatch must never be read as a genuine red.
+        self.assertEqual(verdict, "reason_mismatch")
+
+    def test_classify_empty_reason_raises_verdict_error_naming_it(self) -> None:
+        # Arrange: a genuine red with an unstated reason - the empty
+        # string. On the genuine-red matching path only, this must
+        # raise rather than return a verdict: without a stated
+        # reason there is nothing to verify.
+        result = unittest.TestResult()
+        failing_test = object()
+        result.failures.append((failing_test, FAILURE_TRACEBACK))
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.failures, [(failing_test, FAILURE_TRACEBACK)])
+
+        # Act / Assert: nothing is returned; a VerdictError names
+        # the offending value - the empty reason.
+        with self.assertRaises(
+            anvilkit.pi.piverdict.VerdictError
+        ) as ctx:
+            anvilkit.pi.piverdict.classify(result, "")
+        message = str(ctx.exception)
+        self.assertIn(
+            "reason",
+            message,
+            "the error must name the empty reason; got: %r" % message,
+        )
 
 
 if __name__ == "__main__":
