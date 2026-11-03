@@ -13,9 +13,11 @@ House discipline, as ``anvilkit.pi.piverdict`` uses it: one behaviour
 lands per red/green cycle, and the docstring says which one has
 landed. Behaviour 4 of ``plans/pi-role-prompts.md``
 (xml-to-prompt-body) is implemented here: ``body_from_xml(text)``
-parses ``text`` as one ``<instructions>`` document and returns a
-markdown body - deterministic, so the same input twice is
-byte-identical. ``<overview>`` becomes a ``## Overview`` section; each
+parses ``text`` as one ``<instructions>`` document (or the
+docs-manager source's ``<guidelines>`` document, the plan's source
+map's fourth tracked root) and returns a markdown body -
+deterministic, so the same input twice is byte-identical.
+``<overview>`` becomes a ``## Overview`` section; each
 ``<workflow>/<step>`` a numbered list item carrying its ``<title>``
 and its own text (the step's ``number`` attribute when present, else
 its position); each ``<best_practices>/<practice>`` a bullet; any
@@ -24,8 +26,9 @@ are emitted - a raw XML tag spelling never survives in the body.
 
 Error: empty or whitespace-only ``text`` raises ``PromptError``;
 malformed XML raises ``PromptError`` naming the parse position the
-parser reported; a root that is not an ``<instructions>`` element
-raises ``PromptError`` naming what it got; and a document that
+parser reported; a root that is neither an ``<instructions>`` nor a
+``<guidelines>`` element raises ``PromptError`` naming what it got;
+and a document that
 parses but carries no text raises ``PromptError`` too - never a
 partial body, never a silent empty-string return.
 
@@ -42,8 +45,9 @@ class PromptError(Exception):
     A single exception type covers every failure of
     ``body_from_xml``, so callers need only one ``except`` clause: an
     empty input, a malformed document (naming the parse position), a
-    root that is not an ``<instructions>`` element, and a document
-    that parses but carries no text. Every message names the
+    root that is neither an ``<instructions>`` nor a ``<guidelines>``
+    element, and a document that parses but carries no text. Every
+    message names the
     offending value, so a failure is fixable without reading the
     source.
     """
@@ -53,7 +57,9 @@ def body_from_xml(text: str) -> str:
     """Build the markdown body of one ``.pi/roles`` prompt document.
 
     ``text`` is one instruction XML's text - a document rooted at an
-    ``<instructions>`` element. The return is the markdown body only:
+    ``<instructions>`` element, or at the docs-manager source's
+    ``<guidelines>`` element (the plan's source map names both). The
+    return is the markdown body only:
     no frontmatter, no file name, deterministic - the same input twice
     is byte-identical.
 
@@ -64,8 +70,9 @@ def body_from_xml(text: str) -> str:
 
     Error: empty or whitespace-only ``text`` raises ``PromptError``;
     malformed XML raises ``PromptError`` naming the parse position;
-    a root that is not ``<instructions>`` raises ``PromptError``
-    naming the tag it got; a document carrying no text at all raises
+    a root that is neither ``<instructions>`` nor ``<guidelines>``
+    raises ``PromptError`` naming the tag it got; a document
+    carrying no text at all raises
     ``PromptError`` - never a partial body, never an empty string.
     """
     if not text or not text.strip():
@@ -87,10 +94,10 @@ def body_from_xml(text: str) -> str:
             "the body needs an <instructions> document"
             % type(root.tag).__name__
         )
-    if root.tag != "instructions":
+    if root.tag not in ("instructions", "guidelines"):
         raise PromptError(
-            "the instruction XML root must be <instructions>, got <%s>"
-            % root.tag
+            "the instruction XML root must be <instructions> or "
+            "<guidelines>, got <%s>" % root.tag
         )
     body = "\n".join(_render(root)).strip()
     if not body:
