@@ -76,6 +76,23 @@ trustworthy and a fail may be conservative. Empty text returns 0,
 never a division error. This is the seam behaviour 16's budget check
 divides and compares.
 
+Behaviour 16 (budget-check-reports-never-truncates):
+``budget_report(documents, window)`` is the budget check over a set of
+role documents keyed by stem - the six from ``all_documents()`` or any
+synthetic set. It returns one record per key, in sorted-key order,
+each carrying EXACTLY four keys: ``name`` (the stem), ``estimate``
+(behaviour 15's ``estimate_tokens`` of the stem's layered total),
+``window`` (the argument, unchanged) and ``within`` (``estimate <=
+window``). The layered total is pinned on the FULL text of the files
+Pi's two ``--append-system-prompt`` flags concatenate - for a role,
+``documents["shared-agents"] + documents[stem]``, frontmatter and all;
+for ``shared-agents`` itself, its own document only (it is the chain
+root and nothing is prepended to it). The report is RECORDS ONLY: an
+over-budget role is reported with ``within`` False, never raised and
+never truncated - the input dict is read, never modified, and no
+modified document text is ever returned or written. Deterministic: the
+same inputs twice give equal records.
+
 Error: empty or whitespace-only ``text`` raises ``PromptError``;
 malformed XML raises ``PromptError`` naming the parse position the
 parser reported; a root that is neither an ``<instructions>`` nor a
@@ -98,7 +115,7 @@ Stdlib only. One exception type: ``PromptError``.
 import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class PromptError(Exception):
@@ -400,6 +417,58 @@ def estimate_tokens(text: str) -> int:
     can occur on an empty byte string.
     """
     return math.ceil(len(text.encode("utf-8")) / 3)
+
+
+def budget_report(documents: Dict[str, str], window: int) -> List[Dict[str, Any]]:
+    """The token-budget report over a set of role documents.
+
+    Behaviour 16 of ``plans/pi-role-prompts.md``
+    (budget-check-reports-never-truncates): ``documents`` is a mapping
+    of stem to FULL document text (as ``all_documents()`` returns it),
+    and ``window`` is the model's context window. The return is one
+    record per key, in sorted-key order, each carrying exactly four
+    keys:
+
+    * ``name``: the stem (str);
+    * ``estimate``: ``estimate_tokens`` of the stem's layered total -
+      for a role, the full text of the shared document plus the full
+      text of the role document, the two files Pi's two
+      ``--append-system-prompt`` flags concatenate (frontmatter
+      included - it is part of the file bytes); for ``shared-agents``
+      itself, its own document only (it is the chain root: nothing is
+      prepended to it);
+    * ``window``: the argument, unchanged (int);
+    * ``within``: ``estimate <= window`` (bool).
+
+    The report is RECORDS ONLY. An over-budget role is reported with
+    ``within`` False - the call never raises on budget and never
+    shortens, elides or summarises a body; the input dict is read and
+    left byte-identical, and no modified document text is returned or
+    written. A half-delivered rule set is worse than an absent one,
+    because it looks like it worked - so the check reports red and
+    leaves every body whole. Deterministic: the same inputs twice give
+    equal records.
+
+    Error: none on budget. A stem other than ``shared-agents`` whose
+    ``documents`` lacks ``shared-agents`` is out of scope for this
+    seam; the six-stem regeneration and the tests never pass it.
+    """
+    records = []
+    for name in sorted(documents):
+        if name == "shared-agents":
+            layered = documents["shared-agents"]
+        else:
+            layered = documents["shared-agents"] + documents[name]
+        estimate = estimate_tokens(layered)
+        records.append(
+            {
+                "name": name,
+                "estimate": estimate,
+                "window": window,
+                "within": estimate <= window,
+            }
+        )
+    return records
 
 
 def _strip_source_frontmatter(text: str) -> str:
