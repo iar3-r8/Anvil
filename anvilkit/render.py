@@ -1,7 +1,8 @@
 """Generating the agent artifacts: Zoo Code's ``zoo-code-settings.json`` and
-``.roo/mcp.json``, and Pi's agent-directory ``models.json`` plus the project
-``mcp.json`` and ``extensions/guardrails.json``. This is the only module
-that writes agent artifacts.
+``.roo/mcp.json``, Pi's agent-directory ``models.json`` plus the project
+``mcp.json`` and ``extensions/guardrails.json``, and the Pi role-prompt
+documents under ``.pi/roles/``. This is the only module that writes agent
+artifacts.
 
 Templates are parsed as JSON, values are substituted into the resulting data
 structures, and the output is produced with ``json.dumps``.
@@ -221,6 +222,40 @@ def write_text(path: PathLike, content: str) -> None:
         content += "\n"
 
     path.write_text(content, encoding="utf-8")
+
+
+def role_prompts(root: PathLike, documents: Dict[str, str]) -> None:
+    """Write one ``.pi/roles/<stem>.md`` per entry in ``documents``.
+
+    Each file is written byte-for-byte as the document's UTF-8 encoding —
+    no trailing newline is invented, so a document that does not end in one
+    lands on disk exactly as given. ``<root>/.pi/roles/`` is created when
+    absent, and nothing is ever written outside ``root``.
+
+    An empty ``documents`` mapping raises ``RenderError`` (an empty prompt
+    set is a misconfiguration, and fails fast at the seam), as does an
+    unwritable path (e.g. ``<root>/.pi`` is a file); in both cases no
+    partial file is left behind.
+    """
+    if not documents:
+        raise RenderError("role prompts: documents mapping is empty")
+
+    roles_dir = Path(root) / ".pi" / "roles"
+    try:
+        roles_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RenderError(
+            "Could not create {}: {}".format(roles_dir, exc)
+        ) from exc
+
+    for stem, document in documents.items():
+        target = roles_dir / (stem + ".md")
+        try:
+            target.write_bytes(document.encode("utf-8"))
+        except OSError as exc:
+            raise RenderError(
+                "Could not write {}: {}".format(target, exc)
+            ) from exc
 
 
 def _load_zoo_template(context_window: int) -> Dict[str, Any]:
