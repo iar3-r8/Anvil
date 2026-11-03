@@ -514,7 +514,7 @@ class GitCommitArgvTestCase(unittest.TestCase):
         # Act
         argv = picommit.commit_argv(REPO, COMMIT_MESSAGE)
 
-        # Assert: the exact pinned list shape - five elements, the
+        # Assert: the exact pinned list shape - six elements, the
         # message one of them.
         self.assertEqual(
             argv,
@@ -551,8 +551,8 @@ class GitCommitArgvTestCase(unittest.TestCase):
         )
         self.assertEqual(
             len(argv),
-            5,
-            "the commit argv must be exactly five elements; got: %r"
+            6,
+            "the commit argv must be exactly six elements; got: %r"
             % argv,
         )
 
