@@ -21,9 +21,8 @@ Pinned signature::
 - the verdict is one of ``"green"`` / ``"red"`` / ``"wrong_kind"`` /
   ``"reason_mismatch"``.
 
-Behaviours 1-2 are pinned here. Behaviours 3-4 (wrong-kind-of-red,
-reason-must-match) each get their own red/green cycle and are not asserted
-in this file yet.
+Behaviours 1-3 are pinned here. Behaviour 4 (reason-must-match) gets its
+own red/green cycle and is not asserted in this file yet.
 """
 
 import importlib
@@ -53,6 +52,18 @@ FAILURE_TRACEBACK = (
     '  File "./tests/test_example.py", line 12, in test_example\n'
     "    self.assertEqual(1, 2)\n"
     "AssertionError: 1 != 2\n"
+)
+
+# The exact traceback text of behaviour 3's single error entry, in the
+# shape ``TestResult.addError`` produces - ``(test, traceback_text)``.
+# An import error, one of the plan's three error kinds; the specific kind
+# is irrelevant to the verdict. It is deterministic by construction, the
+# same way as FAILURE_TRACEBACK.
+ERROR_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "./tests/test_example.py", line 3, in <module>\n'
+    "    import missing_module\n"
+    "ModuleNotFoundError: No module named 'missing_module'\n"
 )
 
 
@@ -125,6 +136,71 @@ class ClassifyGenuineRedTestCase(unittest.TestCase):
 
         # Assert
         self.assertEqual(verdict, "red")
+
+
+class ClassifyWrongKindTestCase(unittest.TestCase):
+    """Behaviour 3 (verdict-wrong-kind-of-red): a result carrying an
+    ``errors`` entry (import, collection or syntax) classifies as
+    ``"wrong_kind"`` - even when ``failures`` is also non-empty, an
+    error outranks a failure. Without that priority a wrong-kind run
+    with a coincidental assertion failure would misclassify as
+    ``"red"`` and poison the history (DoD 5 of the plan).
+
+    ``reason`` is any non-empty string on this path: the plan's
+    "Error: none" means no reason matching is expected for an error, so
+    no test here asserts anything about ``reason``. The plan's "the
+    verbatim error text is carried for re-delegation" is not
+    observable in ``classify``'s return under the pinned contract
+    ``classify(...) -> str`` - the carrying surfaces at the picycle
+    layer (behaviour 9 returns the verbatim output) - so, as with
+    behaviour 2's traceback carrying, this class asserts only the
+    verdict.
+    """
+
+    REASON = "a non-empty reason that this path does not match"
+
+    def test_classify_one_error_no_failures_returns_wrong_kind(self) -> None:
+        # Arrange: a real TestResult with exactly one error entry and no
+        # failures - the givens of behaviour 3's first shape. The entry
+        # is the ``(test, traceback_text)`` tuple that addError appends;
+        # it is built here directly because addError renders its text
+        # from a live exception tuple and cannot inject a pinned one.
+        # classify's contract reads exactly those two lists, so the
+        # list is the seam, the same way as behaviour 2's test.
+        result = unittest.TestResult()
+        errored_test = object()
+        result.errors.append((errored_test, ERROR_TRACEBACK))
+        self.assertEqual(result.errors, [(errored_test, ERROR_TRACEBACK)])
+        self.assertEqual(result.failures, [])
+
+        # Act
+        verdict = anvilkit.pi.piverdict.classify(result, self.REASON)
+
+        # Assert
+        self.assertEqual(verdict, "wrong_kind")
+
+    def test_classify_one_error_and_one_failure_returns_wrong_kind(
+        self,
+    ) -> None:
+        # Arrange: a real TestResult carrying an error entry AND a
+        # simultaneous failure entry - behaviour 3's priority case.
+        # The error must outrank the failure: without the priority rule
+        # this result would classify "red" and poison the history.
+        result = unittest.TestResult()
+        errored_test = object()
+        failing_test = object()
+        result.errors.append((errored_test, ERROR_TRACEBACK))
+        result.failures.append((failing_test, FAILURE_TRACEBACK))
+        self.assertEqual(result.errors, [(errored_test, ERROR_TRACEBACK)])
+        self.assertEqual(
+            result.failures, [(failing_test, FAILURE_TRACEBACK)]
+        )
+
+        # Act
+        verdict = anvilkit.pi.piverdict.classify(result, self.REASON)
+
+        # Assert: the error outranks the failure.
+        self.assertEqual(verdict, "wrong_kind")
 
 
 if __name__ == "__main__":
