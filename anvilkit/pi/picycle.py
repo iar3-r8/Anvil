@@ -14,7 +14,8 @@ commits is built by ``picommit``; the verdict it acts on is decided by
 House discipline, as ``anvilkit.pi.piverdict`` and
 ``anvilkit.pi.picommit`` use it: one behaviour lands per red/green
 cycle, and the docstring says which ones have landed. Behaviours 8, 9,
-10, 11 and 13 of ``plans/pi-phase9-redgreen.md`` are implemented here:
+10, 11, 12, 13 and 14 of ``plans/pi-phase9-redgreen.md`` are
+implemented here:
 ``red_step(repo_path, scope, behaviour, number, plan_slug, reason,
 runner, git, issue=None)`` invokes the injected tester delegation
 exactly once, classifies its suite run with
@@ -68,13 +69,33 @@ with nothing committed on either green attempt, returning
 "escalate_to": "architect"}`` - both texts verbatim in attempt order
 and the escalation target the manager's loop-control rule names for
 a second green failure. A completed cycle commits exactly twice, in
-order - the red commit in the red format, then the green commit in
-the green format - and returns ``{"verdict": "green", "red": <the
+order - the red commit in the red format, then the green commit in the
+green format - and returns ``{"verdict": "green", "red": <the
 red step's result dict verbatim>, "green": <green_step's result
 dict, ``{"verdict": "green", "committed": True, "message": <the
-green message>}``>}}``. Behaviour 14 has not landed yet. A red step
+green message>}``>}}``. A red step
 that returns anything but a genuine red (``"red"``) cannot
 be committed green on and raises ``CycleError`` naming the verdict.
+``ship(targeted_result, full_suite_result) -> bool`` is the ship
+gate - behaviour 14
+(targeted-in-loop-full-suite-before-ship) landed: it is PURE, deciding
+over the two given suite runs with no runner, no git and no
+delegation - "the loop itself ran only the targeted file" is a
+property of the loop's running, and ``ship`` takes exactly those two
+results. A run is green iff its ``errors`` AND ``failures`` are both
+empty - the same criterion ``piverdict.classify``'s ``"green"``
+branch uses, so "green" has one meaning in the module. Both green
+returns ``True``. The refusal is a raise, not a return value, and the
+targeted run is checked FIRST - a red targeted means the loop never
+went green, you cannot ship what the loop has not proven, and its
+``CycleError`` names ``"targeted"`` and carries the targeted run's
+failure text verbatim - and only then the full suite, whose
+``CycleError`` names ``"full"`` and carries the full-suite run's
+failure text verbatim: a green targeted file is not a green branch.
+When both are red the targeted one is raised (it is checked first).
+The failure text is the module's verbatim entry - the first
+``errors[0][1]`` if any, else ``failures[0][1]`` - built by
+:func:`_failure_text`, which ``ship`` shares with the green half.
 ``green_step(repo_path, scope, behaviour, number, plan_slug, kind,
 report, test_paths, git, issue=None)`` is the standalone green step
 - behaviour 11 (coder-test-file-edit-is-refused) landed: it inspects
@@ -118,7 +139,14 @@ class CycleError(Exception):
     green the loop must verify. (A ``"wrong_kind"`` does not raise:
     it returns the verbatim error for re-delegation and commits
     nothing.) The message names ``"green"`` as the offending verdict,
-    so a failure is fixable without reading the source.
+    so a failure is fixable without reading the source. ``run_cycle``
+    raises it for a red step whose verdict is not ``"red"`` - a
+    non-genuine red cannot be committed green on. And the ship gate
+    (:func:`ship`) raises it as its refusal of a non-green suite: a
+    red targeted run (naming ``"targeted"``) or, the targeted run
+    being green, a red full-suite run (naming ``"full"``) - the
+    refusal IS the raise, and the offending run's failure text is
+    carried verbatim in the message.
     """
 
 
@@ -348,7 +376,7 @@ def run_cycle(
                 "red": red_result,
                 "green": green_result,
             }
-        failure_outputs.append(_green_failure_text(attempt_result))
+        failure_outputs.append(_failure_text(attempt_result))
     return {
         "verdict": "halted",
         "behaviour": behaviour,
@@ -357,22 +385,72 @@ def run_cycle(
     }
 
 
-def _green_failure_text(result: unittest.TestResult) -> str:
-    """Capture a failed green attempt's failure text, verbatim.
+def _failure_text(result: unittest.TestResult) -> str:
+    """Capture a non-green suite run's failure text, verbatim.
 
-    A failed attempt carries exactly one of the two kinds the judge
+    A non-green run carries at least one of the two kinds the judge
     keeps apart: a wrong-kind run (``errors`` non-empty) or a
     genuine-red run (``errors`` empty, ``failures`` non-empty). This
     mirrors ``piverdict.classify``'s priority - an error outranks a
-    failure - and returns the same entry :func:`red_step` carries on
-    its re-delegation paths: the first error entry's traceback text
-    for a wrong-kind run, else the first failure entry's traceback
-    text. The caller hands the text on verbatim, so the halt result's
-    ``"failure_outputs"`` carry what the suite run produced, unaltered.
+    failure - and returns the module's one verbatim entry: the first
+    error entry's traceback text for a wrong-kind run, else the first
+    failure entry's traceback text. The callers hand the text on
+    verbatim: :func:`run_cycle`'s halt result, and :func:`ship`'s
+    ``CycleError`` messages, carry what the suite run produced,
+    unaltered.
     """
     if result.errors:
         return result.errors[0][1]
     return result.failures[0][1]
+
+
+def ship(
+    targeted_result: unittest.TestResult,
+    full_suite_result: unittest.TestResult,
+) -> bool:
+    """Decide whether the cycle may ship: both runs green, or refuse.
+
+    ``targeted_result`` is the suite run of the targeted file - the
+    file the loop ran in the cycle - and ``full_suite_result`` is the
+    suite run of the whole suite; each is the object a ``unittest``
+    run produces, the same two lists ``piverdict.classify`` reads.
+
+    Behaviour 14 (targeted-in-loop-full-suite-before-ship): the gate
+    is PURE - it decides over the two given results and never acts: no
+    runner, no git, no delegation. "The loop itself ran only the
+    targeted file" is a property of the loop's running, and this
+    function takes exactly those two results, no cycle identity.
+
+    The green criterion is the module's one: a run is green iff its
+    ``errors`` AND ``failures`` are both empty - the same test
+    ``piverdict.classify``'s ``"green"`` branch makes, so "green" has
+    one meaning in the module. Both runs green returns ``True``.
+
+    Otherwise the refusal IS the raise - a ``CycleError``, not a
+    return value - and the targeted run is checked FIRST: a red
+    targeted means the loop never went green, and you cannot ship
+    what the loop has not proven, so its message names ``"targeted"``
+    and carries the targeted run's failure text verbatim (the
+    module's entry - first error, else first failure - via
+    :func:`_failure_text`). Only then is the full suite checked, and
+    its message names ``"full"`` and carries the full-suite run's
+    failure text verbatim: a green targeted file is not a green
+    branch. When both runs are red the targeted one is raised, since
+    it is checked first.
+    """
+    if targeted_result.errors or targeted_result.failures:
+        raise CycleError(
+            "the targeted suite is not green; the loop never went "
+            "green and it cannot ship what it has not proven:\n%s"
+            % _failure_text(targeted_result)
+        )
+    if full_suite_result.errors or full_suite_result.failures:
+        raise CycleError(
+            "the full suite is not green; a green targeted file is "
+            "not a green branch:\n%s"
+            % _failure_text(full_suite_result)
+        )
+    return True
 
 
 def green_step(
