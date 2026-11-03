@@ -64,6 +64,18 @@ from ``role_document(name)``, so it is exactly what the committed
 underlying builders are pinned deterministic, so two calls are
 byte-identical).
 
+Behaviour 15 (token-estimate-is-deterministic): ``estimate_tokens(text)``
+returns ``ceil(len(text.encode("utf-8")) / 3)`` - an exact ``int``,
+deterministic (the same text twice gives the same value), and
+deliberately CONSERVATIVE: an over-estimate for typical English prose,
+an approximation and not a tokenizer measurement. The plan records the
+choice deliberately - the local model's tokenizer is not one of the
+standard ones, and the 3.8 floor plus the stdlib-first rule reject
+tokenizer packages - so a pass against the model's window is
+trustworthy and a fail may be conservative. Empty text returns 0,
+never a division error. This is the seam behaviour 16's budget check
+divides and compares.
+
 Error: empty or whitespace-only ``text`` raises ``PromptError``;
 malformed XML raises ``PromptError`` naming the parse position the
 parser reported; a root that is neither an ``<instructions>`` nor a
@@ -83,6 +95,7 @@ and listing the six known names. ``shared_document`` raises
 Stdlib only. One exception type: ``PromptError``.
 """
 
+import math
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -363,6 +376,30 @@ def all_documents() -> Dict[str, str]:
         "docs": role_document("docs"),
         "tdd-manager": role_document("tdd-manager"),
     }
+
+
+def estimate_tokens(text: str) -> int:
+    """A conservative token estimate for one prompt document's text.
+
+    Behaviour 15 of ``plans/pi-role-prompts.md``
+    (token-estimate-is-deterministic): the return is
+    ``ceil(len(text.encode("utf-8")) / 3)`` - an exact ``int``,
+    deterministic (the same text twice gives the same value), and
+    monotonic in the text's UTF-8 byte length, so the budget check of
+    behaviour 16 can divide and compare it against the model's window.
+
+    This is a CONSERVATIVE ESTIMATE, not a tokenizer measurement: for
+    typical English prose it over-estimates, so a pass against the
+    window is trustworthy and a fail may be conservative. The plan
+    records the choice deliberately - the local model's tokenizer is
+    not one of the standard ones, and the 3.8 floor plus the
+    stdlib-first rule reject tokenizer packages - so an honest
+    approximation is the correct level of claim.
+
+    Empty text returns 0: ``ceil(0 / 3)`` is 0, and no division error
+    can occur on an empty byte string.
+    """
+    return math.ceil(len(text.encode("utf-8")) / 3)
 
 
 def _strip_source_frontmatter(text: str) -> str:
