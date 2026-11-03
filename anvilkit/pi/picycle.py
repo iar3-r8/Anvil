@@ -13,8 +13,8 @@ commits is built by ``picommit``; the verdict it acts on is decided by
 
 House discipline, as ``anvilkit.pi.piverdict`` and
 ``anvilkit.pi.picommit`` use it: one behaviour lands per red/green
-cycle, and the docstring says which ones have landed. Behaviour 8 of
-``plans/pi-phase9-redgreen.md`` is implemented here:
+cycle, and the docstring says which ones have landed. Behaviours 8 and
+9 of ``plans/pi-phase9-redgreen.md`` are implemented here:
 ``red_step(repo_path, scope, behaviour, number, plan_slug, reason,
 runner, git, issue=None)`` invokes the injected tester delegation
 exactly once, classifies its suite run with
@@ -25,11 +25,13 @@ the red message built by ``picommit.red_message`` - both through the
 seam, in that order, so the red step owns the whole commit step and a
 genuine red commits exactly once. On a ``"reason_mismatch"`` it does
 nothing - no add, no commit - and returns the mismatch for
-re-delegation, carrying the failure's traceback text verbatim. A
-``"green"`` or ``"wrong_kind"`` verdict is not a behaviour of
-``red_step`` in this slice (behaviours 9-14 own the loop) and raises
-``CycleError`` naming the verdict. ``run_cycle`` and ``green_step``
-have not landed yet.
+re-delegation, carrying the failure's traceback text verbatim. On a
+``"wrong_kind"`` it does the same for the error - no add, no commit; a
+broken test must never be committed - and returns the error's
+traceback text verbatim for re-delegation to the tester. A ``"green"``
+verdict is not a behaviour of ``red_step`` in this slice (behaviours
+10-14 own the loop) and raises ``CycleError`` naming the verdict.
+``run_cycle`` and ``green_step`` have not landed yet.
 
 Stdlib only. One exception type: ``CycleError``.
 """
@@ -45,13 +47,14 @@ class CycleError(Exception):
     """A cycle step this module could not carry out.
 
     A single exception type covers every failure of the cycle step, so
-    callers need only one ``except`` clause. Behaviour 8 raises it for
-    a verdict ``red_step`` does not own in this slice: a ``"green"`` or
-    ``"wrong_kind"`` classification is a verdict for the loop, which
-    behaviours 9-14 own, not for the red step, and acting on one here
-    would commit a wrong-kind red or skip a green the loop must
-    verify. Every message names the offending verdict, so a failure is
-    fixable without reading the source.
+    callers need only one ``except`` clause. It is raised for the only
+    verdict ``red_step`` does not own in this slice: a ``"green"``
+    classification is a verdict for the loop, which behaviours 10-14
+    own, not for the red step, and acting on one here would skip a
+    green the loop must verify. (A ``"wrong_kind"`` does not raise:
+    it returns the verbatim error for re-delegation and commits
+    nothing.) The message names ``"green"`` as the offending verdict,
+    so a failure is fixable without reading the source.
     """
 
 
@@ -103,9 +106,17 @@ def red_step(
     "failure_text": <verbatim>}``, the ``"redelegate"`` marker the
     caller uses to re-delegate and ``"failure_text"`` the traceback
     text of the first failure entry, carried verbatim so the
-    re-delegation is informed by it. A ``"green"`` or ``"wrong_kind"``
-    verdict raises ``CycleError`` naming the verdict: those are
-    verdicts for the loop, not for the red step in this slice.
+    re-delegation is informed by it.
+
+    Behaviour 9 (wrong-kind-of-red-is-not-committed): a
+    ``"wrong_kind"`` commits nothing - no add, no commit, zero seam
+    invocations; a broken test must never be committed - and returns
+    ``{"verdict": "wrong_kind", "redelegate": "tester",
+    "error_text": <verbatim>}``, ``"error_text"`` the traceback text of
+    the first error entry, carried verbatim so the re-delegation is
+    informed by it. A ``"green"`` verdict raises ``CycleError`` naming
+    it: ``"green"`` is the only verdict for the loop, not for the red
+    step in this slice.
     """
     context: Dict[str, Any] = {
         "role": "tester",
@@ -133,7 +144,13 @@ def red_step(
             "redelegate": "tester",
             "failure_text": result.failures[0][1],
         }
+    if verdict == "wrong_kind":
+        return {
+            "verdict": "wrong_kind",
+            "redelegate": "tester",
+            "error_text": result.errors[0][1],
+        }
     raise CycleError(
-        "red_step does not own verdict %r; the loop (behaviours 9-14) "
-        "does" % verdict
+        "red_step does not own the 'green' verdict, the only verdict "
+        "it does not own; the loop (behaviours 10-14) does"
     )
