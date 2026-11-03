@@ -8,7 +8,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `yamlio.py` | safe YAML loading — the only module permitted to import `yaml` |
 | `env.py` | safe `.env` reading and writing |
 | `config.py` | reading `config.yaml` (llama-swap's, read-only) and `anvil.yaml` (Anvil's own) |
-| `render.py` | generating the agent artifacts — Zoo Code's `zoo-code-settings.json` and `.roo/mcp.json`, Pi's `models.json` and `.pi/mcp.json`; the only module that writes them |
+| `render.py` | generating the agent artifacts — Zoo Code's `zoo-code-settings.json` and `.roo/mcp.json`, Pi's `models.json`, `.pi/mcp.json` and `.pi/extensions/guardrails.json`; the only module that writes them |
 | `compose.py` | driving `docker compose` and the container runtime |
 | `health.py` | health checks against the llama-swap gateway |
 | `stress.py` | stress testing against the llama-swap gateway |
@@ -22,6 +22,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `pi/pievents.py` | JSONL event-stream reader for `pi --mode json` streams |
 | `pi/pifixture.py` | generated bake-off fixture — the trivial red task for the Pi phase-1 bake-off |
 | `pi/piguard.py` | checks over GitHub branch rules, returning findings |
+| `pi/piguardrails.py` | guardrails document builder and validator — one job: build and validate the `.pi/extensions/guardrails.json` document for the `@aliou/pi-guardrails` package (one exception type: `GuardrailsError`); the write seam is `render.guardrails_settings` |
 | `pi/pirecord.py` | bake-off run-record builder (closed thirteen-key record, table rendering) |
 | `pi/piruleset.py` | GitHub ruleset builder — the importable main-branch guard ruleset |
 | `pi/pisandbox.py` | sandbox image argv builders — one job: turn inputs into `docker` command lines |

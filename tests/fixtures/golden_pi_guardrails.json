@@ -1,0 +1,38 @@
+{
+  "enabled": true,
+  "features": {
+    "pathAccess": false,
+    "permissionGate": true,
+    "policies": true,
+    "protectEnvFiles": false
+  },
+  "permissionGate": {
+    "autoDenyPatterns": [
+      {"pattern": "git commit"},
+      {"pattern": "git push"},
+      {"pattern": "git reset"},
+      {"pattern": "git rebase"}
+    ]
+  },
+  "policies": {
+    "rules": [
+      {
+        "id": "secrets",
+        "onlyIfExists": true,
+        "patterns": [
+          {"pattern": ".env"},
+          {"pattern": "*.pem"},
+          {"pattern": "*.key"}
+        ],
+        "protection": "noAccess"
+      },
+      {
+        "id": "guardrails-config",
+        "patterns": [
+          {"pattern": ".pi/extensions/guardrails.json"}
+        ],
+        "protection": "readOnly"
+      }
+    ]
+  }
+}

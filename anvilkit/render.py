@@ -1,6 +1,7 @@
 """Generating the agent artifacts: Zoo Code's ``zoo-code-settings.json`` and
-``.roo/mcp.json``, and Pi's agent-directory ``models.json`` and project
-``mcp.json``. This is the only module that writes agent artifacts.
+``.roo/mcp.json``, and Pi's agent-directory ``models.json`` plus the project
+``mcp.json`` and ``extensions/guardrails.json``. This is the only module
+that writes agent artifacts.
 
 Templates are parsed as JSON, values are substituted into the resulting data
 structures, and the output is produced with ``json.dumps``.
@@ -17,7 +18,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional, Union
 
-from anvilkit.pi import piargv
+from anvilkit.pi import piguardrails, piargv
 
 PathLike = Union[str, Path]
 
@@ -186,6 +187,27 @@ def pi_models_settings(
         )
     except piargv.ArgvError as exc:
         raise RenderError("models document: {}".format(exc)) from exc
+
+    return _to_json(document)
+
+
+def guardrails_settings() -> str:
+    """Render the Pi project ``guardrails.json`` as a JSON string.
+
+    Delegates the document to :func:`anvilkit.pi.piguardrails.
+    build_document` (fetched as a module attribute, the same seam
+    :func:`pi_models_settings` uses for ``piargv.models_document``),
+    re-validates it with the delegate's ``validate_document`` seam, and
+    returns the rendered string. The delegate's ``GuardrailsError`` is
+    translated to ``RenderError`` at this seam so one exception type per
+    module holds for callers - the two types are unrelated, so no
+    delegate error leaks past.
+    """
+    try:
+        document = piguardrails.build_document()
+        piguardrails.validate_document(document)
+    except piguardrails.GuardrailsError as exc:
+        raise RenderError("guardrails document: {}".format(exc)) from exc
 
     return _to_json(document)
 
