@@ -63,6 +63,19 @@ the cycle's test file; the green routes the green commit through
 ``green_step``, passing the red step's changed paths as
 ``test_paths`` and returning the refusal unchanged.
 
+``plans/pi-phase9-redgreen.md``, behaviour 14
+(targeted-in-loop-full-suite-before-ship): given a green targeted run
+and a red full-suite run, ``picycle.ship(targeted_result,
+full_suite_result)`` refuses shipping - raises ``CycleError`` naming
+the full suite and carrying its failure text verbatim - a green
+targeted file is not a green branch. Manager-confirmed contract,
+manager-added beyond the plan's Given (flagged): a red TARGETED run
+refuses the same way, naming the targeted suite, so the gate cannot
+be one-sided; both results green returns ``True``. ``ship`` is PURE -
+it decides over the two given results, never acts; "the loop itself
+ran only the targeted file" is a property of the loop's running, and
+the tests pin that ``ship`` takes exactly the two results.
+
 The manager-confirmed design (do not re-litigate): a green attempt
 succeeds iff ``piverdict.classify(coder_result, reason)`` returns
 ``"green"`` - the same single judge the red step uses, with the same
@@ -412,6 +425,31 @@ NOTHING_CODER_CHANGED_PATHS = ["anvilkit/pi/picycle.py", NOTHING_TEST_FILE]
 NOTHING_CODER_ARGUMENT = (
     "the red assertion is too narrow; widening it is part of the fix, "
     "so I adjusted the test alongside the implementation"
+)
+
+# The inputs of behaviour 14 (targeted-in-loop-full-suite-before-ship).
+# ``ship`` takes exactly the two suite runs - no cycle identity - so the
+# constants are the two failure texts, one per refused case.
+
+# The verbatim traceback text of the full-suite run's single failure
+# entry, in the shape ``TestResult.addFailure`` produces. It is
+# deterministic by construction (a module constant, not a real run).
+SHIP_FULL_SUITE_FAILURE_TEXT = (
+    "Traceback (most recent call last):\n"
+    '  File "./tests/test_full_suite.py", line 9, in test_full_suite\n'
+    "    self.assertEqual(1, 2)\n"
+    "AssertionError: 1 != 2\n"
+)
+
+# The verbatim traceback text of the targeted run's single failure
+# entry (the targeted-red case): a red targeted means the loop never
+# went green - you cannot ship what the loop has not proven - so the
+# gate refuses on the targeted suite, not the full suite.
+SHIP_TARGETED_FAILURE_TEXT = (
+    "Traceback (most recent call last):\n"
+    '  File "./tests/test_picycle.py", line 3, in test_ship\n'
+    "    self.assertEqual(1, 2)\n"
+    "AssertionError: 1 != 2\n"
 )
 
 
@@ -1921,6 +1959,146 @@ class NothingCommittedOnAFailurePathTestCase(unittest.TestCase):
             len(git.calls),
             "a wrong_kind red_step records no git mutation of its own; "
             "got %d git calls: %r" % (len(git.calls), git.calls),
+        )
+
+
+class ShipGateTestCase(unittest.TestCase):
+    """Behaviour 14 (targeted-in-loop-full-suite-before-ship): a green
+    targeted run and a red full-suite run refuse shipping - the
+    full-suite failure is reported, and a green targeted file is not a
+    green branch.
+
+    Manager-CONFIRMED contract (do not re-litigate)::
+
+        ship(targeted_result, full_suite_result) -> bool
+
+    - PURE: decides over the two given results, never acts - no runner,
+      no git, no delegation. "The loop itself ran only the targeted
+      file" is a property of the loop's running, not of ``ship`` - the
+      caller hands in the two results, and these tests pin that
+      ``ship`` takes exactly those two inputs;
+    - both results green (the module's green criterion - the empty
+      ``errors`` and ``failures`` of ``piverdict.classify``'s
+      ``"green"`` branch) -> returns ``True``;
+    - ``full_suite_result`` NOT green -> raises ``CycleError``; the
+      message NAMES the full suite and carries its failure text
+      VERBATIM (the first error entry, else the first failure entry -
+      the same error-outranks-failure entry as the rest of the
+      module). The refusal is the raise, not a return value;
+    - ``targeted_result`` NOT green -> also raises ``CycleError``,
+      naming the TARGETED suite (a red targeted means the loop never
+      went green - you cannot ship what the loop has not proven).
+      FLAGGED: the plan's Given names only the full-suite case; the
+      targeted-red refusal is the manager's addition, so the gate
+      cannot be one-sided.
+
+    Naming fragments FLAGGED for the coder: ``"full"`` names the full
+    suite and ``"targeted"`` names the targeted suite. They are
+    disjoint substrings of one another, so the targeted-red test can
+    additionally pin that the message names the targeted fragment and
+    NOT the full one - the full suite is not the offender there.
+
+    The import happens inside the test (``_picycle``) rather than at
+    module top level; ``anvilkit/pi/picycle.py`` exists (behaviours
+    8-13 landed) but ``ship`` does not, so the tests fail on the
+    attribute lookup (``AttributeError``) instead of breaking
+    collection of the file.
+    """
+
+    def _picycle(self):
+        """Import ``anvilkit.pi.picycle``."""
+        return importlib.import_module("anvilkit.pi.picycle")
+
+    def test_ship_refused_when_full_suite_red(self) -> None:
+        # Arrange: the plan's Given - a green targeted run (an empty
+        # TestResult, the module's green criterion) and a red
+        # full-suite run (one failure entry, no errors).
+        targeted = unittest.TestResult()
+        full_suite = _suite_result(SHIP_FULL_SUITE_FAILURE_TEXT)
+
+        # Act
+        picycle = self._picycle()
+        with self.assertRaises(picycle.CycleError) as ctx:
+            picycle.ship(targeted, full_suite)
+
+        # Assert: the refusal is the raise - a CycleError, not a
+        # return value.
+        message = str(ctx.exception)
+
+        # Assert: the message NAMES the full suite (flagged fragment
+        # "full") - a green targeted file is not a green branch.
+        self.assertIn(
+            "full",
+            message,
+            "the refusal must name the full suite (flagged fragment "
+            "'full'); got: %r" % message,
+        )
+
+        # Assert: the full-suite failure is REPORTED - the failure
+        # text is carried VERBATIM in the message.
+        self.assertIn(
+            SHIP_FULL_SUITE_FAILURE_TEXT,
+            message,
+            "the refusal must carry the full-suite failure text "
+            "verbatim; got: %r" % message,
+        )
+
+    def test_ship_allowed_when_both_green(self) -> None:
+        # Arrange: both suite runs green - two empty TestResults, the
+        # module's green criterion.
+        targeted = unittest.TestResult()
+        full_suite = unittest.TestResult()
+
+        # Act
+        picycle = self._picycle()
+        result = picycle.ship(targeted, full_suite)
+
+        # Assert: shipping is allowed - the gate returns True, not a
+        # raise and not a falsy value.
+        self.assertIs(
+            result,
+            True,
+            "two green suite runs must ship; got: %r" % (result,),
+        )
+
+    def test_ship_refused_when_targeted_red(self) -> None:
+        # Arrange: the manager's one-sidedness guard - a red targeted
+        # run (one failure entry, no errors) and a green full-suite
+        # run (an empty TestResult).
+        targeted = _suite_result(SHIP_TARGETED_FAILURE_TEXT)
+        full_suite = unittest.TestResult()
+
+        # Act
+        picycle = self._picycle()
+        with self.assertRaises(picycle.CycleError) as ctx:
+            picycle.ship(targeted, full_suite)
+
+        # Assert: the refusal is the raise - a CycleError, not a
+        # return value.
+        message = str(ctx.exception)
+
+        # Assert: the message NAMES the targeted suite (flagged
+        # fragment "targeted", consistent with test 1's "full") - the
+        # loop never went green, so it is the targeted suite that
+        # cannot ship.
+        self.assertIn(
+            "targeted",
+            message,
+            "the refusal must name the targeted suite (flagged "
+            "fragment 'targeted'); got: %r" % message,
+        )
+
+        # Assert: the message does NOT name the full suite as the
+        # offender - it is green. Pinned because the flagged
+        # fragments "targeted" and "full" are disjoint substrings of
+        # one another, so the negative pin cannot collide with the
+        # positive one.
+        self.assertNotIn(
+            "full",
+            message,
+            "the targeted-red refusal must not name the full suite as "
+            "the offender (flagged fragments 'targeted' and 'full' "
+            "are disjoint); got: %r" % message,
         )
 
 
