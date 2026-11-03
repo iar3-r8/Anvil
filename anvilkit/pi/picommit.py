@@ -11,7 +11,7 @@ string.
 
 House discipline, as ``anvilkit.pi.piverdict`` uses it: one behaviour
 lands per red/green cycle, and the docstring says which ones have
-landed. Behaviours 5 and 6 of ``plans/pi-phase9-redgreen.md`` are
+landed. Behaviours 5, 6 and 7 of ``plans/pi-phase9-redgreen.md`` are
 implemented here: ``red_message(scope, behaviour, number, plan_slug,
 assertion, issue=None)`` builds the red commit message - subject
 ``test({scope}): cover {behaviour}, failing``, a blank line, the body
@@ -28,25 +28,42 @@ since it is what keeps the red distinct from its green in history.
 An empty ``scope`` or ``behaviour`` raises ``CommitError`` naming the
 offending field; an unknown branch kind raises ``CommitError`` naming
 the offending kind, and the kind is validated before the field checks
-so it is reported even when the other fields are fine. Behaviour 7
-(git-argv-is-a-list) is not yet implemented; it lands in its own
-cycle.
+so it is reported even when the other fields are fine.
+``add_argv(repo, paths)`` and ``commit_argv(repo, message)`` build the
+``git`` argv the driver executes - always a ``list``, never a shell
+string, so no argument can be re-parsed: ``add_argv`` is
+``["git", "-C", repo, "add", "--"] + list(paths)`` and ``commit_argv``
+is ``["git", "-C", repo, "commit", "-m", message]``. The ``--``
+separator in ``add_argv`` is load-bearing: every path is data after
+it, so a path starting with ``-`` (e.g. ``-rf``) is never re-parsed
+as an option. The message in ``commit_argv`` is ONE element,
+byte-identical to the input - never split, never quoted, never run
+through a shell - and ``--amend`` and ``--no-verify`` are never
+emitted, since the red is never amended or squashed and the message
+format is ours and immutable. An empty ``repo`` raises ``CommitError``
+naming the field in both builders; an empty ``message`` raises
+``CommitError`` naming it in ``commit_argv``. An empty ``paths`` list
+is not an error: the plan does not pin it.
 
 Stdlib only. One exception type: ``CommitError``.
 """
 
-from typing import List, Optional
+from typing import List, Optional, Sequence
 
 
 class CommitError(Exception):
-    """A commit message or argv this builder could not build.
+    """A commit message or git argv this module could not build.
 
     A single exception type covers every build failure, so callers
     need only one ``except`` clause. Every raise this module has
-    today belongs to behaviour 5 or 6: an empty scope or behaviour
+    belongs to behaviour 5, 6 or 7: an empty scope or behaviour
     raises it, since a message built from an empty scope or behaviour
-    would be malformed history, and an unknown branch kind raises it,
-    since a green subject can only be ``feat`` or ``fix``. Every
+    would be malformed history; an unknown branch kind raises it,
+    since a green subject can only be ``feat`` or ``fix``; an empty
+    repo path raises it in both argv builders, since ``git -C`` given
+    no path is a command that could not have been meant; and an empty
+    message raises it in ``commit_argv``, since a commit without a
+    message is not the immutable string this module builds. Every
     message names the offending field or kind, so a failure is
     fixable without reading the source.
     """
@@ -167,3 +184,60 @@ def green_message(
     ]
     _append_trailer(lines, issue)
     return "\n".join(lines)
+
+
+def add_argv(repo: str, paths: Sequence[str]) -> List[str]:
+    """Build the ``git add`` argv that stages ``paths`` in ``repo``.
+
+    ``repo`` is the repository path ``git -C`` runs in; ``paths`` are
+    the paths to stage, in the order given.
+
+    Behaviour 7 (git-argv-is-a-list), the add half: the return is a
+    list, never a shell string, exactly
+    ``["git", "-C", repo, "add", "--"] + list(paths)``. The ``--``
+    separator is load-bearing: every path is data after it, so a path
+    starting with ``-`` (e.g. ``-rf``) is never re-parsed as an
+    option - the house rule that no argument can be re-parsed.
+    ``paths`` is expanded in order, and an empty ``paths`` is not an
+    error: the plan does not pin it.
+
+    Error: an empty ``repo`` raises ``CommitError`` naming the field,
+    since ``git -C`` given no path is a command that could not have
+    been meant.
+    """
+    if not repo:
+        raise CommitError(
+            "repo is empty; the add argv needs a path to run in"
+        )
+    return ["git", "-C", repo, "add", "--"] + list(paths)
+
+
+def commit_argv(repo: str, message: str) -> List[str]:
+    """Build the ``git commit`` argv that commits ``message`` in ``repo``.
+
+    ``repo`` is the repository path ``git -C`` runs in; ``message`` is
+    the already-built commit message, one immutable string.
+
+    Behaviour 7 (git-argv-is-a-list), the commit half: the return is
+    a list, never a shell string, exactly
+    ``["git", "-C", repo, "commit", "-m", message]``. The message is
+    ONE element, byte-identical to the input - never split, never
+    quoted, never run through a shell - so a multi-line message stays
+    one element. ``--amend`` and ``--no-verify`` are never emitted:
+    the red is never amended or squashed into its green, and the
+    message format is ours and immutable.
+
+    Error: an empty ``repo`` or an empty ``message`` raises
+    ``CommitError`` naming the offending field, checked in the order
+    the arguments appear, so an empty repo is reported before an
+    empty message.
+    """
+    if not repo:
+        raise CommitError(
+            "repo is empty; the commit argv needs a path to run in"
+        )
+    if not message:
+        raise CommitError(
+            "message is empty; the commit argv carries the built message"
+        )
+    return ["git", "-C", repo, "commit", "-m", message]
