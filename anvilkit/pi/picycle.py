@@ -35,23 +35,33 @@ verdict is not a behaviour of ``red_step`` in this slice (behaviours
 kind, runner, git, issue=None)`` is the happy path of the loop: it
 delegates the RED half to ``red_step`` verbatim - a single commit
 path, so the red format can never drift from ``red_step``'s - and, on
-a ``"red"`` verdict, runs ONE coder delegation (the same injected
-``runner``, context keyed on ``"role": "coder"``) and commits the
-green: the green message built by
+a ``"red"`` verdict, judges each green attempt with the same single
+judge the red step uses: a green attempt succeeds iff
+``piverdict.classify`` of the coder delegation's suite run (the same
+non-empty ``reason``) returns ``"green"``. On a successful attempt it
+commits the green: the green message built by
 ``picommit.green_message(scope, behaviour, number, plan_slug, kind,
-issue=issue)``, staged with ``picommit.add_argv`` on the coder
-delegation's changed paths and then committed with
-``picommit.commit_argv``, the same stage-then-commit order the red
-step uses. A completed cycle commits exactly twice, in order - the
-red commit in the red format, then the green commit in the green
-format - and returns ``{"verdict": "green", "red": <the red step's
-result dict verbatim>, "green": {"committed": True, "message": <the
-green message>}}``. In this slice ``run_cycle`` does not re-judge the
-coder's suite run: no ``piverdict.classify`` call on the coder's
-result, no halt on a non-green coder run, no test-file-edit refusal,
-no double-green halt, no failure-path zero-commit logic - the loop's
-termination and failure handling are behaviours 12-14, which have not
-landed yet; its green half stays inlined as behaviour 10 left it,
+issue=issue)``, staged with ``picommit.add_argv`` on that attempt's
+changed paths and then committed with ``picommit.commit_argv``, the
+same stage-then-commit order the red step uses. Behaviour 12
+(two-failed-greens-halt) landed: a failed attempt - any verdict but
+``"green"`` - commits nothing, zero git calls, and carries its
+failure text verbatim (the first failure entry's text, or the first
+error entry's text for a wrong-kind run - the same entry
+``red_step`` carries on its re-delegation paths); on the first
+failure the loop re-delegates the coder ONCE with the same context
+and judges attempt 2, and a second failed attempt halts it, still
+with nothing committed on either green attempt, returning
+``{"verdict": "halted", "behaviour": <the behaviour>,
+"failure_outputs": [<attempt 1 text>, <attempt 2 text>],
+"escalate_to": "architect"}`` - both texts verbatim in attempt order
+and the escalation target the manager's loop-control rule names for
+a second green failure. A completed cycle commits exactly twice, in
+order - the red commit in the red format, then the green commit in
+the green format - and returns ``{"verdict": "green", "red": <the
+red step's result dict verbatim>, "green": {"committed": True,
+"message": <the green message>}}``. Behaviours 13-14 have not
+landed yet; the green half stays inlined as behaviour 10 left it,
 and a later behaviour reshapes it to delegate to ``green_step``. A
 red step that returns anything but a genuine red (``"red"``) cannot
 be committed green on and raises ``CycleError`` naming the verdict.
@@ -208,7 +218,7 @@ def run_cycle(
     git: Callable[[List[str]], None],
     issue: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Run one cycle: the red step, then one green commit.
+    """Run one cycle: the red step, then the judged green step.
 
     ``repo_path``, ``scope``, ``behaviour``, ``number``, ``plan_slug``,
     ``reason``, ``runner`` and ``git`` mean the same as in
@@ -221,27 +231,40 @@ def run_cycle(
     the red format can never drift from ``red_step``'s - so the
     delegation seam is invoked once with the tester role, the suite run
     is classified, and a genuine red commits exactly once in the red
-    format. On a ``"red"`` verdict the cycle runs ONE coder delegation
-    - the same injected ``runner``, invoked with the cycle's delegation
-    context keyed on ``"role": "coder"`` - and commits the green: the
-    message built by
+    format. On a ``"red"`` verdict the cycle delegates the coder
+    (the same injected ``runner``, context keyed on ``"role":
+    "coder"``) and judges the attempt's suite run with
+    ``piverdict.classify`` - the same single judge the red step uses,
+    the same non-empty ``reason``: a green attempt succeeds iff its
+    verdict is ``"green"``. On a successful attempt the cycle commits
+    the green: the message built by
     ``picommit.green_message(scope, behaviour, number, plan_slug,
     kind, issue=issue)``, staged with ``picommit.add_argv(repo_path,
-    coder_changed_paths)`` on the coder delegation's changed paths and
-    then committed with ``picommit.commit_argv(repo_path,
-    green_message)`` - both through the seam, in that order, the same
-    stage-then-commit order the red step uses. A completed cycle
-    commits exactly twice, in order - the red commit precedes the
-    green commit, and the red is never amended or squashed into its
-    green. The result is
+    changed_paths)`` on that attempt's changed paths and then
+    committed with ``picommit.commit_argv(repo_path, green_msg)`` -
+    both through the seam, in that order, the same stage-then-commit
+    order the red step uses. A completed cycle commits exactly twice,
+    in order - the red commit precedes the green commit, and the red
+    is never amended or squashed into its green. The result is
     ``{"verdict": "green", "red": <the red step's result dict
     verbatim>, "green": {"committed": True, "message": <the green
     message>}}``.
 
-    In this slice the green step does NOT call
-    ``piverdict.classify`` again: no re-judgement of the coder's suite
-    run, no halt on a non-green coder run - the loop's termination and
-    failure handling are behaviours 11-14, which have not landed yet.
+    Behaviour 12 (two-failed-greens-halt): a failed attempt - any
+    verdict but ``"green"`` - commits nothing on that attempt, zero
+    seam invocations, and captures its failure text verbatim: the
+    first failure entry's text, or the first error entry's text for a
+    wrong-kind run - the same entry :func:`red_step` carries on its
+    re-delegation paths. On the first failure the cycle re-delegates
+    the coder ONCE with the same context and judges attempt 2; a
+    second failed attempt halts it - still with nothing committed on
+    either green attempt, the only recorded commit the red's - and
+    returns
+    ``{"verdict": "halted", "behaviour": <the behaviour>,
+    "failure_outputs": [<attempt 1's text>, <attempt 2's text>],
+    "escalate_to": "architect"}``, both texts verbatim in attempt
+    order and ``escalate_to`` the escalation target the manager's
+    loop-control rule names for a second green failure.
 
     Error: a red step that returns a verdict other than ``"red"``
     (``"reason_mismatch"`` or ``"wrong_kind"``) cannot be committed
@@ -274,18 +297,49 @@ def run_cycle(
         "plan_slug": plan_slug,
         "reason": reason,
     }
-    runner_result: Dict[str, Any] = runner(context)
-    coder_changed_paths: List[str] = list(runner_result["changed_paths"])
-    green_msg: str = picommit.green_message(
-        scope, behaviour, number, plan_slug, kind, issue=issue
-    )
-    git(picommit.add_argv(repo_path, coder_changed_paths))
-    git(picommit.commit_argv(repo_path, green_msg))
+    failure_outputs: List[str] = []
+    for _attempt in (1, 2):
+        runner_result: Dict[str, Any] = runner(context)
+        attempt_result: unittest.TestResult = runner_result["result"]
+        if piverdict.classify(attempt_result, reason) == "green":
+            coder_changed_paths: List[str] = list(
+                runner_result["changed_paths"]
+            )
+            green_msg: str = picommit.green_message(
+                scope, behaviour, number, plan_slug, kind, issue=issue
+            )
+            git(picommit.add_argv(repo_path, coder_changed_paths))
+            git(picommit.commit_argv(repo_path, green_msg))
+            return {
+                "verdict": "green",
+                "red": red_result,
+                "green": {"committed": True, "message": green_msg},
+            }
+        failure_outputs.append(_green_failure_text(attempt_result))
     return {
-        "verdict": "green",
-        "red": red_result,
-        "green": {"committed": True, "message": green_msg},
+        "verdict": "halted",
+        "behaviour": behaviour,
+        "failure_outputs": failure_outputs,
+        "escalate_to": "architect",
     }
+
+
+def _green_failure_text(result: unittest.TestResult) -> str:
+    """Capture a failed green attempt's failure text, verbatim.
+
+    A failed attempt carries exactly one of the two kinds the judge
+    keeps apart: a wrong-kind run (``errors`` non-empty) or a
+    genuine-red run (``errors`` empty, ``failures`` non-empty). This
+    mirrors ``piverdict.classify``'s priority - an error outranks a
+    failure - and returns the same entry :func:`red_step` carries on
+    its re-delegation paths: the first error entry's traceback text
+    for a wrong-kind run, else the first failure entry's traceback
+    text. The caller hands the text on verbatim, so the halt result's
+    ``"failure_outputs"`` carry what the suite run produced, unaltered.
+    """
+    if result.errors:
+        return result.errors[0][1]
+    return result.failures[0][1]
 
 
 def green_step(
