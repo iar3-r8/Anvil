@@ -55,6 +55,15 @@ four XML roles return their path string relative to
 ``templates/roo_template/`` (e.g. ``rules-architect/instructions.xml``);
 the coder has no XML source and returns the literal one-liner itself.
 
+Behaviour 12 (generated-files-match-regeneration): ``all_documents()``
+is the single regeneration entry point the drift guard and the write
+seam consume - the six documents as a ``Dict[str, str]`` keyed by file
+stem: ``shared-agents`` from ``shared_document()`` and the five roles
+from ``role_document(name)``, so it is exactly what the committed
+``.pi/roles/*.md`` files must contain, and it is deterministic (the
+underlying builders are pinned deterministic, so two calls are
+byte-identical).
+
 Error: empty or whitespace-only ``text`` raises ``PromptError``;
 malformed XML raises ``PromptError`` naming the parse position the
 parser reported; a root that is neither an ``<instructions>`` nor a
@@ -327,6 +336,33 @@ def source_for(name: str) -> str:
         "unknown role %r: the known names are %s"
         % (name, ", ".join(_KNOWN_NAMES))
     )
+
+
+def all_documents() -> Dict[str, str]:
+    """The six ``.pi/roles`` documents, keyed by file stem.
+
+    Behaviour 12 of ``plans/pi-role-prompts.md``
+    (generated-files-match-regeneration): the return is the complete
+    regeneration of the committed documents - exactly the six stems, in
+    this composition: ``shared-agents`` from ``shared_document()`` (the
+    chain root) and each of the five roles - ``architect``, ``coder``,
+    ``tester``, ``docs``, ``tdd-manager`` - from ``role_document(name)``.
+
+    This is the single regeneration entry point: the drift guard
+    (``tests/test_piprompt_drift.py``) compares the committed files
+    against it, and the write seam (``anvilkit.render.role_prompts``)
+    consumes it to (re)produce the files. Deterministic - the
+    underlying builders are pinned deterministic, so two calls are
+    byte-identical.
+    """
+    return {
+        "shared-agents": shared_document(),
+        "architect": role_document("architect"),
+        "coder": role_document("coder"),
+        "tester": role_document("tester"),
+        "docs": role_document("docs"),
+        "tdd-manager": role_document("tdd-manager"),
+    }
 
 
 def _strip_source_frontmatter(text: str) -> str:
