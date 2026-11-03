@@ -14,10 +14,20 @@ nothing - no add, no commit - and returns the verbatim error output for
 re-delegation to the tester. Error: none - this is the documented
 re-delegation path, not a failure of the loop.
 
-``anvilkit/pi/picycle.py`` does NOT exist yet. The import happens inside
-each test (``_picycle``) rather than at module top level, so while the
-module does not exist the tests fail at the import step
-(``ModuleNotFoundError``) instead of breaking collection of the file.
+``plans/pi-phase9-redgreen.md``, behaviour 10
+(run-cycle-commits-red-then-green): given a cycle whose red step is a
+genuine red and whose subsequent code delegation runs the suite green,
+``picycle.run_cycle(...)`` run with a fake runner and a fake git seam
+commits exactly TWICE, in order - the red commit in the red format,
+then the green commit in the green format (subject
+``feat({scope}): {behaviour}`` for a feature), each naming the
+behaviour and the plan. Error: none - this is the happy path.
+
+Behaviours 8 and 9 have landed, so ``anvilkit/pi/picycle.py`` EXISTS;
+``run_cycle`` does not yet. The import still happens inside each test
+(``_picycle``) rather than at module top level, so while ``run_cycle``
+does not exist the new test fails on the attribute lookup
+(``AttributeError``) instead of breaking collection of the file.
 
 The plan does NOT pin ``red_step``'s parameters (the same situation as
 behaviours 5-7, where the signature was a proposed convention). The
@@ -141,6 +151,42 @@ WRONG_KIND_ERROR_TEXT = (
     "    import anvilkit.pi.not_yet_written\n"
     "ModuleNotFoundError: No module named 'anvilkit.pi.not_yet_written'\n"
 )
+
+# The inputs of behaviour 10 (run-cycle-commits-red-then-green), each a
+# module constant so the expected argvs below are reproducible by eye.
+# The cycle lands its own behaviour (strict TDD: this test IS the red,
+# the run_cycle implementation is the green), so scope, behaviour and
+# number are the cycle's own - behaviour 10 of the same plan, issue #56
+# per the plan header.
+CYCLE_SCOPE = "pi"
+CYCLE_BEHAVIOUR = "run-cycle-commits-red-then-green"
+CYCLE_NUMBER = 10
+CYCLE_PLAN_SLUG = "pi-phase9-redgreen"
+CYCLE_ISSUE = 56
+
+# The stated expected-failure reason of the cycle's genuine red: this
+# test's own expected failure - run_cycle does not exist yet.
+CYCLE_REASON = (
+    "module 'anvilkit.pi.picycle' has no attribute 'run_cycle'"
+)
+
+# The verbatim traceback text of the cycle's genuine red's single
+# failure entry, in the shape ``TestResult.addFailure`` produces. It is
+# deterministic by construction (a module constant, not a real run) and
+# MUST contain the reason as a substring - that is behaviour 4's match
+# rule, the one that makes this a genuine red rather than a mismatch.
+CYCLE_RED_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "./tests/test_picycle.py", line 1, in test_run_cycle\n'
+    "    picycle.run_cycle(...)\n"
+    "AttributeError: module 'anvilkit.pi.picycle' has no "
+    "attribute 'run_cycle'\n"
+)
+assert CYCLE_REASON in CYCLE_RED_TRACEBACK
+
+# The changed file paths of the cycle's coder delegation: the loop's
+# implementation, as distinct from the tester delegation's test file.
+CYCLE_CODE_CHANGED_PATHS = ["anvilkit/pi/picycle.py"]
 
 
 def _suite_result(traceback_text: str) -> unittest.TestResult:
@@ -495,6 +541,293 @@ class WrongKindIsNotCommittedTestCase(unittest.TestCase):
             "the result must carry the error text verbatim for "
             "re-delegation (proposed key 'error_text', paired with the "
             "mismatch path's 'failure_text'); got: %r" % (result,),
+        )
+
+
+class CycleRunner:
+    """The injected delegation seam for the cycle, keyed on the
+    context's ``"role"`` field.
+
+    The cycle's runner is invoked once per delegation: first call the
+    tester role (the red step's suite run), second call the coder role
+    (the green step's suite run). The record is a copy of each context,
+    so the loop cannot mutate what the test asserts on; the tests also
+    assert on the recorded ``"role"`` values to pin that the two
+    delegations arrived in order, tester then coder.
+    """
+
+    def __init__(
+        self,
+        tester_result: unittest.TestResult,
+        coder_result: unittest.TestResult,
+        coder_changed_paths: List[str],
+    ) -> None:
+        self.calls: List[Dict[str, Any]] = []
+        self._results: Dict[str, Dict[str, Any]] = {
+            "tester": {
+                "result": tester_result,
+                "changed_paths": list(CHANGED_PATHS),
+            },
+            "coder": {
+                "result": coder_result,
+                "changed_paths": list(coder_changed_paths),
+            },
+        }
+
+    def __call__(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        self.calls.append(dict(context))
+        canned = self._results[context["role"]]
+        return {
+            "result": canned["result"],
+            "changed_paths": list(canned["changed_paths"]),
+        }
+
+
+class RunCycleCommitsRedThenGreenTestCase(unittest.TestCase):
+    """Behaviour 10 (run-cycle-commits-red-then-green): a cycle whose
+    red step is a genuine red and whose subsequent code delegation runs
+    the suite green commits exactly TWICE, in order - the red commit in
+    the red format, then the green commit in the green format (subject
+    ``feat({scope}): {behaviour}`` for a feature), each naming the
+    behaviour and the plan. Error: none - this is the happy path.
+
+    The plan does NOT pin ``run_cycle``'s signature. The signature and
+    result shape below are a PROPOSED CONVENTION, flagged for
+    confirmation:
+
+    PROPOSED signature (mirrors ``red_step`` plus the loop's needs)::
+
+        run_cycle(repo_path, scope, behaviour, number, plan_slug,
+                  reason, kind, runner, git, issue=None) -> dict
+
+    - the first eight parameters are ``red_step``'s, minus ``reason``'s
+      green role: ``reason`` is the red step's stated expected-failure
+      reason, handed to the tester delegation and the classifier;
+    - ``kind`` is the branch kind - ``"feature"`` or ``"bugfix"`` -
+      needed to build the green subject (``picommit.green_message``);
+    - ``runner`` is the injected delegation seam, invoked ONCE PER
+      DELEGATION - first call the ``"tester"`` role (the red step),
+      second call the ``"coder"`` role (the green step) - keyed on the
+      context's ``"role"`` field, which ``red_step`` already sends;
+    - ``git`` is the same seam ``red_step`` uses.
+
+    PROPOSED result shape (flagged for confirmation). On the happy
+    path the returned dict carries the loop's terminal verdict and the
+    two commits' info::
+
+        {"verdict": "green",
+         "red": <the red step's red_step result dict>,
+         "green": {"committed": True, "message": <the green message>}}
+
+    ``"red"`` is exactly what ``red_step`` returns on a genuine red
+    (``{"verdict": "red", "committed": True, "message": ...}``);
+    ``"green"`` carries the green commit's message the same way.
+
+    The import happens inside the test (``_picycle``) rather than at
+    module top level; ``anvilkit/pi/picycle.py`` exists (behaviours 8-9
+    landed) but ``run_cycle`` does not, so the test fails on the
+    attribute lookup (``AttributeError``) instead of breaking
+    collection of the file.
+    """
+
+    def _picycle(self):
+        """Import ``anvilkit.pi.picycle``."""
+        return importlib.import_module("anvilkit.pi.picycle")
+
+    def test_run_cycle_genuine_red_then_green_commits_twice_in_order(
+        self,
+    ) -> None:
+        # Arrange: a cycle whose red step is a genuine red (one failure
+        # whose text contains the reason, no errors) and whose green
+        # step is a pass (no failures, no errors) - with a role-keyed
+        # delegation seam and a recording git seam.
+        runner = CycleRunner(
+            _suite_result(CYCLE_RED_TRACEBACK),
+            unittest.TestResult(),
+            CYCLE_CODE_CHANGED_PATHS,
+        )
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        result = picycle.run_cycle(
+            REPO,
+            CYCLE_SCOPE,
+            CYCLE_BEHAVIOUR,
+            CYCLE_NUMBER,
+            CYCLE_PLAN_SLUG,
+            CYCLE_REASON,
+            kind="feature",
+            runner=runner,
+            git=git,
+            issue=CYCLE_ISSUE,
+        )
+
+        # Assert: the loop's terminal verdict is green.
+        self.assertEqual(
+            "green",
+            result.get("verdict"),
+            "the cycle's terminal verdict must be 'green'; got: %r"
+            % (result,),
+        )
+
+        # Assert: the delegation seam was invoked twice, in order -
+        # tester first (the red step), coder second (the green step) -
+        # keyed on the context's "role" field.
+        self.assertEqual(
+            ["tester", "coder"],
+            [call.get("role") for call in runner.calls],
+            "the cycle must delegate to the tester then the coder, in "
+            "that order; got: %r" % (runner.calls,),
+        )
+
+        # Assert: EXACTLY TWO of the argvs the fake git recorded are
+        # commit argvs (the picommit.commit_argv shape). "Exactly two
+        # commits" means exactly two COMMIT argvs, not exactly two seam
+        # invocations - each step stages before it commits, so two add
+        # argvs are expected alongside.
+        commit_argv = [
+            argv
+            for argv in git.calls
+            if argv[:5] == ["git", "-C", REPO, "commit", "-m"]
+        ]
+        self.assertEqual(
+            2,
+            len(commit_argv),
+            "a completed cycle records exactly two commit argvs; got %d: "
+            "%r" % (len(commit_argv), git.calls),
+        )
+
+        # Assert: a staging argv precedes EACH commit, in the
+        # picommit.add_argv shape - the red step stages the tester's
+        # changed paths, the green step stages the coder's.
+        self.assertEqual(
+            [
+                ["git", "-C", REPO, "add", "--"] + list(CHANGED_PATHS),
+                ["git", "-C", REPO, "add", "--"] + list(CYCLE_CODE_CHANGED_PATHS),
+            ],
+            [
+                argv
+                for argv in git.calls
+                if argv[:5] == ["git", "-C", REPO, "add", "--"]
+            ],
+            "each step must stage its own changed paths before its "
+            "commit; got: %r" % (git.calls,),
+        )
+
+        # Assert: the red commit argv PRECEDES the green commit argv -
+        # a red is never amended or squashed into its green, so the
+        # order in history is fixed.
+        self.assertLess(
+            git.calls.index(commit_argv[0]),
+            git.calls.index(commit_argv[1]),
+            "the red commit argv must precede the green commit argv; "
+            "got: %r" % (git.calls,),
+        )
+
+        # Assert: no argv carries an amend or no-verify token - the
+        # red is never rewritten.
+        for argv in git.calls:
+            self.assertNotIn("--amend", argv)
+            self.assertNotIn("--no-verify", argv)
+
+        # Assert: each commit argv carries exactly one message element
+        # after -m - one element, byte-identical, never split.
+        for argv in commit_argv:
+            self.assertEqual(
+                1,
+                len(argv) - 5,
+                "each commit argv carries exactly one message element "
+                "after -m; got: %r" % (argv,),
+            )
+
+        # Assert: the FIRST commit's message is the red format - the
+        # red subject, the plan file, the behaviour and the Refs
+        # trailer.
+        red_message = commit_argv[0][5]
+        self.assertEqual(
+            "test(%s): cover %s, failing" % (CYCLE_SCOPE, CYCLE_BEHAVIOUR),
+            red_message.splitlines()[0],
+            "the first commit must open with the red subject; got: %r"
+            % red_message,
+        )
+        self.assertIn(
+            "plans/%s.md" % CYCLE_PLAN_SLUG,
+            red_message,
+            "the red message must cite the plan file; got: %r"
+            % red_message,
+        )
+        self.assertIn(
+            CYCLE_BEHAVIOUR,
+            red_message,
+            "the red message must name the behaviour; got: %r"
+            % red_message,
+        )
+        self.assertIn(
+            "Refs #%d" % CYCLE_ISSUE,
+            red_message,
+            "the red message must carry the Refs trailer; got: %r"
+            % red_message,
+        )
+
+        # Assert: the SECOND commit's message is the green format - the
+        # feat subject for a feature, the body ending Green., the plan
+        # file and the Refs trailer, and never the word "failing" - it
+        # is what keeps the red distinct from its green in history.
+        green_message = commit_argv[1][5]
+        self.assertEqual(
+            "feat(%s): %s" % (CYCLE_SCOPE, CYCLE_BEHAVIOUR),
+            green_message.splitlines()[0],
+            "the second commit must open with the green feature "
+            "subject; got: %r" % green_message,
+        )
+        self.assertIn(
+            "plans/%s.md" % CYCLE_PLAN_SLUG,
+            green_message,
+            "the green message must cite the plan file; got: %r"
+            % green_message,
+        )
+        self.assertIn(
+            CYCLE_BEHAVIOUR,
+            green_message,
+            "the green message must name the behaviour; got: %r"
+            % green_message,
+        )
+        self.assertIn(
+            "Refs #%d" % CYCLE_ISSUE,
+            green_message,
+            "the green message must carry the Refs trailer; got: %r"
+            % green_message,
+        )
+        self.assertEqual(
+            "Behaviour %d of plans/%s.md. Green."
+            % (CYCLE_NUMBER, CYCLE_PLAN_SLUG),
+            green_message.splitlines()[2],
+            "the green message's body must read 'Behaviour %d of "
+            "plans/%s.md. Green.'; got: %r"
+            % (CYCLE_NUMBER, CYCLE_PLAN_SLUG, green_message),
+        )
+        self.assertNotIn(
+            "failing",
+            green_message,
+            "'failing' must never appear in a green message; got: %r"
+            % green_message,
+        )
+
+        # Assert: the returned dict carries each commit's info under
+        # the proposed keys - "red" is the red step's own result,
+        # "green" carries the green message the same way.
+        self.assertEqual(
+            "red",
+            result.get("red", {}).get("verdict"),
+            "the result's 'red' must carry the red step's verdict; "
+            "got: %r" % (result,),
+        )
+        self.assertEqual(
+            green_message,
+            result.get("green", {}).get("message"),
+            "the result's 'green' must carry the green commit's "
+            "message; got: %r" % (result,),
         )
 
 
