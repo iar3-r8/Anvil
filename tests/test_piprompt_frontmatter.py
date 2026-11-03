@@ -237,8 +237,8 @@ class RoleDocumentBodyReuseCase(unittest.TestCase):
         self.assertEqual(
             body.strip(),
             expected.strip(),
-            "architect document body is not body_from_xml's output for %s",
-            ARCHITECT_SOURCE.relative_to(REPO_ROOT),
+            "architect document body is not body_from_xml's output for %s"
+            % ARCHITECT_SOURCE.relative_to(REPO_ROOT),
         )
 
 

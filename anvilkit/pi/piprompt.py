@@ -1,18 +1,13 @@
-"""Markdown prompt bodies from one instruction XML's text.
+"""Markdown prompt bodies and role documents for ``.pi/roles``.
 
 One job: build and validate the markdown body of a ``.pi/roles/*.md``
-prompt document from one instruction XML's text, and nothing else.
-Pure: text in, text out, no file I/O - the caller supplies the XML's
-text; this module never reads ``templates/roo_template/`` itself. The
-other plan behaviours (source map, shared body, frontmatter, budget)
-have their own modules' cycles; the write seam for the finished
-documents lives in ``anvilkit.render``
-(``plans/pi-role-prompts.md`` behaviour 11).
+prompt document, and assemble the complete role document - frontmatter
+plus body - for one named role, and nothing else.
 
 House discipline, as ``anvilkit.pi.piverdict`` uses it: one behaviour
-lands per red/green cycle, and the docstring says which one has
-landed. Behaviour 4 of ``plans/pi-role-prompts.md``
-(xml-to-prompt-body) is implemented here: ``body_from_xml(text)``
+lands per red/green cycle, and the docstring says which ones have
+landed. Two behaviours of ``plans/pi-role-prompts.md`` are implemented
+here. Behaviour 4 (xml-to-prompt-body): ``body_from_xml(text)``
 parses ``text`` as one ``<instructions>`` document (or the
 docs-manager source's ``<guidelines>`` document, the plan's source
 map's fourth tracked root) and returns a markdown body -
@@ -24,6 +19,18 @@ its position); each ``<best_practices>/<practice>`` a bullet; any
 other section a heading plus one bullet per child. Only text nodes
 are emitted - a raw XML tag spelling never survives in the body.
 
+Behaviour 6 (frontmatter-shape): ``role_document(name)`` returns the
+complete document - a YAML frontmatter block delimited by ``---``
+lines, carrying exactly two keys (a non-empty ``description`` and
+``extends: shared-agents``), then the markdown body - for one named
+role. The body is ``body_from_xml``'s output for the role's tracked
+source under ``templates/roo_template/``; the coder has no XML
+source and carries the literal one-liner. The frontmatter is emitted
+as literal text - ``yamlio`` stays the only module that touches
+``yaml``, and the tests parse the block back. This module reads the
+tracked template sources itself; the write seam for the finished
+documents lives in ``anvilkit.render`` (behaviour 11).
+
 Error: empty or whitespace-only ``text`` raises ``PromptError``;
 malformed XML raises ``PromptError`` naming the parse position the
 parser reported; a root that is neither an ``<instructions>`` nor a
@@ -31,12 +38,17 @@ parser reported; a root that is neither an ``<instructions>`` nor a
 and a document that
 parses but carries no text raises ``PromptError`` too - never a
 partial body, never a silent empty-string return.
+``role_document`` raises ``PromptError`` for ``shared-agents`` - the
+chain root has no parent to extend, and is built by behaviour 7's
+``shared_body`` - and for an unknown role name, naming the role and
+listing the known ones.
 
 Stdlib only. One exception type: ``PromptError``.
 """
 
 import xml.etree.ElementTree as ET
-from typing import List, Optional, Tuple
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple
 
 
 class PromptError(Exception):
@@ -106,6 +118,91 @@ def body_from_xml(text: str) -> str:
             "never returned"
         )
     return body + "\n"
+
+
+# The repo root: this file lives at <root>/anvilkit/pi/piprompt.py.
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+# The tracked rule sources, keyed by role name - the plan's source map
+# (plans/pi-role-prompts.md behaviour 8), as a private table until that
+# behaviour pins source_for's public surface.
+_ROLE_SOURCES = {
+    "architect": "rules-architect/instructions.xml",
+    "tester": "rules-qna-tester/instructions.xml",
+    "docs": "rules-docs-manager/guidelines.xml",
+    "tdd-manager": "rules-tdd-manager/instructions.xml",
+}
+
+# The coder carries no XML source: its body is this one-liner verbatim
+# (the plan's decision 1 - nothing authored).
+_CODER_BODY = "You write and modify code."
+
+# The one-line purpose each role document carries as its frontmatter
+# description: a non-empty plain YAML scalar, no characters that need
+# quoting, so the literal-text frontmatter parses back by construction.
+_ROLE_DESCRIPTIONS = {
+    "architect": "Plan and design before implementation.",
+    "coder": "Write and modify code.",
+    "tester": "Write and run the tests for the behaviour.",
+    "docs": "Keep documentation accurate after changes.",
+    "tdd-manager": "Run test-driven development end to end.",
+}
+
+# The role names role_document serves, in the order the error message
+# lists them. shared-agents is not here: it is the chain root, built by
+# behaviour 7's shared_body, and refused by role_document.
+_ROLE_NAMES = tuple(_ROLE_SOURCES) + ("coder",)
+
+
+def role_document(name: str) -> str:
+    """Build the complete document for one named role.
+
+    The return is the finished ``.pi/roles`` document: ``---`` on line
+    1, a YAML frontmatter block carrying exactly two keys - a non-empty
+    role-appropriate ``description`` and ``extends: shared-agents`` - a
+    closing ``---``, then the markdown body. The body is
+    ``body_from_xml``'s output for the role's tracked source under
+    ``templates/roo_template/``; the coder has no XML source and carries
+    the literal one-liner instead. The frontmatter is emitted as
+    literal text (the plan's decision): ``yamlio`` stays the only
+    module that touches ``yaml``, and the tests parse the block back.
+
+    Behaviour 6 of ``plans/pi-role-prompts.md`` (frontmatter-shape) is
+    implemented here: no ``model``, ``thinking`` or ``tools`` key ever
+    appears - routing stays in ``pirole.ROLES``, a role file is not a
+    routing authority.
+
+    Error: ``shared-agents`` raises ``PromptError`` naming the role -
+    the chain root has no parent to extend and is built by behaviour
+    7's ``shared_body``; an unknown role name raises ``PromptError``
+    naming the role and listing the known ones.
+    """
+    if name == "shared-agents":
+        raise PromptError(
+            "shared-agents is the chain root: it has no parent to "
+            "extend, so it is never built by role_document"
+        )
+    if name not in _ROLE_NAMES:
+        raise PromptError(
+            "unknown role %r: the known roles are %s"
+            % (name, ", ".join(_ROLE_NAMES))
+        )
+    body = _role_body(name)
+    if not body.endswith("\n"):
+        body += "\n"
+    frontmatter = "description: %s\nextends: shared-agents" % _ROLE_DESCRIPTIONS[name]
+    return "---\n" + frontmatter + "\n---\n" + body
+
+
+def _role_body(name: str) -> str:
+    """The markdown body for one known role: ``body_from_xml``'s output
+    for the role's tracked XML source, or the coder's literal
+    one-liner. Callers must have validated ``name`` against
+    ``_ROLE_NAMES`` first."""
+    if name == "coder":
+        return _CODER_BODY
+    source = _REPO_ROOT / "templates" / "roo_template" / _ROLE_SOURCES[name]
+    return body_from_xml(source.read_text(encoding="utf-8"))
 
 
 def _render(root: ET.Element) -> List[str]:
