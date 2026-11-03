@@ -30,10 +30,9 @@ Pinned signature::
 - the invocation's ``cwd`` value is not pinned by the plan (``docker run``
   does not depend on it); the tests pin its presence and string type only.
 
-The ``pidriver`` import is deferred into each test so that, while
-``anvilkit/pi/pidriver.py`` does not yet exist, the tests fail at the
-import step (ModuleNotFoundError) instead of breaking collection of the
-module.
+The ``pidriver`` import is deferred into each test: if the module is
+missing, each test fails at its import step (ModuleNotFoundError)
+rather than breaking collection of the whole file.
 
 Container-start-failure detection and the exit-status recording are later
 behaviours in the same plan and are not asserted here; the driver's
@@ -107,12 +106,12 @@ def _architect_definition() -> Dict[str, str]:
 
 
 class RunRoleTestCase(unittest.TestCase):
-    """Shared deferred import of the not-yet-existing ``pidriver`` module.
+    """Shared deferred import of the ``pidriver`` module.
 
-    The import happens inside each test, not at module top level, so that
-    while ``anvilkit/pi/pidriver.py`` does not yet exist the tests fail
-    at the import step (ModuleNotFoundError) instead of breaking
-    collection.
+    The import happens inside each test, not at module top level: if the
+    module is missing, each test fails at its import step
+    (ModuleNotFoundError) rather than breaking collection of the whole
+    file.
     """
 
     def _import_pidriver(self):
