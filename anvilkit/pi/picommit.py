@@ -11,34 +11,58 @@ string.
 
 House discipline, as ``anvilkit.pi.piverdict`` uses it: one behaviour
 lands per red/green cycle, and the docstring says which ones have
-landed. Only behaviour 5 (red-message-format) of
-``plans/pi-phase9-redgreen.md`` is implemented here:
-``red_message(scope, behaviour, number, plan_slug, assertion,
-issue=None)`` builds the red commit message - subject
+landed. Behaviours 5 and 6 of ``plans/pi-phase9-redgreen.md`` are
+implemented here: ``red_message(scope, behaviour, number, plan_slug,
+assertion, issue=None)`` builds the red commit message - subject
 ``test({scope}): cover {behaviour}, failing``, a blank line, the body
-``Behaviour {n} of plans/{task-slug}.md; fails: {assertion}.``, and a
-``Refs #{issue}`` trailer that is omitted entirely when no issue
-number is given, trailer and blank line together. An empty ``scope``
-or ``behaviour`` raises ``CommitError`` naming the offending field.
-Behaviours 6 (green-message-format) and 7 (git-argv-is-a-list) are
-not yet implemented; they land in their own cycles.
+``Behaviour {n} of plans/{task-slug}.md; fails: {assertion}.`` - and
+``green_message(scope, behaviour, number, plan_slug, kind, issue=None)``
+builds the green commit message - subject ``feat({scope}): {behaviour}``
+for a ``"feature"`` kind, ``fix({scope}): {behaviour}`` for a
+``"bugfix"`` kind, a blank line, the body ``Behaviour {n} of
+plans/{task-slug}.md. Green.`` Both append a ``Refs #{issue}`` trailer
+that is omitted entirely when no issue number is given, trailer and
+blank line together (one private helper owns that rule, so the two
+builders cannot drift); "failing" never appears in a green message,
+since it is what keeps the red distinct from its green in history.
+An empty ``scope`` or ``behaviour`` raises ``CommitError`` naming the
+offending field; an unknown branch kind raises ``CommitError`` naming
+the offending kind, and the kind is validated before the field checks
+so it is reported even when the other fields are fine. Behaviour 7
+(git-argv-is-a-list) is not yet implemented; it lands in its own
+cycle.
 
 Stdlib only. One exception type: ``CommitError``.
 """
 
-from typing import Optional
+from typing import List, Optional
 
 
 class CommitError(Exception):
     """A commit message or argv this builder could not build.
 
     A single exception type covers every build failure, so callers
-    need only one ``except`` clause. The one raise this module has
-    today belongs to behaviour 5: an empty scope or behaviour raises
-    it, since a message built from an empty scope or behaviour would
-    be malformed history. Every message names the offending field, so
-    a failure is fixable without reading the source.
+    need only one ``except`` clause. Every raise this module has
+    today belongs to behaviour 5 or 6: an empty scope or behaviour
+    raises it, since a message built from an empty scope or behaviour
+    would be malformed history, and an unknown branch kind raises it,
+    since a green subject can only be ``feat`` or ``fix``. Every
+    message names the offending field or kind, so a failure is
+    fixable without reading the source.
     """
+
+
+def _append_trailer(lines: List[str], issue: Optional[int]) -> None:
+    """Append the ``Refs #{issue}`` trailer to a message's line list.
+
+    The trailer is the intake's reference; it is omitted entirely -
+    no trailer, no blank-line-only tail - when ``issue`` is
+    ``None``. Shared by the red and green builders so the two cannot
+    drift apart on the same rule.
+    """
+    if issue is not None:
+        lines.append("")
+        lines.append("Refs #%d" % issue)
 
 
 def red_message(
@@ -86,7 +110,60 @@ def red_message(
         "Behaviour %d of plans/%s.md; fails: %s."
         % (number, plan_slug, assertion),
     ]
-    if issue is not None:
-        lines.append("")
-        lines.append("Refs #%d" % issue)
+    _append_trailer(lines, issue)
+    return "\n".join(lines)
+
+
+def green_message(
+    scope: str,
+    behaviour: str,
+    number: int,
+    plan_slug: str,
+    kind: str,
+    issue: Optional[int] = None,
+) -> str:
+    """Build the green commit message for one behaviour's green step.
+
+    ``scope``, ``behaviour``, ``number``, ``plan_slug`` and ``issue``
+    mean the same as in :func:`red_message`; ``kind`` is the branch
+    kind - ``"feature"`` or ``"bugfix"`` - and picks the subject
+    prefix: ``feat`` for a feature, ``fix`` for a bugfix.
+
+    Behaviour 6 (green-message-format): the message is exactly four
+    parts - subject ``feat({scope}): {behaviour}`` (or ``fix(...)``
+    for a bugfix), a blank line, the body ``Behaviour {n} of
+    plans/{task-slug}.md. Green.``, and a ``Refs #{issue}`` trailer
+    separated from the body by a blank line. The trailer is omitted
+    entirely when ``issue`` is ``None``, by the same helper the red
+    uses - no trailer, no blank-line-only tail - so a green message
+    without an issue ends at the body, which is why "Green." sits at
+    the end of the body line, never of the whole message. "failing"
+    never appears anywhere in a green message: it is what keeps the
+    red distinct from its green in history.
+
+    Error: an unknown ``kind`` raises ``CommitError`` naming the
+    offending kind, validated before the field checks so it is
+    reported even when the other fields are fine; an empty ``scope``
+    or ``behaviour`` raises ``CommitError`` naming the offending
+    field, in the same order the red uses.
+    """
+    prefixes = {"feature": "feat", "bugfix": "fix"}
+    prefix = prefixes.get(kind)
+    if prefix is None:
+        raise CommitError(
+            "unknown branch kind %r; a green message is built for a "
+            "'feature' or a 'bugfix'" % kind
+        )
+    if not scope:
+        raise CommitError("scope is empty; a green message names its scope")
+    if not behaviour:
+        raise CommitError(
+            "behaviour is empty; a green message names its behaviour"
+        )
+    lines = [
+        "%s(%s): %s" % (prefix, scope, behaviour),
+        "",
+        "Behaviour %d of plans/%s.md. Green." % (number, plan_slug),
+    ]
+    _append_trailer(lines, issue)
     return "\n".join(lines)
