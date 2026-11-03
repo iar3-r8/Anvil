@@ -187,11 +187,15 @@ _ROLE_NAMES = tuple(_ROLE_SOURCES) + ("coder",)
 # errors both list this one tuple, so the two cannot drift.
 _KNOWN_NAMES = _ROLE_NAMES + ("shared-agents",)
 
+# The tracked template root the role documents read their XML sources
+# from by default: the parent of the shared rules dir.
+_TEMPLATES_ROOT = _REPO_ROOT / "templates" / "roo_template"
+
 # The three shared rule sources, in the fixed order behaviour 7 pins:
 # the shared document concatenates them in exactly this order, and the
 # default rules dir the parameter falls back to.
 _SHARED_SOURCES = ("AGENTS.md", "architecture.md", "coding-guidelines.md")
-_SHARED_RULES_DIR = _REPO_ROOT / "templates" / "roo_template" / "rules"
+_SHARED_RULES_DIR = _TEMPLATES_ROOT / "rules"
 
 # The shared document's own frontmatter description: the chain root
 # every role extends. One non-empty plain YAML scalar, no characters
@@ -200,7 +204,7 @@ _SHARED_RULES_DIR = _REPO_ROOT / "templates" / "roo_template" / "rules"
 _SHARED_DESCRIPTION = "Shared rules every role extends."
 
 
-def role_document(name: str) -> str:
+def role_document(name: str, templates_root: Optional[Path] = None) -> str:
     """Build the complete document for one named role.
 
     The return is the finished ``.pi/roles`` document: ``---`` on line
@@ -218,10 +222,19 @@ def role_document(name: str) -> str:
     appears - routing stays in ``pirole.ROLES``, a role file is not a
     routing authority.
 
+    ``templates_root`` defaults to the tracked
+    ``templates/roo_template/``; it is the document-level analogue of
+    ``shared_document``'s ``rules_dir`` and exists so the missing-
+    source error is testable against a temp dir.
+
     Error: ``shared-agents`` raises ``PromptError`` naming the role -
     the chain root has no parent to extend and is built by behaviour
     7's ``shared_body``; an unknown role name raises ``PromptError``
-    naming the role and listing the known ones.
+    naming the role and listing the known ones; a known role whose
+    source file is absent under ``templates_root`` raises
+    ``PromptError`` naming both the role and the relative path it
+    looked for - no partial document and no empty-body fallback is
+    ever returned.
     """
     if name == "shared-agents":
         raise PromptError(
@@ -233,7 +246,7 @@ def role_document(name: str) -> str:
             "unknown role %r: the known names are %s"
             % (name, ", ".join(_KNOWN_NAMES))
         )
-    body = _role_body(name)
+    body = _role_body(name, templates_root)
     if not body.endswith("\n"):
         body += "\n"
     frontmatter = "description: %s\nextends: shared-agents" % _ROLE_DESCRIPTIONS[name]
@@ -348,14 +361,26 @@ def _strip_source_frontmatter(text: str) -> str:
     return "\n".join(lines[close_index + 1 :]).strip("\n")
 
 
-def _role_body(name: str) -> str:
+def _role_body(name: str, templates_root: Optional[Path]) -> str:
     """The markdown body for one known role: ``body_from_xml``'s output
-    for the role's tracked XML source, or the coder's literal
-    one-liner. Callers must have validated ``name`` against
-    ``_ROLE_NAMES`` first."""
+    for the role's XML source under ``templates_root``, or the coder's
+    literal one-liner. Callers must have validated ``name`` against
+    ``_ROLE_NAMES`` first. ``templates_root`` of ``None`` means the
+    tracked ``templates/roo_template/``. A known role whose source file
+    is absent under ``templates_root`` raises ``PromptError`` naming
+    the role and the relative path - a missing source never yields a
+    partial or empty-body document."""
     if name == "coder":
         return _CODER_BODY
-    source = _REPO_ROOT / "templates" / "roo_template" / _ROLE_SOURCES[name]
+    root = templates_root if templates_root is not None else _TEMPLATES_ROOT
+    relative = _ROLE_SOURCES[name]
+    source = root / relative
+    if not source.is_file():
+        raise PromptError(
+            "source for role %r is missing: looked for %s under %s, "
+            "and no document is returned for a role whose source is "
+            "absent" % (name, relative, root)
+        )
     return body_from_xml(source.read_text(encoding="utf-8"))
 
 
