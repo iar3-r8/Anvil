@@ -7,6 +7,13 @@ runner and a fake git seam commits EXACTLY ONCE, in the red format,
 naming the behaviour and the plan. Error: a ``reason_mismatch`` commits
 nothing and returns the mismatch for re-delegation.
 
+``plans/pi-phase9-redgreen.md``, behaviour 9
+(wrong-kind-of-red-is-not-committed): given a tester delegation whose
+suite run classifies ``wrong_kind``, ``picycle.red_step(...)`` commits
+nothing - no add, no commit - and returns the verbatim error output for
+re-delegation to the tester. Error: none - this is the documented
+re-delegation path, not a failure of the loop.
+
 ``anvilkit/pi/picycle.py`` does NOT exist yet. The import happens inside
 each test (``_picycle``) rather than at module top level, so while the
 module does not exist the tests fail at the import step
@@ -53,6 +60,21 @@ re-delegation)::
 The ``"redelegate"`` field is the distinguishable marker a caller uses to
 re-delegate; ``"failure_text"`` carries the failure's traceback text
 verbatim so the re-delegation is informed by it.
+
+On a ``wrong_kind`` (commits nothing, returns the error for
+re-delegation, behaviour 9)::
+
+    {"verdict": "wrong_kind",
+     "redelegate": "tester",
+     "error_text": <verbatim traceback text of the first error entry>}
+
+The ``"redelegate": "tester"`` marker is pinned for consistency with the
+mismatch shape (the plan says "returned for re-delegation to the
+tester"). ``"error_text"`` is a PROPOSED key name, flagged for
+confirmation: the mismatch path uses ``"failure_text"`` for a failure
+entry, so ``"error_text"`` is the consistent pairing for an error entry
+- the failure and error texts are carried under distinct keys, never
+shared.
 """
 
 import importlib
@@ -106,6 +128,19 @@ assert REASON not in MISMATCH_TRACEBACK
 # The changed file paths of the delegation: the test file a red step
 # writes.
 CHANGED_PATHS = ["tests/test_picycle.py"]
+
+# The verbatim traceback text of the wrong-kind run's single ERROR entry
+# (an import failure arriving through ``TestResult.addError``), in the
+# shape ``addError`` produces. It is deterministic by construction (a
+# module constant, not a real run). The wrong-kind verdict does not
+# depend on the reason - behaviour 3 outranks the reason check - so no
+# substring constraint is needed here.
+WRONG_KIND_ERROR_TEXT = (
+    "Traceback (most recent call last):\n"
+    '  File "./tests/test_new_module.py", line 1, in <module>\n'
+    "    import anvilkit.pi.not_yet_written\n"
+    "ModuleNotFoundError: No module named 'anvilkit.pi.not_yet_written'\n"
+)
 
 
 def _suite_result(traceback_text: str) -> unittest.TestResult:
@@ -342,6 +377,124 @@ class RedStepCommitsOnceOnGenuineRedTestCase(unittest.TestCase):
             result.get("failure_text"),
             "the result must carry the failure text verbatim for "
             "re-delegation; got: %r" % (result,),
+        )
+
+
+class WrongKindIsNotCommittedTestCase(unittest.TestCase):
+    """Behaviour 9 (wrong-kind-of-red-is-not-committed): a tester
+    delegation whose suite run classifies ``wrong_kind`` produces ZERO
+    git invocations - no add, no commit - and returns the verbatim
+    error output for re-delegation to the tester.
+
+    A wrong-kind red must never be committed: committing a broken test
+    (an import, collection or syntax error) poisons the history. Error:
+    none - this is the documented re-delegation path, not a failure of
+    the loop.
+
+    CONFIRMED CONTRACT inherited from behaviour 8: ``red_step``'s
+    signature and the runner/git seam shapes in this file's docstring.
+    RESULT-SHAPE CHOICES FLAGGED for the coder: ``"redelegate":
+    "tester"`` is pinned for consistency with the mismatch shape (the
+    plan says the error output is "returned for re-delegation to the
+    tester"); the key ``"error_text"`` is a PROPOSAL - the mismatch
+    path carries its failure under ``"failure_text"``, so an error is
+    carried under the consistently paired ``"error_text"`` and the two
+    kinds of red never share a key.
+
+    The import happens inside the test (``_picycle``) rather than at
+    module top level, so the test fails at the import step
+    (``ModuleNotFoundError``) instead of breaking collection of the
+    file.
+    """
+
+    def _picycle(self):
+        """Import ``anvilkit.pi.picycle``."""
+        return importlib.import_module("anvilkit.pi.picycle")
+
+    def _run_red_step(self, picycle: Any, fake: FakeRunner, git: FakeGit) -> Dict[str, Any]:
+        """Drive ``red_step`` on the confirmed signature."""
+        return picycle.red_step(
+            REPO,
+            SCOPE,
+            BEHAVIOUR,
+            NUMBER,
+            PLAN_SLUG,
+            REASON,
+            runner=fake,
+            git=git,
+            issue=ISSUE,
+        )
+
+    def _wrong_kind_result(self) -> unittest.TestResult:
+        """A real ``TestResult`` carrying exactly one error entry and no
+        failures - the givens of a wrong-kind run (the clean case: an
+        error outranks a failure, so the errors-only shape is what
+        behaviour 3 pins). The entry is the ``(test, traceback_text)``
+        tuple ``addError`` appends, built directly because ``addError``
+        renders its text from a live exception tuple and cannot inject a
+        pinned one; the classifier reads exactly the two lists, so the
+        list is the seam. A sentinel stands in for the errored test."""
+        result = unittest.TestResult()
+        errored_test = object()
+        result.errors.append((errored_test, WRONG_KIND_ERROR_TEXT))
+        return result
+
+    def test_red_step_wrong_kind_commits_nothing_and_returns_error(
+        self,
+    ) -> None:
+        # Arrange: a tester delegation whose suite run classifies
+        # wrong_kind - one error entry, no failures - with a recording
+        # git seam.
+        fake = FakeRunner(self._wrong_kind_result())
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        result = self._run_red_step(picycle, fake, git)
+
+        # Assert: the delegation ran exactly once.
+        self.assertEqual(
+            1,
+            len(fake.calls),
+            "red_step must run the tester delegation exactly once; "
+            "got %d calls" % len(fake.calls),
+        )
+
+        # Assert: ZERO git invocations - no add, no commit; a wrong-kind
+        # red must never be committed.
+        self.assertEqual(
+            0,
+            len(git.calls),
+            "a wrong_kind commits nothing - no add, no commit; got %d "
+            "git calls: %r" % (len(git.calls), git.calls),
+        )
+
+        # Assert: the returned result is usable by a caller to
+        # re-delegate to the tester - it carries the distinguishable
+        # verdict marker and the re-delegation target.
+        self.assertEqual(
+            "wrong_kind",
+            result.get("verdict"),
+            "the result must carry the wrong_kind verdict marker; got: "
+            "%r" % (result,),
+        )
+        self.assertEqual(
+            "tester",
+            result.get("redelegate"),
+            "the result must name the re-delegation target (consistency "
+            "choice, pinned with the mismatch shape); got: %r" % (result,),
+        )
+
+        # Assert: the verbatim error text is carried for re-delegation
+        # under the proposed "error_text" key - the error's traceback,
+        # not the failure's, so "failure_text" is never reused for an
+        # error.
+        self.assertEqual(
+            WRONG_KIND_ERROR_TEXT,
+            result.get("error_text"),
+            "the result must carry the error text verbatim for "
+            "re-delegation (proposed key 'error_text', paired with the "
+            "mismatch path's 'failure_text'); got: %r" % (result,),
         )
 
 
