@@ -47,10 +47,37 @@ plan's own header and the ``feat(``/``fix(`` subjects pin the two
 values, though not the parameter name), mirroring behaviour 5's
 signature plus the ``kind`` before the trailing ``issue``.
 
+``plans/pi-phase9-redgreen.md``, behaviour 7 (git-argv-is-a-list):
+given a repo path, paths to stage and a built message,
+``picommit.add_argv(...)`` and ``picommit.commit_argv(...)`` build -
+they never execute - the ``git`` argv as a list, in the shapes pinned
+by the plan:
+
+    add_argv:     ["git", "-C", repo, "add", "--", *paths]
+    commit_argv:  ["git", "-C", repo, "commit", "-m", msg]
+
+The ``--`` separator is load-bearing: a path starting with ``-``
+(e.g. ``-rf``) is data after it, never an option. The message is ONE
+element of the commit argv, byte-identical to the input - a
+multi-line message with newlines stays one element. ``--amend`` and
+``--no-verify`` are never emitted.
+
+Error: an empty repo path or an empty message raises ``CommitError``.
+An empty ``paths`` list is NOT specified by the plan's Error line, so
+it is not tested as an error.
+
+**Signatures, proposed convention for the coder to confirm** (the plan
+pins the argv shapes but not the parameter order or names):
+
+    add_argv(repo, paths) -> list
+    commit_argv(repo, message) -> str
+
 ``anvilkit/pi/picommit.py`` now exists (behaviour 5 landed), so the
 behaviour-6 class imports it normally at module top level. The
 behaviour-5 classes keep the lazy ``_picommit()`` import from the
-original red step; they are unchanged and still pass.
+original red step; they are unchanged and still pass. The
+behaviour-7 classes also use the top-level ``picommit`` import; their
+red is the missing ``add_argv``/``commit_argv`` attributes.
 """
 
 import importlib
@@ -86,6 +113,23 @@ KIND_FEATURE = "feature"
 KIND_BUGFIX = "bugfix"
 # A kind the plan does not pin - the error rule must name it.
 KIND_UNKNOWN = "hotfix"
+
+# The inputs of behaviour 7, each a module constant so the expected
+# argv below is reproducible by eye. The repo path is a plain
+# absolute path; a leading-dash path is the load-bearing case for
+# the ``--`` separator. The commit message is the green message
+# shape with a multi-line body, so the byte-identity rule is
+# exercised across newlines.
+REPO = "/workspace/repo"
+PATH_NORMAL = "anvilkit/pi/picommit.py"
+PATH_LEADING_DASH = "-rf"
+COMMIT_MESSAGE = (
+    "feat(pi): git-argv-is-a-list\n"
+    "\n"
+    "Behaviour 7 of plans/pi-phase9-redgreen.md. Green.\n"
+    "\n"
+    "Refs #56"
+)
 
 
 class RedMessageFormatTestCase(unittest.TestCase):
@@ -379,6 +423,185 @@ class GreenMessageValidationErrorTestCase(unittest.TestCase):
             "the error must name the unknown branch kind; got: %r"
             % message,
         )
+
+
+class GitAddArgvTestCase(unittest.TestCase):
+    """Behaviour 7 (git-argv-is-a-list), the add half:
+    ``picommit.add_argv(repo, paths)`` returns
+    ``["git", "-C", repo, "add", "--", *paths]`` as a list - the
+    ``--`` separator makes a leading-dash path data, never an
+    option. Written against the PROPOSED signature
+    ``add_argv(repo, paths) -> list`` (flagged in the module
+    docstring for the coder to confirm); the red for this step is the
+    missing ``add_argv`` attribute.
+    """
+
+    def test_add_argv_normal_path_is_pinned_list(self) -> None:
+        # Arrange: a repo path and one ordinary path to stage.
+        # Act
+        argv = picommit.add_argv(REPO, [PATH_NORMAL])
+
+        # Assert: the exact pinned list shape.
+        self.assertEqual(
+            argv,
+            ["git", "-C", REPO, "add", "--", PATH_NORMAL],
+            "add_argv must be ['git', '-C', repo, 'add', '--', "
+            "*paths]; got: %r" % argv,
+        )
+
+    def test_add_argv_leading_dash_path_is_data_after_separator(
+        self,
+    ) -> None:
+        # Arrange: a path that starts with "-" - without the ``--``
+        # separator git would parse it as an option.
+        # Act
+        argv = picommit.add_argv(REPO, [PATH_LEADING_DASH])
+
+        # Assert: the pinned list shape holds - the dash path appears
+        # verbatim as the element after ``--``, and nothing else is
+        # emitted.
+        self.assertEqual(
+            argv,
+            ["git", "-C", REPO, "add", "--", PATH_LEADING_DASH],
+            "a leading-dash path must be data after '--', never an "
+            "option; got: %r" % argv,
+        )
+        self.assertEqual(
+            argv.index("--") + 1,
+            len(argv) - 1,
+            "'--' must be the last option: every path is data after "
+            "it; got: %r" % argv,
+        )
+
+    def test_add_argv_multiple_paths_keep_order_after_separator(
+        self,
+    ) -> None:
+        # Arrange: several paths, one of them a leading-dash one, so
+        # the ``*paths`` expansion is exercised with more than one
+        # element.
+        paths = [PATH_NORMAL, PATH_LEADING_DASH]
+        # Act
+        argv = picommit.add_argv(REPO, paths)
+
+        # Assert: the pinned list shape with the paths expanded in
+        # order, all after ``--``.
+        self.assertEqual(
+            argv,
+            ["git", "-C", REPO, "add", "--", PATH_NORMAL,
+             PATH_LEADING_DASH],
+            "add_argv must expand the paths in order after '--'; "
+            "got: %r" % argv,
+        )
+
+
+class GitCommitArgvTestCase(unittest.TestCase):
+    """Behaviour 7 (git-argv-is-a-list), the commit half:
+    ``picommit.commit_argv(repo, message)`` returns
+    ``["git", "-C", repo, "commit", "-m", msg]`` as a list - the
+    message is ONE element, byte-identical to the input, and
+    ``--amend`` and ``--no-verify`` are never emitted. Written
+    against the PROPOSED signature ``commit_argv(repo, message) ->
+    list`` (flagged in the module docstring for the coder to
+    confirm); the red for this step is the missing ``commit_argv``
+    attribute.
+    """
+
+    def test_commit_argv_message_is_single_byte_identical_element(
+        self,
+    ) -> None:
+        # Arrange: a multi-line message, so byte identity is
+        # exercised across newlines.
+        # Act
+        argv = picommit.commit_argv(REPO, COMMIT_MESSAGE)
+
+        # Assert: the exact pinned list shape - five elements, the
+        # message one of them.
+        self.assertEqual(
+            argv,
+            ["git", "-C", REPO, "commit", "-m", COMMIT_MESSAGE],
+            "commit_argv must be ['git', '-C', repo, 'commit', "
+            "'-m', msg]; got: %r" % argv,
+        )
+
+    def test_commit_argv_multi_line_message_stays_one_element(
+        self,
+    ) -> None:
+        # Arrange / Act
+        argv = picommit.commit_argv(REPO, COMMIT_MESSAGE)
+
+        # Assert: the message is exactly one element of the list,
+        # byte-identical to the input - a newline does not split it.
+        self.assertIn(
+            COMMIT_MESSAGE,
+            argv,
+            "the built message must be one element of the argv, "
+            "byte-identical; got: %r" % argv,
+        )
+        self.assertEqual(
+            argv.count(COMMIT_MESSAGE),
+            1,
+            "the message must appear exactly once as a single "
+            "element; got: %r" % argv,
+        )
+        self.assertEqual(
+            argv[-1],
+            COMMIT_MESSAGE,
+            "the final argv element must be the message itself, "
+            "byte-identical; got: %r" % argv,
+        )
+        self.assertEqual(
+            len(argv),
+            5,
+            "the commit argv must be exactly five elements; got: %r"
+            % argv,
+        )
+
+    def test_commit_argv_never_emits_amend_or_no_verify(self) -> None:
+        # Arrange / Act
+        argv = picommit.commit_argv(REPO, COMMIT_MESSAGE)
+
+        # Assert: the red is never rewritten and hooks are never
+        # bypassed - neither token may appear anywhere in the argv.
+        self.assertNotIn(
+            "--amend",
+            argv,
+            "commit_argv must never emit '--amend'; got: %r" % argv,
+        )
+        self.assertNotIn(
+            "--no-verify",
+            argv,
+            "commit_argv must never emit '--no-verify'; got: %r"
+            % argv,
+        )
+
+
+class GitArgvValidationErrorTestCase(unittest.TestCase):
+    """Behaviour 7's error rule: an empty repo path or an empty
+    message raises ``CommitError``. An empty ``paths`` list is NOT
+    named by the plan's Error line, so it is deliberately not tested
+    as an error here. ``picommit`` is the top-level import; the red
+    for these steps is the missing ``add_argv``/``commit_argv``
+    attribute, which is not a ``CommitError`` and so fails the
+    ``assertRaises`` for the right reason.
+    """
+
+    def test_add_argv_empty_repo_raises_commit_error(self) -> None:
+        # Arrange / Act
+        # Assert
+        with self.assertRaises(picommit.CommitError):
+            picommit.add_argv("", [PATH_NORMAL])
+
+    def test_commit_argv_empty_repo_raises_commit_error(self) -> None:
+        # Arrange / Act
+        # Assert
+        with self.assertRaises(picommit.CommitError):
+            picommit.commit_argv("", COMMIT_MESSAGE)
+
+    def test_commit_argv_empty_message_raises_commit_error(self) -> None:
+        # Arrange / Act
+        # Assert
+        with self.assertRaises(picommit.CommitError):
+            picommit.commit_argv(REPO, "")
 
 
 if __name__ == "__main__":
