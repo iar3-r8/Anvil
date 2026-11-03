@@ -13,8 +13,8 @@ commits is built by ``picommit``; the verdict it acts on is decided by
 
 House discipline, as ``anvilkit.pi.piverdict`` and
 ``anvilkit.pi.picommit`` use it: one behaviour lands per red/green
-cycle, and the docstring says which ones have landed. Behaviours 8 and
-9 of ``plans/pi-phase9-redgreen.md`` are implemented here:
+cycle, and the docstring says which ones have landed. Behaviours 8, 9
+and 10 of ``plans/pi-phase9-redgreen.md`` are implemented here:
 ``red_step(repo_path, scope, behaviour, number, plan_slug, reason,
 runner, git, issue=None)`` invokes the injected tester delegation
 exactly once, classifies its suite run with
@@ -31,7 +31,30 @@ broken test must never be committed - and returns the error's
 traceback text verbatim for re-delegation to the tester. A ``"green"``
 verdict is not a behaviour of ``red_step`` in this slice (behaviours
 10-14 own the loop) and raises ``CycleError`` naming the verdict.
-``run_cycle`` and ``green_step`` have not landed yet.
+``run_cycle(repo_path, scope, behaviour, number, plan_slug, reason,
+kind, runner, git, issue=None)`` is the happy path of the loop: it
+delegates the RED half to ``red_step`` verbatim - a single commit
+path, so the red format can never drift from ``red_step``'s - and, on
+a ``"red"`` verdict, runs ONE coder delegation (the same injected
+``runner``, context keyed on ``"role": "coder"``) and commits the
+green: the green message built by
+``picommit.green_message(scope, behaviour, number, plan_slug, kind,
+issue=issue)``, staged with ``picommit.add_argv`` on the coder
+delegation's changed paths and then committed with
+``picommit.commit_argv``, the same stage-then-commit order the red
+step uses. A completed cycle commits exactly twice, in order - the
+red commit in the red format, then the green commit in the green
+format - and returns ``{"verdict": "green", "red": <the red step's
+result dict verbatim>, "green": {"committed": True, "message": <the
+green message>}}``. In this slice ``run_cycle`` does not re-judge the
+coder's suite run: no ``piverdict.classify`` call on the coder's
+result, no halt on a non-green coder run, no test-file-edit refusal,
+no double-green halt, no failure-path zero-commit logic - the loop's
+termination and failure handling are behaviours 11-14, which have not
+landed yet. A red step that returns anything but a genuine red
+(``"red"``) cannot be committed green on and raises ``CycleError``
+naming the verdict; ``green_step`` has not landed as a separate
+function.
 
 Stdlib only. One exception type: ``CycleError``.
 """
@@ -154,3 +177,95 @@ def red_step(
         "red_step does not own the 'green' verdict, the only verdict "
         "it does not own; the loop (behaviours 10-14) does"
     )
+
+
+def run_cycle(
+    repo_path: str,
+    scope: str,
+    behaviour: str,
+    number: int,
+    plan_slug: str,
+    reason: str,
+    kind: str,
+    runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+    git: Callable[[List[str]], None],
+    issue: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Run one cycle: the red step, then one green commit.
+
+    ``repo_path``, ``scope``, ``behaviour``, ``number``, ``plan_slug``,
+    ``reason``, ``runner`` and ``git`` mean the same as in
+    :func:`red_step`; ``kind`` is the branch kind - ``"feature"`` or
+    ``"bugfix"`` - handed to ``picommit.green_message`` to pick the
+    green subject prefix.
+
+    Behaviour 10 (run-cycle-commits-red-then-green): the RED half
+    delegates verbatim to :func:`red_step` - a single commit path, so
+    the red format can never drift from ``red_step``'s - so the
+    delegation seam is invoked once with the tester role, the suite run
+    is classified, and a genuine red commits exactly once in the red
+    format. On a ``"red"`` verdict the cycle runs ONE coder delegation
+    - the same injected ``runner``, invoked with the cycle's delegation
+    context keyed on ``"role": "coder"`` - and commits the green: the
+    message built by
+    ``picommit.green_message(scope, behaviour, number, plan_slug,
+    kind, issue=issue)``, staged with ``picommit.add_argv(repo_path,
+    coder_changed_paths)`` on the coder delegation's changed paths and
+    then committed with ``picommit.commit_argv(repo_path,
+    green_message)`` - both through the seam, in that order, the same
+    stage-then-commit order the red step uses. A completed cycle
+    commits exactly twice, in order - the red commit precedes the
+    green commit, and the red is never amended or squashed into its
+    green. The result is
+    ``{"verdict": "green", "red": <the red step's result dict
+    verbatim>, "green": {"committed": True, "message": <the green
+    message>}}``.
+
+    In this slice the green step does NOT call
+    ``piverdict.classify`` again: no re-judgement of the coder's suite
+    run, no halt on a non-green coder run - the loop's termination and
+    failure handling are behaviours 11-14, which have not landed yet.
+
+    Error: a red step that returns a verdict other than ``"red"``
+    (``"reason_mismatch"`` or ``"wrong_kind"``) cannot be committed
+    green on - a re-delegation is owed to the tester before any green
+    - and raises ``CycleError`` naming the verdict.
+    """
+    red_result: Dict[str, Any] = red_step(
+        repo_path,
+        scope,
+        behaviour,
+        number,
+        plan_slug,
+        reason,
+        runner=runner,
+        git=git,
+        issue=issue,
+    )
+    if red_result.get("verdict") != "red":
+        raise CycleError(
+            "run_cycle cannot commit a green on a red step that "
+            "returned %r; the re-delegation is owed to the tester "
+            "before any green" % (red_result.get("verdict"),)
+        )
+    context: Dict[str, Any] = {
+        "role": "coder",
+        "repo_path": repo_path,
+        "scope": scope,
+        "behaviour": behaviour,
+        "number": number,
+        "plan_slug": plan_slug,
+        "reason": reason,
+    }
+    runner_result: Dict[str, Any] = runner(context)
+    coder_changed_paths: List[str] = list(runner_result["changed_paths"])
+    green_msg: str = picommit.green_message(
+        scope, behaviour, number, plan_slug, kind, issue=issue
+    )
+    git(picommit.add_argv(repo_path, coder_changed_paths))
+    git(picommit.commit_argv(repo_path, green_msg))
+    return {
+        "verdict": "green",
+        "red": red_result,
+        "green": {"committed": True, "message": green_msg},
+    }
