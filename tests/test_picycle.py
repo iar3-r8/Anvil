@@ -34,12 +34,48 @@ report whose changed paths do NOT include the cycle's test file and
 pins that the green is then committed (one commit argv, green format,
 one message element), so the refusal is testable in both directions.
 
-Behaviours 8, 9 and 10 have landed, so ``anvilkit/pi/picycle.py``
-EXISTS and ``run_cycle`` does. ``green_step`` does not yet - in this
-slice the green commit is inlined in ``run_cycle`` - so the import
-still happens inside each test (``_picycle``) rather than at module
-top level, and the behaviour 11 tests fail on the attribute lookup
-(``AttributeError``) instead of breaking collection of the file.
+Behaviours 8, 9, 10 and 11 have landed, so ``anvilkit/pi/picycle.py``
+EXISTS and ``run_cycle`` and ``green_step`` do. The import still
+happens inside each test (``_picycle``) rather than at module top
+level: the landed behaviours landed one at a time behind this file,
+and keeping the import inside the tests is what let this file stay
+collected while they had not.
+
+``plans/pi-phase9-redgreen.md``, behaviour 12
+(two-failed-greens-halt): given one behaviour whose green attempt
+fails twice in a row, the loop stops and returns a halt result
+naming the behaviour, both failure outputs and the escalation
+target. Error: a first failure re-delegates once - a second coder
+delegation - and nothing is committed on either green attempt.
+
+The manager-confirmed design (do not re-litigate): a green attempt
+succeeds iff ``piverdict.classify(coder_result, reason)`` returns
+``"green"`` - the same single judge the red step uses, with the same
+non-empty ``reason`` - and any other verdict is a failed green
+attempt. On the first failure the loop re-delegates the coder once;
+a second failure halts it. A green attempt commits nothing - the
+green commit happens only on a successful attempt.
+
+The plan does NOT pin the halt result shape ("result shape NEW"), so
+the shape below is a PROPOSED CONVENTION, flagged for confirmation::
+
+    {"verdict": "halted",
+     "behaviour": <the cycle's behaviour name>,
+     "failure_outputs": [<attempt 1's failure/error text verbatim>,
+                         <attempt 2's failure/error text verbatim>],
+     "escalate_to": <the escalation target>}
+
+- ``"failure_outputs"`` carries EACH attempt's text verbatim, in
+  attempt order - for a failed attempt the text of its first failure
+  entry, or first error entry when the run is a wrong-kind red, the
+  same entry ``red_step`` carries on its re-delegation paths;
+- ``"escalate_to"`` is FLAGGED: the plan says only "the escalation
+  target". Its value is pinned to ``"architect"`` here, the manager's
+  named escalation for a double green failure in
+  ``.roo/rules-tdd-manager/instructions.xml`` ("a second failure
+  makes the plan suspect — architect with both reports, or the
+  intake"), chosen over the raw "or the intake" tail because it is a
+  single, testable string.
 
 The plan does NOT pin ``red_step``'s parameters (the same situation as
 behaviours 5-7, where the signature was a proposed convention). The
@@ -237,6 +273,72 @@ GREEN_STEP_CLEAN_CHANGED_PATHS = ["anvilkit/pi/picycle.py"]
 GREEN_STEP_CODER_ARGUMENT = (
     "the red assertion is too narrow; widening it is part of the fix, "
     "so I adjusted the test alongside the implementation"
+)
+
+# The inputs of behaviour 12 (two-failed-greens-halt), each a module
+# constant so the expected argvs and texts below are reproducible by
+# eye. The cycle lands its own behaviour (strict TDD: this test IS the
+# red, the re-judgement is the green), so scope, behaviour and number
+# are the cycle's own - behaviour 12 of the same plan, issue #56 per
+# the plan header.
+HALT_SCOPE = "pi"
+HALT_BEHAVIOUR = "two-failed-greens-halt"
+HALT_NUMBER = 12
+HALT_PLAN_SLUG = "pi-phase9-redgreen"
+HALT_ISSUE = 56
+HALT_KIND = "feature"
+
+# The stated expected-failure reason of the halt cycle's genuine red:
+# the missing re-judgement itself - run_cycle commits the green
+# without classifying the coder's suite run.
+HALT_REASON = (
+    "run_cycle commits the green without classifying the coder's "
+    "suite run"
+)
+
+# The verbatim traceback text of the halt cycle's genuine red's single
+# failure entry, in the shape ``TestResult.addFailure`` produces. It is
+# deterministic by construction (a module constant, not a real run) and
+# MUST contain the reason as a substring - that is behaviour 4's match
+# rule, the one that makes this a genuine red rather than a mismatch.
+HALT_RED_TRACEBACK = (
+    "Traceback (most recent call last):\n"
+    '  File "./tests/test_picycle.py", line 1, in test_run_cycle\n'
+    "    picycle.run_cycle(...)\n"
+    "AssertionError: run_cycle commits the green without classifying "
+    "the coder's suite run\n"
+)
+assert HALT_REASON in HALT_RED_TRACEBACK
+
+# The changed file paths of the halt cycle's coder delegation: the
+# loop's implementation, as distinct from the tester delegation's test
+# file.
+HALT_CODE_CHANGED_PATHS = ["anvilkit/pi/picycle.py"]
+
+# The verbatim traceback text of green attempt 1's single failure
+# entry. It MUST contain the reason as a substring, so the attempt's
+# re-judgement ``piverdict.classify(result, reason)`` yields ``"red"``
+# - a non-green verdict, hence a FAILED green attempt (the
+# manager-confirmed design: any verdict but ``"green"`` fails).
+HALT_FIRST_FAILURE_TEXT = (
+    "Traceback (most recent call last):\n"
+    '  File "./tests/test_picycle.py", line 2, in test_run_cycle\n'
+    "    picycle.run_cycle(...)\n"
+    "AssertionError: run_cycle commits the green without classifying "
+    "the coder's suite run\n"
+)
+assert HALT_REASON in HALT_FIRST_FAILURE_TEXT
+
+# The verbatim traceback text of green attempt 2's single ERROR entry
+# (a broken implementation arriving through ``TestResult.addError``):
+# the attempt's re-judgement yields ``"wrong_kind"`` - a second,
+# distinct non-green verdict, so the halt is pinned on two kinds of
+# failed attempt, not one.
+HALT_SECOND_ERROR_TEXT = (
+    "Traceback (most recent call last):\n"
+    '  File "./anvilkit/pi/picycle.py", line 1, in <module>\n'
+    "    import anvilkit.pi.picycle\n"
+    "ImportError: cannot import name 'rejudge' from 'anvilkit.pi'\n"
 )
 
 
@@ -1123,6 +1225,374 @@ class CoderTestFileEditIsRefusedTestCase(unittest.TestCase):
             result.get("message"),
             "the result must carry the green commit's message; got: %r"
             % (result,),
+        )
+
+
+class QueuedCycleRunner:
+    """The delegation seam for the double-green halt, with the coder's
+    attempts served from a queue.
+
+    ``CycleRunner`` keys on the context's ``"role"`` field with one
+    canned result per role, which fits the happy path's single coder
+    delegation. A re-delegating green half is invoked ONCE PER GREEN
+    ATTEMPT - first coder call attempt 1, second attempt 2 - so the
+    coder role is served in order from a queue of pinned
+    ``TestResult``s instead: each coder call pops the next attempt's
+    suite run, and the re-delegation (if the loop lands it) is observed
+    as a second coder call with a different canned result. The tester
+    role keeps one canned result, exactly as ``CycleRunner``. The
+    record is a copy of each context, so the loop cannot mutate what
+    the test asserts on; the tests also assert on the recorded
+    ``"role"`` values to pin the order, tester then coder, then coder.
+    """
+
+    def __init__(
+        self,
+        tester_result: unittest.TestResult,
+        coder_results: List[unittest.TestResult],
+        coder_changed_paths: List[str],
+    ) -> None:
+        self.calls: List[Dict[str, Any]] = []
+        self._tester: Dict[str, Any] = {
+            "result": tester_result,
+            "changed_paths": list(CHANGED_PATHS),
+        }
+        self._coder_results: List[unittest.TestResult] = list(coder_results)
+        self._coder_changed_paths: List[str] = list(coder_changed_paths)
+
+    def __call__(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        self.calls.append(dict(context))
+        role: str = context["role"]
+        if role == "tester":
+            return {
+                "result": self._tester["result"],
+                "changed_paths": list(self._tester["changed_paths"]),
+            }
+        if role == "coder":
+            result: unittest.TestResult = self._coder_results.pop(0)
+            return {
+                "result": result,
+                "changed_paths": list(self._coder_changed_paths),
+            }
+        raise AssertionError("unexpected delegation role %r" % (role,))
+
+
+class TwoFailedGreensHaltTestCase(unittest.TestCase):
+    """Behaviour 12 (two-failed-greens-halt): a cycle whose green
+    attempt fails twice in a row stops the loop and returns a halt
+    result naming the behaviour, both failure outputs and the
+    escalation target. Error: a first failure re-delegates once - a
+    second coder delegation - and nothing is committed on either green
+    attempt.
+
+    Manager-CONFIRMED design (do not re-litigate): a green attempt
+    succeeds iff ``piverdict.classify(coder_result, reason)`` returns
+    ``"green"`` - the same single judge the red step uses, with the
+    same non-empty ``reason`` - and any other verdict is a failed
+    green attempt. On the first failure the loop re-delegates the
+    coder once; a second failure halts it. On a green attempt NOTHING
+    is committed - the green commit happens only on a successful
+    (first or second) attempt.
+
+    RESULT SHAPE: the plan pins the contents (names the behaviour,
+    carries both failure outputs verbatim, names the escalation
+    target) but not the shape ("result shape NEW"). The shape below is
+    a PROPOSED CONVENTION, flagged for confirmation::
+
+        {"verdict": "halted",
+         "behaviour": <the cycle's behaviour name>,
+         "failure_outputs": [<attempt 1's failure/error text verbatim>,
+                             <attempt 2's failure/error text verbatim>],
+         "escalate_to": <the escalation target>}
+
+    - ``"failure_outputs"`` carries each attempt's text VERBATIM, in
+      attempt order - for a failed attempt the text of its first
+      failure entry, or first error entry when the run is a wrong-kind
+      red, the same entry ``red_step`` carries on its re-delegation
+      paths;
+    - ``"escalate_to"`` is FLAGGED: the plan says only "the
+      escalation target". Its value is pinned to ``"architect"`` here
+      - the manager's named escalation for a double green failure in
+      ``.roo/rules-tdd-manager/instructions.xml`` ("a second failure
+      makes the plan suspect — architect with both reports, or the
+      intake"), chosen over the raw "or the intake" tail because it is
+      a single, testable string.
+    """
+
+    def _picycle(self):
+        """Import ``anvilkit.pi.picycle``."""
+        return importlib.import_module("anvilkit.pi.picycle")
+
+    def _run_cycle(
+        self,
+        picycle: Any,
+        runner: QueuedCycleRunner,
+        git: FakeGit,
+    ) -> Dict[str, Any]:
+        """Drive ``run_cycle`` on the confirmed signature, for the
+        halt cycle's own identity."""
+        return picycle.run_cycle(
+            REPO,
+            HALT_SCOPE,
+            HALT_BEHAVIOUR,
+            HALT_NUMBER,
+            HALT_PLAN_SLUG,
+            HALT_REASON,
+            kind=HALT_KIND,
+            runner=runner,
+            git=git,
+            issue=HALT_ISSUE,
+        )
+
+    def _error_result(self, traceback_text: str) -> unittest.TestResult:
+        """A real ``TestResult`` carrying exactly one error entry and no
+        failures - the givens of a wrong-kind run, the same seam
+        ``WrongKindIsNotCommittedTestCase`` uses. A sentinel stands in
+        for the errored test."""
+        result = unittest.TestResult()
+        errored_test = object()
+        result.errors.append((errored_test, traceback_text))
+        return result
+
+    def test_second_failed_green_halts_with_both_outputs(self) -> None:
+        # Arrange: a cycle whose red step is a genuine red, whose green
+        # attempt 1 is a failed assertion the re-judgement classifies
+        # "red" (one failure whose text contains the reason) and whose
+        # re-delegated attempt 2 is a wrong-kind run (one error entry)
+        # - two consecutive failed greens, of two distinct kinds - with
+        # the queue-based delegation seam and a recording git seam.
+        runner = QueuedCycleRunner(
+            _suite_result(HALT_RED_TRACEBACK),
+            [
+                _suite_result(HALT_FIRST_FAILURE_TEXT),
+                self._error_result(HALT_SECOND_ERROR_TEXT),
+            ],
+            HALT_CODE_CHANGED_PATHS,
+        )
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        result = self._run_cycle(picycle, runner, git)
+
+        # Assert: the loop re-delegated the coder once after the first
+        # failed green attempt - THREE delegations in order, tester
+        # (the red step) then coder (attempt 1) then coder (attempt 2).
+        self.assertEqual(
+            3,
+            len(runner.calls),
+            "a first failed green attempt must be re-judged by "
+            "classify and re-delegate the coder once, for three "
+            "delegations; got %d (the loop re-judges no green "
+            "attempt): %r" % (len(runner.calls), runner.calls),
+        )
+        self.assertEqual(
+            ["tester", "coder", "coder"],
+            [call.get("role") for call in runner.calls],
+            "the delegations must be tester, then coder attempt 1, "
+            "then coder attempt 2, in that order; got: %r"
+            % (runner.calls,),
+        )
+
+        # Assert: EXACTLY ONE commit argv - the RED commit - and no
+        # green commit: nothing is committed on either green attempt.
+        # The single commit argv is red format, so a green commit
+        # cannot have been made.
+        commit_argv = [
+            argv
+            for argv in git.calls
+            if argv[:5] == ["git", "-C", REPO, "commit", "-m"]
+        ]
+        self.assertEqual(
+            1,
+            len(commit_argv),
+            "nothing is committed on a green attempt; a double green "
+            "failure records exactly the red commit, no green commit; "
+            "got %d commit argvs: %r" % (len(commit_argv), git.calls),
+        )
+        red_message = commit_argv[0][5]
+        self.assertEqual(
+            "test(%s): cover %s, failing" % (HALT_SCOPE, HALT_BEHAVIOUR),
+            red_message.splitlines()[0],
+            "the only commit must be the red commit in the red "
+            "subject; got: %r" % red_message,
+        )
+        for argv in git.calls:
+            self.assertNotIn("--amend", argv)
+            self.assertNotIn("--no-verify", argv)
+
+        # Assert: the returned result is the halt (proposed shape,
+        # flagged): the distinguishable verdict marker, the
+        # behaviour's name, both failure outputs VERBATIM in attempt
+        # order, and the escalation target.
+        self.assertEqual(
+            "halted",
+            result.get("verdict"),
+            "the loop must return the halt verdict after a second "
+            "failed green attempt; got: %r" % (result,),
+        )
+        self.assertEqual(
+            HALT_BEHAVIOUR,
+            result.get("behaviour"),
+            "the halt result must name the behaviour; got: %r" % (result,),
+        )
+        self.assertEqual(
+            [HALT_FIRST_FAILURE_TEXT, HALT_SECOND_ERROR_TEXT],
+            result.get("failure_outputs"),
+            "the halt result must carry both failure outputs verbatim, "
+            "in attempt order; got: %r" % (result.get("failure_outputs",)),
+        )
+        self.assertEqual(
+            "architect",
+            result.get("escalate_to"),
+            "the halt result must name the escalation target "
+            "(flagged choice: 'architect', the manager's named "
+            "escalation for a double green failure); got: %r"
+            % (result.get("escalate_to",),),
+        )
+
+    def test_first_failed_green_redelegates_and_commits_on_second(
+        self,
+    ) -> None:
+        # Arrange: a cycle whose red step is a genuine red, whose green
+        # attempt 1 is a failed assertion (the re-judgement classifies
+        # it "red", a failed attempt) and whose re-delegated attempt 2
+        # runs the suite green (no failures, no errors) - the Error
+        # clause: one re-delegation, then the green lands.
+        runner = QueuedCycleRunner(
+            _suite_result(HALT_RED_TRACEBACK),
+            [
+                _suite_result(HALT_FIRST_FAILURE_TEXT),
+                unittest.TestResult(),
+            ],
+            HALT_CODE_CHANGED_PATHS,
+        )
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        result = self._run_cycle(picycle, runner, git)
+
+        # Assert: the loop re-delegated the coder once - THREE
+        # delegations in order, tester then coder then coder.
+        self.assertEqual(
+            3,
+            len(runner.calls),
+            "a first failed green attempt must be re-judged by "
+            "classify and re-delegate the coder once, for three "
+            "delegations; got %d (the loop re-judges no green "
+            "attempt): %r" % (len(runner.calls), runner.calls),
+        )
+        self.assertEqual(
+            ["tester", "coder", "coder"],
+            [call.get("role") for call in runner.calls],
+            "the delegations must be tester, then coder attempt 1, "
+            "then coder attempt 2, in that order; got: %r"
+            % (runner.calls,),
+        )
+
+        # Assert: EXACTLY TWO commit argvs - the red commit first, then
+        # ONE green commit; a staging argv precedes each, in the
+        # stage-then-commit order the red step uses.
+        commit_argv = [
+            argv
+            for argv in git.calls
+            if argv[:5] == ["git", "-C", REPO, "commit", "-m"]
+        ]
+        self.assertEqual(
+            2,
+            len(commit_argv),
+            "a green attempt that passes on the second delegation "
+            "commits exactly twice - the red commit, then one green "
+            "commit; got %d commit argvs: %r"
+            % (len(commit_argv), git.calls),
+        )
+        self.assertEqual(
+            [
+                ["git", "-C", REPO, "add", "--"] + list(CHANGED_PATHS),
+                ["git", "-C", REPO, "add", "--"] + list(HALT_CODE_CHANGED_PATHS),
+            ],
+            [
+                argv
+                for argv in git.calls
+                if argv[:5] == ["git", "-C", REPO, "add", "--"]
+            ],
+            "each step must stage its own changed paths before its "
+            "commit; got: %r" % (git.calls,),
+        )
+        self.assertLess(
+            git.calls.index(commit_argv[0]),
+            git.calls.index(commit_argv[1]),
+            "the red commit argv must precede the green commit argv; "
+            "got: %r" % (git.calls,),
+        )
+        for argv in git.calls:
+            self.assertNotIn("--amend", argv)
+            self.assertNotIn("--no-verify", argv)
+        for argv in commit_argv:
+            self.assertEqual(
+                1,
+                len(argv) - 5,
+                "each commit argv carries exactly one message element "
+                "after -m; got: %r" % (argv,),
+            )
+
+        # Assert: the first commit is the red format, the second the
+        # green format - the feat subject for a feature, the plan file,
+        # the behaviour, the Refs trailer, and never the word
+        # "failing".
+        red_message = commit_argv[0][5]
+        self.assertEqual(
+            "test(%s): cover %s, failing" % (HALT_SCOPE, HALT_BEHAVIOUR),
+            red_message.splitlines()[0],
+            "the first commit must open with the red subject; got: %r"
+            % red_message,
+        )
+        self.assertIn(
+            "Refs #%d" % HALT_ISSUE,
+            red_message,
+            "the red message must carry the Refs trailer; got: %r"
+            % red_message,
+        )
+        green_message = commit_argv[1][5]
+        self.assertEqual(
+            "feat(%s): %s" % (HALT_SCOPE, HALT_BEHAVIOUR),
+            green_message.splitlines()[0],
+            "the second commit must open with the green feature "
+            "subject; got: %r" % green_message,
+        )
+        self.assertIn(
+            "plans/%s.md" % HALT_PLAN_SLUG,
+            green_message,
+            "the green message must cite the plan file; got: %r"
+            % green_message,
+        )
+        self.assertIn(
+            HALT_BEHAVIOUR,
+            green_message,
+            "the green message must name the behaviour; got: %r"
+            % green_message,
+        )
+        self.assertIn(
+            "Refs #%d" % HALT_ISSUE,
+            green_message,
+            "the green message must carry the Refs trailer; got: %r"
+            % green_message,
+        )
+        self.assertNotIn(
+            "failing",
+            green_message,
+            "'failing' must never appear in a green message; got: %r"
+            % green_message,
+        )
+
+        # Assert: the returned result is the normal completed-cycle
+        # shape - the terminal verdict green.
+        self.assertEqual(
+            "green",
+            result.get("verdict"),
+            "a green attempt that passes on the second delegation "
+            "returns the completed-cycle verdict; got: %r" % (result,),
         )
 
 
