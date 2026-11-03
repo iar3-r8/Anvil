@@ -23,10 +23,22 @@ then the green commit in the green format (subject
 ``feat({scope}): {behaviour}`` for a feature), each naming the
 behaviour and the plan. Error: none - this is the happy path.
 
-Behaviours 8 and 9 have landed, so ``anvilkit/pi/picycle.py`` EXISTS;
-``run_cycle`` does not yet. The import still happens inside each test
-(``_picycle``) rather than at module top level, so while ``run_cycle``
-does not exist the new test fails on the attribute lookup
+``plans/pi-phase9-redgreen.md``, behaviour 11
+(coder-test-file-edit-is-refused): given a coder report whose changed
+paths include the cycle's test file, ``picycle.green_step(...)`` run
+with a recording git seam commits nothing - zero git invocations - and
+returns a test-change request carrying the coder's argument verbatim;
+a changed test is a new red step, never an edit of the loop's own test.
+The paired non-refusal test drives the same function with a coder
+report whose changed paths do NOT include the cycle's test file and
+pins that the green is then committed (one commit argv, green format,
+one message element), so the refusal is testable in both directions.
+
+Behaviours 8, 9 and 10 have landed, so ``anvilkit/pi/picycle.py``
+EXISTS and ``run_cycle`` does. ``green_step`` does not yet - in this
+slice the green commit is inlined in ``run_cycle`` - so the import
+still happens inside each test (``_picycle``) rather than at module
+top level, and the behaviour 11 tests fail on the attribute lookup
 (``AttributeError``) instead of breaking collection of the file.
 
 The plan does NOT pin ``red_step``'s parameters (the same situation as
@@ -187,6 +199,45 @@ assert CYCLE_REASON in CYCLE_RED_TRACEBACK
 # The changed file paths of the cycle's coder delegation: the loop's
 # implementation, as distinct from the tester delegation's test file.
 CYCLE_CODE_CHANGED_PATHS = ["anvilkit/pi/picycle.py"]
+
+# The inputs of behaviour 11 (coder-test-file-edit-is-refused), each a
+# module constant so the expected argvs below are reproducible by eye.
+# The cycle lands its own behaviour (strict TDD: this test IS the red,
+# the green_step implementation is the green), so scope, behaviour and
+# number are the cycle's own - behaviour 11 of the same plan, issue #56
+# per the plan header.
+GREEN_STEP_SCOPE = "pi"
+GREEN_STEP_BEHAVIOUR = "coder-test-file-edit-is-refused"
+GREEN_STEP_NUMBER = 11
+GREEN_STEP_PLAN_SLUG = "pi-phase9-redgreen"
+GREEN_STEP_ISSUE = 56
+GREEN_STEP_KIND = "feature"
+
+# The cycle's test file: the red step's changed_paths, the list the
+# green step is handed as ``test_paths``. A coder report touching it is
+# the refusal trigger; a changed test is a new red step, never an edit
+# of the loop's own test.
+GREEN_STEP_TEST_PATHS = ["tests/test_picycle.py"]
+
+# The coder's changed paths when the refusal fires: the implementation
+# plus the cycle's own test file - the test file's presence is what
+# must be refused.
+GREEN_STEP_REFUSAL_CHANGED_PATHS = [
+    "anvilkit/pi/picycle.py",
+    "tests/test_picycle.py",
+]
+
+# The coder's changed paths when no refusal fires: the implementation
+# only, never the cycle's test file.
+GREEN_STEP_CLEAN_CHANGED_PATHS = ["anvilkit/pi/picycle.py"]
+
+# The coder's stated argument/justification, carried verbatim in the
+# test-change request on refusal. Deterministic by construction (a
+# module constant, not a real run).
+GREEN_STEP_CODER_ARGUMENT = (
+    "the red assertion is too narrow; widening it is part of the fix, "
+    "so I adjusted the test alongside the implementation"
+)
 
 
 def _suite_result(traceback_text: str) -> unittest.TestResult:
@@ -828,6 +879,250 @@ class RunCycleCommitsRedThenGreenTestCase(unittest.TestCase):
             result.get("green", {}).get("message"),
             "the result's 'green' must carry the green commit's "
             "message; got: %r" % (result,),
+        )
+
+
+class CoderTestFileEditIsRefusedTestCase(unittest.TestCase):
+    """Behaviour 11 (coder-test-file-edit-is-refused): a coder report
+    whose changed paths include the cycle's test file produces ZERO git
+    invocations - nothing is committed - and the result is a
+    test-change request carrying the coder's argument verbatim. Error:
+    the test file is never edited by the loop; a changed test is a new
+    red step.
+
+    The paired non-refusal test is part of the same behaviour's
+    observable contract: a refusal with no non-refusal test would be
+    untestable in one direction only, so the refusal is pinned to fire
+    on the test file, not on any path.
+
+    The plan does NOT pin ``green_step``'s signature (the same
+    situation as behaviours 8-10). The signature, report keys and
+    result shape below are a PROPOSED CONVENTION, flagged for
+    confirmation:
+
+    PROPOSED signature (mirrors the plan's When, plus the refusal's
+    needs)::
+
+        green_step(repo_path, scope, behaviour, number, plan_slug,
+                   kind, report, test_paths, git, issue=None) -> dict
+
+    - ``repo_path`` / ``scope`` / ``behaviour`` / ``number`` /
+      ``plan_slug`` / ``kind`` / ``git`` / ``issue`` mean the same as
+      in ``run_cycle``'s confirmed green half (``kind`` and ``issue``
+      feed ``picommit.green_message``);
+    - ``report`` is the coder delegation's result dict. The keys this
+      test reads are PROPOSED, mirroring the ``red_step`` report
+      convention: ``"changed_paths"`` - the list of paths the coder
+      touched, and ``"argument"`` - the coder's stated
+      argument/justification, a string;
+    - ``test_paths`` is the list of test files the cycle owns - the
+      red step's ``changed_paths`` - handed in so the green step can
+      refuse without re-deriving them.
+
+    PROPOSED matching rule (flagged for confirmation): a changed path
+    is a refusal trigger if it EQUALS any entry of ``test_paths`` -
+    exact path comparison, no prefix matching invented.
+
+    PROPOSED result shape (flagged for confirmation). On a refusal
+    (nothing committed)::
+
+        {"verdict": "test_change_requested", "argument": <verbatim>}
+
+    On a clean green (the refusal does not fire)::
+
+        {"verdict": "green", "committed": True, "message": <the green
+        message>}
+
+    The import happens inside the test (``_picycle``) rather than at
+    module top level; ``anvilkit/pi/picycle.py`` exists (behaviours
+    8-10 landed) but ``green_step`` does not, so the tests fail on the
+    attribute lookup (``AttributeError``) instead of breaking
+    collection of the file.
+    """
+
+    def _picycle(self):
+        """Import ``anvilkit.pi.picycle``."""
+        return importlib.import_module("anvilkit.pi.picycle")
+
+    def _run_green_step(
+        self,
+        picycle: Any,
+        report: Dict[str, Any],
+        test_paths: List[str],
+        git: FakeGit,
+    ) -> Dict[str, Any]:
+        """Drive ``green_step`` on the proposed signature."""
+        return picycle.green_step(
+            REPO,
+            GREEN_STEP_SCOPE,
+            GREEN_STEP_BEHAVIOUR,
+            GREEN_STEP_NUMBER,
+            GREEN_STEP_PLAN_SLUG,
+            GREEN_STEP_KIND,
+            report,
+            test_paths,
+            git,
+            issue=GREEN_STEP_ISSUE,
+        )
+
+    def test_green_step_test_file_changed_commits_nothing_and_returns_argument(
+        self,
+    ) -> None:
+        # Arrange: a coder report whose changed paths include the
+        # cycle's test file (the red step's changed_paths, passed as
+        # test_paths), with a recording git seam.
+        report: Dict[str, Any] = {
+            "changed_paths": list(GREEN_STEP_REFUSAL_CHANGED_PATHS),
+            "argument": GREEN_STEP_CODER_ARGUMENT,
+        }
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        result = self._run_green_step(
+            picycle, report, list(GREEN_STEP_TEST_PATHS), git
+        )
+
+        # Assert: NOTHING is committed - zero git invocations, no add,
+        # no commit; the test file is never edited by the loop and a
+        # changed test is a new red step.
+        self.assertEqual(
+            0,
+            len(git.calls),
+            "a coder report that touched the cycle's test file commits "
+            "nothing - no add, no commit; got %d git calls: %r"
+            % (len(git.calls), git.calls),
+        )
+
+        # Assert: the result is a test-change request (proposed shape,
+        # flagged): the distinguishable verdict marker, carrying the
+        # coder's argument VERBATIM so the caller's new red step is
+        # informed by the coder's justification.
+        self.assertEqual(
+            "test_change_requested",
+            result.get("verdict"),
+            "the result must carry the test-change-request verdict "
+            "marker; got: %r" % (result,),
+        )
+        self.assertEqual(
+            GREEN_STEP_CODER_ARGUMENT,
+            result.get("argument"),
+            "the result must carry the coder's argument verbatim; got: "
+            "%r" % (result,),
+        )
+
+    def test_green_step_code_only_change_commits_green(
+        self,
+    ) -> None:
+        # Arrange: a coder report whose changed paths do NOT include
+        # the cycle's test file - the refusal must not over-fire on any
+        # path, only on the test file.
+        report: Dict[str, Any] = {
+            "changed_paths": list(GREEN_STEP_CLEAN_CHANGED_PATHS),
+            "argument": GREEN_STEP_CODER_ARGUMENT,
+        }
+        git = FakeGit()
+
+        # Act
+        picycle = self._picycle()
+        result = self._run_green_step(
+            picycle, report, list(GREEN_STEP_TEST_PATHS), git
+        )
+
+        # Assert: the green IS committed - exactly one commit argv, a
+        # staging argv preceding it, in the picommit stage-then-commit
+        # order the red step uses.
+        commit_argv = [
+            argv
+            for argv in git.calls
+            if argv[:5] == ["git", "-C", REPO, "commit", "-m"]
+        ]
+        self.assertEqual(
+            1,
+            len(commit_argv),
+            "a coder report that did not touch the test file commits "
+            "exactly once; got %d commit argvs: %r"
+            % (len(commit_argv), git.calls),
+        )
+        self.assertIn(
+            ["git", "-C", REPO, "add", "--"] + list(GREEN_STEP_CLEAN_CHANGED_PATHS),
+            git.calls[:-1],
+            "a staging argv must precede the commit argv; got: %r"
+            % (git.calls,),
+        )
+        self.assertIs(
+            git.calls[-1],
+            commit_argv[0],
+            "the commit argv must be the last recorded git call; "
+            "got: %r" % (git.calls,),
+        )
+
+        # Assert: no amend or no-verify token, and exactly one message
+        # element after -m - one element, byte-identical, never split.
+        argv = commit_argv[0]
+        self.assertNotIn("--amend", argv)
+        self.assertNotIn("--no-verify", argv)
+        self.assertEqual(
+            1,
+            len(argv) - 5,
+            "the commit argv carries exactly one message element after "
+            "-m; got: %r" % (argv,),
+        )
+
+        # Assert: the message is in the green format - the feat subject
+        # for a feature, the body ending Green., the plan file, the
+        # behaviour, the Refs trailer, and never the word "failing".
+        message = argv[5]
+        self.assertEqual(
+            "feat(%s): %s" % (GREEN_STEP_SCOPE, GREEN_STEP_BEHAVIOUR),
+            message.splitlines()[0],
+            "the commit must open with the green feature subject; "
+            "got: %r" % message,
+        )
+        self.assertIn(
+            "plans/%s.md" % GREEN_STEP_PLAN_SLUG,
+            message,
+            "the green message must cite the plan file; got: %r" % message,
+        )
+        self.assertIn(
+            GREEN_STEP_BEHAVIOUR,
+            message,
+            "the green message must name the behaviour; got: %r" % message,
+        )
+        self.assertIn(
+            "Refs #%d" % GREEN_STEP_ISSUE,
+            message,
+            "the green message must carry the Refs trailer; got: %r"
+            % message,
+        )
+        self.assertEqual(
+            "Behaviour %d of plans/%s.md. Green."
+            % (GREEN_STEP_NUMBER, GREEN_STEP_PLAN_SLUG),
+            message.splitlines()[2],
+            "the green message's body must read 'Behaviour %d of "
+            "plans/%s.md. Green.'; got: %r"
+            % (GREEN_STEP_NUMBER, GREEN_STEP_PLAN_SLUG, message),
+        )
+        self.assertNotIn(
+            "failing",
+            message,
+            "'failing' must never appear in a green message; got: %r"
+            % message,
+        )
+
+        # Assert: the result carries the green commit's info under the
+        # proposed keys (flagged).
+        self.assertEqual(
+            "green",
+            result.get("verdict"),
+            "a clean green step must carry the green verdict; got: %r"
+            % (result,),
+        )
+        self.assertEqual(
+            message,
+            result.get("message"),
+            "the result must carry the green commit's message; got: %r"
+            % (result,),
         )
 
 
