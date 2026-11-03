@@ -2,8 +2,9 @@
 
 One job: build and validate the markdown body of a ``.pi/roles/*.md``
 prompt document, assemble the complete role document - frontmatter
-plus body - for one named role, and build the shared chain-root
-document from the three tracked rule sources, and nothing else.
+plus body - for one named role, build the shared chain-root
+document from the three tracked rule sources, and expose the role
+source map, and nothing else.
 
 House discipline, as ``anvilkit.pi.piverdict`` uses it: one behaviour
 lands per red/green cycle, and the docstring says which ones have
@@ -47,6 +48,13 @@ document. The optional ``rules_dir`` parameter defaults to the tracked
 directory; it exists so the missing-source error is testable against a
 temp dir.
 
+Behaviour 8 (role-source-map): ``source_for(name)`` is the public
+surface of the module's private source table - the same table
+``role_document``'s body lookup reads, so the two cannot drift. The
+four XML roles return their path string relative to
+``templates/roo_template/`` (e.g. ``rules-architect/instructions.xml``);
+the coder has no XML source and returns the literal one-liner itself.
+
 Error: empty or whitespace-only ``text`` raises ``PromptError``;
 malformed XML raises ``PromptError`` naming the parse position the
 parser reported; a root that is neither an ``<instructions>`` nor a
@@ -57,8 +65,11 @@ partial body, never a silent empty-string return.
 ``role_document`` raises ``PromptError`` for ``shared-agents`` - the
 chain root has no parent to extend, and is built by behaviour 7's
 ``shared_document`` - and for an unknown role name, naming the role
-and listing the known ones. ``shared_document`` raises ``PromptError``
-naming a missing source file - never a partial document.
+and listing the known ones. ``source_for`` raises ``PromptError`` for
+any name that is not one of the five roles - ``shared-agents``
+included, the chain root having no source file of its own - naming it
+and listing the six known names. ``shared_document`` raises
+``PromptError`` naming a missing source file - never a partial document.
 
 Stdlib only. One exception type: ``PromptError``.
 """
@@ -141,8 +152,9 @@ def body_from_xml(text: str) -> str:
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 
 # The tracked rule sources, keyed by role name - the plan's source map
-# (plans/pi-role-prompts.md behaviour 8), as a private table until that
-# behaviour pins source_for's public surface.
+# (plans/pi-role-prompts.md behaviour 8), and the single source of
+# truth for both role_document's body lookup and source_for's public
+# surface, so the two cannot drift.
 _ROLE_SOURCES = {
     "architect": "rules-architect/instructions.xml",
     "tester": "rules-qna-tester/instructions.xml",
@@ -169,6 +181,11 @@ _ROLE_DESCRIPTIONS = {
 # lists them. shared-agents is not here: it is the chain root, built by
 # behaviour 7's shared_document, and refused by role_document.
 _ROLE_NAMES = tuple(_ROLE_SOURCES) + ("coder",)
+
+# The six known names behaviour 8's error line lists: the five roles
+# plus the chain root. source_for and role_document's unknown-name
+# errors both list this one tuple, so the two cannot drift.
+_KNOWN_NAMES = _ROLE_NAMES + ("shared-agents",)
 
 # The three shared rule sources, in the fixed order behaviour 7 pins:
 # the shared document concatenates them in exactly this order, and the
@@ -213,8 +230,8 @@ def role_document(name: str) -> str:
         )
     if name not in _ROLE_NAMES:
         raise PromptError(
-            "unknown role %r: the known roles are %s"
-            % (name, ", ".join(_ROLE_NAMES))
+            "unknown role %r: the known names are %s"
+            % (name, ", ".join(_KNOWN_NAMES))
         )
     body = _role_body(name)
     if not body.endswith("\n"):
@@ -272,6 +289,31 @@ def shared_document(rules_dir: Optional[Path] = None) -> str:
         "description: %s\n"
         "---\n" % _SHARED_DESCRIPTION
     ) + body
+
+
+def source_for(name: str) -> str:
+    """The tracked source ``role_document`` builds ``name``'s body from.
+
+    Behaviour 8 of ``plans/pi-role-prompts.md`` (role-source-map): the
+    return is whatever ``role_document`` reads for this role's body -
+    the same private table, so the two cannot drift. The four XML
+    roles return their path string relative to
+    ``templates/roo_template/``, exactly as the plan writes it (e.g.
+    ``rules-architect/instructions.xml``); the coder has no XML source
+    and returns the literal one-liner itself, not a sentinel.
+
+    Error: any other name - ``shared-agents`` included, the chain root
+    having no source file of its own - raises ``PromptError`` naming
+    it and listing the six known names.
+    """
+    if name == "coder":
+        return _CODER_BODY
+    if name in _ROLE_SOURCES:
+        return _ROLE_SOURCES[name]
+    raise PromptError(
+        "unknown role %r: the known names are %s"
+        % (name, ", ".join(_KNOWN_NAMES))
+    )
 
 
 def _strip_source_frontmatter(text: str) -> str:
