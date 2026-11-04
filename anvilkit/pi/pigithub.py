@@ -17,16 +17,19 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1, 2, 4 and 5 of plans/pi-phase10-github-loop.md are
-implemented here: ``read_issue``, ``quote_intake``, ``post_comment`` and
-``progress_body``.
+landed. Behaviours 1, 2, 4, 5 and 6 of plans/pi-phase10-github-loop.md
+are implemented here: ``read_issue``, ``quote_intake``, ``post_comment``,
+``progress_body`` and ``push_argv``. The last is not over the REST
+seam: it is a pure argv builder with no network, in the same discipline
+as ``anvilkit.pi.picommit``'s argv builders - it returns a
+``List[str]``, built, never executed.
 """
 
 import json
 import socket
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 # The issues endpoint lives on the API host, not the web host
 # (doc/external/github/rest-api-endpoints-for-issues.md).
@@ -400,6 +403,41 @@ def progress_body(stage: str, detail: str) -> str:
             )
         )
     return prefix + body[:cut] + _TRUNCATION_MARKER
+
+
+def push_argv(repo: str, remote: str, branch: str) -> List[str]:
+    """Build the ``git push --set-upstream`` argv; pure, never executed.
+
+    No subprocess, no network - the same discipline as
+    ``anvilkit.pi.picommit``'s argv builders: the return is a
+    ``List[str]``, built, for a caller to run as a list (never a string
+    through a shell), so a repo path containing a space passes through
+    as one unsplit element. The return is exactly
+    ``["git", "-C", repo, "push", "--set-upstream", remote, branch]``;
+    ``--force`` and ``-f`` are never emitted (the builder has no flag to
+    add them), and the signature carries no credential parameter, so no
+    token can ever appear in the argv. An empty or whitespace-only
+    ``repo``, ``remote`` or ``branch`` raises ``GitHubError`` naming the
+    offending field (behaviour 5, ``progress_body``, already treats a
+    whitespace-only field as empty, and a whitespace-only remote or
+    branch is just as useless to ``git push``).
+    """
+    if not repo.strip():
+        raise GitHubError(
+            "push_argv: the repo path is empty (or whitespace-only) - "
+            "git needs a working directory to push from"
+        )
+    if not remote.strip():
+        raise GitHubError(
+            "push_argv: the remote is empty (or whitespace-only) - "
+            "git push needs a named remote to push to"
+        )
+    if not branch.strip():
+        raise GitHubError(
+            "push_argv: the branch is empty (or whitespace-only) - "
+            "git push needs a named branch to push"
+        )
+    return ["git", "-C", repo, "push", "--set-upstream", remote, branch]
 
 
 def _longest_backtick_run(text: str) -> int:
