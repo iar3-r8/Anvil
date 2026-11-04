@@ -17,10 +17,11 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1, 2, 4, 5, 6, 7, 8 and 9 of
+landed. Behaviours 1, 2, 4, 5, 6, 7, 8, 9 and 10 of
 plans/pi-phase10-github-loop.md are implemented here: ``read_issue``,
 ``quote_intake``, ``post_comment``, ``progress_body``, ``push_argv``,
-``open_pull_request``, ``pr_body`` and ``read_ci_runs``. ``push_argv``
+``open_pull_request``, ``pr_body``, ``read_ci_runs`` and ``ci_verdict``.
+``push_argv``
 and ``pr_body`` are not over the REST seam: they are pure builders with
 no network - ``push_argv`` in the same discipline as
 ``anvilkit.pi.picommit``'s argv builders, returning a ``List[str]``
@@ -32,6 +33,13 @@ runs filtered by ``head_sha`` and unwraps the envelope the endpoint
 answers with (doc/external/github/
 rest-api-endpoints-for-workflow-runs.md) - the body is read from the
 object's ``workflow_runs`` key, never treated as an array.
+``ci_verdict`` classifies the list ``read_ci_runs`` returns; pure,
+never raises: an empty list is ``"none"``; any dict entry whose
+``status`` is ``"completed"`` with a ``conclusion`` other than
+``"success"`` is ``"failure"``, checked first; any entry not completed
+- an entry not a dict, a dict lacking its ``status`` key, or a dict
+whose ``status`` is anything other than ``"completed"`` - is
+``"pending"``; otherwise ``"success"``.
 """
 
 import json
@@ -592,6 +600,62 @@ def _ci_http_error_reason(code: int, url: str) -> str:
             )
         )
     return "GitHub returned HTTP {} for {}".format(code, url)
+
+
+def ci_verdict(runs: List[Any]) -> str:
+    """Classify a list of CI runs into one verdict; pure, never raises.
+
+    No network, no opener, no token - the classifier takes exactly the
+    list :func:`read_ci_runs` returns and yields one of the four
+    lowercase verdict strings ``"none"``, ``"failure"``,
+    ``"pending"``, ``"success"`` in the plan's check order
+    (plans/pi-phase10-github-loop.md, behaviour 10):
+
+    1. an empty list is ``"none"`` - no CI is not a failure, it is
+       simply not measured;
+    2. any entry that is a dict with ``status == "completed"`` and a
+       ``conclusion`` other than ``"success"`` is ``"failure"``,
+       checked first - a completed failure wins over anything still in
+       flight, already successful or unreadable, wherever it sits in
+       the list;
+    3. any entry that is not completed is ``"pending"`` - a dict whose
+       ``status`` is anything other than ``"completed"`` (the
+       documented ``queued`` and ``in_progress``, or any undocumented
+       value), an entry that is not a dict at all (``None``, a string,
+       a list, a number), or a dict lacking its ``status`` key:
+       ``conclusion`` is ``null`` until ``status`` is ``completed``
+       (doc/external/github/
+       rest-api-endpoints-for-workflow-runs.md), so a ``null``
+       conclusion on an incomplete run is pending, never a failure,
+       and an unreadable entry is pending, never success;
+    4. otherwise - every entry is a dict with
+       ``status == "completed"`` and ``conclusion == "success"`` - the
+       verdict is ``"success"``.
+
+    The list is walked once, and no entry shape can make the
+    classifier raise: a malformed or unreadable entry is data to
+    classify, not an error to throw. ``"none"`` is the empty list
+    only - a non-empty list carrying no readable run is
+    ``"pending"``, never ``"none"`` and never ``"success"``.
+    """
+    if not runs:
+        return "none"
+    failure = False
+    pending = False
+    for run in runs:
+        if isinstance(run, dict) and "status" in run:
+            if run["status"] == "completed":
+                if run.get("conclusion") != "success":
+                    failure = True
+            else:
+                pending = True
+        else:
+            pending = True
+    if failure:
+        return "failure"
+    if pending:
+        return "pending"
+    return "success"
 
 
 # The line stating the block below the fence is quoted data, not
