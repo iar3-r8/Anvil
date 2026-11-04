@@ -2381,3 +2381,467 @@ class PrBodyTests(unittest.TestCase):
             "pr_body is pure: the same inputs must give byte-identical "
             "output (got first: {!r}, second: {!r})".format(first, second),
         )
+
+
+class ReadCiRunsTests(unittest.TestCase):
+    """Behaviour 9 (ci-outcome-read) of plans/pi-phase10-github-loop.md.
+
+    ``read_ci_runs(owner, repo, head_sha, token=None, opener=None,
+    timeout=None)`` — the signature mirrors ``read_issue``'s parameter
+    order — reads
+    ``GET /repos/{owner}/{repo}/actions/runs?head_sha={head_sha}``, the
+    endpoint documented in
+    doc/external/github/rest-api-endpoints-for-workflow-runs.md: the
+    ``head_sha`` is the commit behaviour 7's create-PR response
+    returned, and the loop lists by it because it knows the SHA it
+    pushed but not the run id. A ``token`` adds only the
+    ``Authorization`` header; without one the request goes out
+    unauthenticated - a missing token is not a skip, never a different
+    header set.
+
+    The endpoint's body is an **envelope** ``{"total_count": N,
+    "workflow_runs": [...]}``, not a bare array: a 200 yields
+    ``(runs, None)`` where ``runs`` is the ``workflow_runs`` list read
+    from that object — the envelope unwrapped, never the body treated
+    as an array — with the run dicts passed through unaltered (each run
+    carries at least ``id``, ``name``, ``status``, ``conclusion`` and
+    ``html_url``, and ``conclusion`` is ``null`` until ``status`` is
+    ``completed``, per the saved doc). A ``total_count`` of 0 with an
+    empty list yields ``([], None)``: no CI is not a failure. A 200
+    whose body is a bare JSON list, or a JSON object lacking
+    ``workflow_runs``, a **404**, a **403**, a ``URLError`` (GitHub
+    unreachable) and a timeout (including a ``socket.timeout`` wrapped
+    in a ``URLError``) each yield ``(None, reason)`` naming the
+    situation. Nothing raises, and no token text ever appears in any
+    reason.
+
+    Design decisions pinned here (the plan leaves them to the test):
+
+    - The **404** and **403** are pinned as failures: the saved doc
+      lists only 200 as a success code for this GET, and a
+      mis-scoped or unauthenticated token on a private repository is
+      how the endpoint answers refused — the reason names the status
+      situation, never the token.
+    - The request URL is pinned to
+      ``{api}/repos/{owner}/{repo}/actions/runs?head_sha={head_sha}``:
+      the documented query-parameter filter, so the pushed SHA is
+      carried on the query string, never in the path
+      (doc/external/github/rest-api-endpoints-for-workflow-runs.md).
+
+    Written before the implementation (TDD RED for behaviour 9):
+    ``read_ci_runs`` does not exist in ``anvilkit/pi/pigithub.py`` yet,
+    so every test here is expected to fail with ``AttributeError`` —
+    the missing attribute, not a collection error (the phase-9
+    precedent for the missing-attribute red).
+
+    No test performs real network I/O: every test injects a recorded
+    opener with an abridged recorded response body carrying only the
+    fields this behaviour reads.
+    """
+
+    # The head_sha behaviour 7's create-PR response returned - this
+    # read keys on exactly that SHA.
+    HEAD_SHA = OpenPullRequestTests.HEAD_SHA
+
+    RUNS_URL = "https://api.github.com/repos/{}/{}/actions/runs".format(
+        OWNER, REPO
+    )
+    ENVELOPE_URL = "{}?head_sha={}".format(RUNS_URL, HEAD_SHA)
+
+    # The recorded run, abridged to the fields the loop reads, in the
+    # shape the saved endpoint doc documents
+    # (doc/external/github/rest-api-endpoints-for-workflow-runs.md): the
+    # queued example - conclusion is null until status is completed.
+    CI_RUN_QUEUED: Dict[str, Any] = {
+        "id": 30433642,
+        "name": "Build",
+        "status": "queued",
+        "conclusion": None,
+        "html_url": "https://github.com/octocat/Hello-World/actions/runs/30433642",
+    }
+
+    # The recorded 200 body: the envelope, abridged to the fields the
+    # behaviour reads - total_count and the workflow_runs list.
+    ENVELOPE_BODY: Dict[str, Any] = {
+        "total_count": 1,
+        "workflow_runs": [CI_RUN_QUEUED],
+    }
+
+    def _read(self, opener: Any) -> Tuple[Any, Any]:
+        return pigithub.read_ci_runs(
+            OWNER, REPO, self.HEAD_SHA, TOKEN, opener=opener
+        )
+
+    def _read_recorded(
+        self, outcome: Any
+    ) -> Tuple[Tuple[Any, Any], _RecordingOpener]:
+        opener = _RecordingOpener(outcome)
+        result = self._read(opener)
+        self.assertIsNotNone(
+            opener.request,
+            "the opener must have been called with a request object, "
+            "so the request side can be asserted",
+        )
+        return result, opener
+
+    def _assert_failure(self, label: str, opener: Any) -> str:
+        """Run one recorded failure and assert ``(None, reason)``; return the reason."""
+        runs, reason = self._read(opener)
+
+        self.assertIsNone(
+            runs,
+            "{}: no runs exist when the read failed".format(label),
+        )
+        self.assertIsInstance(
+            reason,
+            str,
+            "{}: the failure must record a string reason".format(label),
+        )
+        self.assertTrue(
+            reason,
+            "{}: the failure must record a non-empty reason".format(label),
+        )
+        self.assertNotIn(
+            TOKEN,
+            reason,
+            "{}: the token text must never appear in a reason".format(label),
+        )
+        return reason
+
+    def _failure_openers(self) -> List[Tuple[str, Any]]:
+        """(label, recorded opener) for every ci-outcome-read failure mode."""
+        return [
+            (
+                "http 404",
+                _opener(
+                    urllib.error.HTTPError(
+                        self.ENVELOPE_URL, 404, "Not Found", None, None
+                    )
+                ),
+            ),
+            (
+                "http 403",
+                _opener(
+                    urllib.error.HTTPError(
+                        self.ENVELOPE_URL, 403, "Forbidden", None, None
+                    )
+                ),
+            ),
+            (
+                "bare list body",
+                _opener(
+                    _FakeResponse(
+                        json.dumps([self.CI_RUN_QUEUED]).encode("utf-8")
+                    )
+                ),
+            ),
+            (
+                "object without workflow_runs",
+                _opener(
+                    _FakeResponse(json.dumps({"total_count": 1}).encode("utf-8"))
+                ),
+            ),
+            (
+                "url error",
+                _opener(urllib.error.URLError("Name or service not known")),
+            ),
+            (
+                "bare socket.timeout",
+                _opener(socket.timeout("timed out")),
+            ),
+            (
+                "URLError wrapping socket.timeout",
+                _opener(urllib.error.URLError(socket.timeout("timed out"))),
+            ),
+        ]
+
+    def test_read_ci_runs_signature_is_owner_repo_head_sha_token_opener_timeout(
+        self,
+    ):
+        # The pinned surface: the credential is a defaulted parameter,
+        # and opener and timeout are the recorded-REST-seam seams every
+        # call in the module shares (anvilkit/pi/piguard.py's
+        # discipline); the parameter order mirrors read_issue.
+        params = inspect.signature(pigithub.read_ci_runs).parameters
+
+        self.assertEqual(
+            list(params),
+            ["owner", "repo", "head_sha", "token", "opener", "timeout"],
+            "read_ci_runs must take exactly (owner, repo, head_sha, "
+            "token=None, opener=None, timeout=None); got: "
+            "{!r}".format(list(params)),
+        )
+
+    def test_read_ci_runs_200_envelope_returns_the_workflow_runs_list_and_none(
+        self,
+    ):
+        # Arrange / Act: the recorded 200 envelope, with the request
+        # captured.
+        result, _ = self._read_recorded(
+            _FakeResponse(json.dumps(self.ENVELOPE_BODY).encode("utf-8"))
+        )
+        runs, reason = result
+
+        # Assert: the 200 yields (runs, None), where runs is the
+        # workflow_runs list read from the envelope object - the
+        # envelope unwrapped, never the body treated as an array.
+        self.assertIsNone(
+            reason,
+            "a 200 with the documented envelope is a success: no reason "
+            "expected (doc/external/github/"
+            "rest-api-endpoints-for-workflow-runs.md)",
+        )
+        self.assertIsInstance(
+            runs,
+            list,
+            "the return must be the workflow_runs list itself - the "
+            "envelope unwrapped; got: {!r}".format(type(runs).__name__),
+        )
+        self.assertNotEqual(
+            runs,
+            self.ENVELOPE_BODY,
+            "the return must be the workflow_runs list, not the "
+            "envelope object",
+        )
+        self.assertEqual(
+            len(runs),
+            1,
+            "a recorded total_count of 1 with one run yields exactly "
+            "one run - the return is the list, not the envelope "
+            "(got: {!r})".format(runs),
+        )
+        self.assertEqual(
+            runs,
+            [self.CI_RUN_QUEUED],
+            "the run dicts must be passed through unaltered",
+        )
+        first = runs[0]
+        self.assertEqual(
+            first["name"],
+            self.CI_RUN_QUEUED["name"],
+            "the first run's name must be the recorded name",
+        )
+        self.assertEqual(
+            first["status"],
+            "queued",
+            "the first run's status must be the recorded status",
+        )
+        self.assertIsNone(
+            first["conclusion"],
+            "conclusion is null until status is completed "
+            "(doc/external/github/rest-api-endpoints-for-workflow-runs.md)",
+        )
+        self.assertEqual(
+            first["html_url"],
+            self.CI_RUN_QUEUED["html_url"],
+            "the first run's html_url must be the recorded html_url",
+        )
+
+    def test_read_ci_runs_200_total_count_zero_returns_empty_list_and_none(
+        self,
+    ):
+        # Arrange / Act: the documented no-CI answer - 200 with
+        # total_count 0 and an empty workflow_runs array, not a 404.
+        runs, reason = self._read(
+            _opener(
+                _FakeResponse(
+                    json.dumps(
+                        {"total_count": 0, "workflow_runs": []}
+                    ).encode("utf-8")
+                )
+            )
+        )
+
+        # Assert: no CI is not a failure.
+        self.assertIsInstance(
+            runs,
+            list,
+            "the no-CI return must be the (empty) workflow_runs list",
+        )
+        self.assertEqual(
+            runs,
+            [],
+            "total_count 0 with an empty workflow_runs yields an empty "
+            "list (got: {!r})".format(runs),
+        )
+        self.assertIsNone(
+            reason,
+            "no CI is not a failure: no reason expected "
+            "(doc/external/github/rest-api-endpoints-for-workflow-runs.md)",
+        )
+
+    def test_read_ci_runs_200_bare_list_body_returns_none_and_reason(
+        self,
+    ):
+        # A bare JSON array is valid JSON: the reason must distinguish
+        # "parsed fine, but not the envelope object" from treating the
+        # array as the runs - never is the body treated as an array.
+        reason = self._assert_failure(
+            "bare list body",
+            _opener(
+                _FakeResponse(
+                    json.dumps([self.CI_RUN_QUEUED]).encode("utf-8")
+                )
+            ),
+        )
+
+        self.assertTrue(
+            any(
+                word in reason.lower()
+                for word in ("object", "dict", "envelope")
+            ),
+            "the reason must name the situation: the 200 body is a bare "
+            "list, not the envelope object (got: {!r})".format(reason),
+        )
+
+    def test_read_ci_runs_200_object_without_workflow_runs_returns_none_and_reason(
+        self,
+    ):
+        reason = self._assert_failure(
+            "object without workflow_runs",
+            _opener(
+                _FakeResponse(json.dumps({"total_count": 1}).encode("utf-8"))
+            ),
+        )
+
+        self.assertIn(
+            "workflow_runs",
+            reason,
+            "the reason must name the situation: the envelope object "
+            "lacks workflow_runs (got: {!r})".format(reason),
+        )
+
+    def test_read_ci_runs_404_returns_none_and_reason_naming_not_found(
+        self,
+    ):
+        # Pinned in the class docstring: the doc lists only 200 as a
+        # success code; 404 is how the endpoint answers a repository
+        # the token cannot see.
+        reason = self._assert_failure(
+            "http 404",
+            _opener(
+                urllib.error.HTTPError(
+                    self.ENVELOPE_URL, 404, "Not Found", None, None
+                )
+            ),
+        )
+
+        self.assertIn(
+            "404",
+            reason,
+            "the reason must name the situation: 404 not found "
+            "(doc/external/github/rest-api-endpoints-for-workflow-runs.md)",
+        )
+
+    def test_read_ci_runs_403_returns_none_and_reason_naming_forbidden(
+        self,
+    ):
+        # Pinned in the class docstring: a mis-scoped or unauthenticated
+        # token on a private repository answers refused.
+        reason = self._assert_failure(
+            "http 403",
+            _opener(
+                urllib.error.HTTPError(
+                    self.ENVELOPE_URL, 403, "Forbidden", None, None
+                )
+            ),
+        )
+
+        self.assertIn(
+            "403",
+            reason,
+            "the reason must name the situation: 403 forbidden "
+            "(doc/external/github/rest-api-endpoints-for-workflow-runs.md)",
+        )
+        self.assertIn(
+            "forbidden",
+            reason.lower(),
+            "the 403 reason must name the cause: forbidden - the "
+            "request lacks read access to the repository (got: "
+            "{!r})".format(reason),
+        )
+
+    def test_read_ci_runs_url_error_returns_none_and_reason_without_raising(
+        self,
+    ):
+        reason = self._assert_failure(
+            "url error",
+            _opener(urllib.error.URLError("Name or service not known")),
+        )
+
+        self.assertIn(
+            "reach",
+            reason.lower(),
+            "the reason must name the situation: GitHub was unreachable",
+        )
+
+    def test_read_ci_runs_timeout_returns_none_and_reason_naming_timeout(
+        self,
+    ):
+        for label, outcome in (
+            ("bare socket.timeout", socket.timeout("timed out")),
+            (
+                "URLError wrapping socket.timeout",
+                urllib.error.URLError(socket.timeout("timed out")),
+            ),
+        ):
+            with self.subTest(timeout=label):
+                reason = self._assert_failure(
+                    "timeout ({})".format(label), _opener(outcome)
+                )
+
+                self.assertTrue(
+                    "time out" in reason.lower() or "timeout" in reason.lower(),
+                    "the reason must name the situation: a timeout",
+                )
+
+    def test_read_ci_runs_request_is_get_to_actions_runs_filtered_by_head_sha(
+        self,
+    ):
+        # Arrange / Act: a 200 envelope, with the request captured.
+        _, opener = self._read_recorded(
+            _FakeResponse(json.dumps(self.ENVELOPE_BODY).encode("utf-8"))
+        )
+        request = opener.request
+
+        # Assert: the documented GET, and the pushed SHA carried on the
+        # head_sha query parameter - never in the path
+        # (doc/external/github/rest-api-endpoints-for-workflow-runs.md).
+        self.assertEqual(
+            request.get_method(),
+            "GET",
+            "the request must be a GET, not a POST "
+            "(doc/external/github/rest-api-endpoints-for-workflow-runs.md)",
+        )
+        self.assertIn(
+            "head_sha={}".format(self.HEAD_SHA),
+            request.full_url,
+            "the url must carry the head_sha query parameter with the "
+            "pushed SHA (got: {!r})".format(request.full_url),
+        )
+        self.assertEqual(
+            request.full_url,
+            self.ENVELOPE_URL,
+            "the url must be "
+            "{api}/repos/{owner}/{repo}/actions/runs?head_sha={{head_sha}} "
+            "with the pushed SHA (got: {!r})".format(request.full_url),
+        )
+
+    def test_read_ci_runs_no_reason_ever_carries_token_text(self):
+        # Drift guard on the credential boundary for behaviour 9: the
+        # sentinel token is driven through every recorded failure path,
+        # and none of the resulting reasons may carry its text.
+        for label, opener in self._failure_openers():
+            with self.subTest(failure=label):
+                runs, reason = self._read(opener)
+
+                self.assertIsNone(runs)
+                self.assertIsInstance(reason, str)
+                self.assertTrue(reason)
+                self.assertNotIn(
+                    TOKEN,
+                    reason,
+                    "the token text must never appear in a reason ({})".format(
+                        label
+                    ),
+                )
