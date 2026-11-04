@@ -44,7 +44,7 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -2030,3 +2030,354 @@ class OpenPullRequestTests(unittest.TestCase):
                         label
                     ),
                 )
+
+
+class PrBodyTests(unittest.TestCase):
+    """Behaviour 8 (pr-description-shape) of plans/pi-phase10-github-loop.md.
+
+    ``pr_body(issue_number, owner, repo, context, changes, testing,
+    example)`` is a PURE builder - no network, no opener, no token - and
+    returns the pull request description that behaviour 7's
+    ``open_pull_request`` posts as its ``body``. It is distinct from
+    ``open_pull_request``, which posts a GIVEN body: ``pr_body`` BUILDS
+    the body from the structured inputs a ``run()`` naturally has - the
+    intake issue number, a one-sentence context, the changed paths with
+    short descriptions, a testing note, and a concrete example - in the
+    shape the repo's own PR commands encode
+    (templates/roo_template/commands/pull-request-builder.md:30): a
+    ``### Context`` section (one sentence explaining the problem or
+    reason), a ``### Changes`` section (bullets with relative paths,
+    including a Testing line naming what tests were added or updated),
+    and a ``### Example`` section (at least one concrete example a
+    reader can eyeball or run - a description that only names files is
+    incomplete).
+
+    Design decisions pinned here (the plan leaves the input shape to the
+    test):
+
+    - ``changes`` is a ``List[Tuple[str, str]]`` of
+      ``(relative_path, short_description)`` pairs - the minimal
+      two-field shape. Each relative path must appear on a bullet line
+      in the ``### Changes`` section, and its short description must be
+      carried in the section.
+    - ``testing`` is a dedicated one-line note rendered as its own
+      bullet in the ``### Changes`` section (the template's
+      "- **Testing**: what tests were added/updated" line), so "what
+      tests were added" is a first-class input rather than smuggled
+      into ``changes`` or ``context``.
+    - ``owner`` and ``repo`` are required inputs: the body must link to
+      the intake issue, and the link is pinned as the exact issue URL
+      ``https://github.com/{owner}/{repo}/issues/{n}`` - not merely
+      "the issue number appears somewhere".
+    - "No impact statement and no 'all tests pass' line is ever
+      emitted" is pinned in two halves, both here: structurally, the
+      signature carries no impact/results/summary parameter at all (an
+      impact statement or a results line would have to be an input the
+      builder has no way to take); and on the rendered output, a
+      realistic call is asserted to contain no "all tests pass"
+      phrasing (case-insensitive).
+    - A whitespace-only ``example`` is treated the same as an empty
+      one: it raises ``GitHubError`` too. The module's own precedent
+      (behaviours 5 and 6) already treats a whitespace-only field as
+      empty, and a description that only names files is incomplete
+      either way.
+    - The "one sentence" context is pinned as exactly one non-empty
+      line between the ``### Context`` header and the next section
+      header: the template's Context is a single sentence, and a
+      builder that pads the section with paragraphs breaks the shape.
+
+    Written before the implementation (TDD RED for behaviour 8):
+    ``pr_body`` does not exist in ``anvilkit/pi/pigithub.py`` yet, so
+    every test here is expected to fail with ``AttributeError`` - the
+    missing attribute, not a collection error (the phase-9 precedent
+    for the missing-attribute red).
+    """
+
+    # Recognizable, realistic inputs for a delivery of this very plan:
+    # the intake issue the loop was handed, the paths a GREEN cycle for
+    # behaviour 8 would change, and an example a reader can run.
+    ISSUE_NUMBER = 1347
+    OWNER = "octocat"
+    REPO = "Hello-World"
+    CONTEXT = (
+        "The intake loop could open a pull request but had no way to "
+        "build its description."
+    )
+    CHANGES: List[Tuple[str, str]] = [
+        (
+            "anvilkit/pi/pigithub.py",
+            "adds pr_body, the pure pull-request-description builder",
+        ),
+        (
+            "tests/test_pigithub.py",
+            "pins the description shape for behaviour 8",
+        ),
+    ]
+    TESTING = (
+        "PrBodyTests pins the sections, the issue link and the "
+        "missing-example error"
+    )
+    # A command with its real output: a reader can eyeball or run it.
+    EXAMPLE = "$ ./tests/run tests.test_pigithub\nOK (54 tests)"
+
+    EXPECTED_ISSUE_URL = "https://github.com/{}/{}/issues/{}".format(
+        OWNER, REPO, ISSUE_NUMBER
+    )
+
+    def _body(self, **overrides: Any) -> str:
+        kwargs: Dict[str, Any] = {
+            "issue_number": self.ISSUE_NUMBER,
+            "owner": self.OWNER,
+            "repo": self.REPO,
+            "context": self.CONTEXT,
+            "changes": list(self.CHANGES),
+            "testing": self.TESTING,
+            "example": self.EXAMPLE,
+        }
+        kwargs.update(overrides)
+        result = pigithub.pr_body(**kwargs)
+
+        self.assertIsInstance(
+            result,
+            str,
+            "pr_body must return a string",
+        )
+        return result
+
+    @staticmethod
+    def _sections(body: str) -> Dict[str, str]:
+        """Map each ``### `` header to the text up to the next one."""
+        sections: Dict[str, str] = {}
+        current: Optional[str] = None
+        lines: List[str] = []
+        for line in body.splitlines():
+            if line.startswith("### "):
+                if current is not None:
+                    sections[current] = "\n".join(lines)
+                current = line[4:].strip()
+                lines = []
+            elif current is not None:
+                lines.append(line)
+        if current is not None:
+            sections[current] = "\n".join(lines)
+        return sections
+
+    def test_pr_body_carries_context_changes_example_sections_in_order(self):
+        # Arrange / Act.
+        body = self._body()
+
+        # Assert: all three headers, in the template's order.
+        positions = []
+        for header in ("### Context", "### Changes", "### Example"):
+            index = body.find(header)
+            self.assertGreaterEqual(
+                index,
+                0,
+                "the body must carry the '{}' section "
+                "(templates/roo_template/commands/pull-request-builder.md); "
+                "got: {!r}".format(header, body),
+            )
+            positions.append(index)
+        self.assertEqual(
+            positions,
+            sorted(positions),
+            "the sections must appear in the template's order: Context, "
+            "then Changes, then Example (got: {!r})".format(body),
+        )
+
+    def test_pr_body_context_section_carries_the_sentence_on_one_line(self):
+        # Arrange / Act.
+        body = self._body()
+        sections = self._sections(body)
+
+        # Assert: the context sentence appears, on a single line.
+        self.assertIn(
+            "Context",
+            sections,
+            "the body must carry a '### Context' section (got sections: "
+            "{!r})".format(sorted(sections)),
+        )
+        context_text = sections["Context"]
+        self.assertIn(
+            self.CONTEXT,
+            context_text,
+            "the one-sentence context must appear under '### Context' "
+            "(got: {!r})".format(context_text),
+        )
+        non_empty = [
+            line for line in context_text.splitlines() if line.strip()
+        ]
+        self.assertEqual(
+            len(non_empty),
+            1,
+            "the context section must carry exactly one sentence on one "
+            "line - a paragraph there breaks the template's shape "
+            "(got: {!r})".format(non_empty),
+        )
+
+    def test_pr_body_changes_section_carries_a_bullet_per_changed_path(self):
+        # Arrange / Act.
+        body = self._body()
+        sections = self._sections(body)
+
+        # Assert: each relative path on a bullet, its description in the
+        # section.
+        self.assertIn(
+            "Changes",
+            sections,
+            "the body must carry a '### Changes' section (got sections: "
+            "{!r})".format(sorted(sections)),
+        )
+        changes_lines = sections["Changes"].splitlines()
+
+        for path, description in self.CHANGES:
+            with self.subTest(path=path):
+                bullets = [
+                    line
+                    for line in changes_lines
+                    if line.lstrip().startswith("-")
+                ]
+                self.assertTrue(
+                    any(path in line for line in bullets),
+                    "the changed path {!r} must appear on a bullet line "
+                    "in the Changes section (got: {!r})".format(
+                        path, changes_lines
+                    ),
+                )
+                self.assertIn(
+                    description,
+                    sections["Changes"],
+                    "the short description for {!r} must be carried in "
+                    "the Changes section (got: {!r})".format(
+                        path, sections["Changes"]
+                    ),
+                )
+
+    def test_pr_body_changes_section_carries_a_testing_line(self):
+        # Arrange / Act.
+        body = self._body()
+        changes_section = self._sections(body).get("Changes", "")
+        bullets = [
+            line
+            for line in changes_section.splitlines()
+            if line.lstrip().startswith("-")
+        ]
+
+        # Assert: a Testing line - a bullet naming what tests were added
+        # or updated, the template's "- **Testing**: ..." line.
+        self.assertTrue(
+            any(self.TESTING in line for line in bullets)
+            or any("testing" in line.lower() for line in bullets),
+            "the Changes section must carry a Testing line - a bullet "
+            "naming what tests were added or updated (got bullets: "
+            "{!r})".format(bullets),
+        )
+
+    def test_pr_body_example_section_carries_the_example_verbatim(self):
+        # Arrange / Act.
+        body = self._body()
+        sections = self._sections(body)
+
+        # Assert: the concrete example appears verbatim under Example.
+        self.assertIn(
+            "Example",
+            sections,
+            "the body must carry a '### Example' section (got sections: "
+            "{!r})".format(sorted(sections)),
+        )
+        self.assertIn(
+            self.EXAMPLE,
+            sections["Example"],
+            "the concrete example must appear verbatim under '### "
+            "Example' - a description that only names files is "
+            "incomplete (templates/roo_template/commands/"
+            "pull-request-builder.md); got: {!r}".format(
+                sections["Example"]
+            ),
+        )
+
+    def test_pr_body_links_to_the_intake_issue(self):
+        # Arrange / Act.
+        body = self._body()
+
+        # Assert: the intake issue link is the exact issue URL.
+        self.assertIn(
+            self.EXPECTED_ISSUE_URL,
+            body,
+            "the body must link to the intake issue: the issue URL {} "
+            "must appear in the body (got: {!r})".format(
+                self.EXPECTED_ISSUE_URL, body
+            ),
+        )
+
+    def test_pr_body_signature_carries_only_the_pinned_inputs(self):
+        # The "no impact statement, no results line" rule is structural:
+        # the builder takes no impact/results/summary input at all, and
+        # no network seam (opener, token, timeout) - it is pure.
+        params = list(inspect.signature(pigithub.pr_body).parameters)
+
+        self.assertEqual(
+            params,
+            ["issue_number", "owner", "repo", "context", "changes",
+             "testing", "example"],
+            "pr_body must take exactly the inputs a run() has: the "
+            "intake issue number, the owner and repo for the issue "
+            "link, the context sentence, the changed paths, the testing "
+            "note and the example - no impact or results parameter, no "
+            "network seam; got: {!r}".format(params),
+        )
+
+    def test_pr_body_empty_example_raises_github_error_naming_it(self):
+        for label, example in (
+            ("empty", ""),
+            ("whitespace", "   \t\n"),
+        ):
+            with self.subTest(example=label):
+                # Act.
+                with self.assertRaises(pigithub.GitHubError) as ctx:
+                    self._body(example=example)
+
+                # Assert: the error names the problem.
+                message = str(ctx.exception)
+                self.assertTrue(
+                    message,
+                    "the GitHubError must carry a non-empty message",
+                )
+                self.assertIn(
+                    "example",
+                    message.lower(),
+                    "the GitHubError must name the problem: the example "
+                    "is missing - a description that only names files "
+                    "is incomplete (got: {!r})".format(message),
+                )
+
+    def test_pr_body_never_emits_an_all_tests_pass_line(self):
+        # The structural half of the exclusion (no impact/results
+        # parameter) is pinned by
+        # test_pr_body_signature_carries_only_the_pinned_inputs; this is
+        # the rendered half: a realistic output must not carry a
+        # results line (the template's "What to Exclude").
+        # Arrange / Act.
+        body = self._body()
+
+        # Assert: no results phrasing, case-insensitive.
+        for phrase in ("all tests pass", "all tests passing"):
+            self.assertNotIn(
+                phrase,
+                body.lower(),
+                "the builder must never emit a results line such as "
+                "'{}' (got: {!r})".format(phrase, body),
+            )
+
+    def test_pr_body_same_inputs_yield_byte_identical_output(self):
+        # Arrange / Act: the same inputs twice.
+        first = self._body()
+        second = self._body()
+
+        # Assert: pure and deterministic.
+        self.assertEqual(
+            first,
+            second,
+            "pr_body is pure: the same inputs must give byte-identical "
+            "output (got first: {!r}, second: {!r})".format(first, second),
+        )
