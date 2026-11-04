@@ -35,6 +35,7 @@ with abridged recorded response bodies carrying only the fields this
 behaviour reads.
 """
 
+import inspect
 import json
 import re
 import socket
@@ -1362,3 +1363,220 @@ class ProgressBodyTests(unittest.TestCase):
             "the result must stay within the 500-character budget "
             "(got {} chars)".format(len(result)),
         )
+
+
+class PushArgvTests(unittest.TestCase):
+    """Behaviour 6 (push-argv) of plans/pi-phase10-github-loop.md.
+
+    ``push_argv(repo, remote, branch) -> List[str]`` is a pure builder:
+    it returns exactly ``["git", "-C", repo, "push", "--set-upstream",
+    remote, branch]`` - a list, built, never executed (the same
+    discipline as ``picommit``'s argv builders: the caller would
+    subprocess the list, no shell). An empty repo, remote or branch
+    raises ``GitHubError`` naming the offending field; ``--force`` and
+    ``-f`` are never emitted, and no token ever appears in the argv.
+
+    Design decisions pinned here (the plan leaves the field handling to
+    the test):
+
+    - A whitespace-only field is treated the same as an empty one: it
+      raises ``GitHubError`` too, naming the field. The module's own
+      precedent (behaviour 5, ``progress_body``) already treats a
+      whitespace-only stage as empty, and a whitespace-only remote or
+      branch would be just as useless to ``git push``.
+    - "No token ever appears in the argv" is pinned structurally: the
+      signature carries no credential-carrying parameter at all (its
+      parameters are exactly ``repo``, ``remote`` and ``branch``), and
+      a sentinel passed positionally as an extra argument raises
+      ``TypeError`` - the surface cannot accept one. A normal call is
+      additionally asserted to carry no credential-like text.
+
+    Written before the implementation (TDD RED for behaviour 6):
+    ``push_argv`` does not exist in ``anvilkit/pi/pigithub.py`` yet, so
+    every test here is expected to fail with ``AttributeError`` - the
+    missing attribute, not a collection error (the phase-9 precedent
+    for the missing-attribute red).
+    """
+
+    # Recognizable, realistic inputs.
+    REPO_PATH = "/workspaces/anvil"
+    REMOTE = "origin"
+    BRANCH = "feature/pi-phase10-github-loop"
+
+    # A repo path containing a space: it must pass through as one raw
+    # list element, never split.
+    REPO_PATH_WITH_SPACE = "/home/user/my projects/anvil"
+
+    def _push_argv(self, repo: str, remote: str, branch: str) -> List[str]:
+        argv = pigithub.push_argv(repo, remote, branch)
+
+        self.assertIsInstance(
+            argv,
+            list,
+            "push_argv must return a list, built, never executed",
+        )
+        return argv
+
+    def test_push_argv_returns_exactly_pinned_list(self):
+        # Arrange / Act.
+        argv = self._push_argv(self.REPO_PATH, self.REMOTE, self.BRANCH)
+
+        # Assert: the exact pinned argv, order included.
+        self.assertEqual(
+            argv,
+            ["git", "-C", self.REPO_PATH, "push",
+             "--set-upstream", self.REMOTE, self.BRANCH],
+            "push_argv must return exactly "
+            "['git', '-C', repo, 'push', '--set-upstream', remote, "
+            "branch]; got: {!r}".format(argv),
+        )
+
+    def test_push_argv_repo_path_with_space_is_one_raw_element(self):
+        # Arrange / Act.
+        argv = self._push_argv(
+            self.REPO_PATH_WITH_SPACE, self.REMOTE, self.BRANCH
+        )
+
+        # Assert: the raw value passes through as ONE element - the
+        # list form is never a string to be split.
+        self.assertEqual(
+            argv,
+            ["git", "-C", self.REPO_PATH_WITH_SPACE, "push",
+             "--set-upstream", self.REMOTE, self.BRANCH],
+            "a repo path containing a space must pass through as one "
+            "list element, unsplit; got: {!r}".format(argv),
+        )
+
+    def test_push_argv_never_emits_force_flags(self):
+        # Arrange / Act: a normal call.
+        argv = self._push_argv(self.REPO_PATH, self.REMOTE, self.BRANCH)
+
+        # Assert: neither flag appears anywhere in the argv. The "never"
+        # is structural - the builder has no flag to add them - so a
+        # normal call is the case to assert.
+        self.assertNotIn(
+            "--force",
+            argv,
+            "push_argv must never emit '--force'; got: {!r}".format(argv),
+        )
+        self.assertNotIn(
+            "-f",
+            argv,
+            "push_argv must never emit '-f'; got: {!r}".format(argv),
+        )
+
+    def test_push_argv_no_token_appears_in_argv(self):
+        # Arrange / Act: a normal call.
+        argv = self._push_argv(self.REPO_PATH, self.REMOTE, self.BRANCH)
+
+        # Assert: the credential text appears nowhere in the argv.
+        self.assertNotIn(
+            TOKEN,
+            argv,
+            "no token ever appears in the argv; got: {!r}".format(argv),
+        )
+
+    def test_push_argv_signature_carries_no_token_parameter(self):
+        # Design decision pinned in the class docstring: the
+        # "no token" rule is structural - the surface cannot accept a
+        # credential-carrying parameter at all.
+        params = inspect.signature(pigithub.push_argv).parameters
+
+        self.assertEqual(
+            list(params),
+            ["repo", "remote", "branch"],
+            "push_argv must take exactly (repo, remote, branch) - no "
+            "credential-carrying parameter; got: {!r}".format(
+                list(params)
+            ),
+        )
+
+    def test_push_argv_extra_positional_sentinel_raises_type_error(self):
+        # A sentinel passed positionally where no fourth parameter
+        # exists must not be silently absorbed into the argv: the call
+        # cannot take it.
+        with self.assertRaises(TypeError):
+            pigithub.push_argv(
+                self.REPO_PATH, self.REMOTE, self.BRANCH, TOKEN
+            )
+
+    def test_push_argv_empty_repo_raises_github_error_naming_field(self):
+        # Arrange / Act.
+        with self.assertRaises(pigithub.GitHubError) as ctx:
+            pigithub.push_argv("", self.REMOTE, self.BRANCH)
+
+        # Assert: the error names the offending field.
+        message = str(ctx.exception)
+        self.assertTrue(
+            message,
+            "the GitHubError must carry a non-empty message naming "
+            "the problem",
+        )
+        self.assertIn(
+            "repo",
+            message.lower(),
+            "the GitHubError must name the offending field: the repo "
+            "path is empty (got: {!r})".format(message),
+        )
+
+    def test_push_argv_empty_remote_raises_github_error_naming_field(self):
+        with self.assertRaises(pigithub.GitHubError) as ctx:
+            pigithub.push_argv(self.REPO_PATH, "", self.BRANCH)
+
+        message = str(ctx.exception)
+        self.assertTrue(
+            message,
+            "the GitHubError must carry a non-empty message naming "
+            "the problem",
+        )
+        self.assertIn(
+            "remote",
+            message.lower(),
+            "the GitHubError must name the offending field: the remote "
+            "is empty (got: {!r})".format(message),
+        )
+
+    def test_push_argv_empty_branch_raises_github_error_naming_field(self):
+        with self.assertRaises(pigithub.GitHubError) as ctx:
+            pigithub.push_argv(self.REPO_PATH, self.REMOTE, "")
+
+        message = str(ctx.exception)
+        self.assertTrue(
+            message,
+            "the GitHubError must carry a non-empty message naming "
+            "the problem",
+        )
+        self.assertIn(
+            "branch",
+            message.lower(),
+            "the GitHubError must name the offending field: the branch "
+            "is empty (got: {!r})".format(message),
+        )
+
+    def test_push_argv_whitespace_only_field_raises_github_error_naming_field(
+        self,
+    ):
+        # Design decision pinned in the class docstring: a
+        # whitespace-only field is treated the same as an empty one.
+        for label, args in (
+            ("repo", ("   \t\n", self.REMOTE, self.BRANCH)),
+            ("remote", (self.REPO_PATH, "   \t\n", self.BRANCH)),
+            ("branch", (self.REPO_PATH, self.REMOTE, "   \t\n")),
+        ):
+            with self.subTest(field=label):
+                with self.assertRaises(pigithub.GitHubError) as ctx:
+                    pigithub.push_argv(*args)
+
+                message = str(ctx.exception)
+                self.assertTrue(
+                    message,
+                    "the GitHubError must carry a non-empty message",
+                )
+                self.assertIn(
+                    label,
+                    message.lower(),
+                    "the GitHubError must name the offending field: "
+                    "{} is whitespace only (got: {!r})".format(
+                        label, message
+                    ),
+                )
