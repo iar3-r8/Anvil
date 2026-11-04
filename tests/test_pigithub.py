@@ -4523,3 +4523,890 @@ class RunTests(unittest.TestCase):
         result = self._run(opener, cycle)
 
         self._assert_token_confined(result, opener, cycle)
+
+
+# ---------------------------------------------------------------------------
+# Behaviours 13-15 of plans/pi-phase10-github-loop.md - boundary pins on
+# already-landed code. No production change: these are expected to pass on
+# arrival, which is what makes them pins, not red steps.
+
+
+def _string_leaves(value: Any) -> List[str]:
+    """Every string (and decoded-bytes) leaf reachable inside ``value``.
+
+    The behaviour-15 drift guard walks its surfaces - a result dict, a
+    cycle-seam call, an argv list - through this, so a token that lands in
+    any nested string is found, not just in the top-level value.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, bytes):
+        return [value.decode("utf-8", errors="replace")]
+    if isinstance(value, dict):
+        leaves: List[str] = []
+        for key, item in value.items():
+            leaves.extend(_string_leaves(key))
+            leaves.extend(_string_leaves(item))
+        return leaves
+    if isinstance(value, (list, tuple)):
+        leaves = []
+        for item in value:
+            leaves.extend(_string_leaves(item))
+        return leaves
+    return []
+
+
+def _find_token(value: Any) -> Optional[str]:
+    """The first string leaf inside ``value`` carrying TOKEN, else None."""
+    for leaf in _string_leaves(value):
+        if TOKEN in leaf:
+            return leaf
+    return None
+
+
+def _module_source() -> str:
+    return Path(pigithub.__file__).resolve().read_text(encoding="utf-8")
+
+
+def _list_element_text(element: Any) -> Optional[str]:
+    """The text of an AST list element: a string literal, or the name of a
+    Name node (the push argv's repo/remote/branch); None for anything else."""
+    import ast
+
+    if isinstance(element, ast.Str):
+        return element.s
+    if isinstance(element, ast.Name):
+        return element.id
+    return None
+
+
+class TokenLocationTests(unittest.TestCase):
+    """Behaviour 13 (token-location-is-the-host-driver) of
+    plans/pi-phase10-github-loop.md. **PIN** - no production change.
+
+    The token's path is a parameter supplied by the host driver from `.env`
+    GITHUB_TOKEN (anvilkit/cli.py:104, anvilkit/env.py), reaching only the
+    ``Authorization`` header of the REST requests this module builds:
+
+    - every public REST function takes ``token`` as a defaulted parameter
+      (``Optional[str] = None``);
+    - the shared header builder puts the token only in
+      ``Authorization: Bearer ...`` and omits the header entirely when the
+      token is absent - never an empty credential;
+    - ``push_argv`` and ``pr_body`` take no token at all (already pinned
+      structurally by the signature tests of behaviours 6 and 8;
+      cross-referenced here, not duplicated identically);
+    - no function in the module builds a sandbox argv, a role argv or a
+      ``.pi/mcp.json`` entry - an MCP GitHub server inside the container
+      would reverse this and is not taken.
+    """
+
+    REST_FUNCTIONS = (
+        pigithub.read_issue,
+        pigithub.post_comment,
+        pigithub.open_pull_request,
+        pigithub.read_ci_runs,
+        pigithub.run,
+    )
+
+    def test_public_rest_functions_take_token_as_a_defaulted_parameter(self):
+        for func in self.REST_FUNCTIONS:
+            with self.subTest(func=func.__name__):
+                params = inspect.signature(func).parameters
+
+                self.assertIn(
+                    "token",
+                    params,
+                    "{} must take a token parameter - the host driver "
+                    "supplies it from .env GITHUB_TOKEN (anvilkit/cli."
+                    "py:104, anvilkit/env.py)".format(func.__name__),
+                )
+                self.assertIsNone(
+                    params["token"].default,
+                    "{}'s token must default to None (Optional[str] = "
+                    "None) - an absent token is an unauthenticated "
+                    "request, never a skip".format(func.__name__),
+                )
+
+    def test_header_builder_puts_the_token_only_in_bearer_authorization(self):
+        # Arrange / Act: a token, and an absence.
+        with_token = pigithub._request_headers(TOKEN)
+        without_token = pigithub._request_headers(None)
+
+        # Assert: the token reaches only the Authorization header, as a
+        # Bearer credential, and an absent token omits the header entirely
+        # - never an empty credential.
+        self.assertEqual(
+            with_token.get("Authorization"),
+            "Bearer " + TOKEN,
+            "the token must reach the request as exactly 'Authorization: "
+            "Bearer <token>' (got: {!r})".format(with_token),
+        )
+        self.assertNotIn(
+            "Authorization",
+            without_token,
+            "an absent token must omit the Authorization header entirely "
+            "- an empty credential must never go out (got: {!r})".format(
+                without_token
+            ),
+        )
+        for label, headers in (
+            ("with token", with_token),
+            ("without token", without_token),
+        ):
+            for key, value in headers.items():
+                if key == "Authorization":
+                    continue
+                self.assertNotIn(
+                    TOKEN,
+                    value,
+                    "{}: the token must reach only the Authorization "
+                    "header, not the {!r} header (got: {!r})".format(
+                        label, key, value
+                    ),
+                )
+
+    def test_recorded_requests_carry_the_token_only_in_authorization(self):
+        # One recorded success per REST endpoint; each opener captures the
+        # request it was handed.
+        opener_issue = _RecordingOpener(
+            _FakeResponse(json.dumps(dict(INTAKE_ISSUE)).encode("utf-8"))
+        )
+        pigithub.read_issue(OWNER, REPO, ISSUE_NUMBER, TOKEN, opener=opener_issue)
+        opener_comment = _RecordingOpener(
+            _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=201)
+        )
+        pigithub.post_comment(
+            OWNER, REPO, ISSUE_NUMBER, "Stage: started", TOKEN, opener=opener_comment
+        )
+        opener_pulls = _RecordingOpener(
+            _FakeResponse(
+                json.dumps(OpenPullRequestTests.PULL_BODY).encode("utf-8"), status=201
+            )
+        )
+        pigithub.open_pull_request(
+            OWNER, REPO, "title", "head", "base", "body", TOKEN, opener=opener_pulls
+        )
+        opener_runs = _RecordingOpener(
+            _FakeResponse(json.dumps(ReadCiRunsTests.ENVELOPE_BODY).encode("utf-8"))
+        )
+        pigithub.read_ci_runs(
+            OWNER, REPO, ReadCiRunsTests.HEAD_SHA, TOKEN, opener=opener_runs
+        )
+
+        for label, opener in (
+            ("read_issue", opener_issue),
+            ("post_comment", opener_comment),
+            ("open_pull_request", opener_pulls),
+            ("read_ci_runs", opener_runs),
+        ):
+            with self.subTest(func=label):
+                request = opener.request
+                self.assertIsNotNone(
+                    request,
+                    "{}: the opener must have been called with a request "
+                    "object, so the request side can be asserted".format(label),
+                )
+                self.assertEqual(
+                    request.get_header("Authorization"),
+                    "Bearer " + TOKEN,
+                    "{}: the token's only home is the Authorization "
+                    "header".format(label),
+                )
+                for key, value in request.header_items():
+                    if key == "Authorization":
+                        continue
+                    self.assertNotIn(
+                        TOKEN,
+                        value,
+                        "{}: the token must not appear in the {!r} "
+                        "header (got: {!r})".format(label, key, value),
+                    )
+
+    def test_push_argv_and_pr_body_take_no_token_parameter(self):
+        # Cross-reference for the signature pins of behaviours 6 and 8
+        # (PushArgvTests / PrBodyTests pin the full parameter lists; this
+        # pins only the token absence, not duplicating them identically):
+        # the two pure builders have no credential-carrying parameter at
+        # all, so a token can never reach their output.
+        for func in (pigithub.push_argv, pigithub.pr_body):
+            with self.subTest(func=func.__name__):
+                self.assertNotIn(
+                    "token",
+                    inspect.signature(func).parameters,
+                    "{} takes no token at all - it is a pure builder with "
+                    "no network seam (got: {!r})".format(
+                        func.__name__,
+                        list(inspect.signature(func).parameters),
+                    ),
+                )
+
+    def test_module_builds_no_sandbox_role_argv_or_mcp_json_entry(self):
+        # An MCP GitHub server inside the container would reverse the
+        # token location (the token would sit in a container config file,
+        # not in a host-side header): it is not taken, so nothing in the
+        # module may build an mcp.json entry - and the only argv any
+        # function builds is the push argv behaviour 6 pins.
+        import ast
+
+        source = _module_source()
+
+        self.assertNotIn(
+            "mcp.json",
+            source,
+            "no function in this module may build a .pi/mcp.json entry - "
+            "an MCP GitHub server inside the container would reverse the "
+            "token location (plans/pi-phase10-github-loop.md, behaviour 13)",
+        )
+        tree = ast.parse(source)
+        git_lists = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.List)
+            and node.elts
+            and _list_element_text(node.elts[0]) == "git"
+        ]
+        self.assertEqual(
+            len(git_lists),
+            1,
+            "exactly one argv is built in this module - the push argv - "
+            "and no sandbox or role argv (got {} list literals starting "
+            "with 'git')".format(len(git_lists)),
+        )
+        argv = [_list_element_text(element) for element in git_lists[0].elts]
+        self.assertEqual(
+            argv,
+            ["git", "-C", "repo", "push", "--set-upstream", "remote", "branch"],
+            "the only argv the module builds must be the push argv, "
+            "exactly as behaviour 6 pins it (got: {!r})".format(argv),
+        )
+
+
+class WithheldPermissionsTests(unittest.TestCase):
+    """Behaviour 14 (withheld-permissions-are-unnecessary) of
+    plans/pi-phase10-github-loop.md. **PIN** - no production change.
+
+    Every endpoint this module calls maps to a permission the repo-scoped
+    token already carries; all fall inside ``issues:write``,
+    ``pull_requests:write``, ``contents:write``, ``actions:read``,
+    ``metadata:read`` (plans/pi-phase10-github-loop.md, behaviour 14):
+
+    - ``GET  /repos/{o}/{r}/issues/{n}`` - issues read
+      (doc/external/github/rest-api-endpoints-for-issues.md)
+    - ``POST /repos/{o}/{r}/issues/{n}/comments`` - issues write
+      (doc/external/github/rest-api-endpoints-for-issue-comments.md)
+    - ``POST /repos/{o}/{r}/pulls`` - pull requests write
+      (doc/external/github/rest-api-endpoints-for-pull-requests.md)
+    - ``GET  /repos/{o}/{r}/actions/runs?head_sha=...`` - actions read
+      (doc/external/github/rest-api-endpoints-for-workflow-runs.md)
+
+    No call requires ``administration`` or ``workflows`` (doc/external/
+    github/fine-grained-personal-access-tokens.md), and no Actions write
+    endpoint (re-run, cancel, force-cancel, delete, dispatch) is
+    reachable - the CI edit path stays closed.
+    """
+
+    API_HOST = "https://api.github.com"
+
+    # The four documented endpoints, indexed per constructor: the read is
+    # behaviour 1's GET, the comment behaviour 4's POST, the pulls
+    # behaviour 7's POST, the runs behaviour 9's GET (each cited in the
+    # class docstring).
+    DOCUMENTED_ENDPOINTS = (
+        ("GET", re.compile(r"^/repos/[^/]+/[^/]+/issues/\d+$")),
+        ("POST", re.compile(r"^/repos/[^/]+/[^/]+/issues/\d+/comments$")),
+        ("POST", re.compile(r"^/repos/[^/]+/[^/]+/pulls$")),
+        ("GET", re.compile(r"^/repos/[^/]+/[^/]+/actions/runs$")),
+    )
+
+    def _record_endpoint(
+        self, label: str, outcome: Any, call: Callable[[Any], None]
+    ) -> Tuple[str, str]:
+        """Drive one REST call over a recording opener; return (method, path)."""
+        opener = _RecordingOpener(outcome)
+        call(opener)
+        self.assertIsNotNone(
+            opener.request,
+            "{}: the opener must have been called with a request "
+            "object, so the request side can be asserted".format(label),
+        )
+        request = opener.request
+        url = request.full_url
+        self.assertTrue(
+            url.startswith(self.API_HOST),
+            "{}: the request must go to the API host (got: "
+            "{!r})".format(label, url),
+        )
+        # The path minus any query string: the head_sha filter rides on
+        # the query (doc/external/github/
+        # rest-api-endpoints-for-workflow-runs.md), not on the path.
+        path = url[len(self.API_HOST):].split("?", 1)[0]
+        return request.get_method(), path
+
+    def test_module_constructs_exactly_the_four_documented_endpoints(self):
+        cases = [
+            (
+                "read_issue",
+                _FakeResponse(json.dumps(dict(INTAKE_ISSUE)).encode("utf-8")),
+                lambda opener: pigithub.read_issue(
+                    OWNER, REPO, ISSUE_NUMBER, TOKEN, opener=opener
+                ),
+            ),
+            (
+                "post_comment",
+                _FakeResponse(
+                    json.dumps(COMMENT_BODY).encode("utf-8"), status=201
+                ),
+                lambda opener: pigithub.post_comment(
+                    OWNER, REPO, ISSUE_NUMBER, "Stage: started", TOKEN,
+                    opener=opener,
+                ),
+            ),
+            (
+                "open_pull_request",
+                _FakeResponse(
+                    json.dumps(OpenPullRequestTests.PULL_BODY).encode("utf-8"),
+                    status=201,
+                ),
+                lambda opener: pigithub.open_pull_request(
+                    OWNER, REPO, "title", "head", "base", "body", TOKEN,
+                    opener=opener,
+                ),
+            ),
+            (
+                "read_ci_runs",
+                _FakeResponse(
+                    json.dumps(ReadCiRunsTests.ENVELOPE_BODY).encode("utf-8")
+                ),
+                lambda opener: pigithub.read_ci_runs(
+                    OWNER, REPO, ReadCiRunsTests.HEAD_SHA, TOKEN, opener=opener
+                ),
+            ),
+        ]
+        for index, (label, outcome, call) in enumerate(cases):
+            with self.subTest(func=label):
+                # Act: one recorded success per constructor.
+                method, path = self._record_endpoint(label, outcome, call)
+
+                # Assert: this constructor builds exactly its documented
+                # endpoint - the four above, and no other.
+                expected_method, expected_pattern = self.DOCUMENTED_ENDPOINTS[index]
+                self.assertEqual(
+                    method,
+                    expected_method,
+                    "{}: the documented endpoint is a {} (doc/external/"
+                    "github/rest-api-endpoints-for-issues.md, "
+                    "-issue-comments.md, -pull-requests.md, "
+                    "-workflow-runs.md); got: {!r}".format(
+                        label, expected_method, method
+                    ),
+                )
+                self.assertRegex(
+                    path,
+                    expected_pattern,
+                    "{}: the endpoint constructed must be the documented "
+                    "one; got path {!r}".format(label, path),
+                )
+
+    def test_no_actions_write_endpoint_appears_anywhere_in_the_module(self):
+        # The CI edit path stays closed: re-run, cancel-timed-out, cancel,
+        # delete and dispatch all need actions:write (doc/external/github/
+        # rest-api-endpoints-for-workflow-runs.md), and administration and
+        # workflows are separate permissions that are simply withheld
+        # (doc/external/github/fine-grained-personal-access-tokens.md).
+        # None of those endpoints or permissions may be reachable from
+        # this module - asserted over the module source, so a drift that
+        # adds even an untested call is caught.
+        source = _module_source()
+
+        for fragment in ("rerun", "cancel", "dispatches", "DELETE"):
+            self.assertNotIn(
+                fragment,
+                source,
+                "no Actions write endpoint may be reachable from this "
+                "module - re-run, cancel-timed-out, cancel, delete and "
+                "dispatch all need actions:write, which is withheld "
+                "(doc/external/github/rest-api-endpoints-for-workflow-"
+                "runs.md); found {!r}".format(fragment),
+            )
+        self.assertNotIn(
+            "administration",
+            source,
+            "no call may require the administration permission (doc/"
+            "external/github/fine-grained-personal-access-tokens.md)",
+        )
+        self.assertNotIn(
+            "workflows",
+            source,
+            "no call may require the workflows permission (doc/external/"
+            "github/fine-grained-personal-access-tokens.md)",
+        )
+
+
+class TokenNeverEchoedTests(unittest.TestCase):
+    """Behaviour 15 (token-never-echoed) of plans/pi-phase10-github-loop.md.
+    **PIN** - no production change.
+
+    Drift guard on the credential boundary: the sentinel token is driven
+    through every failure path of every public function, and must appear
+    in no reason string, no result dict, no comment/PR request body, no
+    url and no push argv. One parametric test per function family.
+    """
+
+    def test_read_issue_token_never_echoed_in_any_failure(self):
+        failures = [
+            (
+                "http 301",
+                urllib.error.HTTPError(URL, 301, "Moved Permanently", None, None),
+            ),
+            (
+                "http 404",
+                urllib.error.HTTPError(URL, 404, "Not Found", None, None),
+            ),
+            (
+                "http 410",
+                urllib.error.HTTPError(URL, 410, "Gone", None, None),
+            ),
+            (
+                "non-json body",
+                _FakeResponse(b"<html>GitHub Maintenance</html>"),
+            ),
+            (
+                "json list body",
+                _FakeResponse(json.dumps([ISSUE_NUMBER]).encode("utf-8")),
+            ),
+            (
+                "url error",
+                urllib.error.URLError("Name or service not known"),
+            ),
+            ("bare socket.timeout", socket.timeout("timed out")),
+            (
+                "URLError wrapping socket.timeout",
+                urllib.error.URLError(socket.timeout("timed out")),
+            ),
+        ]
+        for label, outcome in failures:
+            with self.subTest(failure=label):
+                opener = _RecordingOpener(outcome)
+                issue, reason = pigithub.read_issue(
+                    OWNER, REPO, ISSUE_NUMBER, TOKEN, opener=opener
+                )
+
+                self.assertIsNone(issue)
+                self.assertIsInstance(reason, str)
+                self.assertNotIn(
+                    TOKEN,
+                    reason,
+                    "the token text must never appear in a reason ({})".format(
+                        label
+                    ),
+                )
+                self.assertIsNotNone(opener.request)
+                self.assertNotIn(
+                    TOKEN,
+                    opener.request.full_url,
+                    "no url may carry the token ({})".format(label),
+                )
+
+    def test_post_comment_token_never_echoed_in_any_failure(self):
+        failures = [
+            (
+                "http 403",
+                urllib.error.HTTPError(COMMENTS_URL, 403, "Forbidden", None, None),
+            ),
+            (
+                "http 404",
+                urllib.error.HTTPError(COMMENTS_URL, 404, "Not Found", None, None),
+            ),
+            (
+                "http 410",
+                urllib.error.HTTPError(COMMENTS_URL, 410, "Gone", None, None),
+            ),
+            (
+                "http 422",
+                urllib.error.HTTPError(COMMENTS_URL, 422, "Validation Failed", None, None),
+            ),
+            (
+                "http 200 (not success)",
+                _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=200),
+            ),
+            (
+                "201 non-json body",
+                _FakeResponse(b"<html>GitHub Maintenance</html>", status=201),
+            ),
+            (
+                "201 json list body",
+                _FakeResponse(json.dumps([ISSUE_NUMBER]).encode("utf-8"), status=201),
+            ),
+            (
+                "201 without html_url",
+                _FakeResponse(json.dumps({"id": 1}).encode("utf-8"), status=201),
+            ),
+            (
+                "url error",
+                urllib.error.URLError("Name or service not known"),
+            ),
+            ("bare socket.timeout", socket.timeout("timed out")),
+            (
+                "URLError wrapping socket.timeout",
+                urllib.error.URLError(socket.timeout("timed out")),
+            ),
+        ]
+        for label, outcome in failures:
+            with self.subTest(failure=label):
+                opener = _RecordingOpener(outcome)
+                comment_url, reason = pigithub.post_comment(
+                    OWNER, REPO, ISSUE_NUMBER, "Stage: started", TOKEN,
+                    opener=opener,
+                )
+
+                self.assertIsNone(comment_url)
+                self.assertIsInstance(reason, str)
+                self.assertNotIn(
+                    TOKEN,
+                    reason,
+                    "the token text must never appear in a reason ({})".format(
+                        label
+                    ),
+                )
+                self.assertIsNotNone(opener.request)
+                self.assertNotIn(
+                    TOKEN,
+                    opener.request.full_url,
+                    "no url may carry the token ({})".format(label),
+                )
+                body = opener.request.data
+                self.assertIsNotNone(
+                    body, "a comment post carries a body ({})".format(label)
+                )
+                self.assertNotIn(
+                    TOKEN,
+                    body.decode("utf-8", errors="replace"),
+                    "no comment request body may carry the token ({})".format(
+                        label
+                    ),
+                )
+
+    def test_open_pull_request_token_never_echoed_in_any_failure(self):
+        pulls_url = OpenPullRequestTests.PULLS_URL
+        failures = [
+            (
+                "http 422",
+                urllib.error.HTTPError(pulls_url, 422, "Validation Failed", None, None),
+            ),
+            (
+                "http 403",
+                urllib.error.HTTPError(pulls_url, 403, "Forbidden", None, None),
+            ),
+            (
+                "http 200 (not success)",
+                _FakeResponse(
+                    json.dumps(OpenPullRequestTests.PULL_BODY).encode("utf-8"),
+                    status=200,
+                ),
+            ),
+            (
+                "201 non-json body",
+                _FakeResponse(b"<html>GitHub Maintenance</html>", status=201),
+            ),
+            (
+                "201 json list body",
+                _FakeResponse(json.dumps([ISSUE_NUMBER]).encode("utf-8"), status=201),
+            ),
+            (
+                "201 without head.sha",
+                _FakeResponse(
+                    json.dumps(
+                        {
+                            "number": ISSUE_NUMBER,
+                            "html_url": OpenPullRequestTests.PULL_BODY["html_url"],
+                            "head": {},
+                        }
+                    ).encode("utf-8"),
+                    status=201,
+                ),
+            ),
+            (
+                "url error",
+                urllib.error.URLError("Name or service not known"),
+            ),
+            ("bare socket.timeout", socket.timeout("timed out")),
+            (
+                "URLError wrapping socket.timeout",
+                urllib.error.URLError(socket.timeout("timed out")),
+            ),
+        ]
+        for label, outcome in failures:
+            with self.subTest(failure=label):
+                opener = _RecordingOpener(outcome)
+                pull, reason = pigithub.open_pull_request(
+                    OWNER, REPO, "title", "head", "base", "body", TOKEN,
+                    opener=opener,
+                )
+
+                self.assertIsNone(pull)
+                self.assertIsInstance(reason, str)
+                self.assertNotIn(
+                    TOKEN,
+                    reason,
+                    "the token text must never appear in a reason ({})".format(
+                        label
+                    ),
+                )
+                self.assertIsNotNone(opener.request)
+                self.assertNotIn(
+                    TOKEN,
+                    opener.request.full_url,
+                    "no url may carry the token ({})".format(label),
+                )
+                body = opener.request.data
+                self.assertIsNotNone(
+                    body, "a pulls post carries a body ({})".format(label)
+                )
+                self.assertNotIn(
+                    TOKEN,
+                    body.decode("utf-8", errors="replace"),
+                    "no pull request body may carry the token ({})".format(
+                        label
+                    ),
+                )
+
+    def test_read_ci_runs_token_never_echoed_in_any_failure(self):
+        failures = [
+            (
+                "http 404",
+                urllib.error.HTTPError(
+                    ReadCiRunsTests.ENVELOPE_URL, 404, "Not Found", None, None
+                ),
+            ),
+            (
+                "http 403",
+                urllib.error.HTTPError(
+                    ReadCiRunsTests.ENVELOPE_URL, 403, "Forbidden", None, None
+                ),
+            ),
+            (
+                "bare list body",
+                _FakeResponse(
+                    json.dumps([ReadCiRunsTests.CI_RUN_QUEUED]).encode("utf-8")
+                ),
+            ),
+            (
+                "object without workflow_runs",
+                _FakeResponse(
+                    json.dumps({"total_count": 1}).encode("utf-8")
+                ),
+            ),
+            (
+                "url error",
+                urllib.error.URLError("Name or service not known"),
+            ),
+            ("bare socket.timeout", socket.timeout("timed out")),
+            (
+                "URLError wrapping socket.timeout",
+                urllib.error.URLError(socket.timeout("timed out")),
+            ),
+        ]
+        for label, outcome in failures:
+            with self.subTest(failure=label):
+                opener = _RecordingOpener(outcome)
+                runs, reason = pigithub.read_ci_runs(
+                    OWNER, REPO, ReadCiRunsTests.HEAD_SHA, TOKEN, opener=opener
+                )
+
+                self.assertIsNone(runs)
+                self.assertIsInstance(reason, str)
+                self.assertNotIn(
+                    TOKEN,
+                    reason,
+                    "the token text must never appear in a reason ({})".format(
+                        label
+                    ),
+                )
+                self.assertIsNotNone(opener.request)
+                # The url carries the head_sha on the query string - the
+                # exact surface a drift could leak the token into.
+                self.assertNotIn(
+                    TOKEN,
+                    opener.request.full_url,
+                    "no url may carry the token ({})".format(label),
+                )
+
+    def test_pure_builders_carry_no_token(self):
+        # The pure builders take no token parameter at all (pinned
+        # structurally by TokenLocationTests); this pins the output side:
+        # the sentinel can appear in none of their results either.
+        argv = pigithub.push_argv(RunTests.REPO_PATH, RunTests.REMOTE, RunTests.BRANCH)
+        found = _find_token(argv)
+        self.assertIsNone(
+            found,
+            "no token ever appears in the push argv (behaviour 6; found: "
+            "{!r})".format(found),
+        )
+        body = pigithub.pr_body(
+            ISSUE_NUMBER,
+            OWNER,
+            REPO,
+            "A one-sentence context.",
+            [("anvilkit/pi/pigithub.py", "a change")],
+            "the tests",
+            "a concrete example",
+        )
+        found = _find_token(body)
+        self.assertIsNone(
+            found,
+            "no token ever appears in the PR body (behaviour 8; found: "
+            "{!r})".format(found),
+        )
+        comment = pigithub.progress_body("started", "a detail")
+        found = _find_token(comment)
+        self.assertIsNone(
+            found,
+            "no token ever appears in the progress comment (behaviour 5; "
+            "found: {!r})".format(found),
+        )
+
+    def _run_with(self, opener: Any, cycle: Any, git_calls: List[List[str]]) -> Any:
+        return pigithub.run(
+            owner=OWNER,
+            repo=REPO,
+            issue_number=ISSUE_NUMBER,
+            repo_path=RunTests.REPO_PATH,
+            remote=RunTests.REMOTE,
+            branch=RunTests.BRANCH,
+            title=RunTests.TITLE,
+            base=RunTests.BASE,
+            context=RunTests.CONTEXT,
+            changes=RunTests.CHANGES,
+            testing=RunTests.TESTING,
+            example=RunTests.EXAMPLE,
+            scope=RunTests.SCOPE,
+            behaviour=RunTests.BEHAVIOUR,
+            plan_slug=RunTests.PLAN_SLUG,
+            reason=RunTests.REASON,
+            kind=RunTests.KIND,
+            runner=lambda context: {"result": None, "changed_paths": []},
+            git=lambda argv: git_calls.append(argv),
+            token=TOKEN,
+            opener=opener,
+            cycle=cycle,
+        )
+
+    def test_run_failure_paths_token_never_echoed(self):
+        # Four recorded failure paths through run(): one that returns a
+        # result (the intake read that failed) and three that raise
+        # GitHubError (a write the loop cannot continue past).
+        issue_200 = _FakeResponse(json.dumps(dict(INTAKE_ISSUE)).encode("utf-8"))
+        start_201 = _FakeResponse(
+            json.dumps(RunTests.START_COMMENT_BODY).encode("utf-8"), status=201
+        )
+        pull_201 = _FakeResponse(
+            json.dumps(RunTests.PULL_BODY).encode("utf-8"), status=201
+        )
+        cases = [
+            (
+                "intake failed (404)",
+                {
+                    RunTests.ISSUE_URL: [
+                        urllib.error.HTTPError(
+                            RunTests.ISSUE_URL, 404, "Not Found", None, None
+                        )
+                    ]
+                },
+            ),
+            (
+                "start comment failed (403)",
+                {
+                    RunTests.ISSUE_URL: [issue_200],
+                    RunTests.COMMENTS_URL: [
+                        urllib.error.HTTPError(
+                            RunTests.COMMENTS_URL, 403, "Forbidden", None, None
+                        )
+                    ],
+                },
+            ),
+            (
+                "pull request failed (422)",
+                {
+                    RunTests.ISSUE_URL: [issue_200],
+                    RunTests.COMMENTS_URL: [start_201],
+                    RunTests.PULLS_URL: [
+                        urllib.error.HTTPError(
+                            RunTests.PULLS_URL, 422, "Validation Failed", None, None
+                        )
+                    ],
+                },
+            ),
+            (
+                "ci read failed (404)",
+                {
+                    RunTests.ISSUE_URL: [issue_200],
+                    RunTests.COMMENTS_URL: [start_201],
+                    RunTests.PULLS_URL: [pull_201],
+                    RunTests.CI_URL: [
+                        urllib.error.HTTPError(
+                            RunTests.CI_URL, 404, "Not Found", None, None
+                        )
+                    ],
+                },
+            ),
+        ]
+        for label, responses in cases:
+            with self.subTest(path=label):
+                events: List[Any] = []
+                git_calls: List[List[str]] = []
+                cycle = _RecordingCycle(RunTests.GREEN_RESULT, events)
+                opener = _RecordingSequenceOpener(responses, events)
+
+                # Act: the loop returns a result (intake) or raises
+                # GitHubError (a write it cannot continue past).
+                try:
+                    result = self._run_with(opener, cycle, git_calls)
+                    outcome = result
+                except pigithub.GitHubError as exc:
+                    outcome = str(exc)
+
+                # Assert: the sentinel appears in no reason string, no
+                # result dict, no comment/PR request body, no url and no
+                # push argv.
+                found = _find_token(outcome)
+                self.assertIsNone(
+                    found,
+                    "{}: the token must appear in no reason string and "
+                    "no result dict (found: {!r})".format(label, found),
+                )
+                for request in opener.requests:
+                    self.assertNotIn(
+                        TOKEN,
+                        request.full_url,
+                        "{}: no url may carry the token (got: "
+                        "{!r})".format(label, request.full_url),
+                    )
+                    for key, value in request.header_items():
+                        if key == "Authorization":
+                            continue
+                        self.assertNotIn(
+                            TOKEN,
+                            value,
+                            "{}: the token must not appear in the {!r} "
+                            "header".format(label, key),
+                        )
+                    if request.data is not None:
+                        self.assertNotIn(
+                            TOKEN,
+                            request.data.decode("utf-8", errors="replace"),
+                            "{}: no comment/PR request body may carry "
+                            "the token".format(label),
+                        )
+                found = _find_token(cycle.calls)
+                self.assertIsNone(
+                    found,
+                    "{}: the token must not reach the cycle-seam calls "
+                    "(found: {!r})".format(label, found),
+                )
+                self.assertEqual(
+                    git_calls,
+                    [],
+                    "{}: run must build the push argv but never execute "
+                    "git - the caller runs it".format(label),
+                )
