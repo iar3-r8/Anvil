@@ -17,15 +17,21 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1, 2, 4, 5, 6, 7 and 8 of
+landed. Behaviours 1, 2, 4, 5, 6, 7, 8 and 9 of
 plans/pi-phase10-github-loop.md are implemented here: ``read_issue``,
 ``quote_intake``, ``post_comment``, ``progress_body``, ``push_argv``,
-``open_pull_request`` and ``pr_body``. ``push_argv`` and ``pr_body``
-are not over the REST seam: they are pure builders with no network -
-``push_argv`` in the same discipline as ``anvilkit.pi.picommit``'s argv
-builders, returning a ``List[str]`` built, never executed; ``pr_body``
-returns the pull request description ``open_pull_request`` posts, built
-from structured pieces, never substituted into a template.
+``open_pull_request``, ``pr_body`` and ``read_ci_runs``. ``push_argv``
+and ``pr_body`` are not over the REST seam: they are pure builders with
+no network - ``push_argv`` in the same discipline as
+``anvilkit.pi.picommit``'s argv builders, returning a ``List[str]``
+built, never executed; ``pr_body`` returns the pull request description
+``open_pull_request`` posts, built from structured pieces, never
+substituted into a template. ``read_ci_runs`` reads the CI outcome of
+the commit ``open_pull_request`` returned: it lists Actions workflow
+runs filtered by ``head_sha`` and unwraps the envelope the endpoint
+answers with (doc/external/github/
+rest-api-endpoints-for-workflow-runs.md) - the body is read from the
+object's ``workflow_runs`` key, never treated as an array.
 """
 
 import json
@@ -53,6 +59,7 @@ DEFAULT_ISSUE_TIMEOUT = 10.0
 _ISSUES_DOC = "doc/external/github/rest-api-endpoints-for-issues.md"
 _COMMENTS_DOC = "doc/external/github/rest-api-endpoints-for-issue-comments.md"
 _PULLS_DOC = "doc/external/github/rest-api-endpoints-for-pull-requests.md"
+_WORKFLOWS_DOC = "doc/external/github/rest-api-endpoints-for-workflow-runs.md"
 
 
 class GitHubError(Exception):
@@ -468,6 +475,121 @@ def _pulls_http_error_reason(code: int, url: str) -> str:
             "pull request is already open for the same head and base, "
             "or the head branch was never pushed (see "
             "{})".format(url, _PULLS_DOC)
+        )
+    return "GitHub returned HTTP {} for {}".format(code, url)
+
+
+def read_ci_runs(
+    owner: str,
+    repo: str,
+    head_sha: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> Tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    """Read the CI runs of one commit; never raises.
+
+    Builds ``GET {api}/repos/{owner}/{repo}/actions/runs?head_sha=
+    {head_sha}`` (doc/external/github/
+    rest-api-endpoints-for-workflow-runs.md) over the same recorded REST
+    seam as :func:`read_issue`: the pinned API version, the token as
+    the sole ``Authorization`` header, the same default timeout. The
+    ``head_sha`` is the commit :func:`open_pull_request`'s 201 body
+    returned: the loop lists by the SHA it pushed, never a run id it
+    does not have.
+
+    Returns ``(runs, None)`` on a 200 whose body is the documented
+    envelope object ``{"total_count": N, "workflow_runs": [...]}``: the
+    return is the ``workflow_runs`` list read from that object - the
+    envelope unwrapped, never the body treated as an array - with the
+    run dicts passed through unaltered. A ``total_count`` of 0 with an
+    empty list yields ``([], None)``: no CI is not a failure. Every
+    other recorded outcome yields ``(None, reason)`` naming the
+    situation - a 404 (the repository is not readable there), a 403
+    (the request lacks read access to the runs), a 200 with a non-JSON
+    body, a 200 whose JSON body is a bare list rather than the envelope
+    object, a 200 whose envelope object lacks ``workflow_runs``, a
+    ``URLError`` (GitHub unreachable) and a timeout (including a
+    ``socket.timeout`` wrapped in a ``URLError``). No reason ever
+    carries the token text.
+
+    ``opener`` defaults to ``urllib.request.urlopen``; tests inject a
+    recorded opener, so the suite never touches the live network.
+    """
+    if opener is None:
+        opener = urllib.request.urlopen
+    if timeout is None:
+        timeout = DEFAULT_ISSUE_TIMEOUT
+
+    url = "{}/repos/{}/{}/actions/runs?head_sha={}".format(
+        _GITHUB_API_BASE, owner, repo, head_sha
+    )
+    headers = _request_headers(token)
+    request = urllib.request.Request(url, headers=headers)
+
+    try:
+        with opener(request, timeout=timeout) as response:
+            body = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return None, _ci_http_error_reason(exc.code, url)
+    except socket.timeout:
+        return None, "timeout after {}s contacting {}".format(timeout, url)
+    except urllib.error.URLError as exc:
+        # URLError wraps the real cause, including socket.timeout on
+        # some versions (the same pattern as anvilkit/pi/piguard.py).
+        if isinstance(exc.reason, socket.timeout):
+            return None, "timeout after {}s contacting {}".format(timeout, url)
+        return None, "GitHub was unreachable for {}: {}".format(url, exc.reason)
+    except OSError as exc:
+        return None, "GitHub was unreachable for {}: {}".format(url, exc)
+
+    try:
+        payload = json.loads(body)
+    except ValueError as exc:
+        return None, (
+            "GitHub returned a 200 with a non-JSON body for {}: {} - "
+            "the workflow runs endpoint answers with a JSON envelope "
+            "(see {})".format(url, exc, _WORKFLOWS_DOC)
+        )
+    if not isinstance(payload, dict):
+        return None, (
+            "GitHub returned a 200 whose JSON body is not the envelope "
+            "object for {}: expected an object (dict), got {} (see "
+            "{})".format(url, type(payload).__name__, _WORKFLOWS_DOC)
+        )
+    runs = payload.get("workflow_runs")
+    if not isinstance(runs, list):
+        return None, (
+            "GitHub returned a 200 whose envelope lacks workflow_runs "
+            "for {}: the body must be the envelope object carrying a "
+            "workflow_runs list (got {} where a list is expected; see "
+            "{})".format(url, type(runs).__name__, _WORKFLOWS_DOC)
+        )
+    return runs, None
+
+
+def _ci_http_error_reason(code: int, url: str) -> str:
+    """A reason naming the recorded HTTP error situation for the CI
+    runs read; never the token.
+
+    Only the status code and the URL are named - the ``Authorization``
+    header is request-side and must never round-trip into a
+    user-facing reason (behaviour 15 pins the boundary project-wide).
+    """
+    if code == 403:
+        return (
+            "GitHub returned 403 forbidden for {}: the request lacks "
+            "read access to the repository's workflow runs, or GitHub "
+            "is refusing the request outright (see "
+            "{})".format(url, _WORKFLOWS_DOC)
+        )
+    if code == 404:
+        return (
+            "GitHub returned 404 not found for {}: the workflow runs "
+            "cannot be read there - the repository does not exist, or "
+            "the request lacks access to it (see {})".format(
+                url, _WORKFLOWS_DOC
+            )
         )
     return "GitHub returned HTTP {} for {}".format(code, url)
 

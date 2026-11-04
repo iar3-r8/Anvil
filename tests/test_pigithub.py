@@ -2823,7 +2823,7 @@ class ReadCiRunsTests(unittest.TestCase):
             request.full_url,
             self.ENVELOPE_URL,
             "the url must be "
-            "{api}/repos/{owner}/{repo}/actions/runs?head_sha={{head_sha}} "
+            "{{api}}/repos/{{owner}}/{{repo}}/actions/runs?head_sha={{head_sha}} "
             "with the pushed SHA (got: {!r})".format(request.full_url),
         )
 
