@@ -1,10 +1,13 @@
-"""Tests for anvilkit.pi.pigithub - GitHub intake read (behaviour 1).
+"""Tests for anvilkit.pi.pigithub - GitHub intake read (behaviour 1) and
+quoted intake (behaviour 2).
 
 Written before the implementation (TDD RED for behaviour 1 ``intake-read``
-of plans/pi-phase10-github-loop.md): ``anvilkit/pi/pigithub.py`` does not
-exist yet, so this file's import of ``anvilkit.pi.pigithub`` is the
+of plans/pi-phase10-github-loop.md): ``anvilkit/pi/pigithub.py`` did not
+exist yet, so this file's import of ``anvilkit.pi.pigithub`` was the
 expected red - the phase-9 precedent, where the first red commit was
-exactly this import of the not-yet-existing module.
+exactly this import of the not-yet-existing module. Behaviour 2
+(``intake-is-quoted-data``) is now red against the missing
+``quote_intake`` attribute of the landed module.
 
 ``read_issue(owner, repo, issue_number, token, opener=None, ...)`` reads
 ``GET /repos/{owner}/{repo}/issues/{issue_number}`` - the endpoint shape
@@ -17,6 +20,15 @@ body that is not an object, a ``URLError`` and a timeout - yields
 ``(None, reason)`` naming the situation. Nothing raises, and no token
 text appears in any reason.
 
+``quote_intake(issue)`` is pure - no network, no opener - and must turn
+an issue dict (``number``, ``title``, ``body``; ``body`` may be
+``None``) into a string the model can see as quoted data, not
+instructions (issue #57: prompt injection is the live threat). A
+preamble line stating the block is quoted issue data, not instructions,
+must precede a fenced block carrying the body verbatim. A backtick run
+inside the body grows the fence past it, so nothing escapes; a ``null``
+body yields an empty block, never the string ``"None"``.
+
 No test performs real network I/O: every test injects a recorded opener
 (a urlopen-like callable, the same seam ``anvilkit/pi/piguard.py`` uses)
 with abridged recorded response bodies carrying only the fields this
@@ -24,6 +36,7 @@ behaviour reads.
 """
 
 import json
+import re
 import socket
 import sys
 import unittest
@@ -55,6 +68,14 @@ URL = "https://api.github.com/repos/{}/{}/issues/{}".format(
 # shape the saved endpoint doc documents
 # (doc/external/github/rest-api-endpoints-for-issues.md).
 ISSUE_BODY: Dict[str, Any] = {
+    "number": 1347,
+    "title": "Found a bug",
+    "body": "I'm having a problem with this.",
+}
+
+# A full issue dict for the pure intake-quoting behaviour: number,
+# title and body, in the shape behaviour 1's read returns.
+INTAKE_ISSUE: Dict[str, Any] = {
     "number": 1347,
     "title": "Found a bug",
     "body": "I'm having a problem with this.",
@@ -316,3 +337,264 @@ class ReadIssueTests(unittest.TestCase):
                         label
                     ),
                 )
+
+
+class QuoteIntakeTests(unittest.TestCase):
+    """Behaviour 2 (intake-is-quoted-data) of plans/pi-phase10-github-loop.md.
+
+    ``quote_intake(issue)`` is pure: in an issue dict (``number``,
+    ``title``, ``body``; ``body`` may be ``None``), out a string. An
+    issue body is data, not instructions (issue #57): the model must see
+    it inside a fenced block preceded by a line stating the content is
+    quoted issue data, not instructions. A backtick run in the body
+    grows the fence past it so nothing inside can escape the fence, and
+    a ``None`` body yields an empty block, never the string ``"None"``.
+
+    The tests assert on the returned structure, not on an exact
+    rendering: any markdown fence of backticks (at least three, the
+    markdown minimum) with matching opening and closing lines is
+    accepted, so the GREEN implementation is free to choose
+    ``"```"``, four backticks, or the grown width the body demands.
+
+    Title handling - a design decision pinned here: the quoted block
+    carries the issue title as quoted data. The plan's given is "an
+    issue dict with a title and a body", and the saved endpoint doc
+    names ``title`` one of the response fields the loop consumes
+    (doc/external/github/rest-api-endpoints-for-issues.md) - so the
+    title is part of the quoted content, not dropped, and no test may
+    pin a layout that drops it.
+    """
+
+    # A markdown fence of backticks: three or more backticks.
+    FENCE_RE = re.compile(r"^\s*`{3,}\s*$")
+
+    # Preamble keywords: the line before the fence must state the block
+    # is quoted issue data, not instructions. Asserted on the lowercased
+    # line, so wording that carries both ideas is accepted.
+    PREAMBLE_REQUIRES_QUOTED = ("quotation", "quoted")
+    PREAMBLE_REQUIRES_DATA = ("issue data", "issue",)
+    PREAMBLE_REQUIRES_NOT_INSTRUCTIONS = ("not instruction", "instruction")
+
+    def _quote(self, issue: Dict[str, Any]) -> str:
+        result = pigithub.quote_intake(issue)
+
+        self.assertIsInstance(
+            result,
+            str,
+            "quote_intake must return a string",
+        )
+        return result
+
+    def _split_fenced_block(self, text: str) -> Tuple[str, List[str]]:
+        """Split ``text`` into (preamble_lines, fenced_block_lines).
+
+        A fenced block is an opening line of backticks only and a later
+        closing line of the same run, with the body in between. Returns
+        the lines before the opening fence and the lines between the
+        fences (exclusive of the fence lines themselves).
+        """
+        lines = text.splitlines()
+        opening = -1
+        for index, line in enumerate(lines):
+            if self.FENCE_RE.match(line):
+                opening = index
+                break
+        self.assertGreaterEqual(
+            opening,
+            0,
+            "the quoted text must contain a fence: a line of three or "
+            "more backticks (got: {!r})".format(text),
+        )
+        opening_run = self._fence_run(lines[opening])
+        closing = -1
+        for index in range(opening + 1, len(lines)):
+            if self.FENCE_RE.match(lines[index]) and self._fence_run(
+                lines[index]
+            ) == opening_run:
+                closing = index
+                break
+        self.assertGreaterEqual(
+            closing,
+            0,
+            "the fence opened at line {} must be closed by a line of the "
+            "same backtick run (got: {!r})".format(opening, text),
+        )
+        return "\n".join(lines[:opening]), lines[opening + 1 : closing]
+
+    @staticmethod
+    def _fence_run(line: str) -> int:
+        stripped = line.strip()
+        return len(stripped) - len(stripped.lstrip("`"))
+
+    def _assert_preamble_precedes_fence(
+        self, text: str, preamble: str, fence_lines: List[str]
+    ) -> None:
+        """The preamble must appear as a line BEFORE the fence."""
+        lines = text.splitlines()
+        opening = 0
+        for index, line in enumerate(lines):
+            if self.FENCE_RE.match(line):
+                opening = index
+                break
+        self.assertGreaterEqual(opening, 0)
+        preamble_lines = lines[:opening]
+
+        matching = [
+            (index, line)
+            for index, line in enumerate(preamble_lines)
+            if self._is_preamble_line(line)
+        ]
+        self.assertTrue(
+            matching,
+            "a line before the fence must state the content is quoted "
+            "issue data, not instructions (got preamble: "
+            "{!r})".format(preamble_lines),
+        )
+        # The preamble line must be above the fence, not inside it.
+        self.assertLess(
+            matching[0][0],
+            opening,
+            "the quoted-data preamble must precede the fence, not sit "
+            "inside the block",
+        )
+        self.assertTrue(
+            all(index < opening for index, _ in matching),
+            "every preamble line must be above the fence",
+        )
+
+    def _is_preamble_line(self, line: str) -> bool:
+        lowered = line.lower()
+        has_quoted = any(word in lowered for word in self.PREAMBLE_REQUIRES_QUOTED)
+        has_data = any(word in lowered for word in self.PREAMBLE_REQUIRES_DATA)
+        has_not_instructions = any(
+            word in lowered for word in self.PREAMBLE_REQUIRES_NOT_INSTRUCTIONS
+        )
+        return has_quoted and has_data and has_not_instructions
+
+    def test_quote_intake_returns_preamble_then_fenced_block(self):
+        # Arrange: a plain issue with no backticks anywhere.
+        issue = dict(INTAKE_ISSUE)
+
+        # Act.
+        text = self._quote(issue)
+
+        # Assert: preamble line, then the fence, then the body inside.
+        preamble, block = self._split_fenced_block(text)
+        self._assert_preamble_precedes_fence(text, preamble, block)
+        self.assertIn(
+            issue["body"],
+            text,
+            "the body must appear inside the fenced block, verbatim "
+            "(got: {!r})".format(text),
+        )
+
+    def test_quote_intake_body_between_matching_fences(self):
+        # Arrange / Act.
+        text = self._quote(dict(INTAKE_ISSUE))
+        _, block = self._split_fenced_block(text)
+
+        # Assert: the body sits strictly between the fences.
+        self.assertIn(
+            INTAKE_ISSUE["body"],
+            "\n".join(block),
+            "the body must be between the opening and closing fence, "
+            "not outside them (block: {!r})".format(block),
+        )
+
+    def test_quote_intake_carries_title_as_quoted_data(self):
+        # Design decision pinned here: the title is part of the quoted
+        # data, not dropped (plan behaviour 2 given: "an issue dict
+        # with a title and a body").
+        title = "Found a bug"
+        text = self._quote(
+            {"number": 1, "title": title, "body": INTAKE_ISSUE["body"]}
+        )
+
+        self.assertIn(
+            title,
+            text,
+            "the quoted intake must carry the issue title as quoted "
+            "data (got: {!r})".format(text),
+        )
+
+    def test_quote_intake_single_backtick_in_body_stays_inside_fence(self):
+        for label, body in (
+            ("single backtick", "run `make test` and paste the output"),
+            ("three-backtick run", "```\nthis looks like a fence\n```"),
+            ("four-backtick run", "````\nthis looks like a wider fence\n````"),
+        ):
+            with self.subTest(label=label):
+                text = self._quote(
+                    {"number": 1, "title": INTAKE_ISSUE["title"], "body": body}
+                )
+                preamble, block = self._split_fenced_block(text)
+
+                # The fence that opens must be longer than the longest
+                # backtick run in the body, so nothing inside can close
+                # it prematurely.
+                longest_in_body = self._longest_backtick_run(body)
+                opening = next(
+                    line
+                    for line in text.splitlines()
+                    if self.FENCE_RE.match(line)
+                )
+                self.assertGreater(
+                    self._fence_run(opening),
+                    longest_in_body,
+                    "{}: the fence ({} backticks) must grow past the "
+                    "longest backtick run in the body ({} backticks), so "
+                    "the body cannot escape it".format(
+                        label,
+                        self._fence_run(opening),
+                        longest_in_body,
+                    ),
+                )
+                self.assertIn(
+                    body,
+                    "\n".join(block),
+                    "{}: the body must appear verbatim inside the block "
+                    "(block: {!r})".format(label, block),
+                )
+
+    def test_quote_intake_no_backticks_in_body(self):
+        text = self._quote(
+            {"number": 1, "title": INTAKE_ISSUE["title"], "body": "plain text"}
+        )
+        _, block = self._split_fenced_block(text)
+
+        self.assertIn(
+            "plain text",
+            "\n".join(block),
+            "a body with no backticks must still sit inside the fence",
+        )
+
+    def test_quote_intake_none_body_yields_empty_block_never_none_string(self):
+        text = self._quote(
+            {"number": 9, "title": "No description", "body": None}
+        )
+        preamble, block = self._split_fenced_block(text)
+
+        self.assertNotIn(
+            "None",
+            text,
+            "a null body must never render as the string \"None\" "
+            "(got: {!r})".format(text),
+        )
+        self.assertTrue(
+            all(not line.strip() for line in block),
+            "a null body must yield an empty block: the fences are "
+            "adjacent, carrying no body text (got: {!r})".format(block),
+        )
+
+    @staticmethod
+    def _longest_backtick_run(text: str) -> int:
+        longest = 0
+        run = 0
+        for char in text:
+            if char == "`":
+                run += 1
+                if run > longest:
+                    longest = run
+            else:
+                run = 0
+        return longest
