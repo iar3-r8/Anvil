@@ -17,11 +17,11 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1, 2, 4, 5, 6, 7, 8, 9, 10 and 11 of
+landed. Behaviours 1, 2, 4, 5, 6, 7, 8, 9, 10, 11 and 12 of
 plans/pi-phase10-github-loop.md are implemented here: ``read_issue``,
 ``quote_intake``, ``post_comment``, ``progress_body``, ``push_argv``,
-``open_pull_request``, ``pr_body``, ``read_ci_runs``, ``ci_verdict``
-and ``render_ci``.
+``open_pull_request``, ``pr_body``, ``read_ci_runs``, ``ci_verdict``,
+``render_ci`` and ``run``.
 ``push_argv``
 and ``pr_body`` are not over the REST seam: they are pure builders with
 no network - ``push_argv`` in the same discipline as
@@ -51,7 +51,16 @@ conclusion (``conclusion`` is ``null`` until ``status`` is
 ``"None"``; an entry that is not a dict renders as a readable
 placeholder, never via ``str()``; and a ``none`` verdict renders
 "no workflow runs recorded for this commit" - an unmeasured CI is
-never reported as passed.
+never reported as passed. ``run`` composes the landed primitives into
+the intake loop in the pinned order: the intake read, a start progress
+comment, exactly one cycle-seam call (the seam defaults to
+``picycle.run_cycle``, injected so the loop is testable with no
+repository, no commits and no network), the push argv (built, never
+executed - running it is the caller's job), the pull request, the CI
+read keyed on the PR's ``head_sha``, and a final comment carrying the
+PR url and the CI verdict word. A ``"halted"`` cycle result pushes
+nothing and opens nothing, posting one comment naming the halt; an
+intake read that failed never reaches the cycle and posts no comment.
 """
 
 import json
@@ -59,6 +68,8 @@ import socket
 import urllib.error
 import urllib.request
 from typing import Any, Callable, Dict, List, Optional, Tuple
+
+from anvilkit.pi import picycle
 
 # The issues endpoint lives on the API host, not the web host
 # (doc/external/github/rest-api-endpoints-for-issues.md).
@@ -932,3 +943,194 @@ def render_ci(runs: List[Any], verdict: str) -> str:
         else:
             lines.append(_UNREADABLE_ENTRY_LINE)
     return "\n".join(lines)
+
+
+def run(
+    owner: str,
+    repo: str,
+    issue_number: int,
+    repo_path: str,
+    remote: str,
+    branch: str,
+    title: str,
+    base: str,
+    context: str,
+    changes: List[Tuple[str, str]],
+    testing: str,
+    example: str,
+    scope: str,
+    behaviour: str,
+    plan_slug: str,
+    reason: str,
+    kind: str,
+    runner: Callable[[Dict[str, Any]], Dict[str, Any]],
+    git: Callable[[List[str]], None],
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+    cycle: Callable[..., Dict[str, Any]] = picycle.run_cycle,
+) -> Dict[str, Any]:
+    """Compose the landed primitives into the intake loop, in pinned order.
+
+    Behaviour 12 of plans/pi-phase10-github-loop.md. The order is: the
+    intake read (behaviour 1), a start progress comment (behaviour 4),
+    exactly one cycle-seam call, the push argv (behaviour 6 - built,
+    never executed: running it is the caller's job, which keeps the
+    suite free of a real repository), the pull request (behaviours 7
+    and 8 - ``pr_body`` builds the body, ``open_pull_request`` posts
+    it with ``head`` the branch and ``base`` the base), the CI read
+    (behaviours 9, 10 and 11 - ``read_ci_runs`` keyed on the PR's
+    ``head_sha``), and a final comment carrying the PR's
+    ``html_url`` and the CI verdict word.
+
+    The ``cycle`` seam defaults to ``picycle.run_cycle`` and is called
+    with the cycle inputs forwarded verbatim, ``number`` and ``issue``
+    both the intake issue number, and a ``reason`` carrying the
+    caller's ``reason`` AND ``quote_intake`` of the read issue - the
+    intake reaches the cycle as quoted data, not instructions.
+
+    The result is one dict with a ``status``:
+
+    - ``"opened"``: ``issue_number``, ``start_comment_url``,
+      ``pr`` (exactly ``open_pull_request``'s return: ``number``,
+      ``html_url``, ``head_sha``), ``push_argv`` (the value
+      ``push_argv`` built), ``ci`` (``runs``, ``verdict`` and the
+      ``render_ci`` report) and ``final_comment_url``.
+    - ``"halted"``: a ``"halted"`` cycle result pushes nothing and
+      opens nothing - no pull request, no CI read - and posts exactly
+      one comment naming the halt and the behaviour: ``issue_number``,
+      the cycle result ``cycle`` verbatim, ``pr: None``,
+      ``push_argv: None`` and ``halt_comment_url``.
+    - ``"intake_failed"``: an intake read that failed makes exactly one
+      request (the intake GET) - no comment (the issue is unreadable,
+      so a comment POST would fail for the same reason), the cycle
+      never reached: ``issue_number``, the read's ``reason``,
+      ``pr: None``, ``push_argv: None``.
+
+    Every failure the read functions name as a ``reason`` is translated
+    into ``GitHubError`` when it happens on a write the loop cannot
+    continue past - a start, halt or final comment that could not be
+    posted, a pull request that could not be opened, a CI read that
+    failed - because a loop that believed a comment landed when it did
+    not would be worse than one that raised.
+    """
+    issue, intake_reason = read_issue(
+        owner, repo, issue_number, token=token, opener=opener, timeout=timeout
+    )
+    if issue is None:
+        return {
+            "status": "intake_failed",
+            "issue_number": issue_number,
+            "reason": intake_reason,
+            "pr": None,
+            "push_argv": None,
+        }
+
+    start_url, start_reason = post_comment(
+        owner,
+        repo,
+        issue_number,
+        progress_body(
+            "started", "intake loop started on issue {}".format(issue_number)
+        ),
+        token=token,
+        opener=opener,
+        timeout=timeout,
+    )
+    if start_url is None:
+        raise GitHubError("run: the start comment was not posted - {}".format(
+            start_reason
+        ))
+
+    cycle_result = cycle(
+        repo_path,
+        scope,
+        behaviour,
+        issue_number,
+        plan_slug,
+        "{}\n\n{}".format(reason, quote_intake(issue)),
+        kind,
+        runner,
+        git,
+        issue=issue_number,
+    )
+
+    if cycle_result.get("verdict") == "halted":
+        halt_url, halt_reason = post_comment(
+            owner,
+            repo,
+            issue_number,
+            progress_body(
+                "halted",
+                "the cycle halted on behaviour {} - nothing was pushed "
+                "and no pull request was opened".format(behaviour),
+            ),
+            token=token,
+            opener=opener,
+            timeout=timeout,
+        )
+        if halt_url is None:
+            raise GitHubError("run: the halt comment was not posted - {}".format(
+                halt_reason
+            ))
+        return {
+            "status": "halted",
+            "issue_number": issue_number,
+            "cycle": cycle_result,
+            "pr": None,
+            "push_argv": None,
+            "halt_comment_url": halt_url,
+        }
+
+    push_argv_list = push_argv(repo_path, remote, branch)
+
+    pull, pull_reason = open_pull_request(
+        owner,
+        repo,
+        title,
+        head=branch,
+        base=base,
+        body=pr_body(issue_number, owner, repo, context, changes, testing, example),
+        token=token,
+        opener=opener,
+        timeout=timeout,
+    )
+    if pull is None:
+        raise GitHubError(
+            "run: the pull request was not opened - {}".format(pull_reason)
+        )
+
+    runs, ci_reason = read_ci_runs(
+        owner, repo, pull["head_sha"], token=token, opener=opener, timeout=timeout
+    )
+    if runs is None:
+        raise GitHubError("run: the CI read failed - {}".format(ci_reason))
+
+    verdict = ci_verdict(runs)
+    report = render_ci(runs, verdict)
+    final_url, final_reason = post_comment(
+        owner,
+        repo,
+        issue_number,
+        progress_body(
+            "final",
+            "opened {} - CI: {}\n{}".format(pull["html_url"], verdict, report),
+        ),
+        token=token,
+        opener=opener,
+        timeout=timeout,
+    )
+    if final_url is None:
+        raise GitHubError("run: the final comment was not posted - {}".format(
+            final_reason
+        ))
+
+    return {
+        "status": "opened",
+        "issue_number": issue_number,
+        "start_comment_url": start_url,
+        "pr": pull,
+        "push_argv": push_argv_list,
+        "ci": {"runs": runs, "verdict": verdict, "report": report},
+        "final_comment_url": final_url,
+    }
