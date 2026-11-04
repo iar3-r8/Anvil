@@ -3,7 +3,7 @@
 Source URL: https://docs.github.com/en/rest/issues/comments
 Fetched: 2026-11-04
 
-Why this page is saved (abridged to the one endpoint the phase-10 loop writes): progress is
+Why this page is saved (abridged to the one endpoint the intake loop writes): progress is
 posted with `POST /repos/{owner}/{repo}/issues/{issue_number}/comments`, whose **only**
 required body parameter is `body` (a string) and whose success code is **`201`, not `200`** —
 so a driver that treats 200 as success would silently never see its own comment land. The
@@ -100,8 +100,8 @@ curl -L \
 }
 ```
 
-## List issue comments (adjacent, not used by this slice)
+## List issue comments (adjacent, not used by the intake loop)
 
 `GET /repos/{owner}/{repo}/issues/{issue_number}/comments` — "Issues" read **or** "Pull
 requests" read; `200`, `404`, `410`. Comments are ordered by ascending ID. Not consumed by
-the phase-10 loop, which writes progress rather than re-reading it.
+the intake loop, which writes progress rather than re-reading it.

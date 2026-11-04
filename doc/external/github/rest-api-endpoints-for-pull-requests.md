@@ -3,7 +3,7 @@
 Source URL: https://docs.github.com/en/rest/pulls/pulls
 Fetched: 2026-11-04
 
-Why this page is saved (abridged to the one endpoint the phase-10 loop writes): delivery is
+Why this page is saved (abridged to the one endpoint the intake loop writes): delivery is
 `POST /repos/{owner}/{repo}/pulls`, whose required body parameters are **`head` and `base`**,
 with `title` required "unless `issue` is specified" and `body` optional — so the PR
 description is a plain `body` string, built from the project's own pull-request shape rather
@@ -113,8 +113,8 @@ curl -L \
 `head.sha` is "the most recent commit on the pull request's branch" — the value the Actions
 run lookup filters on as `head_sha`.
 
-## Get a pull request (adjacent, not used by this slice)
+## Get a pull request (adjacent, not used by the intake loop)
 
 `GET /repos/{owner}/{repo}/pulls/{pull_number}` — "Pull requests" read **or** "Contents"
 read; `200`, `304`, `404`, `406`, `422`, `500`, `503`. `mergeable` may be `null` while
-GitHub computes it in the background. The phase-10 loop does not poll mergeability.
+GitHub computes it in the background. The intake loop does not poll mergeability.

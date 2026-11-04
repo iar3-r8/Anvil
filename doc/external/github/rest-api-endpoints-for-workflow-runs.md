@@ -3,7 +3,7 @@
 Source URL: https://docs.github.com/en/rest/actions/workflow-runs
 Fetched: 2026-11-04
 
-Why this page is saved (abridged to the one endpoint the phase-10 loop reads): the run
+Why this page is saved (abridged to the one endpoint the intake loop reads): the run
 reports the CI outcome of the pull request it just opened by listing
 `GET /repos/{owner}/{repo}/actions/runs` filtered by **`head_sha`** — the commit SHA the
 create-PR response returned — on **Actions: read**. Two facts decide the whole behaviour:
@@ -14,8 +14,8 @@ passed" is `status == "completed" and conclusion == "success"`, and an in-progre
 pending, not a failure.
 
 Every write endpoint on this page — re-run, cancel, delete, delete-logs — requires
-**Actions: write**, which the phase-10 token does not carry. Read-only is sufficient for
-this slice and the CI edit path stays closed.
+**Actions: write**, which the repo-scoped token does not carry. Read-only is sufficient
+for the intake loop and the CI edit path stays closed.
 
 ---
 
@@ -112,20 +112,20 @@ curl -L \
 Note the queued example: `status` is `"queued"` and `conclusion` is `null`. The
 `conclusion` field only carries a verdict once the run has completed.
 
-## Get a workflow run (adjacent, not used by this slice)
+## Get a workflow run (adjacent, not used by the intake loop)
 
 `GET /repos/{owner}/{repo}/actions/runs/{run_id}` — Actions **read**; `200`. Returns one
-run object with the same `status`/`conclusion` pair, no envelope. The phase-10 loop lists by
+run object with the same `status`/`conclusion` pair, no envelope. The intake loop lists by
 `head_sha` instead, because it knows the SHA it pushed but not the run id.
 
-## Download workflow run logs (adjacent, not used by this slice)
+## Download workflow run logs (adjacent, not used by the intake loop)
 
 `GET /repos/{owner}/{repo}/actions/runs/{run_id}/logs` — Actions **read**; answers **`302`**
 with a `Location:` header to an archive URL that "expires after 1 minute". Fetching the log
-archive is not part of this slice, which reports the run's conclusion rather than its text.
+archive is not part of the intake loop, which reports the run's conclusion rather than its text.
 
-## Write endpoints (withheld by the phase-10 token)
+## Write endpoints (withheld by the repo-scoped token)
 
 Re-run a workflow, re-run failed jobs, re-run a job, cancel, force-cancel, approve a fork
 run, delete a run and delete run logs **all require "Actions" repository permissions
-(write)**. The phase-10 token grants Actions `read` only.
+(write)**. The repo-scoped token grants Actions `read` only.

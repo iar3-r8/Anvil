@@ -75,9 +75,9 @@ from anvilkit.pi import picycle
 # (doc/external/github/rest-api-endpoints-for-issues.md).
 _GITHUB_API_BASE = "https://api.github.com"
 
-# Pinned by the plan's Assumptions: the saved pages rendered against a
-# later default, and these endpoints' documented shapes are unchanged
-# between them.
+# Pinned to the header the saved endpoint documentation's request
+# examples carry, so the shapes those pages record - which the failure
+# reasons cite - are the shapes the requests actually get.
 _API_VERSION = "2022-11-28"
 
 # Generous on purpose: a slow GitHub must not turn a readable issue
@@ -94,13 +94,17 @@ _WORKFLOWS_DOC = "doc/external/github/rest-api-endpoints-for-workflow-runs.md"
 
 
 class GitHubError(Exception):
-    """The module's single exception, raised on a bad argument.
+    """The module's single exception.
 
-    Behaviour 1 (the read) never raises - it returns ``(None, reason)``.
-    Defined now so the module compiles as the later behaviours land:
-    behaviour 5 raises it for an empty stage, behaviour 6 for an empty
-    argv field, and behaviour 8 for a missing example
-    (plans/pi-phase10-github-loop.md).
+    The REST functions never raise - they return ``(None, reason)`` - so
+    this is raised by the pure builders - ``progress_body`` for an empty
+    stage or a stage that leaves no room for a detail within the budget,
+    ``push_argv`` for an empty repo, remote or branch, and ``pr_body``
+    for a missing example - and by ``run`` when a write the loop cannot
+    continue past fails: a start, halt or final comment that could not
+    be posted, a pull request that could not be opened, or a CI read
+    that failed. A loop that believed a comment landed when it did not
+    would be worse than one that raised.
     """
 
 

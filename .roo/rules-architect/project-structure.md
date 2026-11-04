@@ -31,4 +31,5 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `pi/piverdict.py` | red/green classification — one job: turn one suite result into green, red, wrong-kind-of-red or reason-mismatch |
 | `pi/picommit.py` | red and green commit messages and the `git` argv — builds them, never executes |
 | `pi/picycle.py` | the red/green loop driver — the only module that invokes a git mutation |
+| `pi/pigithub.py` | GitHub interaction surface for the intake loop — issue intake read and quoting, progress comments, push argv, pull-request open, CI read and report, composed by `run` behind an injected `picycle.run_cycle` seam; REST failures return `(None, reason)` and the host-driver token reaches only the `Authorization` header (one exception type: `GitHubError`) |
 | `pi/pitrust.py` | write the project-local `.pi/` fixture for the phase-2 trust probe |

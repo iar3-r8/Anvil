@@ -3,9 +3,9 @@
 Source URL: https://docs.github.com/en/rest/issues/issues
 Fetched: 2026-11-04
 
-Why this page is saved (abridged to the one endpoint the phase-10 loop reads): the run's
+Why this page is saved (abridged to the one endpoint the intake loop reads): the run's
 **intake** is an issue, read with `GET /repos/{owner}/{repo}/issues/{issue_number}` on a
-fine-grained token carrying **Issues: read** — which the phase-10 token already has at
+fine-grained token carrying **Issues: read** — which the repo-scoped token already has at
 `write`, and `write` includes `read`. The response fields the loop consumes are `number`,
 `title` and `body`; `body` is the untrusted text that must reach the model as quoted data.
 The status codes matter because every one of them becomes a `reason` string rather than an
@@ -102,4 +102,4 @@ curl -L \
 The full response additionally carries `user`, `labels`, `assignee`, `assignees`,
 `milestone`, `locked`, `active_lock_reason`, `closed_at`, `closed_by`, `repository_url`,
 `labels_url`, `comments_url`, `events_url` and `pinned_comment`. None of them is read by
-the phase-10 loop.
+the intake loop.
