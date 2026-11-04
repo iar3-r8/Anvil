@@ -2845,3 +2845,474 @@ class ReadCiRunsTests(unittest.TestCase):
                         label
                     ),
                 )
+
+
+class CiVerdictTests(unittest.TestCase):
+    """Behaviour 10 (ci-verdict) of plans/pi-phase10-github-loop.md.
+
+    ``ci_verdict(runs)`` is pure - no network, no opener, no token -
+    and classifies a list of run dicts (the list ``read_ci_runs``
+    returns) into one of four verdict strings, in the plan's check
+    order:
+
+    1. an empty list is ``"none"``;
+    2. any run with ``status == "completed"`` and a ``conclusion``
+       other than ``"success"`` is ``"failure"`` - CHECKED FIRST, so a
+       completed failure wins over anything not yet completed;
+    3. any run not ``completed`` is ``"pending"``;
+    4. otherwise ``"success"``.
+
+    Design decisions pinned here (the plan leaves the input details to
+    the test):
+
+    - The verdict strings are exactly the plan's lowercase words:
+      ``"none"``, ``"failure"``, ``"pending"``, ``"success"`` - no
+      capitalisation, no punctuation. Behaviour 11's ``render_ci``
+      receives these exact strings.
+    - "An unreadable run entry is pending, not success" is pinned as:
+      any list entry that is not a dict (``None``, a string, a list, a
+      number) is unreadable, and so is a dict entry whose ``status``
+      key is missing. An unreadable entry can never be a
+      ``"failure"`` (it cannot be a completed non-success) and can
+      never let the list classify as ``"success"`` - the list is
+      ``"pending"``. The invariant pinned throughout: ``"success"`` is
+      returned only when EVERY entry is a dict with
+      ``status == "completed"`` AND ``conclusion == "success"`` - a
+      ``conclusion`` of ``"success"`` without a ``status`` of
+      ``"completed"`` is not enough.
+    - ``"none"`` is the empty list only: a non-empty list carrying no
+      readable run is ``"pending"``, never ``"none"`` and never
+      ``"success"``.
+    - A status value that is not one of the documented
+      ``queued``/``in_progress``/``completed`` is still "not
+      ``completed``": it is ``"pending"``, never ``"success"``. The
+      plan's rule is "any run not completed is pending", not an
+      allowlist of the two waiting states
+      (doc/external/github/rest-api-endpoints-for-workflow-runs.md
+      names the three documented statuses).
+    - A ``null`` conclusion on an incomplete run is ``"pending"``,
+      never ``"failure"`` - the documented trap: conclusion is null
+      until status is completed (doc/external/github/
+      rest-api-endpoints-for-workflow-runs.md). A completed run with a
+      ``null`` conclusion is NOT pinned: the saved doc says a
+      completed run carries a conclusion, so that combination is
+      undocumented and pinning it would fix a third-party fact the
+      doc does not state.
+    - The classifier never raises on any input list it is given: a
+      malformed or unreadable entry is data to classify, not an error
+      to throw - the verdict for it is ``"pending"`` (or
+      ``"failure"``, failure being checked first, when a completed
+      non-success is also present).
+    - The signature is exactly ``(runs)``: one positional parameter,
+      no network seam (no opener, token or timeout) - the pure
+      behaviours in this module take only the data they classify or
+      build.
+
+    Written before the implementation (TDD RED for behaviour 10):
+    ``ci_verdict`` does not exist in ``anvilkit/pi/pigithub.py`` yet,
+    so every test here is expected to fail with ``AttributeError`` -
+    the missing attribute, not a collection error (the phase-9
+    precedent for the missing-attribute red).
+    """
+
+    # The four verdict strings, exactly as the plan writes them
+    # (plans/pi-phase10-github-loop.md, behaviour 10).
+    NONE = "none"
+    FAILURE = "failure"
+    PENDING = "pending"
+    SUCCESS = "success"
+    VERDICTS = (NONE, FAILURE, PENDING, SUCCESS)
+
+    @classmethod
+    def _run(
+        cls,
+        status: str,
+        conclusion: Optional[str],
+        name: str = "Build",
+        run_id: int = 30433642,
+    ) -> Dict[str, Any]:
+        """A run dict in the shape ``read_ci_runs`` passes through
+        (doc/external/github/rest-api-endpoints-for-workflow-runs.md):
+        ``conclusion`` is ``null`` until ``status`` is ``completed``."""
+        return {
+            "id": run_id,
+            "name": name,
+            "status": status,
+            "conclusion": conclusion,
+            "html_url": (
+                "https://github.com/octocat/Hello-World/actions/runs/{}".format(
+                    run_id
+                )
+            ),
+        }
+
+    def _verdict(self, runs: List[Any]) -> str:
+        result = pigithub.ci_verdict(runs)
+
+        self.assertIsInstance(
+            result,
+            str,
+            "ci_verdict must return a string verdict",
+        )
+        return result
+
+    def test_ci_verdict_signature_is_runs_only(self):
+        # The pinned surface: one positional parameter, no network seam
+        # (no opener, token or timeout) - the classifier is pure.
+        params = inspect.signature(pigithub.ci_verdict).parameters
+
+        self.assertEqual(
+            list(params),
+            ["runs"],
+            "ci_verdict must take exactly (runs) - it is pure, no "
+            "network seam; got: {!r}".format(list(params)),
+        )
+
+    def test_ci_verdict_empty_list_is_none(self):
+        # Arrange / Act: no runs at all - the no-CI answer behaviour 9
+        # yields as an empty list.
+        verdict = self._verdict([])
+
+        # Assert: no runs is "none", never a success nobody measured.
+        self.assertEqual(
+            verdict,
+            self.NONE,
+            "an empty list of runs is 'none' (got: {!r})".format(verdict),
+        )
+
+    def test_ci_verdict_single_completed_success_is_success(self):
+        # Arrange / Act.
+        runs = [self._run("completed", "success")]
+
+        # Assert: every run completed, every conclusion success.
+        verdict = self._verdict(runs)
+
+        self.assertEqual(
+            verdict,
+            self.SUCCESS,
+            "a single completed run whose conclusion is 'success' is "
+            "'success' (got: {!r})".format(verdict),
+        )
+
+    def test_ci_verdict_completed_run_with_non_success_conclusion_is_failure(
+        self,
+    ):
+        # Arrange: every documented conclusion other than success, each
+        # on a completed run
+        # (doc/external/github/rest-api-endpoints-for-workflow-runs.md
+        # names failure, success, neutral, cancelled, skipped,
+        # timed_out and action_required).
+        for conclusion in (
+            "failure",
+            "cancelled",
+            "skipped",
+            "timed_out",
+            "action_required",
+            "neutral",
+        ):
+            with self.subTest(conclusion=conclusion):
+                runs = [self._run("completed", conclusion)]
+
+                # Act / Assert.
+                verdict = self._verdict(runs)
+
+                self.assertEqual(
+                    verdict,
+                    self.FAILURE,
+                    "a completed run with conclusion {!r} - other than "
+                    "'success' - is a failure (got: "
+                    "{!r})".format(conclusion, verdict),
+                )
+
+    def test_ci_verdict_incomplete_run_with_null_conclusion_is_pending_never_failure(
+        self,
+    ):
+        # The documented trap: conclusion is null until status is
+        # completed (doc/external/github/
+        # rest-api-endpoints-for-workflow-runs.md), so a queued or
+        # in_progress run carries a null conclusion - and that null is
+        # pending, NEVER a failure.
+        for status in ("queued", "in_progress"):
+            with self.subTest(status=status):
+                # Arrange: the recorded shape of a run not yet
+                # completed - status set, conclusion null.
+                runs = [self._run(status, None)]
+
+                # Act.
+                verdict = self._verdict(runs)
+
+                # Assert: pending, and explicitly not a failure.
+                self.assertEqual(
+                    verdict,
+                    self.PENDING,
+                    "a {} run's null conclusion is pending (got: "
+                    "{!r})".format(status, verdict),
+                )
+                self.assertNotEqual(
+                    verdict,
+                    self.FAILURE,
+                    "a null conclusion on an incomplete run must never "
+                    "be classified as a failure (got: {!r})".format(verdict),
+                )
+
+    def test_ci_verdict_completed_failure_is_checked_before_pending(self):
+        # The plan's ordering: the completed-non-success check comes
+        # FIRST, so a completed failure wins over a run still in
+        # flight, a run already successful, or an unreadable entry -
+        # no matter where in the list it sits.
+        cases = [
+            (
+                "completed failure before in-progress",
+                [
+                    self._run("completed", "failure"),
+                    self._run("in_progress", None),
+                ],
+            ),
+            (
+                "completed failure after in-progress",
+                [
+                    self._run("in_progress", None),
+                    self._run("completed", "failure"),
+                ],
+            ),
+            (
+                "completed failure alongside completed success",
+                [
+                    self._run("completed", "success"),
+                    self._run("completed", "failure"),
+                ],
+            ),
+            (
+                "completed failure alongside unreadable entry",
+                [None, self._run("completed", "failure")],
+            ),
+        ]
+        for label, runs in cases:
+            with self.subTest(case=label):
+                # Arrange / Act.
+                verdict = self._verdict(runs)
+
+                # Assert: the completed failure is checked first.
+                self.assertEqual(
+                    verdict,
+                    self.FAILURE,
+                    "{}: the completed failure must win over the "
+                    "incomplete, successful and unreadable entries - "
+                    "it is checked first (got: {!r})".format(label, verdict),
+                )
+
+    def test_ci_verdict_no_completed_failure_but_incomplete_run_is_pending(
+        self,
+    ):
+        # Arrange: no completed failure, but something not yet
+        # completed - the pending check is second, after the failure
+        # check and before success.
+        cases = [
+            (
+                "in-progress before completed success",
+                [
+                    self._run("in_progress", None),
+                    self._run("completed", "success"),
+                ],
+            ),
+            (
+                "in-progress after completed success",
+                [
+                    self._run("completed", "success"),
+                    self._run("in_progress", None),
+                ],
+            ),
+        ]
+        for label, runs in cases:
+            with self.subTest(case=label):
+                # Act.
+                verdict = self._verdict(runs)
+
+                # Assert: pending, never success - a successful run
+                # does not make the commit's CI passed while another
+                # run is still in flight.
+                self.assertEqual(
+                    verdict,
+                    self.PENDING,
+                    "{}: no completed failure, but a run not completed: "
+                    "pending, never success (got: {!r})".format(label, verdict),
+                )
+
+    def test_ci_verdict_all_runs_completed_success_is_success(self):
+        # Arrange / Act: several runs, all completed, all successful.
+        runs = [
+            self._run("completed", "success", name="Build", run_id=30433642),
+            self._run("completed", "success", name="Lint", run_id=30433643),
+        ]
+
+        # Assert: success.
+        verdict = self._verdict(runs)
+
+        self.assertEqual(
+            verdict,
+            self.SUCCESS,
+            "every run completed with conclusion 'success' is "
+            "'success' (got: {!r})".format(verdict),
+        )
+
+    def test_ci_verdict_unreadable_entry_is_pending_not_success(self):
+        # An entry that is not a dict is unreadable: it cannot be a
+        # completed failure, and it must not let the list classify as
+        # success - the verdict is pending.
+        for label, bad_entry in (
+            ("None", None),
+            ("a string", "not a run dict"),
+            ("a list", ["not", "a", "run", "dict"]),
+            ("a number", 30433642),
+        ):
+            with self.subTest(entry=label):
+                # Arrange: one unreadable entry alongside an otherwise
+                # fine completed-success run.
+                runs = [self._run("completed", "success"), bad_entry]
+
+                # Act.
+                verdict = self._verdict(runs)
+
+                # Assert: pending, not success, and the call did not
+                # raise (a raise would fail the test as an error).
+                self.assertEqual(
+                    verdict,
+                    self.PENDING,
+                    "an unreadable run entry ({!r}) is pending, not "
+                    "success (got: {!r})".format(bad_entry, verdict),
+                )
+
+    def test_ci_verdict_only_unreadable_entries_is_pending_not_none(self):
+        # "none" is the empty list only: a non-empty list carrying no
+        # readable run is still pending, never none and never success.
+        for label, runs in (
+            ("a single None", [None]),
+            ("a single string", ["not a run dict"]),
+            ("None and a string", [None, "not a run dict"]),
+        ):
+            with self.subTest(runs=label):
+                # Act.
+                verdict = self._verdict(runs)
+
+                # Assert.
+                self.assertEqual(
+                    verdict,
+                    self.PENDING,
+                    "{}: a non-empty list with no readable run is "
+                    "pending, never none and never success (got: "
+                    "{!r})".format(label, verdict),
+                )
+
+    def test_ci_verdict_dict_entry_missing_status_is_pending_not_success(
+        self,
+    ):
+        # A dict entry whose status cannot be read is unreadable:
+        # pending, never success, and never a raise - a KeyError
+        # escaping the classifier would turn a malformed run into a
+        # crash in the host driver.
+        cases = [
+            (
+                "conclusion success without status",
+                [{"name": "Build", "conclusion": "success"}],
+            ),
+            (
+                "missing status alongside completed success",
+                [{"name": "Build"}, self._run("completed", "success")],
+            ),
+        ]
+        for label, runs in cases:
+            with self.subTest(case=label):
+                # Act.
+                verdict = self._verdict(runs)
+
+                # Assert: a conclusion of "success" without a status of
+                # "completed" is not enough for success.
+                self.assertEqual(
+                    verdict,
+                    self.PENDING,
+                    "{}: a run entry whose status cannot be read is "
+                    "pending, never success (got: {!r})".format(label, verdict),
+                )
+
+    def test_ci_verdict_undocumented_status_is_pending_not_success(self):
+        # The documented statuses are queued, in_progress and completed
+        # (doc/external/github/rest-api-endpoints-for-workflow-runs.md).
+        # The plan's rule is "any run not completed is pending" - not
+        # an allowlist of the two waiting states - so an undocumented
+        # status value is pending, never success.
+        cases = [
+            (
+                "undocumented status alone",
+                [self._run("waiting", None)],
+            ),
+            (
+                "undocumented status alongside completed success",
+                [
+                    self._run("waiting", None),
+                    self._run("completed", "success"),
+                ],
+            ),
+        ]
+        for label, runs in cases:
+            with self.subTest(case=label):
+                # Act.
+                verdict = self._verdict(runs)
+
+                # Assert.
+                self.assertEqual(
+                    verdict,
+                    self.PENDING,
+                    "{}: a status that is not 'completed' is pending, "
+                    "never success (got: {!r})".format(label, verdict),
+                )
+
+    def test_ci_verdict_never_raises_and_returns_only_the_four_verdicts(
+        self,
+    ):
+        # Pure classification: every input below must yield one of the
+        # four verdict strings without raising - a malformed or
+        # unreadable entry is data to classify, not an error to throw.
+        inputs: List[Any] = [
+            [],
+            [self._run("completed", "success")],
+            [self._run("completed", "failure")],
+            [self._run("completed", "cancelled")],
+            [self._run("queued", None)],
+            [self._run("in_progress", None)],
+            [
+                self._run("completed", "failure"),
+                self._run("in_progress", None),
+            ],
+            [
+                self._run("in_progress", None),
+                self._run("completed", "failure"),
+            ],
+            [
+                self._run("completed", "success"),
+                self._run("in_progress", None),
+            ],
+            [
+                self._run("completed", "success"),
+                self._run("completed", "success"),
+            ],
+            [self._run("completed", "success"), None],
+            [None],
+            ["not a run dict"],
+            [{"name": "Build"}],
+            [{"name": "Build", "conclusion": "success"}],
+            [self._run("waiting", None)],
+        ]
+        for index, runs in enumerate(inputs):
+            with self.subTest(input=index):
+                # Act.
+                verdict = pigithub.ci_verdict(runs)
+
+                # Assert: one of the four verdict strings.
+                self.assertIn(
+                    verdict,
+                    self.VERDICTS,
+                    "ci_verdict must return one of the four verdict "
+                    "strings {!r}; got: {!r} for input {!r}".format(
+                        self.VERDICTS, verdict, runs
+                    ),
+                )
