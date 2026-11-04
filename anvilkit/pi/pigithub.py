@@ -17,13 +17,15 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1, 2, 4, 5, 6 and 7 of
+landed. Behaviours 1, 2, 4, 5, 6, 7 and 8 of
 plans/pi-phase10-github-loop.md are implemented here: ``read_issue``,
-``quote_intake``, ``post_comment``, ``progress_body``, ``push_argv``
-and ``open_pull_request``. ``push_argv`` is not over the REST seam: it
-is a pure argv builder with no network, in the same discipline as
-``anvilkit.pi.picommit``'s argv builders - it returns a ``List[str]``,
-built, never executed.
+``quote_intake``, ``post_comment``, ``progress_body``, ``push_argv``,
+``open_pull_request`` and ``pr_body``. ``push_argv`` and ``pr_body``
+are not over the REST seam: they are pure builders with no network -
+``push_argv`` in the same discipline as ``anvilkit.pi.picommit``'s argv
+builders, returning a ``List[str]`` built, never executed; ``pr_body``
+returns the pull request description ``open_pull_request`` posts, built
+from structured pieces, never substituted into a template.
 """
 
 import json
@@ -587,6 +589,69 @@ def push_argv(repo: str, remote: str, branch: str) -> List[str]:
             "git push needs a named branch to push"
         )
     return ["git", "-C", repo, "push", "--set-upstream", remote, branch]
+
+
+def pr_body(
+    issue_number: int,
+    owner: str,
+    repo: str,
+    context: str,
+    changes: List[Tuple[str, str]],
+    testing: str,
+    example: str,
+) -> str:
+    """Build the pull request description; pure, never posted.
+
+    No network, no opener, no token - the body that
+    :func:`open_pull_request` later posts is built here, from the
+    structured inputs a run naturally has: the intake issue number and
+    the owner and repo for the intake-issue link, a one-sentence
+    context, the changed paths with a short description each, a
+    dedicated testing note, and a concrete example. The shape is the
+    one the repo's own PR commands encode
+    (templates/roo_template/commands/pull-request-builder.md): a
+    ``### Context`` section carrying exactly one line, a ``### Changes``
+    section carrying a bullet per changed path (each bullet naming the
+    relative path and carrying its description), the testing note as
+    its own ``**Testing**`` bullet, the intake-issue link as its own
+    bullet, and a ``### Example`` section carrying the example verbatim.
+    The text is built as a list of lines and joined - never by
+    substituting user data into a template string, so a path or
+    description containing markdown metacharacters cannot mangle the
+    shape.
+
+    Per the template's exclusions, no impact statement or results line
+    is emitted: the signature carries no impact, results or summary
+    input at all, so none can be rendered. An empty or whitespace-only
+    ``example`` raises ``GitHubError`` naming it - a description that
+    only names files is incomplete (behaviour 5, ``progress_body``,
+    already treats a whitespace-only field as empty).
+    """
+    if not example.strip():
+        raise GitHubError(
+            "pr_body: the example is empty (or whitespace-only) - a "
+            "description that only names files is incomplete; a PR "
+            "body needs at least one concrete example a reader can "
+            "eyeball or run (see "
+            "templates/roo_template/commands/pull-request-builder.md)"
+        )
+    issue_url = "https://github.com/{}/{}/issues/{}".format(
+        owner, repo, issue_number
+    )
+    lines = [
+        "### Context",
+        context,
+        "",
+        "### Changes",
+    ]
+    for path, description in changes:
+        lines.append("- `{}`: {}".format(path, description))
+    lines.append("- **Testing**: {}".format(testing))
+    lines.append("- **Intake issue**: {}".format(issue_url))
+    lines.append("")
+    lines.append("### Example")
+    lines.append(example)
+    return "\n".join(lines)
 
 
 def _longest_backtick_run(text: str) -> int:
