@@ -27,7 +27,9 @@ trigger: always_on
 - Limit line length to 88 characters (Black standard)
 - Use explicit imports over wildcard imports
 - Follow naming conventions: snake_case for variables/functions, PascalCase for classes
-- Favor short, readable functions and simplicity over complexity; if a change needs a long function full of small edits, factor the decision out into a small helper>
+- Favor short, readable functions and simplicity over complexity; if a change needs a long function full of small edits, factor the decision out into a small helper
+- Make the code self-documenting: if a comment or docstring has to restate what the code already shows (a count, a key list, a structure), the code is not clear enough - improve the code rather than add the comment
+- Docstrings should help a new reader understand what the thing does and, where genuinely non-obvious, why - not narrate the code, and not carry development history (behaviour numbers, plan references, phase/slice identifiers)>
 
 ## Documentation Finalisation
 - Once all tests are written and passing, ask the user whether to switch to **Docs Manager** mode to finalize documentation (README, doc/ directory, usage guides).

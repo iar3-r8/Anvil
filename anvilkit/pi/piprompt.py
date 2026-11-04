@@ -1,115 +1,11 @@
-"""Markdown prompt bodies and role documents for ``.pi/roles``.
+"""Markdown prompt documents for ``.pi/roles``.
 
-One job: build and validate the markdown body of a ``.pi/roles/*.md``
-prompt document, assemble the complete role document - frontmatter
-plus body - for one named role, build the shared chain-root
-document from the three tracked rule sources, and expose the role
-source map, and nothing else.
-
-House discipline, as ``anvilkit.pi.piverdict`` uses it: one behaviour
-lands per red/green cycle, and the docstring says which ones have
-landed. Three behaviours of ``plans/pi-role-prompts.md`` are
-implemented here. Behaviour 4 (xml-to-prompt-body): ``body_from_xml(text)``
-parses ``text`` as one ``<instructions>`` document (or the
-docs-manager source's ``<guidelines>`` document, the plan's source
-map's fourth tracked root) and returns a markdown body -
-deterministic, so the same input twice is byte-identical.
-``<overview>`` becomes a ``## Overview`` section; each
-``<workflow>/<step>`` a numbered list item carrying its ``<title>``
-and its own text (the step's ``number`` attribute when present, else
-its position); each ``<best_practices>/<practice>`` a bullet; any
-other section a heading plus one bullet per child. Only text nodes
-are emitted - a raw XML tag spelling never survives in the body.
-
-Behaviour 6 (frontmatter-shape): ``role_document(name)`` returns the
-complete document - a YAML frontmatter block delimited by ``---``
-lines, carrying exactly two keys (a non-empty ``description`` and
-``extends: shared-agents``), then the markdown body - for one named
-role. The body is ``body_from_xml``'s output for the role's tracked
-source under ``templates/roo_template/``; the coder has no XML
-source and carries the literal one-liner. The frontmatter is emitted
-as literal text - ``yamlio`` stays the only module that touches
-``yaml``, and the tests parse the block back. This module reads the
-tracked template sources itself; the write seam for the finished
-documents lives in ``anvilkit.render`` (behaviour 11).
-
-Behaviour 7 (shared-prompt-is-root): ``shared_document()`` returns the
-complete ``shared-agents`` document - one frontmatter block of its own
-(a non-empty ``description``, no ``extends`` - it is the chain root -
-and no ``model``/``thinking``/``tools``) over the bodies of the three
-tracked rule sources under ``templates/roo_template/rules/``,
-concatenated in the fixed order ``AGENTS.md``, ``architecture.md``,
-``coding-guidelines.md`` - so it is the layer every role extends. Each
-source's own Zoo frontmatter block is stripped: ``trigger:``/
-``always_on`` is dispatch metadata for the Zoo renderer, not a rule,
-and every markdown content line of each source's body survives in the
-output. Deterministic - the same inputs twice give a byte-identical
-document. The optional ``rules_dir`` parameter defaults to the tracked
-directory; it exists so the missing-source error is testable against a
-temp dir.
-
-Behaviour 8 (role-source-map): ``source_for(name)`` is the public
-surface of the module's private source table - the same table
-``role_document``'s body lookup reads, so the two cannot drift. The
-four XML roles return their path string relative to
-``templates/roo_template/`` (e.g. ``rules-architect/instructions.xml``);
-the coder has no XML source and returns the literal one-liner itself.
-
-Behaviour 12 (generated-files-match-regeneration): ``all_documents()``
-is the single regeneration entry point the drift guard and the write
-seam consume - the six documents as a ``Dict[str, str]`` keyed by file
-stem: ``shared-agents`` from ``shared_document()`` and the five roles
-from ``role_document(name)``, so it is exactly what the committed
-``.pi/roles/*.md`` files must contain, and it is deterministic (the
-underlying builders are pinned deterministic, so two calls are
-byte-identical).
-
-Behaviour 15 (token-estimate-is-deterministic): ``estimate_tokens(text)``
-returns ``ceil(len(text.encode("utf-8")) / 3)`` - an exact ``int``,
-deterministic (the same text twice gives the same value), and
-deliberately CONSERVATIVE: an over-estimate for typical English prose,
-an approximation and not a tokenizer measurement. The plan records the
-choice deliberately - the local model's tokenizer is not one of the
-standard ones, and the 3.8 floor plus the stdlib-first rule reject
-tokenizer packages - so a pass against the model's window is
-trustworthy and a fail may be conservative. Empty text returns 0,
-never a division error. This is the seam behaviour 16's budget check
-divides and compares.
-
-Behaviour 16 (budget-check-reports-never-truncates):
-``budget_report(documents, window)`` is the budget check over a set of
-role documents keyed by stem - the six from ``all_documents()`` or any
-synthetic set. It returns one record per key, in sorted-key order,
-each carrying EXACTLY four keys: ``name`` (the stem), ``estimate``
-(behaviour 15's ``estimate_tokens`` of the stem's layered total),
-``window`` (the argument, unchanged) and ``within`` (``estimate <=
-window``). The layered total is pinned on the FULL text of the files
-Pi's two ``--append-system-prompt`` flags concatenate - for a role,
-``documents["shared-agents"] + documents[stem]``, frontmatter and all;
-for ``shared-agents`` itself, its own document only (it is the chain
-root and nothing is prepended to it). The report is RECORDS ONLY: an
-over-budget role is reported with ``within`` False, never raised and
-never truncated - the input dict is read, never modified, and no
-modified document text is ever returned or written. Deterministic: the
-same inputs twice give equal records.
-
-Error: empty or whitespace-only ``text`` raises ``PromptError``;
-malformed XML raises ``PromptError`` naming the parse position the
-parser reported; a root that is neither an ``<instructions>`` nor a
-``<guidelines>`` element raises ``PromptError`` naming what it got;
-and a document that
-parses but carries no text raises ``PromptError`` too - never a
-partial body, never a silent empty-string return.
-``role_document`` raises ``PromptError`` for ``shared-agents`` - the
-chain root has no parent to extend, and is built by behaviour 7's
-``shared_document`` - and for an unknown role name, naming the role
-and listing the known ones. ``source_for`` raises ``PromptError`` for
-any name that is not one of the five roles - ``shared-agents``
-included, the chain root having no source file of its own - naming it
-and listing the six known names. ``shared_document`` raises
-``PromptError`` naming a missing source file - never a partial document.
-
-Stdlib only. One exception type: ``PromptError``.
+One job: build the markdown body of a prompt document from its
+instruction XML, assemble the five role documents and the shared
+chain-root document from the tracked rule sources, and report their
+token budgets. Deterministic: the same inputs twice give
+byte-identical documents. Stdlib only. One exception type:
+``PromptError``.
 """
 
 import math
@@ -119,40 +15,23 @@ from typing import Any, Dict, List, Optional, Tuple
 
 
 class PromptError(Exception):
-    """A prompt body this module could not build or validate.
+    """A prompt document this module could not build or validate.
 
-    A single exception type covers every failure of
-    ``body_from_xml``, so callers need only one ``except`` clause: an
-    empty input, a malformed document (naming the parse position), a
-    root that is neither an ``<instructions>`` nor a ``<guidelines>``
-    element, and a document that parses but carries no text. Every
-    message names the
-    offending value, so a failure is fixable without reading the
-    source.
+    One type for every failure - empty or malformed input, an
+    unexpected root tag, a missing source file, an unknown role name -
+    so callers need a single ``except``; every message names the
+    offending value.
     """
 
 
 def body_from_xml(text: str) -> str:
     """Build the markdown body of one ``.pi/roles`` prompt document.
 
-    ``text`` is one instruction XML's text - a document rooted at an
-    ``<instructions>`` element, or at the docs-manager source's
-    ``<guidelines>`` element (the plan's source map names both). The
-    return is the markdown body only:
-    no frontmatter, no file name, deterministic - the same input twice
-    is byte-identical.
-
-    Behaviour 4 (xml-to-prompt-body): the body carries the source's
-    text nodes - the overview, each step's title and text, each
-    practice - laid out as markdown headings, numbered items and
-    bullets, with no raw XML tag spelling surviving in the output.
-
-    Error: empty or whitespace-only ``text`` raises ``PromptError``;
-    malformed XML raises ``PromptError`` naming the parse position;
-    a root that is neither ``<instructions>`` nor ``<guidelines>``
-    raises ``PromptError`` naming the tag it got; a document
-    carrying no text at all raises
-    ``PromptError`` - never a partial body, never an empty string.
+    ``text`` is one instruction XML document, rooted at
+    ``<instructions>`` or the docs-manager source's ``<guidelines>``.
+    Returns the markdown body only - no frontmatter - deterministic,
+    and never partial or empty: a textless, malformed or wrongly-
+    rooted document raises ``PromptError`` naming the problem.
     """
     if not text or not text.strip():
         raise PromptError(
@@ -246,34 +125,15 @@ _SHARED_DESCRIPTION = "Shared rules every role extends."
 def role_document(name: str, templates_root: Optional[Path] = None) -> str:
     """Build the complete document for one named role.
 
-    The return is the finished ``.pi/roles`` document: ``---`` on line
-    1, a YAML frontmatter block carrying exactly two keys - a non-empty
-    role-appropriate ``description`` and ``extends: shared-agents`` - a
-    closing ``---``, then the markdown body. The body is
-    ``body_from_xml``'s output for the role's tracked source under
-    ``templates/roo_template/``; the coder has no XML source and carries
-    the literal one-liner instead. The frontmatter is emitted as
-    literal text (the plan's decision): ``yamlio`` stays the only
-    module that touches ``yaml``, and the tests parse the block back.
-
-    Behaviour 6 of ``plans/pi-role-prompts.md`` (frontmatter-shape) is
-    implemented here: no ``model``, ``thinking`` or ``tools`` key ever
-    appears - routing stays in ``pirole.ROLES``, a role file is not a
-    routing authority.
-
-    ``templates_root`` defaults to the tracked
-    ``templates/roo_template/``; it is the document-level analogue of
-    ``shared_document``'s ``rules_dir`` and exists so the missing-
-    source error is testable against a temp dir.
-
-    Error: ``shared-agents`` raises ``PromptError`` naming the role -
-    the chain root has no parent to extend and is built by behaviour
-    7's ``shared_document``; an unknown role name raises ``PromptError``
-    naming the role and listing the known ones; a known role whose
-    source file is absent under ``templates_root`` raises
-    ``PromptError`` naming both the role and the relative path it
-    looked for - no partial document and no empty-body fallback is
-    ever returned.
+    Returns the finished ``.pi/roles`` document: a YAML frontmatter
+    block carrying a role-appropriate ``description`` and
+    ``extends: shared-agents``, then the markdown body built from the
+    role's tracked source. Deterministic, and no ``model``,
+    ``thinking`` or ``tools`` key ever appears. ``shared-agents`` (the
+    chain root, built by ``shared_document``), an unknown name, or a
+    missing source raises ``PromptError`` naming it - no partial
+    document is ever returned. ``templates_root`` defaults to the
+    tracked ``templates/roo_template/``.
     """
     if name == "shared-agents":
         raise PromptError(
@@ -295,30 +155,15 @@ def role_document(name: str, templates_root: Optional[Path] = None) -> str:
 def shared_document(rules_dir: Optional[Path] = None) -> str:
     """Build the complete ``shared-agents`` chain-root document.
 
-    Behaviour 7 of ``plans/pi-role-prompts.md``
-    (shared-prompt-is-root): the return is the finished
-    ``.pi/roles/shared-agents.md`` document - a single YAML
-    frontmatter block of its own, delimited by ``---`` lines, carrying
-    only a non-empty ``description`` (no ``extends`` - it is the chain
-    root and has no parent to extend - and no ``model``, ``thinking``
-    or ``tools``; routing stays in ``pirole.ROLES``), then the bodies
-    of the three tracked rule sources under ``rules_dir`` -
-    ``AGENTS.md``, ``architecture.md``, ``coding-guidelines.md`` -
-    concatenated in that fixed order, one blank line between sources,
-    so it is the layer every role document extends.
-
-    Each source's own Zoo frontmatter block is stripped: its
-    ``trigger:``/``always_on`` is dispatch metadata for the Zoo
-    renderer, not a rule, and every markdown content line of each
-    source's body survives in the output. Deterministic - the same
-    inputs twice give a byte-identical document.
-
-    ``rules_dir`` defaults to the tracked
-    ``templates/roo_template/rules/``; it exists so the missing-source
-    error is testable against a temp dir.
-
-    Error: a missing source file raises ``PromptError`` naming it -
-    never a partial document.
+    Returns the layer every role document extends: a frontmatter block
+    of its own (a non-empty ``description``, no ``extends``), then the
+    bodies of the three tracked shared rule sources, concatenated in
+    the fixed order ``AGENTS.md``, ``architecture.md``,
+    ``coding-guidelines.md``, one blank line between sources. Each
+    source's own frontmatter is stripped; every content line survives.
+    Deterministic; a missing source raises ``PromptError`` naming it -
+    never a partial document. ``rules_dir`` defaults to the tracked
+    ``templates/roo_template/rules/``.
     """
     if rules_dir is None:
         rules_dir = _SHARED_RULES_DIR
@@ -346,17 +191,11 @@ def shared_document(rules_dir: Optional[Path] = None) -> str:
 def source_for(name: str) -> str:
     """The tracked source ``role_document`` builds ``name``'s body from.
 
-    Behaviour 8 of ``plans/pi-role-prompts.md`` (role-source-map): the
-    return is whatever ``role_document`` reads for this role's body -
-    the same private table, so the two cannot drift. The four XML
-    roles return their path string relative to
-    ``templates/roo_template/``, exactly as the plan writes it (e.g.
-    ``rules-architect/instructions.xml``); the coder has no XML source
-    and returns the literal one-liner itself, not a sentinel.
-
-    Error: any other name - ``shared-agents`` included, the chain root
-    having no source file of its own - raises ``PromptError`` naming
-    it and listing the six known names.
+    The four XML roles return their path relative to
+    ``templates/roo_template/`` (e.g. ``rules-architect/instructions.xml``);
+    the coder has no XML source and returns its literal one-liner. Any
+    other name - ``shared-agents`` included - raises ``PromptError``
+    naming it and listing the known names.
     """
     if name == "coder":
         return _CODER_BODY
@@ -371,19 +210,10 @@ def source_for(name: str) -> str:
 def all_documents() -> Dict[str, str]:
     """The six ``.pi/roles`` documents, keyed by file stem.
 
-    Behaviour 12 of ``plans/pi-role-prompts.md``
-    (generated-files-match-regeneration): the return is the complete
-    regeneration of the committed documents - exactly the six stems, in
-    this composition: ``shared-agents`` from ``shared_document()`` (the
-    chain root) and each of the five roles - ``architect``, ``coder``,
-    ``tester``, ``docs``, ``tdd-manager`` - from ``role_document(name)``.
-
-    This is the single regeneration entry point: the drift guard
-    (``tests/test_piprompt_drift.py``) compares the committed files
-    against it, and the write seam (``anvilkit.render.role_prompts``)
-    consumes it to (re)produce the files. Deterministic - the
-    underlying builders are pinned deterministic, so two calls are
-    byte-identical.
+    ``shared-agents`` from ``shared_document()`` and the five roles from
+    ``role_document(name)`` - the complete regeneration of the committed
+    documents, and the single entry point the drift guard and the write
+    seam consume. Deterministic: two calls are byte-identical.
     """
     return {
         "shared-agents": shared_document(),
@@ -398,23 +228,12 @@ def all_documents() -> Dict[str, str]:
 def estimate_tokens(text: str) -> int:
     """A conservative token estimate for one prompt document's text.
 
-    Behaviour 15 of ``plans/pi-role-prompts.md``
-    (token-estimate-is-deterministic): the return is
-    ``ceil(len(text.encode("utf-8")) / 3)`` - an exact ``int``,
-    deterministic (the same text twice gives the same value), and
-    monotonic in the text's UTF-8 byte length, so the budget check of
-    behaviour 16 can divide and compare it against the model's window.
-
-    This is a CONSERVATIVE ESTIMATE, not a tokenizer measurement: for
-    typical English prose it over-estimates, so a pass against the
-    window is trustworthy and a fail may be conservative. The plan
-    records the choice deliberately - the local model's tokenizer is
-    not one of the standard ones, and the 3.8 floor plus the
-    stdlib-first rule reject tokenizer packages - so an honest
-    approximation is the correct level of claim.
-
-    Empty text returns 0: ``ceil(0 / 3)`` is 0, and no division error
-    can occur on an empty byte string.
+    Returns ``ceil(len(text.encode("utf-8")) / 3)`` - an exact ``int``,
+    deterministic and monotonic in the text's UTF-8 byte length, so a
+    budget check can divide and compare it against the model's window.
+    A deliberate over-estimate, not a tokenizer: a pass against the
+    window is trustworthy, a fail may be conservative. Empty text
+    returns 0.
     """
     return math.ceil(len(text.encode("utf-8")) / 3)
 
@@ -422,36 +241,16 @@ def estimate_tokens(text: str) -> int:
 def budget_report(documents: Dict[str, str], window: int) -> List[Dict[str, Any]]:
     """The token-budget report over a set of role documents.
 
-    Behaviour 16 of ``plans/pi-role-prompts.md``
-    (budget-check-reports-never-truncates): ``documents`` is a mapping
-    of stem to FULL document text (as ``all_documents()`` returns it),
-    and ``window`` is the model's context window. The return is one
-    record per key, in sorted-key order, each carrying exactly four
-    keys:
-
-    * ``name``: the stem (str);
-    * ``estimate``: ``estimate_tokens`` of the stem's layered total -
-      for a role, the full text of the shared document plus the full
-      text of the role document, the two files Pi's two
-      ``--append-system-prompt`` flags concatenate (frontmatter
-      included - it is part of the file bytes); for ``shared-agents``
-      itself, its own document only (it is the chain root: nothing is
-      prepended to it);
-    * ``window``: the argument, unchanged (int);
-    * ``within``: ``estimate <= window`` (bool).
-
-    The report is RECORDS ONLY. An over-budget role is reported with
-    ``within`` False - the call never raises on budget and never
-    shortens, elides or summarises a body; the input dict is read and
-    left byte-identical, and no modified document text is returned or
-    written. A half-delivered rule set is worse than an absent one,
-    because it looks like it worked - so the check reports red and
-    leaves every body whole. Deterministic: the same inputs twice give
-    equal records.
-
-    Error: none on budget. A stem other than ``shared-agents`` whose
-    ``documents`` lacks ``shared-agents`` is out of scope for this
-    seam; the six-stem regeneration and the tests never pass it.
+    ``documents`` maps stem to full document text (as
+    ``all_documents()`` returns it); ``window`` is the model's context
+    window. Returns one record per key in sorted-key order, each with
+    ``name``, ``estimate``, ``window`` and ``within``: the estimate is
+    ``estimate_tokens`` of the stem's layered total - shared document
+    plus role document, or the document itself for ``shared-agents``
+    (the chain root, nothing prepended to it). Records only: an
+    over-budget role is reported with ``within`` False, never raised,
+    and no document text is ever shortened, elided or rewritten.
+    Deterministic: the same inputs twice give equal records.
     """
     records = []
     for name in sorted(documents):

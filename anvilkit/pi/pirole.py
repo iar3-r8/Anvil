@@ -45,15 +45,13 @@ class RoleError(Exception):
 
 
 def resolve(name: str, coder_model_id: str, frontier_model_id: str) -> Dict[str, str]:
-    """Resolve a role name to its definition dict.
+    """Resolve a role name to its Pi definition.
 
-    The definition carries exactly five keys: ``model_id`` (the frontier id
-    for the frontier-tier role, the local coder id for the rest), ``tier``
-    (``"frontier"`` or ``"local"``), ``prompt_path`` (``.pi/roles/<name>.md``),
-    ``shared_prompt_path`` (the chain root ``.pi/roles/shared-agents.md``, the
-    same file for every role) and ``tools`` (the default tool set). An
-    unknown ``name`` raises ``RoleError`` naming it and listing the four
-    known roles, so the caller can see what exists.
+    Turns a role name into the definition the role argv consumes: the
+    model it runs on, its tier, and the prompt paths the argv appends -
+    the role's own layer and the shared chain root it extends. An
+    unknown ``name`` raises ``RoleError`` naming it and listing the
+    known roles.
     """
     if name not in ROLES:
         raise RoleError(

@@ -22,6 +22,7 @@ extends: shared-agents
 - Never document a flag or command from memory. Confirm it against the code first.
 - Module docstrings explain why, not what. State what the module replaces and which defect it fixes; the code already says what it does.
 - Comment the surprising, not the obvious. A comment earns its place by explaining a non-obvious constraint (a GNU-only flag, a library's EOF behaviour, an ordering requirement). Do not narrate the code.
+- Make the code explicit instead of explaining it: if a comment or docstring has to restate what the code already shows (a count, a key list, a structure), the code is not clear enough.
 - Keep README.md and doc/ accurate, clear and simple to understand; detailed guides live in doc/.
 - Record architectural decisions and their rationale in plans/, so a later reader does not re-litigate a settled question.
 - A page describes the system as it is now, not the work that produced it. Slice letters, milestone identifiers, behaviour numbers, pull request numbers, commit hashes, and "shipped / planned" sequencing are delivery vocabulary.
