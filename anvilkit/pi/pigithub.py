@@ -17,8 +17,9 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1, 2 and 4 of plans/pi-phase10-github-loop.md are
-implemented here: ``read_issue``, ``quote_intake`` and ``post_comment``.
+landed. Behaviours 1, 2, 4 and 5 of plans/pi-phase10-github-loop.md are
+implemented here: ``read_issue``, ``quote_intake``, ``post_comment`` and
+``progress_body``.
 """
 
 import json
@@ -355,6 +356,50 @@ def quote_intake(issue: Dict[str, Any]) -> str:
         lines.append("Body: {}".format(body_text))
     lines.append(fence)
     return "\n".join(lines)
+
+
+# The user-confirmed budget (plans/pi-phase10-github-loop.md,
+# Assumptions): the whole progress comment, marker included, is at most
+# this many characters - a comment is paid for on arrival and on every
+# later re-read, so it must stay short.
+PROGRESS_COMMENT_BUDGET = 500
+
+# The explicit truncation tail appended when the detail is cut.
+_TRUNCATION_MARKER = "… (truncated)"
+
+
+def progress_body(stage: str, detail: str) -> str:
+    """Build the progress comment text; pure.
+
+    No network, no opener. A progress comment is paid for on arrival
+    and on every later re-read, so the result is capped at
+    :data:`PROGRESS_COMMENT_BUDGET` characters, marker included: a
+    detail that would push the result past the budget is cut from its
+    tail and the result ends in the explicit truncation marker, while
+    a short detail comes back untruncated. The stage labels which stage
+    the progress is about and appears in the result even when the
+    detail is truncated; an empty or whitespace-only stage raises
+    ``GitHubError`` naming it.
+    """
+    if not stage.strip():
+        raise GitHubError(
+            "progress_body: the stage is empty (or whitespace-only) - "
+            "a progress comment without a readable stage is unreadable"
+        )
+    prefix = "Stage: {}\n".format(stage)
+    body = detail if detail else "(no detail)"
+    text = prefix + body
+    if len(text) <= PROGRESS_COMMENT_BUDGET:
+        return text
+    cut = PROGRESS_COMMENT_BUDGET - len(prefix) - len(_TRUNCATION_MARKER)
+    if cut <= 0:
+        raise GitHubError(
+            "progress_body: the stage alone leaves no room for a detail "
+            "within the {}-character budget - the stage is too long".format(
+                PROGRESS_COMMENT_BUDGET
+            )
+        )
+    return prefix + body[:cut] + _TRUNCATION_MARKER
 
 
 def _longest_backtick_run(text: str) -> int:
