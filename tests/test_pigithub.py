@@ -81,6 +81,24 @@ INTAKE_ISSUE: Dict[str, Any] = {
     "body": "I'm having a problem with this.",
 }
 
+# The recorded 201 comment body, abridged to the fields the loop reads,
+# in the shape the saved endpoint doc documents
+# (doc/external/github/rest-api-endpoints-for-issue-comments.md).
+COMMENT_BODY: Dict[str, Any] = {
+    "id": 1,
+    "node_id": "MDEyOklzc3VlQ29tbWVudDE=",
+    "url": "https://api.github.com/repos/octocat/Hello-World/issues/comments/1",
+    "html_url": "https://github.com/octocat/Hello-World/issues/1347#issuecomment-1",
+    "body": "Me too",
+    "created_at": "2011-04-14T16:00:49Z",
+    "updated_at": "2011-04-14T16:00:49Z",
+    "issue_url": "https://api.github.com/repos/octocat/Hello-World/issues/1347",
+    "author_association": "COLLABORATOR",
+}
+
+COMMENT_URL = COMMENT_BODY["html_url"]
+COMMENTS_URL = "{}/comments".format(URL)
+
 
 class _FakeResponse:
     """A minimal urlopen response: readable and usable as a context manager."""
@@ -155,6 +173,30 @@ def _failure_openers() -> List[Tuple[str, Any]]:
             _opener(urllib.error.URLError(socket.timeout("timed out"))),
         ),
     ]
+
+
+class _RecordingOpener:
+    """A urlopen-like callable that records the request it is given, then
+    plays back one recorded outcome.
+
+    Behaviour 4 (progress-comment) is the first behaviour in this file where
+    the REQUEST side is under test (method, url, headers, body bytes), so the
+    opener captures the request object handed to it before replaying the
+    recorded outcome - an exception to raise (a recorded failure) or a
+    :class:`_FakeResponse` to return (a recorded success).
+    """
+
+    def __init__(self, outcome: Any) -> None:
+        self.outcome = outcome
+        self.request: Any = None
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        candidate = args[0] if args else kwargs.get("request")
+        if isinstance(candidate, urllib.request.Request):
+            self.request = candidate
+        if isinstance(self.outcome, Exception):
+            raise self.outcome
+        return self.outcome
 
 
 class ReadIssueTests(unittest.TestCase):
@@ -758,4 +800,379 @@ class InjectionFixtureTests(unittest.TestCase):
             "the injection text must sit below the quoted-data preamble "
             "line, inside the fence (preamble at line {}, injection at "
             "line {} in {!r})".format(preamble_indexes[0], injection_line, text),
+        )
+
+
+class PostCommentTests(unittest.TestCase):
+    """Behaviour 4 (progress-comment) of plans/pi-phase10-github-loop.md.
+
+    ``post_comment(owner, repo, issue_number, body, token, opener=None,
+    timeout=None)`` posts the dict built with ``json.dumps`` to
+    ``POST /repos/{owner}/{repo}/issues/{issue_number}/comments`` - the
+    endpoint documented in
+    doc/external/github/rest-api-endpoints-for-issue-comments.md. A
+    **201** yields ``(comment_url, None)``: 201, not 200, is the
+    documented success code, and a 200 must NOT be treated as success -
+    a driver that treats 200 as success would silently never see its own
+    comment land. ``403``, ``404``, ``410``, ``422``, a ``URLError`` (an
+    unreachable host) and a timeout each yield ``(None, reason)`` naming
+    the situation, and no reason ever carries the token text.
+
+    The request side is under test here (unlike behaviour 1): the opener
+    records the request it is given, and the tests assert method
+    ``POST``, the url ending in ``issues/{n}/comments``, a JSON content
+    type, and a body that is ``json.dumps`` of a dict carrying the
+    comment text under exactly a ``body`` key - never built by string
+    substitution (quotes and unicode must survive the JSON round trip
+    un-mangled).
+
+    No test performs real network I/O: every test injects a recorded
+    opener with an abridged recorded response body.
+    """
+
+    # The comment text: quotes and unicode, because a body built by
+    # substitution (rather than ``json.dumps`` of a dict) would mangle
+    # exactly these on the round trip.
+    COMMENT_TEXT = 'Stage: pushed "feature/pi-phase10-github-loop" ✓'
+
+    def _post(
+        self, body: str, opener: Any
+    ) -> Tuple[Any, Any]:
+        return pigithub.post_comment(
+            OWNER, REPO, ISSUE_NUMBER, body, TOKEN, opener=opener
+        )
+
+    def _post_recorded(
+        self, body: str, outcome: Any
+    ) -> Tuple[Tuple[Any, Any], _RecordingOpener]:
+        opener = _RecordingOpener(outcome)
+        result = self._post(body, opener)
+        self.assertIsNotNone(
+            opener.request,
+            "the opener must have been called with a request object, "
+            "so the request side can be asserted",
+        )
+        return result, opener
+
+    def _assert_failure(self, label: str, opener: Any) -> str:
+        """Run one recorded failure and assert ``(None, reason)``; return the reason."""
+        comment_url, reason = self._post(self.COMMENT_TEXT, opener)
+
+        self.assertIsNone(
+            comment_url,
+            "{}: no comment_url exists when the post failed".format(label),
+        )
+        self.assertIsInstance(
+            reason,
+            str,
+            "{}: the failure must record a string reason".format(label),
+        )
+        self.assertTrue(
+            reason,
+            "{}: the failure must record a non-empty reason".format(label),
+        )
+        self.assertNotIn(
+            TOKEN,
+            reason,
+            "{}: the token text must never appear in a reason".format(label),
+        )
+        return reason
+
+    def test_post_comment_201_returns_html_url_and_none(self):
+        # Arrange: the recorded 201 response carries html_url.
+        comment_url, reason = self._post_recorded(
+            self.COMMENT_TEXT,
+            _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=201),
+        )
+
+        # Assert: the 201 yields (comment_url, None); the url is the
+        # comment's html_url from the 201 response body.
+        self.assertIsNone(
+            reason,
+            "a 201 is the documented success code: no reason expected "
+            "(doc/external/github/rest-api-endpoints-for-issue-comments.md)",
+        )
+        self.assertEqual(
+            comment_url,
+            COMMENT_URL,
+            "the 201 must yield the comment's html_url from the response",
+        )
+
+    def test_post_comment_200_is_not_success(self):
+        # A 200 on this endpoint is not the documented success: a driver
+        # that treats 200 as success would silently never see its own
+        # comment land (doc/external/github/
+        # rest-api-endpoints-for-issue-comments.md).
+        comment_url, reason = self._post_recorded(
+            self.COMMENT_TEXT,
+            _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=200),
+        )
+
+        self.assertIsNone(
+            comment_url,
+            "a 200 must NOT be treated as success: 201, not 200, is the "
+            "documented success code - no comment_url expected",
+        )
+        self.assertIsInstance(reason, str)
+        self.assertTrue(reason, "a 200 must record a non-empty reason")
+        self.assertNotIn(TOKEN, reason)
+
+    def test_post_comment_403_returns_none_and_reason_naming_forbidden(self):
+        reason = self._assert_failure(
+            "http 403",
+            _opener(
+                urllib.error.HTTPError(
+                    COMMENTS_URL, 403, "Forbidden", None, None
+                )
+            ),
+        )
+
+        self.assertIn(
+            "403",
+            reason,
+            "the reason must name the situation: 403 forbidden "
+            "(doc/external/github/rest-api-endpoints-for-issue-comments.md)",
+        )
+
+    def test_post_comment_404_returns_none_and_reason_naming_not_found(self):
+        reason = self._assert_failure(
+            "http 404",
+            _opener(
+                urllib.error.HTTPError(
+                    COMMENTS_URL, 404, "Not Found", None, None
+                )
+            ),
+        )
+
+        self.assertIn(
+            "404",
+            reason,
+            "the reason must name the situation: 404 resource not found "
+            "(doc/external/github/rest-api-endpoints-for-issue-comments.md)",
+        )
+
+    def test_post_comment_410_returns_none_and_reason_naming_gone(self):
+        reason = self._assert_failure(
+            "http 410",
+            _opener(
+                urllib.error.HTTPError(COMMENTS_URL, 410, "Gone", None, None)
+            ),
+        )
+
+        self.assertIn(
+            "410",
+            reason,
+            "the reason must name the situation: 410 gone "
+            "(doc/external/github/rest-api-endpoints-for-issue-comments.md)",
+        )
+
+    def test_post_comment_422_returns_none_and_reason_naming_validation(self):
+        reason = self._assert_failure(
+            "http 422",
+            _opener(
+                urllib.error.HTTPError(
+                    COMMENTS_URL, 422, "Validation Failed", None, None
+                )
+            ),
+        )
+
+        self.assertIn(
+            "422",
+            reason,
+            "the reason must name the situation: 422 validation failed, "
+            "or the endpoint has been spammed "
+            "(doc/external/github/rest-api-endpoints-for-issue-comments.md)",
+        )
+
+    def test_post_comment_url_error_returns_none_and_reason_without_raising(self):
+        reason = self._assert_failure(
+            "url error",
+            _opener(urllib.error.URLError("Name or service not known")),
+        )
+
+        self.assertIn(
+            "reach",
+            reason.lower(),
+            "the reason must name the situation: GitHub was unreachable",
+        )
+
+    def test_post_comment_timeout_returns_none_and_reason_naming_timeout(self):
+        for label, outcome in (
+            ("bare socket.timeout", socket.timeout("timed out")),
+            (
+                "URLError wrapping socket.timeout",
+                urllib.error.URLError(socket.timeout("timed out")),
+            ),
+        ):
+            with self.subTest(timeout=label):
+                reason = self._assert_failure(
+                    "timeout ({})".format(label), _opener(outcome)
+                )
+
+                self.assertTrue(
+                    "time out" in reason.lower() or "timeout" in reason.lower(),
+                    "the reason must name the situation: a timeout",
+                )
+
+    def test_post_comment_no_reason_ever_carries_token_text(self):
+        # Drift guard on the credential boundary for behaviour 4: the
+        # sentinel token is driven through every recorded failure path,
+        # and none of the resulting reasons may carry its text.
+        failures = [
+            (
+                "http 403",
+                _opener(
+                    urllib.error.HTTPError(
+                        COMMENTS_URL, 403, "Forbidden", None, None
+                    )
+                ),
+            ),
+            (
+                "http 404",
+                _opener(
+                    urllib.error.HTTPError(
+                        COMMENTS_URL, 404, "Not Found", None, None
+                    )
+                ),
+            ),
+            (
+                "http 410",
+                _opener(
+                    urllib.error.HTTPError(COMMENTS_URL, 410, "Gone", None, None)
+                ),
+            ),
+            (
+                "http 422",
+                _opener(
+                    urllib.error.HTTPError(
+                        COMMENTS_URL, 422, "Validation Failed", None, None
+                    )
+                ),
+            ),
+            (
+                "http 200 (not success)",
+                _opener(
+                    _FakeResponse(
+                        json.dumps(COMMENT_BODY).encode("utf-8"), status=200
+                    )
+                ),
+            ),
+            (
+                "url error",
+                _opener(urllib.error.URLError("Name or service not known")),
+            ),
+            ("bare socket.timeout", _opener(socket.timeout("timed out"))),
+            (
+                "URLError wrapping socket.timeout",
+                _opener(urllib.error.URLError(socket.timeout("timed out"))),
+            ),
+        ]
+        for label, opener in failures:
+            with self.subTest(failure=label):
+                comment_url, reason = self._post(self.COMMENT_TEXT, opener)
+
+                self.assertIsNone(comment_url)
+                self.assertIsInstance(reason, str)
+                self.assertTrue(reason)
+                self.assertNotIn(
+                    TOKEN,
+                    reason,
+                    "the token text must never appear in a reason ({})".format(
+                        label
+                    ),
+                )
+
+    def test_post_comment_request_is_post_to_comments_url(self):
+        # Arrange / Act: a 201, with the request captured.
+        _, opener = self._post_recorded(
+            self.COMMENT_TEXT,
+            _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=201),
+        )
+        request = opener.request
+
+        self.assertEqual(
+            request.get_method(),
+            "POST",
+            "the request must be a POST, not a GET "
+            "(doc/external/github/rest-api-endpoints-for-issue-comments.md)",
+        )
+        self.assertEqual(
+            request.full_url,
+            COMMENTS_URL,
+            "the url must be /repos/{owner}/{repo}/issues/{n}/comments "
+            "(doc/external/github/rest-api-endpoints-for-issue-comments.md)",
+        )
+
+    def test_post_comment_request_body_is_json_of_dict_with_only_body_key(self):
+        # Arrange / Act: a 201, with the request captured.
+        _, opener = self._post_recorded(
+            self.COMMENT_TEXT,
+            _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=201),
+        )
+        request = opener.request
+        sent = request.data
+        self.assertIsNotNone(sent, "the request must carry a body")
+
+        if isinstance(sent, str):
+            sent = sent.encode("utf-8")
+        payload = json.loads(sent.decode("utf-8"))
+
+        # The body is valid JSON round-tripping to a dict with exactly the
+        # comment text under a `body` key - the endpoint takes exactly one
+        # required body parameter, body
+        # (doc/external/github/rest-api-endpoints-for-issue-comments.md).
+        self.assertIsInstance(
+            payload,
+            dict,
+            "the request body must be a JSON object (dict)",
+        )
+        self.assertEqual(
+            payload,
+            {"body": self.COMMENT_TEXT},
+            "the request body must be a dict with exactly the comment "
+            "text under a 'body' key",
+        )
+
+    def test_post_comment_request_content_type_is_json(self):
+        _, opener = self._post_recorded(
+            self.COMMENT_TEXT,
+            _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=201),
+        )
+        content_type = opener.request.get_header("Content-type")
+
+        self.assertIsNotNone(
+            content_type,
+            "the request must declare a content type",
+        )
+        self.assertIn(
+            "json",
+            content_type.lower(),
+            "the content type must be JSON (got: {!r})".format(content_type),
+        )
+
+    def test_post_comment_request_body_quotes_and_unicode_survive_json_round_trip(
+        self,
+    ):
+        # The comment text carries double quotes, newlines and unicode;
+        # a body built by string substitution would mangle these, while a
+        # dict serialised with json.dumps round-trips them exactly.
+        tricky_text = (
+            'Line one says "quoted" and the next line is '
+            "unicode ✓\nTab\tseparated"
+        )
+        _, opener = self._post_recorded(
+            tricky_text,
+            _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=201),
+        )
+        sent = opener.request.data
+        if isinstance(sent, str):
+            sent = sent.encode("utf-8")
+
+        payload = json.loads(sent.decode("utf-8"))
+        self.assertEqual(
+            payload,
+            {"body": tricky_text},
+            "quotes, newlines and unicode must survive the JSON round "
+            "trip un-mangled - the body is json.dumps of a dict, never "
+            "built by substitution",
         )
