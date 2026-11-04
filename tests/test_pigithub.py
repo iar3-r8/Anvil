@@ -44,13 +44,16 @@ import unittest
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from anvilkit.pi import pigithub  # noqa: E402
+# Imported only to assert the identity of run's default cycle seam
+# (behaviour 12's pin); the real run_cycle is never called in this file.
+from anvilkit.pi import picycle  # noqa: E402
 
 
 # A sentinel whose full text is asserted absent from every reason: a
@@ -3670,3 +3673,853 @@ class RenderCiTests(unittest.TestCase):
             "render_ci is pure: the same inputs must give byte-identical "
             "output (got first: {!r}, second: {!r})".format(first, second),
         )
+
+
+class _RecordingSequenceOpener:
+    """A urlopen-like callable that records every request in order and
+    replays a recorded response per URL.
+
+    Behaviour 12 (run-composes-cycle) is the first behaviour in this
+    file where one test drives several sequential requests over the REST
+    seam - the intake read, the start comment, the pull request, the CI
+    read, the final comment - so the opener keeps an ordered
+    ``requests`` list (each entry the ``urllib.request.Request`` it was
+    handed) and a ``responses`` map of URL to a queue of recorded
+    outcomes, popping the next recorded outcome for each URL on each
+    request. An outcome is an exception to raise (a recorded failure) or
+    a :class:`_FakeResponse` to return (a recorded success). A request
+    for a URL with no recorded outcome left is a test bug and raises
+    ``AssertionError`` naming the URL. Every request also appends a
+    ``("http", method, url)`` entry to the shared ``events`` list the
+    test passes in, so the test can pin the REST calls interleaved with
+    the cycle-seam calls.
+    """
+
+    def __init__(self, responses: Dict[str, List[Any]], events: List[Any]) -> None:
+        self._responses = {url: list(items) for url, items in responses.items()}
+        self._events = events
+        self.requests: List[Any] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        request = args[0] if args else kwargs.get("request")
+        self.requests.append(request)
+        self._events.append(("http", request.get_method(), request.full_url))
+        queue = self._responses.get(request.full_url)
+        if not queue:
+            raise AssertionError(
+                "the opener was asked for a url with no recorded outcome "
+                "left: {}".format(request.full_url)
+            )
+        outcome = queue.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+
+class _RecordingCycle:
+    """A cycle seam: records every call it is made with, in order, and
+    returns a fixed result.
+
+    Behaviour 12 composes ``picycle.run_cycle`` behind an injected seam
+    (the plan's Assumptions), so the loop is testable with no repository,
+    no commits and no network - the same discipline as picycle's own git
+    seam. The seam records each call as ``{"args": (...), "kwargs":
+    {...}}`` so the test can assert exactly what run() forwarded to the
+    cycle, and appends a ``("cycle",)`` entry to the shared ``events``
+    list so the test can pin the cycle call between the REST calls.
+    """
+
+    def __init__(self, result: Dict[str, Any], events: List[Any]) -> None:
+        self._result = result
+        self._events = events
+        self.calls: List[Dict[str, Any]] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
+        self.calls.append({"args": args, "kwargs": dict(kwargs)})
+        self._events.append(("cycle",))
+        return self._result
+
+
+class RunTests(unittest.TestCase):
+    """Behaviour 12 (run-composes-cycle) of plans/pi-phase10-github-loop.md.
+
+    ``run(...)`` composes the landed primitives of this module into the
+    intake loop, in order: the intake read (behaviour 1), a start
+    progress comment (behaviour 4), exactly one cycle-seam call, the
+    push argv (behaviour 6), the pull request (behaviours 7 and 8), the
+    CI read (behaviours 9, 10 and 11), and a final comment carrying the
+    PR url and the CI verdict.
+
+    Design decisions pinned here (the plan leaves them to the test):
+
+    - **run's signature**, pinned exactly by
+      ``test_run_signature_is_pinned``: ``(owner, repo, issue_number,
+      repo_path, remote, branch, title, base, context, changes,
+      testing, example, scope, behaviour, plan_slug, reason, kind,
+      runner, git, token=None, opener=None, timeout=None, cycle=None)``.
+      The first three are the issue identity; ``repo_path``, ``remote``
+      and ``branch`` are the push identity (they feed ``push_argv`` and
+      are never executed here - the plan's Assumptions); ``title``,
+      ``base``, ``context``, ``changes``, ``testing`` and ``example``
+      are the ``pr_body`` inputs the PR request is built from (a full
+      set, not a subset); ``scope``, ``behaviour``, ``plan_slug``,
+      ``reason``, ``kind``, ``runner`` and ``git`` are the cycle
+      inputs; ``token``, ``opener`` and ``timeout`` are the recorded
+      REST seam shared by every call in the module; and ``cycle`` is
+      the cycle seam.
+    - **The cycle inputs are explicit run() parameters, forwarded
+      verbatim** (chosen over a pre-bound seam, so the tests can assert
+      exactly what run hands the cycle): ``run_cycle(repo_path, scope,
+      behaviour, number, plan_slug, reason, kind, runner, git,
+      issue=None)`` (anvilkit/pi/picycle.py:260) is called with
+      ``number`` the issue number and ``issue`` the issue number, so
+      the commits the cycle makes can name the intake issue in their
+      ``Refs`` trailer. The cycle inputs are required parameters - run
+      can never hand the seam a ``None``.
+    - **The quoted intake reaches the cycle in its ``reason``**: the
+      ``reason`` run hands the cycle contains the caller's ``reason``
+      AND ``quote_intake(<the read issue>)`` (behaviour 2), so the
+      cycle's tester and coder delegations see the issue text as quoted
+      data, not instructions.
+    - **The result is one dict with a ``status``**, in three shapes:
+
+      - success: ``{"status": "opened", "issue_number",
+        "start_comment_url", "pr": {"number", "html_url",
+        "head_sha"}, "push_argv": ["git", "-C", repo_path, "push",
+        "--set-upstream", remote, branch], "ci": {"runs", "verdict",
+        "report"}, "final_comment_url"}`` - the push argv is a VALUE in
+        the result, built by ``push_argv`` and never executed: running
+        it is the caller's job (the plan's Assumptions), which keeps
+        the suite free of a real repository.
+      - a halted cycle: ``{"status": "halted", "issue_number",
+        "cycle": <the cycle's result dict verbatim>, "pr": None,
+        "push_argv": None, "halt_comment_url"}`` - nothing is pushed
+        and nothing is opened; the halt comment names the halt and the
+        behaviour.
+      - an intake read that failed: ``{"status": "intake_failed",
+        "issue_number", "reason": <the read's reason>, "pr": None,
+        "push_argv": None}`` - the cycle is never reached.
+    - **No comment is posted on an intake failure** (chosen, and
+      recorded): the issue is unreadable - possibly nonexistent - so a
+      comment POST would fail for the same reason, and the plan's error
+      path pins a comment only for the halt. An intake failure makes
+      exactly one HTTP request: the intake GET.
+    - **The final comment** carries the PR's ``html_url`` AND the CI
+      verdict word (pinned as the verdict word, e.g. ``"success"``, not
+      the full rendered report).
+    - **The pull request** request body is built via ``pr_body`` (the
+      intake-issue link, the ``### Context`` / ``### Changes`` /
+      ``### Example`` sections, the ``**Testing**`` line, a bullet per
+      changed path), with ``head`` the run's branch and ``base`` the
+      run's base.
+
+    Written before the implementation (TDD RED for behaviour 12):
+    ``run`` does not exist in ``anvilkit/pi/pigithub.py`` yet, so every
+    test here is expected to fail with ``AttributeError`` - the missing
+    attribute, not a collection error (the phase-9 precedent for the
+    missing-attribute red).
+
+    No test performs real network I/O, real git, or touches a real
+    repository: the REST seam is a :class:`_RecordingSequenceOpener`
+    with abridged recorded response bodies (every third-party shape
+    cited to the saved doc pages), the cycle is a
+    :class:`_RecordingCycle` returning a fixed result, and the ``git``
+    and ``runner`` seams are recording sentinels that ``run`` must
+    never invoke itself (the fake cycle never invokes them either, so
+    any invocation is run's own doing).
+    """
+
+    # The pinned run() parameter list (see the docstring): issue
+    # identity, push identity, the PR inputs, the cycle inputs, then the
+    # four defaulted seams.
+    RUN_PARAMS = [
+        "owner", "repo", "issue_number",
+        "repo_path", "remote", "branch",
+        "title", "base", "context", "changes", "testing", "example",
+        "scope", "behaviour", "plan_slug", "reason", "kind", "runner", "git",
+        "token", "opener", "timeout", "cycle",
+    ]
+
+    # The positional order of the seam's parameters, as
+    # anvilkit/pi/picycle.run_cycle declares it (anvilkit/pi/picycle.py:
+    # 260), so a cycle call can be asserted whether run() made it
+    # positionally or by keyword.
+    CYCLE_PARAM_NAMES = (
+        "repo_path", "scope", "behaviour", "number", "plan_slug",
+        "reason", "kind", "runner", "git",
+    )
+
+    # The push identity: feeds push_argv, never executed here (the
+    # plan's Assumptions).
+    REPO_PATH = "/workspace/target-repo"
+    REMOTE = "origin"
+    BRANCH = "feature/pi-phase10-github-loop"
+
+    # The PR inputs: exactly what pr_body (behaviour 8) takes, plus the
+    # title and the base the pulls POST requires
+    # (doc/external/github/rest-api-endpoints-for-pull-requests.md).
+    TITLE = "Phase 10: run() composes the intake loop"
+    BASE = "pi"
+    CONTEXT = "run() composes the GitHub intake loop over the recorded seam."
+    CHANGES = [("anvilkit/pi/pigithub.py", "adds run()")]
+    TESTING = "./tests/run tests.test_pigithub"
+    EXAMPLE = "./tests/run tests.test_pigithub"
+
+    # The cycle inputs, forwarded verbatim to the seam.
+    SCOPE = "pigithub"
+    BEHAVIOUR = "run-composes-cycle"
+    PLAN_SLUG = "pi-phase10-github-loop"
+    REASON = (
+        "AttributeError: module 'anvilkit.pi.pigithub' "
+        "has no attribute 'run'"
+    )
+    KIND = "feature"
+
+    ISSUE_URL = "https://api.github.com/repos/{}/{}/issues/{}".format(
+        OWNER, REPO, ISSUE_NUMBER
+    )
+    COMMENTS_URL = ISSUE_URL + "/comments"
+    PULLS_URL = "https://api.github.com/repos/{}/{}/pulls".format(OWNER, REPO)
+    PULL_HTML_URL = "https://github.com/{}/{}/pull/57".format(OWNER, REPO)
+
+    # The recorded 201 body, abridged to the fields the loop reads:
+    # number, html_url and head.sha
+    # (doc/external/github/rest-api-endpoints-for-pull-requests.md).
+    PULL_BODY: Dict[str, Any] = {
+        "number": 57,
+        "html_url": PULL_HTML_URL,
+        "head": {"sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e"},
+    }
+    HEAD_SHA = PULL_BODY["head"]["sha"]
+    # The CI read keys on exactly the SHA the PR 201 returned
+    # (doc/external/github/rest-api-endpoints-for-workflow-runs.md).
+    CI_URL = "https://api.github.com/repos/{}/{}/actions/runs?head_sha={}".format(
+        OWNER, REPO, HEAD_SHA
+    )
+
+    # The recorded 201 comment bodies, abridged to the one field
+    # post_comment reads (html_url;
+    # doc/external/github/rest-api-endpoints-for-issue-comments.md):
+    # distinct bodies, so the start, final and halt comments are
+    # distinguishable in the recorded requests.
+    START_COMMENT_BODY: Dict[str, Any] = {
+        "html_url": "https://github.com/{}/{}/issues/{}#issuecomment-1".format(
+            OWNER, REPO, ISSUE_NUMBER
+        ),
+    }
+    FINAL_COMMENT_BODY: Dict[str, Any] = {
+        "html_url": "https://github.com/{}/{}/issues/{}#issuecomment-2".format(
+            OWNER, REPO, ISSUE_NUMBER
+        ),
+    }
+    HALT_COMMENT_BODY: Dict[str, Any] = {
+        "html_url": "https://github.com/{}/{}/issues/{}#issuecomment-3".format(
+            OWNER, REPO, ISSUE_NUMBER
+        ),
+    }
+
+    # The recorded CI runs, abridged to the fields the loop reads
+    # (doc/external/github/rest-api-endpoints-for-workflow-runs.md):
+    # two completed successes, so ci_verdict (behaviour 10) answers
+    # "success".
+    CI_RUNS: List[Dict[str, Any]] = [
+        {
+            "id": 30433642,
+            "name": "Build",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/{}/{}/actions/runs/30433642".format(
+                OWNER, REPO
+            ),
+        },
+        {
+            "id": 30433643,
+            "name": "Lint",
+            "status": "completed",
+            "conclusion": "success",
+            "html_url": "https://github.com/{}/{}/actions/runs/30433643".format(
+                OWNER, REPO
+            ),
+        },
+    ]
+    CI_ENVELOPE: Dict[str, Any] = {
+        "total_count": 2,
+        "workflow_runs": CI_RUNS,
+    }
+
+    # The fixed cycle results: a completed cycle and a halt, in the
+    # shapes anvilkit/pi/picycle.run_cycle returns (its docstring:
+    # behaviour 10's completion, behaviour 12's halt).
+    GREEN_RESULT: Dict[str, Any] = {
+        "verdict": "green",
+        "red": {
+            "verdict": "red",
+            "committed": True,
+            "message": "red message",
+            "changed_paths": ["anvilkit/pi/pigithub.py"],
+        },
+        "green": {
+            "verdict": "green",
+            "committed": True,
+            "message": "green message",
+        },
+    }
+    HALT_RESULT: Dict[str, Any] = {
+        "verdict": "halted",
+        "behaviour": BEHAVIOUR,
+        "failure_outputs": ["attempt 1 failure text", "attempt 2 failure text"],
+        "escalate_to": "architect",
+    }
+
+    def setUp(self) -> None:
+        self.events: List[Any] = []
+        self.git_calls: List[List[str]] = []
+        self.runner_calls: List[Dict[str, Any]] = []
+        self.runner = self._make_runner()
+        self.git = self._make_git()
+
+    def _make_runner(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+        def runner(context: Dict[str, Any]) -> Dict[str, Any]:
+            self.runner_calls.append(context)
+            return {"result": None, "changed_paths": []}
+
+        return runner
+
+    def _make_git(self) -> Callable[[List[str]], None]:
+        def git(argv: List[str]) -> None:
+            self.git_calls.append(argv)
+
+        return git
+
+    def _run(self, opener: Any, cycle: Any) -> Dict[str, Any]:
+        return pigithub.run(
+            owner=OWNER,
+            repo=REPO,
+            issue_number=ISSUE_NUMBER,
+            repo_path=self.REPO_PATH,
+            remote=self.REMOTE,
+            branch=self.BRANCH,
+            title=self.TITLE,
+            base=self.BASE,
+            context=self.CONTEXT,
+            changes=self.CHANGES,
+            testing=self.TESTING,
+            example=self.EXAMPLE,
+            scope=self.SCOPE,
+            behaviour=self.BEHAVIOUR,
+            plan_slug=self.PLAN_SLUG,
+            reason=self.REASON,
+            kind=self.KIND,
+            runner=self.runner,
+            git=self.git,
+            token=TOKEN,
+            opener=opener,
+            cycle=cycle,
+        )
+
+    def _happy_responses(self) -> Dict[str, List[Any]]:
+        return {
+            self.ISSUE_URL: [
+                _FakeResponse(json.dumps(dict(INTAKE_ISSUE)).encode("utf-8"))
+            ],
+            self.COMMENTS_URL: [
+                _FakeResponse(
+                    json.dumps(self.START_COMMENT_BODY).encode("utf-8"), status=201
+                ),
+                _FakeResponse(
+                    json.dumps(self.FINAL_COMMENT_BODY).encode("utf-8"), status=201
+                ),
+            ],
+            self.PULLS_URL: [
+                _FakeResponse(json.dumps(self.PULL_BODY).encode("utf-8"), status=201)
+            ],
+            self.CI_URL: [
+                _FakeResponse(json.dumps(self.CI_ENVELOPE).encode("utf-8"))
+            ],
+        }
+
+    def _halt_responses(self) -> Dict[str, List[Any]]:
+        # The happy path minus the pulls and the CI: a halted cycle must
+        # not ask for them, so they carry no recorded outcome - an
+        # opener asked for one would raise.
+        return {
+            self.ISSUE_URL: [
+                _FakeResponse(json.dumps(dict(INTAKE_ISSUE)).encode("utf-8"))
+            ],
+            self.COMMENTS_URL: [
+                _FakeResponse(
+                    json.dumps(self.START_COMMENT_BODY).encode("utf-8"), status=201
+                ),
+                _FakeResponse(
+                    json.dumps(self.HALT_COMMENT_BODY).encode("utf-8"), status=201
+                ),
+            ],
+        }
+
+    def _normalize_cycle_call(self, call: Dict[str, Any]) -> Dict[str, Any]:
+        merged: Dict[str, Any] = dict(
+            zip(self.CYCLE_PARAM_NAMES, call["args"][: len(self.CYCLE_PARAM_NAMES)])
+        )
+        merged.update(call["kwargs"])
+        return merged
+
+    def _comment_requests(self, opener: Any) -> List[Any]:
+        return [
+            request
+            for request in opener.requests
+            if request.get_method() == "POST"
+            and request.full_url == self.COMMENTS_URL
+        ]
+
+    def _comment_body(self, request: Any) -> str:
+        return json.loads(request.data.decode("utf-8"))["body"]
+
+    def _assert_token_confined(self, result: Any, opener: Any, cycle: Any) -> None:
+        # The sentinel's only home is the Authorization header: not in
+        # any other header, not in any url, not in any request body, not
+        # in any cycle-seam argument, not in any result value.
+        for request in opener.requests:
+            self.assertEqual(
+                request.get_header("Authorization"),
+                "Bearer " + TOKEN,
+                "the token's only home is the Authorization header",
+            )
+            for key, value in request.header_items():
+                if key != "Authorization":
+                    self.assertNotIn(
+                        TOKEN,
+                        value,
+                        "the token must not appear in the {} header".format(key),
+                    )
+            self.assertNotIn(TOKEN, request.full_url)
+            if request.data is not None:
+                self.assertNotIn(
+                    TOKEN,
+                    request.data.decode("utf-8"),
+                    "the token must not appear in a request body",
+                )
+        for index, call in enumerate(cycle.calls):
+            self._assert_value_carries_no_token(
+                call, "the cycle-seam call #{}".format(index)
+            )
+        self._assert_value_carries_no_token(result, "the run result")
+
+    def _assert_value_carries_no_token(self, value: Any, where: str) -> None:
+        if isinstance(value, str):
+            self.assertNotIn(
+                TOKEN, value, "the token text must not appear in {}".format(where)
+            )
+        elif isinstance(value, bytes):
+            self.assertNotIn(TOKEN.encode("utf-8"), value, where)
+        elif isinstance(value, dict):
+            for key in value:
+                self._assert_value_carries_no_token(key, where)
+                self._assert_value_carries_no_token(value[key], where)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                self._assert_value_carries_no_token(item, where)
+
+    def test_run_signature_is_pinned(self):
+        params = inspect.signature(pigithub.run).parameters
+
+        self.assertEqual(
+            list(params),
+            self.RUN_PARAMS,
+            "run must take exactly the pinned parameter list (see the "
+            "class docstring); got: {!r}".format(list(params)),
+        )
+        # The cycle inputs are required - run can never hand the seam a
+        # None - while the four seams are defaulted.
+        for name in self.RUN_PARAMS[:-4]:
+            self.assertIs(
+                params[name].default,
+                inspect.Parameter.empty,
+                "{} must be a required parameter".format(name),
+            )
+        for name in ("token", "opener", "timeout"):
+            self.assertIsNone(params[name].default)
+        self.assertIsNotNone(params["cycle"].default)
+
+    def test_run_default_cycle_seam_is_picycle_run_cycle(self):
+        # The plan's Assumptions: the seam defaults to picycle.run_cycle
+        # (imported only to check the identity of the default - never
+        # called here).
+        default = inspect.signature(pigithub.run).parameters["cycle"].default
+
+        self.assertIs(
+            default,
+            picycle.run_cycle,
+            "the cycle seam must default to picycle.run_cycle (the "
+            "plan's Assumptions); got: {!r}".format(default),
+        )
+
+    def test_run_happy_path_makes_the_requests_in_pinned_order(self):
+        # Arrange: a recorded 200 issue, a completed cycle, a recorded
+        # 201 PR and a recorded 200 CI envelope.
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._happy_responses(), self.events)
+
+        # Act.
+        self._run(opener, cycle)
+
+        # Assert: the pinned interleaving - the intake read, the start
+        # comment, exactly one cycle-seam call (between the start
+        # comment and the pull request), the pull request, the CI read
+        # (keyed on the head_sha the PR 201 returned - CI_URL is built
+        # from HEAD_SHA), and the final comment.
+        self.assertEqual(
+            self.events,
+            [
+                ("http", "GET", self.ISSUE_URL),
+                ("http", "POST", self.COMMENTS_URL),
+                ("cycle",),
+                ("http", "POST", self.PULLS_URL),
+                ("http", "GET", self.CI_URL),
+                ("http", "POST", self.COMMENTS_URL),
+            ],
+            "the loop must run in the pinned order: intake read, start "
+            "comment, one cycle-seam call, the pull request, the CI read "
+            "(keyed on the PR's head_sha {!r}), the final comment "
+            "(got: {!r})".format(self.HEAD_SHA, self.events),
+        )
+
+    def test_run_happy_path_calls_the_cycle_seam_exactly_once(self):
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._happy_responses(), self.events)
+
+        self._run(opener, cycle)
+
+        self.assertEqual(
+            len(cycle.calls),
+            1,
+            "a completed loop must call the cycle seam exactly once "
+            "(got {} calls)".format(len(cycle.calls)),
+        )
+
+    def test_run_forwards_the_cycle_inputs_verbatim(self):
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._happy_responses(), self.events)
+
+        self._run(opener, cycle)
+
+        self.assertEqual(len(cycle.calls), 1)
+        merged = self._normalize_cycle_call(cycle.calls[0])
+        self.assertEqual(merged["repo_path"], self.REPO_PATH)
+        self.assertEqual(merged["scope"], self.SCOPE)
+        self.assertEqual(merged["behaviour"], self.BEHAVIOUR)
+        self.assertEqual(merged["number"], ISSUE_NUMBER)
+        self.assertEqual(merged["plan_slug"], self.PLAN_SLUG)
+        self.assertEqual(merged["kind"], self.KIND)
+        self.assertIs(merged["runner"], self.runner)
+        self.assertIs(merged["git"], self.git)
+
+    def test_run_hands_the_quoted_intake_and_issue_number_to_the_cycle(self):
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._happy_responses(), self.events)
+
+        self._run(opener, cycle)
+
+        merged = self._normalize_cycle_call(cycle.calls[0])
+        self.assertEqual(
+            merged["issue"],
+            ISSUE_NUMBER,
+            "the cycle's issue must be the intake issue number",
+        )
+        # The intake reaches the cycle as quoted data, not instructions:
+        # the reason the seam receives carries the caller's reason AND
+        # quote_intake (behaviour 2) of the read issue (the recorded 200
+        # body is exactly INTAKE_ISSUE).
+        quoted = pigithub.quote_intake(dict(INTAKE_ISSUE))
+        self.assertIn(
+            quoted,
+            merged["reason"],
+            "the cycle's reason must carry the quoted intake - "
+            "quote_intake of the read issue (got: {!r})".format(merged["reason"]),
+        )
+        self.assertIn(
+            self.REASON,
+            merged["reason"],
+            "the cycle's reason must still carry the caller's reason "
+            "(got: {!r})".format(merged["reason"]),
+        )
+
+    def test_run_final_comment_carries_the_pr_url_and_the_ci_verdict_word(self):
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._happy_responses(), self.events)
+
+        self._run(opener, cycle)
+
+        comments = self._comment_requests(opener)
+        self.assertEqual(
+            len(comments),
+            2,
+            "the loop posts exactly two comments: the start and the "
+            "final (got: {!r})".format(len(comments)),
+        )
+        final = self._comment_body(comments[-1])
+
+        self.assertIn(
+            self.PULL_HTML_URL,
+            final,
+            "the final comment must carry the PR's html_url "
+            "(got: {!r})".format(final),
+        )
+        self.assertIn(
+            "success",
+            final,
+            "the final comment must carry the CI verdict word "
+            "(got: {!r})".format(final),
+        )
+
+    def test_run_pulls_request_is_built_via_pr_body_with_the_intake_link_and_branches(
+        self,
+    ):
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._happy_responses(), self.events)
+
+        self._run(opener, cycle)
+
+        pulls = [
+            request for request in opener.requests if request.full_url == self.PULLS_URL
+        ]
+        self.assertEqual(
+            len(pulls),
+            1,
+            "the loop opens exactly one pull request",
+        )
+        request = pulls[0]
+        self.assertEqual(request.get_method(), "POST")
+        payload = json.loads(request.data.decode("utf-8"))
+
+        self.assertEqual(
+            payload["head"],
+            self.BRANCH,
+            "head must be the run's branch",
+        )
+        self.assertEqual(
+            payload["base"],
+            self.BASE,
+            "base must be the run's base",
+        )
+        self.assertEqual(payload["title"], self.TITLE)
+        body = payload["body"]
+        self.assertIn(
+            "https://github.com/{}/{}/issues/{}".format(OWNER, REPO, ISSUE_NUMBER),
+            body,
+            "the PR body must link the intake issue (pr_body, "
+            "behaviour 8) (got: {!r})".format(body),
+        )
+        for section in ("### Context", "### Changes", "### Example"):
+            self.assertIn(
+                section,
+                body,
+                "the PR body must carry the {!r} section (pr_body, "
+                "behaviour 8)".format(section),
+            )
+        self.assertIn(
+            "**Testing**",
+            body,
+            "the PR body must carry the Testing line (pr_body, "
+            "behaviour 8)",
+        )
+        self.assertIn(
+            "anvilkit/pi/pigithub.py",
+            body,
+            "the PR body must name the changed path (pr_body, "
+            "behaviour 8)",
+        )
+
+    def test_run_result_carries_the_pr_and_the_push_argv_and_executes_no_git(self):
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._happy_responses(), self.events)
+
+        result = self._run(opener, cycle)
+
+        self.assertEqual(result["status"], "opened")
+        self.assertEqual(
+            result["pr"],
+            {
+                "number": 57,
+                "html_url": self.PULL_HTML_URL,
+                "head_sha": self.HEAD_SHA,
+            },
+            "the result must carry the PR as open_pull_request returned "
+            "it: number, html_url and head_sha",
+        )
+        self.assertEqual(
+            result["push_argv"],
+            [
+                "git",
+                "-C",
+                self.REPO_PATH,
+                "push",
+                "--set-upstream",
+                self.REMOTE,
+                self.BRANCH,
+            ],
+            "the result must carry the push_argv list, built, never "
+            "executed (behaviour 6; the plan's Assumptions)",
+        )
+        self.assertEqual(
+            result["start_comment_url"], self.START_COMMENT_BODY["html_url"]
+        )
+        self.assertEqual(
+            result["final_comment_url"], self.FINAL_COMMENT_BODY["html_url"]
+        )
+        self.assertEqual(
+            result["ci"],
+            {
+                "runs": self.CI_RUNS,
+                "verdict": "success",
+                "report": pigithub.render_ci(self.CI_RUNS, "success"),
+            },
+            "the result must carry the CI read, its verdict and the "
+            "rendered report",
+        )
+        self.assertEqual(
+            self.git_calls,
+            [],
+            "run must build the push argv but never execute git - the "
+            "caller runs it (the plan's Assumptions)",
+        )
+        self.assertEqual(
+            self.runner_calls,
+            [],
+            "run must forward the runner to the cycle seam, never "
+            "invoke it itself",
+        )
+
+    def test_run_halt_opens_nothing_reads_no_ci_and_posts_one_comment_naming_the_halt(
+        self,
+    ):
+        cycle = _RecordingCycle(self.HALT_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._halt_responses(), self.events)
+
+        self._run(opener, cycle)
+
+        # The pinned interleaving for a halt: the intake read, the start
+        # comment, the cycle, and exactly one comment after it - no
+        # pulls, no CI read.
+        self.assertEqual(
+            self.events,
+            [
+                ("http", "GET", self.ISSUE_URL),
+                ("http", "POST", self.COMMENTS_URL),
+                ("cycle",),
+                ("http", "POST", self.COMMENTS_URL),
+            ],
+            "a halted cycle must push nothing and open nothing: no "
+            "pulls POST, no CI read, exactly one comment after the "
+            "cycle (got: {!r})".format(self.events),
+        )
+        self.assertEqual(
+            len(cycle.calls),
+            1,
+            "the halt comes from one cycle-seam call",
+        )
+
+        comments = self._comment_requests(opener)
+        self.assertEqual(
+            len(comments),
+            2,
+            "exactly one comment after the start comment (got: "
+            "{!r})".format(len(comments)),
+        )
+        halt_body = self._comment_body(comments[-1])
+        self.assertIn(
+            "halt",
+            halt_body.lower(),
+            "the halt comment must name the halt (got: {!r})".format(halt_body),
+        )
+        self.assertIn(
+            self.BEHAVIOUR,
+            halt_body,
+            "the halt comment must name the behaviour that halted "
+            "(got: {!r})".format(halt_body),
+        )
+
+    def test_run_halt_result_carries_no_pr_no_push_argv_and_the_verbatim_cycle(self):
+        cycle = _RecordingCycle(self.HALT_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._halt_responses(), self.events)
+
+        result = self._run(opener, cycle)
+
+        self.assertEqual(result["status"], "halted")
+        self.assertEqual(
+            result["cycle"],
+            self.HALT_RESULT,
+            "the result must carry the halted cycle's result dict "
+            "verbatim",
+        )
+        self.assertIsNone(result["pr"], "a halted cycle must not carry a PR")
+        self.assertIsNone(
+            result["push_argv"], "a halted cycle must not carry a push argv"
+        )
+        self.assertEqual(
+            result["halt_comment_url"], self.HALT_COMMENT_BODY["html_url"]
+        )
+
+    def test_run_intake_failure_makes_only_the_intake_get_and_never_reaches_the_cycle(
+        self,
+    ):
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(
+            {
+                self.ISSUE_URL: [
+                    urllib.error.HTTPError(
+                        self.ISSUE_URL, 404, "Not Found", None, None
+                    )
+                ]
+            },
+            self.events,
+        )
+
+        result = self._run(opener, cycle)
+
+        # The intake read that failed never reaches the cycle: one
+        # request (the intake GET), zero cycle calls, no comment - the
+        # issue is unreadable, so a comment POST would fail for the same
+        # reason (design decision pinned in the class docstring).
+        self.assertEqual(
+            self.events,
+            [("http", "GET", self.ISSUE_URL)],
+            "an intake failure must make exactly one request - the "
+            "intake GET - and nothing else (got: {!r})".format(self.events),
+        )
+        self.assertEqual(
+            cycle.calls,
+            [],
+            "an intake read that failed never reaches the cycle",
+        )
+        self.assertEqual(result["status"], "intake_failed")
+        self.assertIsInstance(result["reason"], str)
+        self.assertTrue(result["reason"])
+        self.assertIn(
+            "404",
+            result["reason"],
+            "the result must report the intake failure reason",
+        )
+        self.assertNotIn(TOKEN, result["reason"])
+        self.assertIsNone(result["pr"])
+        self.assertIsNone(result["push_argv"])
+
+    def test_run_happy_path_keeps_the_token_out_of_bodies_urls_and_result(self):
+        # Drift guard on the credential boundary for behaviour 12: the
+        # sentinel is driven through the happy path, and its only home
+        # is the Authorization header.
+        cycle = _RecordingCycle(self.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._happy_responses(), self.events)
+
+        result = self._run(opener, cycle)
+
+        self._assert_token_confined(result, opener, cycle)
+
+    def test_run_halt_path_keeps_the_token_out_of_bodies_urls_and_result(self):
+        # The same drift guard, driven through the halt path (the halt
+        # comment and the halt result are the extra surfaces).
+        cycle = _RecordingCycle(self.HALT_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._halt_responses(), self.events)
+
+        result = self._run(opener, cycle)
+
+        self._assert_token_confined(result, opener, cycle)
