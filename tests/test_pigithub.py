@@ -1178,3 +1178,187 @@ class PostCommentTests(unittest.TestCase):
             "trip un-mangled - the body is json.dumps of a dict, never "
             "built by substitution",
         )
+
+
+class ProgressBodyTests(unittest.TestCase):
+    """Behaviour 5 (progress-comment-is-short) of plans/pi-phase10-github-loop.md.
+
+    ``progress_body(stage, detail)`` is pure - no network, no opener -
+    and builds the progress comment text that behaviour 4's
+    ``post_comment`` sends. A comment is paid for on arrival and on
+    every later re-read (issue #57's Notes), so the result is capped at
+    the 500-character budget (plans/pi-phase10-github-loop.md,
+    Assumptions - the user-confirmed value): a detail longer than the
+    budget is cut so the result ends in an explicit truncation marker,
+    and a short detail comes back untruncated. An empty stage raises
+    ``GitHubError`` naming it.
+
+    Design decisions pinned here (the plan leaves the marker to the test):
+
+    - The truncation marker is the literal suffix ``"… (truncated)"``
+      (:attr:`TRUNCATION_MARKER`): a distinctive, recognizable tail the
+      assertion can match exactly with ``endswith``. The 500-character
+      budget counts the marker - the whole result is at most 500
+      characters, marker included.
+    - A stage that is only whitespace is treated the same as an empty
+      stage: it raises ``GitHubError`` too. A progress comment with no
+      readable stage is just as useless as one with no stage at all.
+    - The stage is part of the output even when the detail is
+      truncated: it labels which stage the progress is about, and a
+      truncated comment that dropped its label would be unreadable.
+    - A valid stage with an empty detail (``""``) yields a well-formed,
+      non-empty result under the budget carrying the stage. A ``None``
+      detail is not pinned: the plan types ``detail`` as a string, and
+      pinning None would be a contract the plan does not ask for.
+    """
+
+    # The user-confirmed budget (plans/pi-phase10-github-loop.md,
+    # Assumptions): the whole result, marker included.
+    BUDGET = 500
+
+    # The explicit truncation marker pinned in the docstring above.
+    TRUNCATION_MARKER = "… (truncated)"
+
+    # A recognizable stage name, used to assert the stage is part of
+    # the output.
+    STAGE = "ci-verdict"
+
+    # Well under the budget: must come back untruncated.
+    SHORT_DETAIL = "cycle 3: tests green, 42 passed"
+
+    # Over the budget: must be cut so the result fits and ends in the
+    # marker.
+    LONG_DETAIL = "cycle detail: " + "repeat repeat " * 80
+
+    def test_progress_body_short_detail_returned_untruncated(self):
+        # Arrange / Act: a stage and a detail well under the budget.
+        result = pigithub.progress_body(self.STAGE, self.SHORT_DETAIL)
+
+        # Assert: the full detail is present, no marker, within budget.
+        self.assertIsInstance(result, str)
+        self.assertIn(
+            self.SHORT_DETAIL,
+            result,
+            "a short detail must come back in full, untruncated "
+            "(got: {!r})".format(result),
+        )
+        self.assertNotIn(
+            self.TRUNCATION_MARKER,
+            result,
+            "a short detail is under the budget: no truncation marker "
+            "expected (got: {!r})".format(result),
+        )
+        self.assertLessEqual(
+            len(result),
+            self.BUDGET,
+            "the result must stay within the 500-character budget "
+            "(got {} chars)".format(len(result)),
+        )
+
+    def test_progress_body_result_carries_the_stage(self):
+        result = pigithub.progress_body(self.STAGE, self.SHORT_DETAIL)
+
+        self.assertIn(
+            self.STAGE,
+            result,
+            "the stage labels which stage the progress is about and "
+            "must appear in the result (got: {!r})".format(result),
+        )
+
+    def test_progress_body_long_detail_at_most_budget_characters(self):
+        result = pigithub.progress_body(self.STAGE, self.LONG_DETAIL)
+
+        self.assertLessEqual(
+            len(result),
+            self.BUDGET,
+            "a detail longer than the budget must yield a result of at "
+            "most 500 characters, marker included (got {} chars)".format(
+                len(result)
+            ),
+        )
+
+    def test_progress_body_long_detail_ends_in_truncation_marker(self):
+        result = pigithub.progress_body(self.STAGE, self.LONG_DETAIL)
+
+        self.assertTrue(
+            result.endswith(self.TRUNCATION_MARKER),
+            "a detail longer than the budget must end in the explicit "
+            "truncation marker {!r} (got: {!r})".format(
+                self.TRUNCATION_MARKER, result
+            ),
+        )
+
+    def test_progress_body_truncation_cuts_detail_not_stage(self):
+        result = pigithub.progress_body(self.STAGE, self.LONG_DETAIL)
+
+        self.assertNotIn(
+            self.LONG_DETAIL,
+            result,
+            "the full long detail must not survive truncation (got: "
+            "{!r})".format(result),
+        )
+        self.assertIn(
+            self.STAGE,
+            result,
+            "the stage must survive truncation - a comment that lost "
+            "its stage label is unreadable (got: {!r})".format(result),
+        )
+
+    def test_progress_body_empty_stage_raises_github_error_naming_it(self):
+        with self.assertRaises(pigithub.GitHubError) as ctx:
+            pigithub.progress_body("", self.SHORT_DETAIL)
+
+        message = str(ctx.exception)
+        self.assertTrue(
+            message,
+            "the GitHubError must carry a non-empty message naming the "
+            "problem",
+        )
+        self.assertIn(
+            "stage",
+            message.lower(),
+            "the GitHubError must name the problem: the stage is empty "
+            "(got: {!r})".format(message),
+        )
+
+    def test_progress_body_whitespace_stage_raises_github_error(self):
+        # Design decision pinned in the class docstring: a
+        # whitespace-only stage is treated the same as an empty stage.
+        with self.assertRaises(pigithub.GitHubError) as ctx:
+            pigithub.progress_body("   \t\n", self.SHORT_DETAIL)
+
+        message = str(ctx.exception)
+        self.assertTrue(
+            message,
+            "the GitHubError must carry a non-empty message",
+        )
+        self.assertIn(
+            "stage",
+            message.lower(),
+            "the GitHubError must name the problem: the stage is "
+            "whitespace only (got: {!r})".format(message),
+        )
+
+    def test_progress_body_empty_detail_stays_well_formed_under_budget(self):
+        # Design decision pinned in the class docstring: a valid stage
+        # with an empty detail still yields a well-formed comment.
+        result = pigithub.progress_body(self.STAGE, "")
+
+        self.assertIsInstance(result, str)
+        self.assertTrue(
+            result,
+            "an empty detail must still yield a non-empty, well-formed "
+            "comment (got: {!r})".format(result),
+        )
+        self.assertIn(
+            self.STAGE,
+            result,
+            "the stage must appear even when the detail is empty "
+            "(got: {!r})".format(result),
+        )
+        self.assertLessEqual(
+            len(result),
+            self.BUDGET,
+            "the result must stay within the 500-character budget "
+            "(got {} chars)".format(len(result)),
+        )
