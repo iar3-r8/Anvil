@@ -52,6 +52,7 @@ assert on their parsed structure:
 | [`tests/test_manager_rules.py`](../tests/test_manager_rules.py) | the tdd-manager workflow, its practices and its byte ceiling |
 | [`tests/test_agents_rules.py`](../tests/test_agents_rules.py) | both `AGENTS.md` copies: sections and bullets |
 | [`tests/test_rules_mirror.py`](../tests/test_rules_mirror.py) | the four XML rule files stay byte-identical between `templates/roo_template/` and `.roo/` |
+| [`tests/test_piprompt_drift.py`](../tests/test_piprompt_drift.py) | the six checked-in `.pi/roles/*.md` prompt documents stay byte-identical to regeneration from `templates/roo_template/` |
 | [`tests/test_shared_rules_split.py`](../tests/test_shared_rules_split.py) | mode-specific rules sit in their `rules-{slug}/` file, not in the shared always-on files |
 
 Two properties of this suite are worth knowing:

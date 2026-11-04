@@ -268,7 +268,7 @@ def role_document(name: str, templates_root: Optional[Path] = None) -> str:
 
     Error: ``shared-agents`` raises ``PromptError`` naming the role -
     the chain root has no parent to extend and is built by behaviour
-    7's ``shared_body``; an unknown role name raises ``PromptError``
+    7's ``shared_document``; an unknown role name raises ``PromptError``
     naming the role and listing the known ones; a known role whose
     source file is absent under ``templates_root`` raises
     ``PromptError`` naming both the role and the relative path it
