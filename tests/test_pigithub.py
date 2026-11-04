@@ -880,10 +880,11 @@ class PostCommentTests(unittest.TestCase):
 
     def test_post_comment_201_returns_html_url_and_none(self):
         # Arrange: the recorded 201 response carries html_url.
-        comment_url, reason = self._post_recorded(
+        result, _ = self._post_recorded(
             self.COMMENT_TEXT,
             _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=201),
         )
+        comment_url, reason = result
 
         # Assert: the 201 yields (comment_url, None); the url is the
         # comment's html_url from the 201 response body.
@@ -903,10 +904,11 @@ class PostCommentTests(unittest.TestCase):
         # that treats 200 as success would silently never see its own
         # comment land (doc/external/github/
         # rest-api-endpoints-for-issue-comments.md).
-        comment_url, reason = self._post_recorded(
+        result, _ = self._post_recorded(
             self.COMMENT_TEXT,
             _FakeResponse(json.dumps(COMMENT_BODY).encode("utf-8"), status=200),
         )
+        comment_url, reason = result
 
         self.assertIsNone(
             comment_url,

@@ -17,8 +17,8 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1 and 2 of plans/pi-phase10-github-loop.md are
-implemented here: ``read_issue`` and ``quote_intake``.
+landed. Behaviours 1, 2 and 4 of plans/pi-phase10-github-loop.md are
+implemented here: ``read_issue``, ``quote_intake`` and ``post_comment``.
 """
 
 import json
@@ -44,6 +44,7 @@ DEFAULT_ISSUE_TIMEOUT = 10.0
 # Cited by the reasons so a reviewer can check each claim against the
 # saved endpoint documentation.
 _ISSUES_DOC = "doc/external/github/rest-api-endpoints-for-issues.md"
+_COMMENTS_DOC = "doc/external/github/rest-api-endpoints-for-issue-comments.md"
 
 
 class GitHubError(Exception):
@@ -55,6 +56,24 @@ class GitHubError(Exception):
     argv field, and behaviour 8 for a missing example
     (plans/pi-phase10-github-loop.md).
     """
+
+
+def _request_headers(token: Optional[str]) -> Dict[str, str]:
+    """The REST-seam headers shared by every call in this module.
+
+    One seam, so the post cannot drift from the read: the ``Accept``
+    type and the pinned ``X-GitHub-Api-Version`` (the plan's
+    Assumptions). A ``token`` adds only the ``Authorization`` header;
+    without one the request goes out unauthenticated - a missing token
+    is not a skip, never a different header set.
+    """
+    headers: Dict[str, str] = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": _API_VERSION,
+    }
+    if token:
+        headers["Authorization"] = "Bearer {}".format(token)
+    return headers
 
 
 def read_issue(
@@ -97,12 +116,7 @@ def read_issue(
     url = "{}/repos/{}/{}/issues/{}".format(
         _GITHUB_API_BASE, owner, repo, issue_number
     )
-    headers = {
-        "Accept": "application/vnd.github+json",
-        "X-GitHub-Api-Version": _API_VERSION,
-    }
-    if token:
-        headers["Authorization"] = "Bearer {}".format(token)
+    headers = _request_headers(token)
     request = urllib.request.Request(url, headers=headers)
 
     try:
@@ -166,6 +180,139 @@ def _http_error_reason(code: int, url: str) -> str:
             "deleted, so it can no longer be read (see {})".format(
                 url, _ISSUES_DOC
             )
+        )
+    return "GitHub returned HTTP {} for {}".format(code, url)
+
+
+def post_comment(
+    owner: str,
+    repo: str,
+    issue_number: int,
+    body: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Post one progress comment; never raises.
+
+    Posts the dict built with ``json.dumps`` - the comment text under
+    exactly the ``body`` key, never built by string substitution, so
+    quotes, newlines and unicode survive the JSON round trip - to
+    ``POST {api}/repos/{owner}/{repo}/issues/{issue_number}/comments``
+    (doc/external/github/rest-api-endpoints-for-issue-comments.md) over
+    the same recorded REST seam as :func:`read_issue`: the pinned API
+    version, the token as the sole ``Authorization`` header, the same
+    default timeout.
+
+    Returns ``(comment_url, None)`` on a 201 - 201, not 200, is the
+    documented success code for this POST - where ``comment_url`` is
+    the comment's ``html_url`` read from the 201 body. A 200 is NOT a
+    success: a driver that treats 200 as success would silently never
+    see its own comment land. A 403, a 404, a 410, a 422, a 201 with a
+    non-JSON body, a 201 with a JSON body that is not an object, a 201
+    without an ``html_url``, a ``URLError`` (GitHub unreachable) and a
+    timeout (including a ``socket.timeout`` wrapped in a
+    ``URLError``) each yield ``(None, reason)`` naming the situation.
+    No reason ever carries the token text.
+
+    ``opener`` defaults to ``urllib.request.urlopen``; tests inject a
+    recorded opener, so the suite never touches the live network.
+    """
+    if opener is None:
+        opener = urllib.request.urlopen
+    if timeout is None:
+        timeout = DEFAULT_ISSUE_TIMEOUT
+
+    url = "{}/repos/{}/{}/issues/{}/comments".format(
+        _GITHUB_API_BASE, owner, repo, issue_number
+    )
+    headers = _request_headers(token)
+    headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        url, data=json.dumps({"body": body}).encode("utf-8"), headers=headers
+    )
+
+    try:
+        with opener(request, timeout=timeout) as response:
+            status = response.getcode()
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return None, _comment_http_error_reason(exc.code, url)
+    except socket.timeout:
+        return None, "timeout after {}s contacting {}".format(timeout, url)
+    except urllib.error.URLError as exc:
+        # URLError wraps the real cause, including socket.timeout on
+        # some versions (the same pattern as anvilkit/pi/piguard.py).
+        if isinstance(exc.reason, socket.timeout):
+            return None, "timeout after {}s contacting {}".format(timeout, url)
+        return None, "GitHub was unreachable for {}: {}".format(url, exc.reason)
+    except OSError as exc:
+        return None, "GitHub was unreachable for {}: {}".format(url, exc)
+
+    if status != 201:
+        return None, (
+            "GitHub returned {} for {}: only 201 is the documented "
+            "success code for creating a comment, so this response must "
+            "not be treated as a posted comment (see {})".format(
+                status, url, _COMMENTS_DOC
+            )
+        )
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        return None, (
+            "GitHub returned a 201 with a non-JSON body for {}: {} - "
+            "the comments endpoint answers with a JSON object (see "
+            "{})".format(url, exc, _COMMENTS_DOC)
+        )
+    if not isinstance(payload, dict):
+        return None, (
+            "GitHub returned a 201 whose JSON body is not a comment "
+            "object for {}: expected an object (dict), got {} (see "
+            "{})".format(url, type(payload).__name__, _COMMENTS_DOC)
+        )
+    html_url = payload.get("html_url")
+    if not html_url:
+        return None, (
+            "GitHub returned a 201 without an html_url for {}: the "
+            "comment object does not carry the url the loop reports "
+            "(see {})".format(url, _COMMENTS_DOC)
+        )
+    return html_url, None
+
+
+def _comment_http_error_reason(code: int, url: str) -> str:
+    """A reason naming the recorded HTTP error situation for a comment
+    post; never the token.
+
+    Only the status code and the URL are named - the ``Authorization``
+    header is request-side and must never round-trip into a
+    user-facing reason (behaviour 15 pins the boundary project-wide).
+    """
+    if code == 403:
+        return (
+            "GitHub returned 403 forbidden for {}: the request lacks "
+            "write access to comment on the issue, or GitHub is "
+            "refusing the request outright (see {})".format(url, _COMMENTS_DOC)
+        )
+    if code == 404:
+        return (
+            "GitHub returned 404 not found for {}: the issue cannot be "
+            "commented on there - it does not exist, or the request "
+            "lacks access to it (see {})".format(url, _COMMENTS_DOC)
+        )
+    if code == 410:
+        return (
+            "GitHub returned 410 gone for {}: the issue has been "
+            "deleted, so it can no longer be commented on (see "
+            "{})".format(url, _COMMENTS_DOC)
+        )
+    if code == 422:
+        return (
+            "GitHub returned 422 validation failed for {}: the comment "
+            "body was rejected, or creating comments too quickly "
+            "tripped GitHub's secondary rate limiting (see "
+            "{})".format(url, _COMMENTS_DOC)
         )
     return "GitHub returned HTTP {} for {}".format(code, url)
 
