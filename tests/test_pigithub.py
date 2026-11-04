@@ -1580,3 +1580,453 @@ class PushArgvTests(unittest.TestCase):
                         label, message
                     ),
                 )
+
+
+class OpenPullRequestTests(unittest.TestCase):
+    """Behaviour 7 (open-pull-request) of plans/pi-phase10-github-loop.md.
+
+    ``open_pull_request(owner, repo, title, head, base, body, token=None,
+    opener=None, timeout=None)`` posts the dict built with ``json.dumps``
+    - a body carrying EXACTLY the keys ``title``, ``head``, ``base``,
+    ``body``, nothing more and nothing less - to
+    ``POST /repos/{owner}/{repo}/pulls``, the endpoint documented in
+    doc/external/github/rest-api-endpoints-for-pull-requests.md. A
+    **201** yields ``({"number", "html_url", "head_sha"}, None)``, where
+    ``head_sha`` is read from the 201 body's ``head.sha`` - the commit
+    the CI read in behaviour 9 keys on. A 200 is not the documented
+    success code and must not be treated as one; a **422** (an
+    already-open pull request for the same head/base, or a head branch
+    that was never pushed) and a **403** each yield ``(None, reason)``
+    naming the cause, and a 201 whose body lacks ``head.sha`` is a
+    reason, not a ``KeyError``. No reason ever carries the token text.
+
+    Design decisions pinned here (the plan leaves them to the test):
+
+    - The 200 is pinned as a failure, for symmetry with behaviour 4's
+      ``post_comment``: the plan names 201 as the success and 422/403
+      as the failures, and a driver that treated an undocumented 200 as
+      success would silently believe a pull request had been opened that
+      it cannot identify - the documented 201 body is what carries the
+      ``number``, ``html_url`` and ``head.sha`` the loop reports.
+    - The 422 reason must be distinguishable from the 403 reason: on
+      this endpoint a 422 means a duplicate pull request or a head
+      branch never pushed (doc/external/github/
+      rest-api-endpoints-for-pull-requests.md), so the reason names that
+      situation, not merely the status code; a 403 names forbidden.
+    - A 201 whose ``head`` is not an object, or whose ``head`` lacks a
+      ``sha``, yields ``(None, reason)`` - no ``KeyError`` may escape
+      ``open_pull_request``: a malformed 201 body is a recoverable
+      GitHub anomaly the host driver must be able to name, not a crash.
+
+    Written before the implementation (TDD RED for behaviour 7):
+    ``open_pull_request`` does not exist in ``anvilkit/pi/pigithub.py``
+    yet, so every test here is expected to fail with ``AttributeError``
+    - the missing attribute, not a collection error (the phase-9
+    precedent for the missing-attribute red).
+
+    No test performs real network I/O: every test injects a recorded
+    opener with an abridged recorded response body.
+    """
+
+    TITLE = "Amazing new feature"
+    HEAD = "feature/pi-phase10-github-loop"
+    BASE = "pi"
+    # Quotes and unicode: a body built by string substitution (rather
+    # than json.dumps of a dict) would mangle exactly these on the
+    # round trip, the same discipline behaviour 4 pins for comments.
+    BODY = 'Please pull these awesome changes in! "quoted" ✓'
+
+    PULLS_URL = "https://api.github.com/repos/{}/{}/pulls".format(OWNER, REPO)
+
+    # The recorded 201 body, abridged to the fields the loop reads:
+    # number, html_url and head.sha
+    # (doc/external/github/rest-api-endpoints-for-pull-requests.md).
+    PULL_BODY: Dict[str, Any] = {
+        "number": 1347,
+        "html_url": "https://github.com/octocat/Hello-World/pull/1347",
+        "head": {"sha": "6dcb09b5b57875f334f61aebed695e2e4193db5e"},
+    }
+
+    HEAD_SHA = PULL_BODY["head"]["sha"]
+
+    def _open(self, opener: Any) -> Tuple[Any, Any]:
+        return pigithub.open_pull_request(
+            OWNER, REPO, self.TITLE, self.HEAD, self.BASE, self.BODY,
+            TOKEN, opener=opener,
+        )
+
+    def _open_recorded(
+        self, outcome: Any
+    ) -> Tuple[Tuple[Any, Any], _RecordingOpener]:
+        opener = _RecordingOpener(outcome)
+        result = self._open(opener)
+        self.assertIsNotNone(
+            opener.request,
+            "the opener must have been called with a request object, "
+            "so the request side can be asserted",
+        )
+        return result, opener
+
+    def _assert_failure(self, label: str, opener: Any) -> str:
+        """Run one recorded failure and assert ``(None, reason)``; return the reason."""
+        result, reason = self._open(opener)
+
+        self.assertIsNone(
+            result,
+            "{}: no pull request exists when the open failed".format(label),
+        )
+        self.assertIsInstance(
+            reason,
+            str,
+            "{}: the failure must record a string reason".format(label),
+        )
+        self.assertTrue(
+            reason,
+            "{}: the failure must record a non-empty reason".format(label),
+        )
+        self.assertNotIn(
+            TOKEN,
+            reason,
+            "{}: the token text must never appear in a reason".format(label),
+        )
+        return reason
+
+    def test_open_pull_request_signature_is_owner_repo_title_head_base_body(self):
+        # The pinned surface: the credential is a defaulted parameter,
+        # and opener and timeout are the recorded-REST-seam seams every
+        # call in the module shares (anvilkit/pi/piguard.py's discipline).
+        params = inspect.signature(pigithub.open_pull_request).parameters
+
+        self.assertEqual(
+            list(params),
+            ["owner", "repo", "title", "head", "base", "body", "token",
+             "opener", "timeout"],
+            "open_pull_request must take exactly "
+            "(owner, repo, title, head, base, body, token=None, "
+            "opener=None, timeout=None); got: {!r}".format(list(params)),
+        )
+
+    def test_open_pull_request_201_returns_number_html_url_head_sha_and_none(
+        self,
+    ):
+        # Arrange: the recorded 201 carries the abridged PR object.
+        result, _ = self._open_recorded(
+            _FakeResponse(json.dumps(self.PULL_BODY).encode("utf-8"), status=201)
+        )
+        pull_request, reason = result
+
+        # Assert: the 201 yields ({"number", "html_url", "head_sha"},
+        # None); head_sha is read from the 201 body's head.sha.
+        self.assertIsNone(
+            reason,
+            "a 201 is the documented success code: no reason expected "
+            "(doc/external/github/rest-api-endpoints-for-pull-requests.md)",
+        )
+        self.assertIsInstance(
+            pull_request,
+            dict,
+            "the 201 must yield a dict, not None",
+        )
+        self.assertEqual(
+            set(pull_request),
+            {"number", "html_url", "head_sha"},
+            "the result must carry exactly number, html_url and "
+            "head_sha; got: {!r}".format(pull_request),
+        )
+        self.assertEqual(
+            pull_request["number"],
+            self.PULL_BODY["number"],
+            "number must be read from the 201 response",
+        )
+        self.assertEqual(
+            pull_request["html_url"],
+            self.PULL_BODY["html_url"],
+            "html_url must be read from the 201 response",
+        )
+        self.assertEqual(
+            pull_request["head_sha"],
+            self.HEAD_SHA,
+            "head_sha must be read from the 201 response's head.sha - "
+            "the commit the CI read keys on (doc/external/github/"
+            "rest-api-endpoints-for-pull-requests.md)",
+        )
+
+    def test_open_pull_request_200_is_not_success(self):
+        # Design decision pinned in the class docstring: the plan names
+        # 201 as the success; a 200 is not documented for this endpoint
+        # and must not be treated as a created pull request.
+        result, _ = self._open_recorded(
+            _FakeResponse(json.dumps(self.PULL_BODY).encode("utf-8"), status=200)
+        )
+        pull_request, reason = result
+
+        self.assertIsNone(
+            pull_request,
+            "a 200 must NOT be treated as success: 201, not 200, is the "
+            "documented success code - no pull request expected "
+            "(doc/external/github/rest-api-endpoints-for-pull-requests.md)",
+        )
+        self.assertIsInstance(reason, str)
+        self.assertTrue(reason, "a 200 must record a non-empty reason")
+        self.assertNotIn(TOKEN, reason)
+
+    def test_open_pull_request_422_returns_none_and_reason_naming_the_cause(
+        self,
+    ):
+        reason = self._assert_failure(
+            "http 422",
+            _opener(
+                urllib.error.HTTPError(
+                    self.PULLS_URL, 422, "Validation Failed", None, None
+                )
+            ),
+        )
+
+        self.assertIn(
+            "422",
+            reason,
+            "the reason must name the situation: 422 validation failed "
+            "(doc/external/github/rest-api-endpoints-for-pull-requests.md)",
+        )
+        # The 422 cause on this endpoint is a duplicate pull request or
+        # a head branch that was never pushed: the reason must name it,
+        # which is what distinguishes it from a bare status echo.
+        self.assertTrue(
+            any(
+                word in reason.lower()
+                for word in ("duplicate", "already open", "already-open", "push")
+            ),
+            "the 422 reason must name the cause: an already-open pull "
+            "request for the same head/base, or a head branch never "
+            "pushed (got: {!r})".format(reason),
+        )
+
+    def test_open_pull_request_403_returns_none_and_reason_naming_forbidden(
+        self,
+    ):
+        reason = self._assert_failure(
+            "http 403",
+            _opener(
+                urllib.error.HTTPError(
+                    self.PULLS_URL, 403, "Forbidden", None, None
+                )
+            ),
+        )
+
+        self.assertIn(
+            "403",
+            reason,
+            "the reason must name the situation: 403 forbidden "
+            "(doc/external/github/rest-api-endpoints-for-pull-requests.md)",
+        )
+        self.assertIn(
+            "forbidden",
+            reason.lower(),
+            "the 403 reason must name the cause: forbidden - the "
+            "request lacks pull-request write access (got: {!r})".format(
+                reason
+            ),
+        )
+
+    def test_open_pull_request_201_without_head_sha_returns_reason_not_key_error(
+        self,
+    ):
+        # Design decision pinned in the class docstring: a 201 whose
+        # body lacks head.sha is a reason, not a KeyError - no
+        # exception may escape open_pull_request.
+        malformed = (
+            (
+                "head.sha missing",
+                {"number": 1347, "html_url": self.PULL_BODY["html_url"],
+                 "head": {"ref": "feature/pi-phase10-github-loop"}},
+            ),
+            (
+                "head not an object",
+                {"number": 1347, "html_url": self.PULL_BODY["html_url"],
+                 "head": "feature/pi-phase10-github-loop"},
+            ),
+            (
+                "head missing",
+                {"number": 1347, "html_url": self.PULL_BODY["html_url"]},
+            ),
+        )
+        for label, body in malformed:
+            with self.subTest(body=label):
+                # The act must not raise: a KeyError escaping here would
+                # turn a malformed 201 into a crash in the host driver.
+                pull_request, reason = self._open(
+                    _opener(_FakeResponse(json.dumps(body).encode("utf-8"), status=201))
+                )
+
+                self.assertIsNone(
+                    pull_request,
+                    "{}: no pull request exists when head.sha cannot be "
+                    "read from the 201 body".format(label),
+                )
+                self.assertIsInstance(
+                    reason,
+                    str,
+                    "{}: the failure must record a string reason".format(label),
+                )
+                self.assertTrue(
+                    reason,
+                    "{}: the failure must record a non-empty reason".format(label),
+                )
+                self.assertIn(
+                    "head",
+                    reason.lower(),
+                    "{}: the reason must name the situation: head.sha "
+                    "could not be read from the 201 body (got: {!r})".format(
+                        label, reason
+                    ),
+                )
+                self.assertNotIn(TOKEN, reason)
+
+    def test_open_pull_request_request_is_post_to_pulls_url(self):
+        # Arrange / Act: a 201, with the request captured.
+        _, opener = self._open_recorded(
+            _FakeResponse(json.dumps(self.PULL_BODY).encode("utf-8"), status=201)
+        )
+        request = opener.request
+
+        self.assertEqual(
+            request.get_method(),
+            "POST",
+            "the request must be a POST, not a GET "
+            "(doc/external/github/rest-api-endpoints-for-pull-requests.md)",
+        )
+        self.assertEqual(
+            request.full_url,
+            self.PULLS_URL,
+            "the url must be /repos/{owner}/{repo}/pulls "
+            "(doc/external/github/rest-api-endpoints-for-pull-requests.md)",
+        )
+
+    def test_open_pull_request_request_body_is_json_of_dict_with_exactly_title_head_base_body(
+        self,
+    ):
+        # Arrange / Act: a 201, with the request captured.
+        _, opener = self._open_recorded(
+            _FakeResponse(json.dumps(self.PULL_BODY).encode("utf-8"), status=201)
+        )
+        sent = opener.request.data
+        self.assertIsNotNone(sent, "the request must carry a body")
+
+        if isinstance(sent, str):
+            sent = sent.encode("utf-8")
+        payload = json.loads(sent.decode("utf-8"))
+
+        # The body is valid JSON round-tripping to a dict whose key set
+        # is EXACTLY {title, head, base, body}: the endpoint requires
+        # head and base, title here (no issue conversion), body
+        # optional - and no extra keys (no head_repo, no draft, no
+        # maintainer_can_modify) may leak into the request
+        # (doc/external/github/rest-api-endpoints-for-pull-requests.md).
+        self.assertIsInstance(
+            payload,
+            dict,
+            "the request body must be a JSON object (dict)",
+        )
+        self.assertEqual(
+            set(payload),
+            {"title", "head", "base", "body"},
+            "the request body must carry exactly the keys title, head, "
+            "base and body - no extra keys, no missing keys "
+            "(got: {!r})".format(sorted(payload)),
+        )
+        self.assertEqual(
+            payload["title"],
+            self.TITLE,
+            "title must be carried through un-mangled",
+        )
+        self.assertEqual(
+            payload["head"],
+            self.HEAD,
+            "head must be carried through un-mangled",
+        )
+        self.assertEqual(
+            payload["base"],
+            self.BASE,
+            "base must be carried through un-mangled",
+        )
+        self.assertEqual(
+            payload["body"],
+            self.BODY,
+            "quotes and unicode must survive the JSON round trip - the "
+            "body is json.dumps of a dict, never built by substitution "
+            "(got: {!r})".format(payload["body"]),
+        )
+
+    def test_open_pull_request_request_content_type_is_json(self):
+        _, opener = self._open_recorded(
+            _FakeResponse(json.dumps(self.PULL_BODY).encode("utf-8"), status=201)
+        )
+        content_type = opener.request.get_header("Content-type")
+
+        self.assertIsNotNone(
+            content_type,
+            "the request must declare a content type",
+        )
+        self.assertIn(
+            "json",
+            content_type.lower(),
+            "the content type must be JSON (got: {!r})".format(content_type),
+        )
+
+    def test_open_pull_request_no_reason_ever_carries_token_text(self):
+        # Drift guard on the credential boundary for behaviour 7: the
+        # sentinel token is driven through every recorded failure path,
+        # and none of the resulting reasons may carry its text.
+        failures = [
+            (
+                "http 422",
+                _opener(
+                    urllib.error.HTTPError(
+                        self.PULLS_URL, 422, "Validation Failed", None, None
+                    )
+                ),
+            ),
+            (
+                "http 403",
+                _opener(
+                    urllib.error.HTTPError(
+                        self.PULLS_URL, 403, "Forbidden", None, None
+                    )
+                ),
+            ),
+            (
+                "http 200 (not success)",
+                _opener(
+                    _FakeResponse(
+                        json.dumps(self.PULL_BODY).encode("utf-8"), status=200
+                    )
+                ),
+            ),
+            (
+                "201 without head.sha",
+                _opener(
+                    _FakeResponse(
+                        json.dumps(
+                            {"number": 1347,
+                             "html_url": self.PULL_BODY["html_url"],
+                             "head": {}}
+                        ).encode("utf-8"),
+                        status=201,
+                    )
+                ),
+            ),
+        ]
+        for label, opener in failures:
+            with self.subTest(failure=label):
+                pull_request, reason = self._open(opener)
+
+                self.assertIsNone(pull_request)
+                self.assertIsInstance(reason, str)
+                self.assertTrue(reason)
+                self.assertNotIn(
+                    TOKEN,
+                    reason,
+                    "the token text must never appear in a reason ({})".format(
+                        label
+                    ),
+                )
