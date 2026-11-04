@@ -28,6 +28,11 @@ _FRONTIER_ROLES = frozenset(("architect",))
 # (doc/external/pi-dev/cli.md, Tools).
 _DEFAULT_TOOLS = "read,bash,edit,write"
 
+# The shared prompt layer, the chain root every role extends: the same file
+# for all four roles, appended first so the role layer lands last
+# (doc/external/pi-dev/packages/pi-roles.md, Merge rules).
+_SHARED_PROMPT_PATH = ".pi/roles/shared-agents.md"
+
 
 class RoleError(Exception):
     """A role name is unknown, a role definition is missing its fields, or a
@@ -40,14 +45,13 @@ class RoleError(Exception):
 
 
 def resolve(name: str, coder_model_id: str, frontier_model_id: str) -> Dict[str, str]:
-    """Resolve a role name to its definition dict.
+    """Resolve a role name to its Pi definition.
 
-    The definition carries exactly four keys: ``model_id`` (the frontier id
-    for the frontier-tier role, the local coder id for the rest), ``tier``
-    (``"frontier"`` or ``"local"``), ``prompt_path`` (``.pi/roles/<name>.md``)
-    and ``tools`` (the default tool set). An unknown ``name`` raises
-    ``RoleError`` naming it and listing the four known roles, so the caller
-    can see what exists.
+    Turns a role name into the definition the role argv consumes: the
+    model it runs on, its tier, and the prompt paths the argv appends -
+    the role's own layer and the shared chain root it extends. An
+    unknown ``name`` raises ``RoleError`` naming it and listing the
+    known roles.
     """
     if name not in ROLES:
         raise RoleError(
@@ -65,6 +69,7 @@ def resolve(name: str, coder_model_id: str, frontier_model_id: str) -> Dict[str,
         "model_id": model_id,
         "tier": tier,
         "prompt_path": ".pi/roles/{}.md".format(name),
+        "shared_prompt_path": _SHARED_PROMPT_PATH,
         "tools": _DEFAULT_TOOLS,
     }
 
@@ -105,23 +110,33 @@ def role_argv(definition: Dict[str, str], session_id: str, task: str) -> List[st
     """Build the pi invocation for one role as a list of argv tokens.
 
     The tokens, in order: ``pi``, ``--mode json``, ``--model <id>``,
-    ``--append-system-prompt <path>``, ``--tools <tools>``,
-    ``--session-id <id>``, ``--no-mcp``, ``-a``, the ``--`` terminator, and
-    the task last after it - the task is exactly one element, byte-identical
-    to the input, so it reaches ``subprocess`` with no shell and no quoting
-    (doc/external/pi-dev/cli.md, Invocation and output). An empty
-    ``model_id``, ``prompt_path`` or ``task`` raises ``RoleError`` naming the
-    field. A ``session_id`` that violates Pi's rule (letters, numbers, ``.``,
-    ``_`` and ``-``; must start and end with a letter or number) raises
-    ``RoleError`` quoting the id; a valid id crosses in byte-identical and is
-    never rewritten. No conflicting session flags (``--session``,
-    ``--continue``, ``-c``, ``--resume``, ``-r``, ``--no-session``) are ever
-    emitted, since Pi rejects them alongside ``--session-id``.
+    ``--append-system-prompt <shared>``, ``--append-system-prompt <role>``,
+    ``--tools <tools>``, ``--session-id <id>``, ``--no-mcp``, ``-a``, the
+    ``--`` terminator, and the task last after it - the task is exactly one
+    element, byte-identical to the input, so it reaches ``subprocess`` with
+    no shell and no quoting (doc/external/pi-dev/cli.md, Invocation and
+    output). The two append flags pin the layering: the shared layer
+    (``shared_prompt_path``, the chain root) first, the role layer
+    (``prompt_path``) last, so the role layer lands last per Pi's append
+    order; the replace flag ``--system-prompt`` is never emitted. An empty
+    ``model_id``, ``prompt_path``, ``shared_prompt_path`` or ``task`` raises
+    ``RoleError`` naming the field. A ``session_id`` that violates Pi's rule
+    (letters, numbers, ``.``, ``_`` and ``-``; must start and end with a
+    letter or number) raises ``RoleError`` quoting the id; a valid id
+    crosses in byte-identical and is never rewritten. No conflicting session
+    flags (``--session``, ``--continue``, ``-c``, ``--resume``, ``-r``,
+    ``--no-session``) are ever emitted, since Pi rejects them alongside
+    ``--session-id``.
     """
     _validate_session_id(session_id)
     model_id = definition["model_id"]
     if not model_id:
         raise RoleError("role argv requires a non-empty model_id field")
+    shared_prompt_path = definition.get("shared_prompt_path")
+    if not shared_prompt_path:
+        raise RoleError(
+            "role argv requires a non-empty shared_prompt_path field"
+        )
     prompt_path = definition["prompt_path"]
     if not prompt_path:
         raise RoleError("role argv requires a non-empty prompt_path field")
@@ -133,6 +148,8 @@ def role_argv(definition: Dict[str, str], session_id: str, task: str) -> List[st
         "json",
         "--model",
         model_id,
+        "--append-system-prompt",
+        shared_prompt_path,
         "--append-system-prompt",
         prompt_path,
         "--tools",

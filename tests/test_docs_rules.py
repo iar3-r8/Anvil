@@ -11,8 +11,9 @@ The two files under test are data:
 
 Each file holds root ``<guidelines>``: a ``<workflow>`` of four
 ``name``-keyed steps (``start``, ``code_comments``, ``usage_docs``,
-``structure``), a ``<best_practices>`` block of 13 ``<rule>`` elements
-(9 original + 3 new + 1 history-reference rule; the link-to-the-plan
+``structure``), a ``<best_practices>`` block of 14 ``<rule>`` elements
+(9 original + 3 new + 1 history-reference rule
++ 1 self-documenting-code rule; the link-to-the-plan
 rule is gone: the plan is not
 part of the documentation, so no rule may tell the writer to link to
 it), a ``<documentation_finalisation>`` block of 2 ``<rule>`` elements,
@@ -395,14 +396,15 @@ class DocsManagerPageProseBase(XmlTemplateTestCase):
     def _rule_texts(self):
         return [_element_text(r) for r in self._best_practice_rules()]
 
-    def test_best_practices_holds_exactly_thirteen_rules(self):
-        # 9 original + 3 new + 1 history-reference rule = 13.
+    def test_best_practices_holds_exactly_fourteen_rules(self):
+        # 9 original + 3 new + 1 history-reference rule
+        # + 1 self-documenting-code rule = 14.
         rules = self._best_practice_rules()
         self.assertEqual(
             len(rules),
-            13,
-            "expected <best_practices> to hold exactly 13 <rule> elements "
-            "(12 + 1 history-reference rule), found %d. Rule texts: %r"
+            14,
+            "expected <best_practices> to hold exactly 14 <rule> elements "
+            "(13 + 1 self-documenting-code rule), found %d. Rule texts: %r"
             % (len(rules), self._rule_texts()),
         )
 

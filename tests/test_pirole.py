@@ -30,18 +30,25 @@ Documented runner contract, cited from
 Behaviour 4 (``role-table-resolves-four-roles``) and behaviour 5
 (``role-argv-is-list-and-complete``) are also tested here:
 ``pirole.resolve(name, coder_model_id, frontier_model_id)`` maps each of the
-four role names to a definition dict carrying its ``model_id``, ``tier``,
-``prompt_path`` and ``tools`` - the architect is the only frontier-tier role
-(frontier model id), while coder, tester and docs run on the local coder
-model - and an unknown name raises ``RoleError`` naming it and listing the
-four known roles. Behaviour 5 pins ``role_argv(definition, session_id,
-task)``: a ``List[str]`` (never a ``str``) carrying ``pi``, ``--mode json``,
-the model, the prompt path, the full tool list, the session id, ``--no-mcp``,
-``-a``, the ``--`` terminator, and the task last after it - and an empty
-model id, prompt path or task raises ``RoleError`` naming the field. The
-``pirole`` import is deferred into the tests so that, while a part of the
-module does not yet exist, those tests fail at the import or attribute step
-rather than breaking collection of the boundary pins.
+four role names to a definition dict carrying exactly its ``model_id``,
+``tier``, ``prompt_path``, ``shared_prompt_path`` and ``tools`` - the
+architect is the only frontier-tier role (frontier model id), while coder,
+tester and docs run on the local coder model, and every role carries the
+same shared layer path ``.pi/roles/shared-agents.md`` - and an unknown name
+raises ``RoleError`` naming it and listing the four known roles. Behaviour 5
+pins ``role_argv(definition, session_id, task)``: a ``List[str]`` (never a
+``str``) carrying ``pi``, ``--mode json``, the model, the shared prompt path
+and the role prompt path as two ``--append-system-prompt`` flags (shared
+first, role last, so the role layer lands last), the full tool list, the
+session id, ``--no-mcp``, ``-a``, the ``--`` terminator, and the task last
+after it - and an empty model id, prompt path, ``shared_prompt_path`` or
+task raises ``RoleError`` naming the field, while the replace flag
+``--system-prompt`` is never emitted (behaviour 17 of
+``plans/pi-role-prompts.md`` re-pins the single-flag vector to this
+two-flag contract). The ``pirole`` import is deferred into the tests so
+that, while a part of the module does not yet exist, those tests fail at
+the import or attribute step rather than breaking collection of the
+boundary pins.
 """
 
 import ast
@@ -223,6 +230,20 @@ ROLES = ("architect", "coder", "tester", "docs")
 CODER_MODEL_ID = "llama-swapped-coder-72b"
 FRONTIER_MODEL_ID = "claude-sonnet-4-5"
 
+# Behaviour 17 (plans/pi-role-prompts.md): the shared prompt layer. Every
+# role's definition carries this path beside its own prompt_path, and the
+# role argv emits it as the first of two --append-system-prompt flags so
+# the role layer lands last. The value comes from pirole's fixed table -
+# the repinned resolve tests pin the value, the vector test pins its
+# position.
+SHARED_PROMPT_PATH = ".pi/roles/shared-agents.md"
+
+# The definition's exact key set after the behaviour-17 re-pin: the four
+# original keys plus shared_prompt_path.
+DEFINITION_KEYS = frozenset(
+    ("model_id", "tier", "prompt_path", "shared_prompt_path", "tools")
+)
+
 
 class RoleResolveTestCase(PiRoleBoundaryPinTestCase):
     """Shared deferred import of the not-yet-existing ``pirole`` module.
@@ -250,11 +271,29 @@ class TestResolveRoles(RoleResolveTestCase):
             "architect", CODER_MODEL_ID, FRONTIER_MODEL_ID
         )
         # Assert: the architect is the only frontier-tier role and carries
-        # the frontier model id, its own prompt path and the default tools.
+        # the frontier model id, its own prompt path, the shared layer path
+        # and the default tools.
         self.assertEqual(FRONTIER_MODEL_ID, definition["model_id"])
         self.assertEqual("frontier", definition["tier"])
         self.assertEqual(".pi/roles/architect.md", definition["prompt_path"])
         self.assertEqual("read,bash,edit,write", definition["tools"])
+        # Behaviour 17: exactly five keys, shared_prompt_path beside
+        # prompt_path. The value is read via .get so that check is a plain
+        # assertion mismatch (absent key -> None), never a KeyError in the
+        # test.
+        self.assertEqual(
+            DEFINITION_KEYS,
+            set(definition),
+            "the definition must carry exactly the five keys, "
+            "shared_prompt_path beside prompt_path; got: %r"
+            % (sorted(definition),),
+        )
+        self.assertEqual(
+            SHARED_PROMPT_PATH,
+            definition.get("shared_prompt_path"),
+            "every role's definition must carry the shared layer path; "
+            "got: %r" % (definition.get("shared_prompt_path"),),
+        )
 
     def test_resolve_coder_carries_local_model_tier_and_paths(self):
         # Arrange: a local-tier role name and both model ids.
@@ -268,6 +307,23 @@ class TestResolveRoles(RoleResolveTestCase):
         self.assertEqual("local", definition["tier"])
         self.assertEqual(".pi/roles/coder.md", definition["prompt_path"])
         self.assertEqual("read,bash,edit,write", definition["tools"])
+        # Behaviour 17: exactly five keys, shared_prompt_path beside
+        # prompt_path. The value is read via .get so that check is a plain
+        # assertion mismatch (absent key -> None), never a KeyError in the
+        # test.
+        self.assertEqual(
+            DEFINITION_KEYS,
+            set(definition),
+            "the definition must carry exactly the five keys, "
+            "shared_prompt_path beside prompt_path; got: %r"
+            % (sorted(definition),),
+        )
+        self.assertEqual(
+            SHARED_PROMPT_PATH,
+            definition.get("shared_prompt_path"),
+            "every role's definition must carry the shared layer path; "
+            "got: %r" % (definition.get("shared_prompt_path"),),
+        )
 
     def test_resolve_tester_carries_local_model_tier_and_paths(self):
         # Arrange: a local-tier role name and both model ids.
@@ -281,6 +337,23 @@ class TestResolveRoles(RoleResolveTestCase):
         self.assertEqual("local", definition["tier"])
         self.assertEqual(".pi/roles/tester.md", definition["prompt_path"])
         self.assertEqual("read,bash,edit,write", definition["tools"])
+        # Behaviour 17: exactly five keys, shared_prompt_path beside
+        # prompt_path. The value is read via .get so that check is a plain
+        # assertion mismatch (absent key -> None), never a KeyError in the
+        # test.
+        self.assertEqual(
+            DEFINITION_KEYS,
+            set(definition),
+            "the definition must carry exactly the five keys, "
+            "shared_prompt_path beside prompt_path; got: %r"
+            % (sorted(definition),),
+        )
+        self.assertEqual(
+            SHARED_PROMPT_PATH,
+            definition.get("shared_prompt_path"),
+            "every role's definition must carry the shared layer path; "
+            "got: %r" % (definition.get("shared_prompt_path"),),
+        )
 
     def test_resolve_docs_carries_local_model_tier_and_paths(self):
         # Arrange: a local-tier role name and both model ids.
@@ -294,6 +367,23 @@ class TestResolveRoles(RoleResolveTestCase):
         self.assertEqual("local", definition["tier"])
         self.assertEqual(".pi/roles/docs.md", definition["prompt_path"])
         self.assertEqual("read,bash,edit,write", definition["tools"])
+        # Behaviour 17: exactly five keys, shared_prompt_path beside
+        # prompt_path. The value is read via .get so that check is a plain
+        # assertion mismatch (absent key -> None), never a KeyError in the
+        # test.
+        self.assertEqual(
+            DEFINITION_KEYS,
+            set(definition),
+            "the definition must carry exactly the five keys, "
+            "shared_prompt_path beside prompt_path; got: %r"
+            % (sorted(definition),),
+        )
+        self.assertEqual(
+            SHARED_PROMPT_PATH,
+            definition.get("shared_prompt_path"),
+            "every role's definition must carry the shared layer path; "
+            "got: %r" % (definition.get("shared_prompt_path"),),
+        )
 
 
 class TestResolveUnknownRole(RoleResolveTestCase):
@@ -334,9 +424,13 @@ class TestRoleArgvCompleteVector(RoleResolveTestCase):
     """The role argv is a list of str tokens, complete and in order.
 
     The token vector is pinned end to end: the pi executable first, the JSON
-    mode, the model, the prompt path, the full tool list, the session id, the
-    MCP kill switch, the project-approval flag, the option terminator, and
-    finally the task after it.
+    mode, the model, the shared prompt path and the role prompt path as two
+    ``--append-system-prompt`` flags (shared first, role last, so the role
+    layer lands last), the full tool list, the session id, the MCP kill
+    switch, the project-approval flag, the option terminator, and finally
+    the task after it. Behaviour 17 re-pins the previously single-flag
+    vector to this two-flag contract; the replace flag ``--system-prompt``
+    is never emitted (doc/external/pi-dev/cli.md, System prompt).
     """
 
     def test_role_argv_coder_session_task_is_list_of_str_with_complete_vector(self):
@@ -355,7 +449,12 @@ class TestRoleArgvCompleteVector(RoleResolveTestCase):
         for token in argv:
             self.assertIsInstance(token, str)
         # The complete token vector, in order, with the task last after the
-        # option terminator.
+        # option terminator. The two append flags pin the layering: the
+        # shared layer first, the role layer last, so the role layer lands
+        # last. Both paths are pinned as literals the same way the role
+        # prompt path already is, so a red here is an argv-shape mismatch
+        # (two flags expected, one produced), never a missing-key crash in
+        # the test.
         self.assertEqual(
             [
                 "pi",
@@ -363,6 +462,8 @@ class TestRoleArgvCompleteVector(RoleResolveTestCase):
                 "json",
                 "--model",
                 CODER_MODEL_ID,
+                "--append-system-prompt",
+                SHARED_PROMPT_PATH,
                 "--append-system-prompt",
                 ".pi/roles/coder.md",
                 "--tools",
@@ -375,8 +476,19 @@ class TestRoleArgvCompleteVector(RoleResolveTestCase):
                 TASK,
             ],
             argv,
-            "the role argv must carry exactly these tokens in this order, "
-            "the task last after the terminator; got: %r" % (argv,),
+            "the role argv must carry exactly these tokens in this order - "
+            "the shared append flag before the role append flag, the task "
+            "last after the terminator; got: %r" % (argv,),
+        )
+        # The replace flag is never emitted: the role layers only ever
+        # append (doc/external/pi-dev/cli.md, System prompt). Token-level
+        # absence: --append-system-prompt is a different token, so this is
+        # not a substring match.
+        self.assertNotIn(
+            "--system-prompt",
+            argv,
+            "the role argv must never emit the replace flag --system-prompt; "
+            "got: %r" % (argv,),
         )
         # The task is the final token, positioned after the "--" terminator.
         self.assertEqual(
@@ -387,8 +499,47 @@ class TestRoleArgvCompleteVector(RoleResolveTestCase):
         )
 
 
+class TestRoleArgvNeverEmitsReplaceSystemPromptFlag(RoleResolveTestCase):
+    """The replace flag ``--system-prompt`` is never in the produced argv.
+
+    Pi's ``--system-prompt`` replaces the default system prompt; the role
+    layers only ever append, so the builder can never emit the replace flag
+    (doc/external/pi-dev/cli.md, System prompt). The absence is pinned on a
+    real, complete produced vector - a boundary guard that holds against
+    the current single-flag shape and must keep holding once the two-flag
+    shape lands.
+    """
+
+    def test_role_argv_carries_no_replace_flag_on_a_complete_vector(self):
+        # Arrange: a resolved coder definition, a valid session id and a task.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        # Act.
+        argv = pirole.role_argv(definition, SESSION_ID, TASK)
+        # Anti-vacuity: the inspected vector is a real, complete one.
+        self.assertEqual(
+            "pi",
+            argv[0],
+            "the inspected argv must be a real pi invocation; got: %r" % (argv,),
+        )
+        self.assertIn(
+            "--session-id",
+            argv,
+            "the inspected argv must carry the legitimate --session-id "
+            "flag; got: %r" % (argv,),
+        )
+        # Assert: token-level absence of the replace flag.
+        self.assertNotIn(
+            "--system-prompt",
+            argv,
+            "the role argv must never emit the replace flag --system-prompt, "
+            "only append; got: %r" % (argv,),
+        )
+
+
 class TestRoleArgvEmptyFieldRaises(RoleResolveTestCase):
-    """An empty model id, prompt path or task raises RoleError naming it.
+    """An empty model id, prompt path, shared_prompt_path or task raises
+    RoleError naming it.
 
     The definition is built by ``resolve`` and then one field is blanked, so
     each failure is pinned on exactly one missing value while the other
@@ -424,6 +575,25 @@ class TestRoleArgvEmptyFieldRaises(RoleResolveTestCase):
             message,
             "the error must name the empty prompt path field; got: %r"
             % message,
+        )
+
+    def test_role_argv_empty_shared_prompt_path_raises_role_error_naming_the_field(self):
+        # Arrange: a resolved coder definition whose shared layer path is
+        # blanked. The assignment cannot KeyError - it adds the key the
+        # current resolve does not yet return - so the red is the missing
+        # refusal, not a crash in the test.
+        pirole = self._import_pirole()
+        definition = pirole.resolve("coder", CODER_MODEL_ID, FRONTIER_MODEL_ID)
+        definition["shared_prompt_path"] = ""
+        # Act / Assert: nothing is returned; a RoleError names the field.
+        with self.assertRaises(pirole.RoleError) as ctx:
+            pirole.role_argv(definition, SESSION_ID, TASK)
+        message = str(ctx.exception)
+        self.assertIn(
+            "shared_prompt_path",
+            message,
+            "the error must name the empty shared_prompt_path field; "
+            "got: %r" % message,
         )
 
     def test_role_argv_empty_task_raises_role_error_naming_the_field(self):
