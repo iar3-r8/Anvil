@@ -17,12 +17,13 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1, 2, 4, 5 and 6 of plans/pi-phase10-github-loop.md
-are implemented here: ``read_issue``, ``quote_intake``, ``post_comment``,
-``progress_body`` and ``push_argv``. The last is not over the REST
-seam: it is a pure argv builder with no network, in the same discipline
-as ``anvilkit.pi.picommit``'s argv builders - it returns a
-``List[str]``, built, never executed.
+landed. Behaviours 1, 2, 4, 5, 6 and 7 of
+plans/pi-phase10-github-loop.md are implemented here: ``read_issue``,
+``quote_intake``, ``post_comment``, ``progress_body``, ``push_argv``
+and ``open_pull_request``. ``push_argv`` is not over the REST seam: it
+is a pure argv builder with no network, in the same discipline as
+``anvilkit.pi.picommit``'s argv builders - it returns a ``List[str]``,
+built, never executed.
 """
 
 import json
@@ -49,6 +50,7 @@ DEFAULT_ISSUE_TIMEOUT = 10.0
 # saved endpoint documentation.
 _ISSUES_DOC = "doc/external/github/rest-api-endpoints-for-issues.md"
 _COMMENTS_DOC = "doc/external/github/rest-api-endpoints-for-issue-comments.md"
+_PULLS_DOC = "doc/external/github/rest-api-endpoints-for-pull-requests.md"
 
 
 class GitHubError(Exception):
@@ -317,6 +319,153 @@ def _comment_http_error_reason(code: int, url: str) -> str:
             "body was rejected, or creating comments too quickly "
             "tripped GitHub's secondary rate limiting (see "
             "{})".format(url, _COMMENTS_DOC)
+        )
+    return "GitHub returned HTTP {} for {}".format(code, url)
+
+
+def open_pull_request(
+    owner: str,
+    repo: str,
+    title: str,
+    head: str,
+    base: str,
+    body: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    """Open a pull request; never raises.
+
+    Posts the dict built with ``json.dumps`` - carrying exactly the keys
+    ``title``, ``head``, ``base`` and ``body``, never built by string
+    substitution, so quotes, newlines and unicode survive the JSON round
+    trip - to ``POST {api}/repos/{owner}/{repo}/pulls``
+    (doc/external/github/rest-api-endpoints-for-pull-requests.md) over
+    the same recorded REST seam as :func:`read_issue` and
+    :func:`post_comment`: the pinned API version, the token as the sole
+    ``Authorization`` header, the same default timeout.
+
+    Returns ``({"number", "html_url", "head_sha"}, None)`` on a 201 -
+    201, not 200, is the documented success code - where ``number`` and
+    ``html_url`` are read from the 201 body and ``head_sha`` is read
+    from the 201 body's ``head.sha``, the commit the CI read keys on. A
+    200 is NOT a success: a driver that treats 200 as success would
+    silently believe a pull request had been opened that it cannot
+    identify. A 422 (an already-open pull request for the same head/
+    base, or a head branch that was never pushed), a 403, a 201 with a
+    non-JSON body, a 201 with a JSON body that is not an object, a 201
+    whose body lacks ``head.sha`` (or whose ``head`` is not an object),
+    a ``URLError`` (GitHub unreachable) and a timeout (including a
+    ``socket.timeout`` wrapped in a ``URLError``) each yield
+    ``(None, reason)`` naming the situation - a malformed 201 body is a
+    recoverable GitHub anomaly the host driver must be able to name,
+    not a ``KeyError``. No reason ever carries the token text.
+
+    ``opener`` defaults to ``urllib.request.urlopen``; tests inject a
+    recorded opener, so the suite never touches the live network.
+    """
+    if opener is None:
+        opener = urllib.request.urlopen
+    if timeout is None:
+        timeout = DEFAULT_ISSUE_TIMEOUT
+
+    url = "{}/repos/{}/{}/pulls".format(_GITHUB_API_BASE, owner, repo)
+    headers = _request_headers(token)
+    headers["Content-Type"] = "application/json"
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(
+            {"title": title, "head": head, "base": base, "body": body}
+        ).encode("utf-8"),
+        headers=headers,
+    )
+
+    try:
+        with opener(request, timeout=timeout) as response:
+            status = response.getcode()
+            raw = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        return None, _pulls_http_error_reason(exc.code, url)
+    except socket.timeout:
+        return None, "timeout after {}s contacting {}".format(timeout, url)
+    except urllib.error.URLError as exc:
+        # URLError wraps the real cause, including socket.timeout on
+        # some versions (the same pattern as anvilkit/pi/piguard.py).
+        if isinstance(exc.reason, socket.timeout):
+            return None, "timeout after {}s contacting {}".format(timeout, url)
+        return None, "GitHub was unreachable for {}: {}".format(url, exc.reason)
+    except OSError as exc:
+        return None, "GitHub was unreachable for {}: {}".format(url, exc)
+
+    if status != 201:
+        return None, (
+            "GitHub returned {} for {}: only 201 is the documented "
+            "success code for creating a pull request, so this response "
+            "must not be treated as an opened pull request (see "
+            "{})".format(status, url, _PULLS_DOC)
+        )
+    try:
+        payload = json.loads(raw)
+    except ValueError as exc:
+        return None, (
+            "GitHub returned a 201 with a non-JSON body for {}: {} - "
+            "the pulls endpoint answers with a JSON object (see "
+            "{})".format(url, exc, _PULLS_DOC)
+        )
+    if not isinstance(payload, dict):
+        return None, (
+            "GitHub returned a 201 whose JSON body is not a pull "
+            "request object for {}: expected an object (dict), got {} "
+            "(see {})".format(url, type(payload).__name__, _PULLS_DOC)
+        )
+    head_obj = payload.get("head")
+    if not isinstance(head_obj, dict):
+        return None, (
+            "GitHub returned a 201 whose head is not an object for "
+            "{}: the pull request object must carry head.sha, the "
+            "commit the CI read keys on (got {} where an object is "
+            "expected; see {})".format(
+                url, type(head_obj).__name__, _PULLS_DOC
+            )
+        )
+    head_sha = head_obj.get("sha")
+    if not head_sha:
+        return None, (
+            "GitHub returned a 201 whose head lacks a sha for {}: the "
+            "pull request object must carry head.sha, the commit the "
+            "CI read keys on (see {})".format(url, _PULLS_DOC)
+        )
+    return (
+        {
+            "number": payload.get("number"),
+            "html_url": payload.get("html_url"),
+            "head_sha": head_sha,
+        },
+        None,
+    )
+
+
+def _pulls_http_error_reason(code: int, url: str) -> str:
+    """A reason naming the recorded HTTP error situation for a pull
+    request open; never the token.
+
+    Only the status code and the URL are named - the ``Authorization``
+    header is request-side and must never round-trip into a
+    user-facing reason (behaviour 15 pins the boundary project-wide).
+    """
+    if code == 403:
+        return (
+            "GitHub returned 403 forbidden for {}: the request lacks "
+            "write access to create the pull request on the head or "
+            "source branch, or GitHub is refusing the request outright "
+            "(see {})".format(url, _PULLS_DOC)
+        )
+    if code == 422:
+        return (
+            "GitHub returned 422 validation failed for {}: a duplicate "
+            "pull request is already open for the same head and base, "
+            "or the head branch was never pushed (see "
+            "{})".format(url, _PULLS_DOC)
         )
     return "GitHub returned HTTP {} for {}".format(code, url)
 
