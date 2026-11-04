@@ -3316,3 +3316,357 @@ class CiVerdictTests(unittest.TestCase):
                         self.VERDICTS, verdict, runs
                     ),
                 )
+
+
+class RenderCiTests(unittest.TestCase):
+    """Behaviour 11 (ci-report) of plans/pi-phase10-github-loop.md.
+
+    ``render_ci(runs, verdict)`` is PURE - no network, no opener, no
+    token - and renders the CI outcome of the commit ``open_pull_request``
+    returned: the list ``read_ci_runs`` returns, plus the verdict
+    ``ci_verdict`` assigned to that list. It returns a multi-line
+    ``str`` report.
+
+    Shape (plans/pi-phase10-github-loop.md, behaviour 11): ONE LINE PER
+    RUN - for each run in ``runs``, a line naming its ``name``, its
+    ``status``, its ``conclusion`` and its ``html_url`` - under a
+    VERDICT LINE carrying the verdict.
+
+    Design decisions pinned here (the plan leaves the rendering to the
+    test):
+
+    - The signature is exactly ``(runs, verdict)``: the list
+      ``read_ci_runs`` returns, and the verdict string ``ci_verdict``
+      returns - nothing else, and no network seam (no opener, token or
+      timeout). The renderer is pure and deterministic.
+    - "One line per run" is pinned as a LINE-LEVEL co-occurrence, not a
+      loose "all these substrings appear somewhere": for a run whose
+      ``name`` is unique in the report, exactly one line carries that
+      ``name``, and THAT line also carries the run's ``status`` and
+      ``html_url`` (and its ``conclusion`` when the run is completed,
+      i.e. ``conclusion`` is not ``None``). Together the count of
+      run-lines equals ``len(runs)``. A renderer that scatters the fields
+      across unrelated lines fails this.
+    - The ``none`` verdict (no runs) renders the anti-vacuity phrase
+      ``"no workflow runs recorded for this commit"`` and NEVER reports
+      the CI as passed: the output for the none case contains no
+      "passed" or "success" outcome. An unmeasured CI is not a green.
+    - A ``None`` conclusion (an incomplete run) renders as a readable
+      absence, never the literal string ``"None"`` - the ``str()`` of
+      ``None`` must not leak into the report.
+    - An unreadable run entry (an entry that is not a dict, e.g.
+      ``None`` in the list) must not crash ``render_ci`` and must not be
+      rendered as a normal run with its fields. This pins the choice:
+      the unreadable entry is rendered as a readable placeholder (or
+      skipped with a marker) - never ``str(None)`` - so the literal
+      string ``"None"`` never appears, and the function never raises.
+      (This composes with behaviour 10's "unreadable is pending": the
+      report for such a list with a ``pending`` verdict is still
+      well-formed.)
+    - A ``pending`` verdict (an uncompleted run) renders the run line(s)
+      and the pending verdict line; an uncompleted CI is not reported as
+      passed.
+
+    Written before the implementation (TDD RED for behaviour 11):
+    ``render_ci`` does not exist in ``anvilkit/pi/pigithub.py`` yet, so
+    every test here is expected to fail with ``AttributeError`` - the
+    missing attribute, not a collection error (the phase-9 precedent for
+    the missing-attribute red).
+    """
+
+    NONE = "none"
+    FAILURE = "failure"
+    PENDING = "pending"
+    SUCCESS = "success"
+
+    # The anti-vacuity phrase a none verdict must carry.
+    NONE_PHRASE = "no workflow runs recorded for this commit"
+
+    @classmethod
+    def _run(
+        cls,
+        status: str,
+        conclusion: Optional[str],
+        name: str = "Build",
+        run_id: int = 30433642,
+    ) -> Dict[str, Any]:
+        """A run dict in the shape ``read_ci_runs`` passes through
+        (doc/external/github/rest-api-endpoints-for-workflow-runs.md):
+        ``conclusion`` is ``null`` until ``status`` is ``completed``."""
+        return {
+            "id": run_id,
+            "name": name,
+            "status": status,
+            "conclusion": conclusion,
+            "html_url": (
+                "https://github.com/octocat/Hello-World/actions/runs/{}".format(
+                    run_id
+                )
+            ),
+        }
+
+    def _render(self, runs: List[Any], verdict: str) -> str:
+        result = pigithub.render_ci(runs, verdict)
+
+        self.assertIsInstance(
+            result,
+            str,
+            "render_ci must return a string report",
+        )
+        return result
+
+    def _assert_run_line(self, report: str, run: Dict[str, Any]) -> None:
+        """Pin the line-level association for one unique-named run: exactly
+        one line carries its name, and that line carries its status and
+        html_url (and its conclusion, when the run is completed)."""
+        lines = report.splitlines()
+        matching = [line for line in lines if run["name"] in line]
+
+        self.assertEqual(
+            len(matching),
+            1,
+            "each run must render on exactly one line naming its name "
+            "{!r} (got {} such lines): {!r}".format(
+                run["name"], len(matching), lines
+            ),
+        )
+        line = matching[0]
+        self.assertIn(
+            run["status"],
+            line,
+            "the run's name line must carry its status {!r} "
+            "(got line: {!r})".format(run["status"], line),
+        )
+        self.assertIn(
+            run["html_url"],
+            line,
+            "the run's name line must carry its html_url {!r} "
+            "(got line: {!r})".format(run["html_url"], line),
+        )
+        if run["conclusion"] is not None:
+            self.assertIn(
+                run["conclusion"],
+                line,
+                "a completed run's name line must carry its conclusion "
+                "{!r} (got line: {!r})".format(run["conclusion"], line),
+            )
+
+    def test_render_ci_signature_is_runs_and_verdict(self):
+        # The pinned surface: exactly the list read_ci_runs returns and
+        # the verdict string ci_verdict returns - nothing else, and no
+        # network seam. The renderer is pure.
+        params = inspect.signature(pigithub.render_ci).parameters
+
+        self.assertEqual(
+            list(params),
+            ["runs", "verdict"],
+            "render_ci must take exactly (runs, verdict) - it is pure, "
+            "no network seam; got: {!r}".format(list(params)),
+        )
+
+    def test_render_ci_success_verdict_carries_the_verdict_word(self):
+        # Arrange: two distinct completed-success runs.
+        runs = [
+            self._run("completed", "success", name="Build", run_id=30433642),
+            self._run("completed", "success", name="Lint", run_id=30433643),
+        ]
+
+        # Act.
+        report = self._render(runs, self.SUCCESS)
+
+        # Assert: the verdict line carries the verdict word.
+        self.assertIn(
+            self.SUCCESS,
+            report,
+            "the report must carry a verdict line naming the verdict "
+            "'success' (got: {!r})".format(report),
+        )
+
+    def test_render_ci_one_line_per_run_names_all_four_fields(self):
+        # Arrange: two runs, each with a distinct name, status,
+        # conclusion and html_url, all completed and successful.
+        runs = [
+            self._run("completed", "success", name="Build", run_id=30433642),
+            self._run("completed", "cancelled", name="Lint", run_id=30433643),
+        ]
+
+        # Act.
+        report = self._render(runs, self.FAILURE)
+
+        # Assert: one line per run, each line naming the run's name,
+        # status, conclusion and html_url (the line-level association).
+        for run in runs:
+            with self.subTest(name=run["name"]):
+                self._assert_run_line(report, run)
+
+        # The run-lines themselves equal len(runs): exactly one line per
+        # unique run name.
+        named_lines = [
+            line
+            for line in report.splitlines()
+            if any(run["name"] in line for run in runs)
+        ]
+        self.assertEqual(
+            len(named_lines),
+            len(runs),
+            "the report must carry one line per run: {} runs mean {} "
+            "run-lines (got {}): {!r}".format(
+                len(runs), len(runs), len(named_lines), named_lines
+            ),
+        )
+
+    def test_render_ci_pending_verdict_renders_run_and_not_passed(self):
+        # Arrange: a single in-progress run (conclusion null until
+        # completed).
+        runs = [self._run("in_progress", None, name="Build", run_id=30433642)]
+
+        # Act.
+        report = self._render(runs, self.PENDING)
+
+        # Assert: the run line is rendered and the pending verdict
+        # carries; an uncompleted CI is NOT reported as passed.
+        self._assert_run_line(report, runs[0])
+        self.assertIn(
+            self.PENDING,
+            report,
+            "the report must carry a verdict line naming the verdict "
+            "'pending' (got: {!r})".format(report),
+        )
+        lowered = report.lower()
+        self.assertNotIn(
+            "passed",
+            lowered,
+            "an uncompleted (pending) CI must never be reported as "
+            "passed (got: {!r})".format(report),
+        )
+        self.assertNotIn(
+            "success",
+            lowered,
+            "an uncompleted (pending) CI must never be reported as "
+            "success (got: {!r})".format(report),
+        )
+
+    def test_render_ci_failure_verdict_renders_failing_conclusion(self):
+        # Arrange: one completed-success run and one completed run with a
+        # non-success conclusion.
+        runs = [
+            self._run("completed", "success", name="Build", run_id=30433642),
+            self._run("completed", "failure", name="Lint", run_id=30433643),
+        ]
+
+        # Act.
+        report = self._render(runs, self.FAILURE)
+
+        # Assert: the failing run's non-success conclusion is rendered,
+        # and the failure verdict carries.
+        self._assert_run_line(report, runs[0])
+        self._assert_run_line(report, runs[1])
+        self.assertIn(
+            "failure",
+            report,
+            "the failing run's non-success conclusion 'failure' must be "
+            "rendered (got: {!r})".format(report),
+        )
+        self.assertIn(
+            self.FAILURE,
+            report,
+            "the report must carry a verdict line naming the verdict "
+            "'failure' (got: {!r})".format(report),
+        )
+
+    def test_render_ci_none_verdict_renders_the_phrase_never_passed(self):
+        # Arrange: no runs at all - the no-CI answer behaviour 9 yields
+        # as an empty list, verdict "none".
+        # Act.
+        report = self._render([], self.NONE)
+
+        # Assert: the anti-vacuity phrase is carried, and the CI is never
+        # reported as passed.
+        self.assertIn(
+            self.NONE_PHRASE,
+            report,
+            "a none verdict must render 'no workflow runs recorded for "
+            "this commit' (got: {!r})".format(report),
+        )
+        lowered = report.lower()
+        self.assertNotIn(
+            "passed",
+            lowered,
+            "an unmeasured (none) CI must never be reported as passed "
+            "(got: {!r})".format(report),
+        )
+        self.assertNotIn(
+            "success",
+            lowered,
+            "an unmeasured (none) CI must never be reported as success "
+            "(got: {!r})".format(report),
+        )
+
+    def test_render_ci_none_conclusion_never_renders_the_string_none(self):
+        # Arrange: an incomplete run whose conclusion is null (the
+        # documented trap - conclusion is null until status is completed).
+        runs = [self._run("in_progress", None, name="Build", run_id=30433642)]
+
+        # Act.
+        report = self._render(runs, self.PENDING)
+
+        # Assert: the null conclusion renders as a readable absence,
+        # never the literal string "None".
+        self.assertNotIn(
+            "None",
+            report,
+            "a null (None) conclusion must render as a readable absence, "
+            "never the string 'None' (got: {!r})".format(report),
+        )
+
+    def test_render_ci_unreadable_entry_is_placeholder_never_raises(self):
+        # Arrange: a run entry that is not a dict - an unreadable entry.
+        for label, bad_entry in (
+            ("None", None),
+            ("a string", "not a run dict"),
+            ("a number", 30433642),
+        ):
+            with self.subTest(entry=label):
+                # Act: must never raise. A readable run sits alongside
+                # so the well-formed report is still exercised.
+                runs = [
+                    self._run("in_progress", None, name="Build", run_id=30433642),
+                    bad_entry,
+                ]
+                report = self._render(runs, self.PENDING)
+
+                # Assert: the unreadable entry is rendered as a readable
+                # placeholder, never via str(None) - so the literal
+                # string "None" never appears - and the pending verdict
+                # still carries (well-formed report).
+                self.assertNotIn(
+                    "None",
+                    report,
+                    "an unreadable run entry ({!r}) must render as a "
+                    "readable placeholder, never the string 'None' "
+                    "(got: {!r})".format(bad_entry, report),
+                )
+                self.assertIn(
+                    self.PENDING,
+                    report,
+                    "the report for an unreadable-entry list with a "
+                    "pending verdict must still be well-formed and carry "
+                    "the verdict (got: {!r})".format(report),
+                )
+
+    def test_render_ci_same_inputs_yield_byte_identical_output(self):
+        # Arrange / Act: the same inputs twice.
+        runs = [
+            self._run("completed", "success", name="Build", run_id=30433642),
+            self._run("in_progress", None, name="Lint", run_id=30433643),
+        ]
+        first = self._render(runs, self.PENDING)
+        second = self._render(runs, self.PENDING)
+
+        # Assert: pure and deterministic.
+        self.assertEqual(
+            first,
+            second,
+            "render_ci is pure: the same inputs must give byte-identical "
+            "output (got first: {!r}, second: {!r})".format(first, second),
+        )
