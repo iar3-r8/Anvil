@@ -17,10 +17,11 @@ which names the URL and the situation only, never the request headers.
 
 House discipline, as ``anvilkit.pi.picycle``'s docstring uses it: one
 behaviour lands per red/green cycle, and the docstring says which have
-landed. Behaviours 1, 2, 4, 5, 6, 7, 8, 9 and 10 of
+landed. Behaviours 1, 2, 4, 5, 6, 7, 8, 9, 10 and 11 of
 plans/pi-phase10-github-loop.md are implemented here: ``read_issue``,
 ``quote_intake``, ``post_comment``, ``progress_body``, ``push_argv``,
-``open_pull_request``, ``pr_body``, ``read_ci_runs`` and ``ci_verdict``.
+``open_pull_request``, ``pr_body``, ``read_ci_runs``, ``ci_verdict``
+and ``render_ci``.
 ``push_argv``
 and ``pr_body`` are not over the REST seam: they are pure builders with
 no network - ``push_argv`` in the same discipline as
@@ -39,7 +40,18 @@ never raises: an empty list is ``"none"``; any dict entry whose
 ``"success"`` is ``"failure"``, checked first; any entry not completed
 - an entry not a dict, a dict lacking its ``status`` key, or a dict
 whose ``status`` is anything other than ``"completed"`` - is
-``"pending"``; otherwise ``"success"``.
+``"pending"``; otherwise ``"success"``. ``render_ci`` renders that
+outcome as a multi-line report - the list ``read_ci_runs`` returns
+plus the verdict ``ci_verdict`` assigned to it: one line per
+readable run naming its ``name``, ``status``, ``conclusion`` and
+``html_url``, under a verdict line carrying the verdict word. Pure -
+no network, no opener, no token - and never raises: a ``None``
+conclusion (``conclusion`` is ``null`` until ``status`` is
+``completed``) renders as a readable absence, never the string
+``"None"``; an entry that is not a dict renders as a readable
+placeholder, never via ``str()``; and a ``none`` verdict renders
+"no workflow runs recorded for this commit" - an unmeasured CI is
+never reported as passed.
 """
 
 import json
@@ -852,3 +864,71 @@ def _longest_backtick_run(text: str) -> int:
         else:
             run = 0
     return longest
+
+
+# The anti-vacuity phrase a ``none`` verdict must carry (behaviour 11):
+# an unmeasured CI is never reported as passed.
+_NO_RUNS_PHRASE = "no workflow runs recorded for this commit"
+
+# A readable absence for a null conclusion: conclusion is null until
+# status is completed (doc/external/github/
+# rest-api-endpoints-for-workflow-runs.md), so it renders as this,
+# never str(None).
+_NO_CONCLUSION = "(no conclusion yet)"
+
+# The line for an entry that is not a dict: a readable placeholder,
+# never str(entry) - so str(None) can never leak into the report.
+_UNREADABLE_ENTRY_LINE = "- unreadable workflow run entry"
+
+
+def _run_line(run: Dict[str, Any]) -> str:
+    """The one line for a readable (dict) workflow run.
+
+    Carries the run's ``name``, ``status``, ``conclusion`` and
+    ``html_url`` on a single line. A missing or ``None`` field renders
+    as a readable absence, never ``str(None)``.
+    """
+    name = run.get("name")
+    status = run.get("status")
+    conclusion = run.get("conclusion")
+    html_url = run.get("html_url")
+    name_text = "(unnamed)" if name is None else str(name)
+    status_text = "(unknown status)" if status is None else str(status)
+    conclusion_text = _NO_CONCLUSION if conclusion is None else str(conclusion)
+    url_text = "(no link)" if html_url is None else str(html_url)
+    return "- {}: status={}, conclusion={}, {}".format(
+        name_text, status_text, conclusion_text, url_text
+    )
+
+
+def render_ci(runs: List[Any], verdict: str) -> str:
+    """Render the CI report; pure, never raises.
+
+    No network, no opener, no token. Renders the CI outcome of the
+    commit ``open_pull_request`` returned: ``runs`` is the list
+    ``read_ci_runs`` returns and ``verdict`` is the verdict
+    ``ci_verdict`` assigned to that list. The result is a multi-line
+    report built as a list of lines and joined - one line per
+    readable run naming its ``name``, ``status``, ``conclusion`` and
+    ``html_url``, under a verdict line carrying the verdict word.
+
+    A ``None`` conclusion (``conclusion`` is ``null`` until ``status``
+    is ``completed``) renders as a readable absence, never the string
+    ``"None"``; an entry that is not a dict renders as a readable
+    placeholder, never via ``str()`` - so the report is well-formed
+    for any list ``read_ci_runs`` can return, and the function never
+    raises. A ``none`` verdict renders
+    "no workflow runs recorded for this commit" and never reports the
+    CI as passed - an unmeasured CI is not a green. Pure and
+    deterministic: the same inputs give byte-identical output.
+    """
+    lines: List[str] = ["CI for this commit: {}".format(verdict)]
+    if verdict == "none":
+        lines.append(_NO_RUNS_PHRASE)
+        return "\n".join(lines)
+    for run in runs:
+        if isinstance(run, dict):
+            lines.append(_run_line(run))
+        else:
+            lines.append(_UNREADABLE_ENTRY_LINE)
+    return "\n".join(lines)
