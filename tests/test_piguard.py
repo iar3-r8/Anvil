@@ -6176,5 +6176,184 @@ class RenderFindingFailBranchTests(unittest.TestCase):
         )
 
 
+class RenderFindingWarnTokenTests(unittest.TestCase):
+    """Behaviour 17: the warn branch names the check on token findings.
+
+    The token-scope probes (behaviours 2, 3 and 6 of
+    plans/verify-guards-token.md) emit ``warn`` findings carrying
+    ``rule=None`` and a ``check`` name. The ``warn`` branch of
+    ``render_finding`` formats ``rule`` directly, so today those lines
+    render as ``warn: None - ...`` - a literal ``None`` where the report
+    should name the check.
+
+    The contract under test: a ``warn`` finding renders a line that
+    names what is being warned about - for a token finding (``rule=None``)
+    that is the ``check`` name, never a literal ``None`` - in the same
+    shape the ``fail`` branch (behaviour 9) already uses:
+    ``warn: {check} - {danger}; fix: {remedy}``. The rule-based warn
+    lines (non-None ``rule``) render byte-for-byte as they do today, and
+    a pin below keeps it that way.
+    """
+
+    def _assert_token_warn_line(
+        self, line: str, check: str, danger: str, remedy: str
+    ) -> None:
+        self.assertIsInstance(line, str)
+        self.assertTrue(
+            line,
+            "a warn finding must render a non-empty line",
+        )
+        self.assertTrue(
+            line.startswith("warn:"),
+            "a warn finding must render a line marked with a 'warn:' "
+            "prefix, consistent with the ok:/warn:/skipped:/fail: prefix "
+            "convention the other branches use: {!r}".format(line),
+        )
+        self.assertNotIn(
+            "None",
+            line,
+            "a token warn finding carries rule=None, and the line must "
+            "name the check, not a literal 'None' - the 'warn: None - ...' "
+            "rendering is the defect: {!r}".format(line),
+        )
+        self.assertTrue(
+            line.startswith("warn: {} - ".format(check)),
+            "the warn line must name the check first, mirroring the "
+            "fail branch's 'fail: {check} - ...' shape: {!r}".format(line),
+        )
+        self.assertIn(
+            danger,
+            line,
+            "the rendered warn line must name the danger",
+        )
+        self.assertIn(
+            "fix:",
+            line,
+            "the rendered warn line must carry the remedy in a 'fix:' "
+            "position, consistent with the rule-based warn shape: "
+            "{!r}".format(line),
+        )
+        self.assertIn(
+            remedy,
+            line,
+            "the rendered warn line must name the remedy",
+        )
+
+    def test_probe_warn_findings_with_rule_none_render_check_not_literal_none(self):
+        # The real warn findings behaviours 2, 3 and 6 emit: all carry
+        # rule=None, so the warn line must not depend on rule being
+        # non-None.
+        target_url = "https://api.github.com/repos/owner/repo"
+        admin_url = (
+            "https://api.github.com/repos/owner/repo/actions/permissions"
+        )
+        for label, finding in (
+            (
+                "target_access (behaviour 2, 404)",
+                piguard.probe_target_access(
+                    "owner",
+                    "repo",
+                    token="token-xyz",
+                    opener=_opener(
+                        urllib.error.HTTPError(
+                            target_url, 404, "Not Found", None, None
+                        )
+                    ),
+                )[0],
+            ),
+            (
+                "administration (behaviour 3, 404)",
+                piguard.probe_administration(
+                    "owner",
+                    "repo",
+                    token="token-xyz",
+                    opener=_opener(
+                        urllib.error.HTTPError(
+                            admin_url, 404, "Not Found", None, None
+                        )
+                    ),
+                )[0],
+            ),
+            (
+                "named_repo (behaviour 6, 200)",
+                piguard.probe_named_repo(
+                    "owner",
+                    "other",
+                    token="token-xyz",
+                    opener=_opener(
+                        _FakeResponse(b'{"full_name": "owner/other"}', 200)
+                    ),
+                )[0],
+            ),
+        ):
+            with self.subTest(probe=label):
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "warn",
+                    "fixture sanity: the probe emits a warn finding",
+                )
+                self.assertIsNone(
+                    _field(finding, "rule"),
+                    "fixture sanity: a token finding carries rule=None",
+                )
+
+                line = piguard.render_finding(finding)
+
+                self._assert_token_warn_line(
+                    line,
+                    _field(finding, "check"),
+                    _field(finding, "danger"),
+                    _field(finding, "remedy"),
+                )
+
+    def test_minimal_token_warn_finding_renders_check_not_literal_none(self):
+        # Only the fields a token warn finding carries - no reason, no
+        # source - so the assertion isolates the warn branch from the
+        # probes.
+        finding = {
+            "status": "warn",
+            "check": "administration",
+            "rule": None,
+            "danger": "d",
+            "remedy": "r",
+        }
+
+        line = piguard.render_finding(finding)
+
+        self._assert_token_warn_line(line, "administration", "d", "r")
+
+    def test_rule_based_warn_finding_renders_byte_for_byte_unchanged(self):
+        # The rule-based warns (check_history_rewrite, check_review, ...)
+        # carry a non-None rule and must keep rendering exactly as
+        # "warn: {rule} - {danger}; fix: {remedy}": the fix for the
+        # token warn path must not touch this one. This assertion passes
+        # today and pins that boundary.
+        warn = [
+            f
+            for f in piguard.check_history_rewrite(
+                [rule("non_fast_forward", "main-guard")]
+            )
+            if _field(f, "status") == "warn"
+        ][0]
+        self.assertEqual(
+            _field(warn, "status"),
+            "warn",
+            "fixture sanity: an absent rule warns",
+        )
+        self.assertIsNotNone(
+            _field(warn, "rule"),
+            "fixture sanity: a rule-based warn carries a non-None rule",
+        )
+
+        self.assertEqual(
+            piguard.render_finding(warn),
+            "warn: {} - {}; fix: {}".format(
+                _field(warn, "rule"),
+                _field(warn, "danger"),
+                _field(warn, "remedy"),
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
