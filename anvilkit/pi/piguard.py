@@ -1560,12 +1560,14 @@ def _block_substance(finding: Dict[str, Any]) -> str:
     source of the finding's text: a word added to a probe's danger or reason
     reaches the block automatically, without the block re-deriving it.
 
-    The one reword is a passed finding whose ``rule`` is None - a token
-    passed finding: :func:`render_finding`'s passed branch is written for
-    branch rules and would print "the None rule is present", a claim about
-    a ruleset object the token probes never looked at. The block instead
-    names the check and the fact it verified, from the finding's recorded
-    remedy.
+    The one special case is a passed finding whose ``rule`` is None - a
+    token passed finding: :func:`render_finding`'s passed branch is written
+    for branch rules and would print "the None rule is present", a claim
+    about a ruleset object the token probes never looked at. For that case
+    the block's detail is empty (behaviour 19a): the substance of a token
+    passed finding lives entirely in its remedy, which the block prints on
+    its indented ``see:`` line - the check is named by the headline, and
+    the detail would only restate the see: line.
     """
     status = finding.get("status")
     prefix = _BLOCK_PREFIXES.get(status, "unknown")
@@ -1577,23 +1579,14 @@ def _block_substance(finding: Dict[str, Any]) -> str:
     substance = line[len(marker):]
 
     if status == "passed" and finding.get("rule") is None:
-        # The "ok: the None rule is present" fix (behaviour 19): a token
-        # passed finding (rule=None) must name the check and the fact it
-        # verified, without "the ... rule is present" and without None.
-        # The recorded remedy carries exactly that fact plus the doc path,
-        # so the substance is the remedy reworded from a fix instruction
-        # into a statement of what was verified.
-        remedy = finding.get("remedy") or ""
-        fact = remedy
-        if fact.startswith("nothing to do - "):
-            fact = fact[len("nothing to do - "):]
-        if fact.endswith("."):
-            fact = fact[:-1]
-        check = finding.get("check")
-        if fact and fact[0].isupper():
-            fact = fact[0].lower() + fact[1:]
-        substance = "the {} check verified: {}".format(check, fact)
-        return substance
+        # Behaviour 19a: a token passed finding (rule=None) carries its
+        # substance in the remedy field - the block prints that text on its
+        # indented see: line - so there is no detail to reword into: a
+        # detail line derived from the remedy would restate the see: line.
+        # The block is the headline (which names the check) plus the
+        # wrapped see: line; returning empty detail keeps every other
+        # invariant (headline, width, line count, determinism) intact.
+        return ""
 
     fix_marker = " fix: "
     cut = substance.rfind(fix_marker)
