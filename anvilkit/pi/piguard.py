@@ -45,6 +45,11 @@ CHECK_CLASSIC_TOKEN = "classic_token"
 # constant finding per run, not one per repo or per probe.
 CHECK_WORKFLOWS_WITHHELD = "workflows_withheld"
 
+# The named-repo probe's check name (behaviour 6 of
+# plans/verify-guards-token.md), in the same snake_case spelling pattern
+# as the sibling probes' check names.
+CHECK_NAMED_REPO = "named_repo"
+
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
 _RULES_API_BASE = "https://api.github.com"
@@ -135,6 +140,16 @@ _WORKFLOWS_WITHHELD_SKIP_DANGER = (
     "token may be able to edit CI workflows on the target - the "
     "documented privilege-escalation path - and no read-only call can "
     "rule it out"
+)
+
+# The same, for the named-repo probe: the unmeasured hole is that the
+# token may be scoped beyond the target repository - a compromise of it
+# would not then be confined to the target.
+_NAMED_REPO_SKIP_DANGER = (
+    "whether the token is scoped beyond the target repository is "
+    "unmeasured: the token may also reach a named other repository, and "
+    "a compromise of it would not be confined to the target, which this "
+    "report cannot rule out"
 )
 
 # What an agent could do if each rule is absent: the consequence, not the
@@ -871,6 +886,190 @@ def workflows_withheld_finding() -> List[Dict[str, Any]]:
             "source": None,
             "reason": reason,
             "remedy": remedy,
+        }
+    ]
+
+
+def probe_named_repo(
+    owner: str,
+    other_repo: Optional[str],
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The named-repo token-scope probe: does the token reach a named other repo?
+
+    Issues ``GET /repos/{owner}/{other_repo}`` through :func:`fetch_probe`
+    (behaviour 1 of plans/verify-guards-token.md) - one probe, one API call -
+    against the two halves of the user-supplied ``--other-repo OWNER/REPO``
+    value, which the caller splits (behaviour 15). The halves are never
+    guessed, and the owner in them is not assumed to equal the target's
+    owner (plan Assumptions). The probe hits the *other* repository, never
+    the target: a ``404`` on the target is behaviour 2's louder finding, not
+    this probe's.
+
+    The framing rule this probe exists to encode: a ``404`` is the honest
+    answer, and it only proves one thing.
+
+    - ``404`` -> one ``passed`` finding worded "proves only that the token
+      is not scoped to {owner}/{other}; it cannot enumerate the token's
+      full repository list" - both halves: the specific proof and the
+      explicit non-claim. The remedy cites the saved page that documents a
+      fine-grained token reaching only the repositories selected at
+      creation.
+    - ``200`` -> one ``warn`` finding: the token reaches more than the
+      target, so a compromise of it is not confined to the target repo.
+    - no other repo supplied -> one ``skipped`` finding naming
+      ``--other-repo`` as the fix - never a pass - with no request
+      attempted at all: there is nothing to probe.
+    - ``403`` -> one ``skipped`` finding: a permission denial is not a
+      scope answer the probe can interpret.
+    - any other status -> one ``skipped`` finding whose reason carries
+      the status.
+    - a transport reason from :func:`fetch_probe` -> one ``skipped``
+      finding with a non-empty reason.
+
+    Like the other token-scope probes, a missing or empty token is a
+    **skip** - no request is attempted at all - because a token-scope probe
+    reads a token's property, and an unauthenticated request establishes no
+    fact about any token (behaviour 7).
+
+    Never raises; always returns a list of findings. Never echoes a token
+    into a finding or a reason (module invariant).
+    """
+    other = "{}/{}".format(owner, other_repo) if other_repo else None
+    skipped_remedy = (
+        "supply a repository to probe via --other-repo OWNER/REPO, make "
+        "the token valid, and make api.github.com reachable, then re-run; "
+        "see {}".format(_FINE_GRAINED_DOC)
+    )
+
+    if not other_repo:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": (
+                    "no other repository supplied: there is nothing to "
+                    "probe, and a pass with no repository named would "
+                    "claim a scope fact that was never measured"
+                ),
+                "remedy": (
+                    "re-run with --other-repo OWNER/REPO naming a "
+                    "repository to probe; a fine-grained token reaches "
+                    "only the repositories selected at creation, per "
+                    "{}".format(_FINE_GRAINED_DOC)
+                ),
+            }
+        ]
+
+    if not token:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": (
+                    "no token supplied: a token-scope probe with no token "
+                    "establishes no fact about any token, so the probe "
+                    "skips rather than issuing an unauthenticated request "
+                    "and reading its status as a token property - unlike "
+                    "fetch_branch_rules, where a missing token is an "
+                    "unauthenticated attempt"
+                ),
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    url = "{}/repos/{}/{}".format(_RULES_API_BASE, owner, other_repo)
+    status, _headers, _body, reason = fetch_probe(
+        url, token, opener=opener, timeout=timeout
+    )
+
+    if reason is not None:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": reason,
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    if status == 404:
+        return [
+            {
+                "status": "passed",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "danger": "",
+                "source": None,
+                "remedy": (
+                    "nothing to do - this 404 proves only that the token "
+                    "is not scoped to {}; it cannot enumerate the "
+                    "token's full repository list: a fine-grained token "
+                    "reaches only the repositories selected at creation, "
+                    "so a 404 on one named repository says nothing about "
+                    "the others; see {}".format(other, _FINE_GRAINED_DOC)
+                ),
+            }
+        ]
+
+    if status == 200:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "danger": (
+                    "the token reaches more than the target - at least {} "
+                    "too: a compromise of this token is not confined to "
+                    "the target repository".format(other)
+                ),
+                "source": None,
+                "remedy": (
+                    "recreate the token with Repository access 'Only "
+                    "select repositories' including only the target and "
+                    "not {}; see {}".format(other, _FINE_GRAINED_DOC)
+                ),
+            }
+        ]
+
+    if status == 403:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": (
+                    "GitHub returned 403 for {}: a permission denial is "
+                    "not a scope answer the probe can interpret, so the "
+                    "probe skips rather than reading the denial as "
+                    "'not scoped to'".format(url)
+                ),
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    return [
+        {
+            "status": "skipped",
+            "check": CHECK_NAMED_REPO,
+            "rule": None,
+            "danger": _NAMED_REPO_SKIP_DANGER,
+            "source": None,
+            "reason": "GitHub returned HTTP {} for {}".format(status, url),
+            "remedy": skipped_remedy,
         }
     ]
 
