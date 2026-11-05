@@ -36,6 +36,13 @@ _RULES_API_BASE = "https://api.github.com"
 # skipped one (plans/pi-guard-verification.md, Assumptions).
 DEFAULT_RULES_TIMEOUT = 10.0
 
+# The X-GitHub-Api-Version the saved probe-endpoint docs pin, sent by the
+# token-scope probes. A new constant on purpose: fetch_branch_rules
+# predates those docs and sends no version header, and its existing header
+# behaviour is untouched (doc/external/github/rest-api-endpoints-for-
+# actions-permissions.md, doc/external/github/rest-api-endpoints-for-users.md).
+_PROBE_API_VERSION = "2026-03-10"
+
 # The API rule types the history-rewrite guard looks for, in report order.
 # These are the API names, not the UI labels: the endpoint returns
 # 'non_fast_forward' for what the UI calls "Block force pushes".
@@ -187,6 +194,92 @@ def fetch_branch_rules(
             "{}: expected a list".format(url)
         )
     return payload, None
+
+
+def fetch_probe(
+    url: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> Tuple[Optional[int], Optional[Any], Optional[bytes], Optional[str]]:
+    """Issue one read-only GET and observe the answer; never raises.
+
+    The fetch seam for the token-scope probes (behaviour 1 of
+    plans/verify-guards-token.md): builds a ``GET`` for ``url`` with
+    ``Accept: application/vnd.github+json`` and
+    ``X-GitHub-Api-Version`` pinned to the version the saved probe-endpoint
+    docs use (doc/external/github/rest-api-endpoints-for-actions-permissions.
+    md and doc/external/github/rest-api-endpoints-for-users.md) and opens it
+    through ``opener``, which defaults to ``urllib.request.urlopen``. A
+    ``token`` adds the ``Authorization: Bearer <token>`` header - the same
+    shape :func:`fetch_branch_rules` builds - and without one the request
+    goes out with no ``Authorization`` header at all. That contrast is the
+    point: in :func:`fetch_branch_rules` a missing token is an
+    unauthenticated attempt the endpoint allows, whereas a probe is meant to
+    measure a token's scope, so this function simply sends what it is given
+    and decides nothing - a fact about a token cannot be established without
+    one, and that judgement belongs to the probes, not the fetch.
+
+    An ``HTTPError`` is a **successful observation**: its ``code`` and
+    ``headers`` are returned with ``reason=None``, because a ``403`` is the
+    compliant answer to a token-scope probe - a denial is the data. Only
+    transport-level failures - a ``URLError``, a ``socket.timeout``, a bare
+    ``OSError`` - yield ``(None, None, None, reason)`` with a non-empty
+    reason string; this function never raises.
+
+    Returns ``(status, headers, body, reason)``: the response's status code
+    (``getcode``), its headers, its body as raw bytes - the probes inspect
+    headers and, where they parse, decode - and ``None`` on any HTTP answer,
+    or the three ``None``s with the reason string on a transport failure.
+    The reason never carries the token.
+
+    ``opener`` is the injection seam: tests pass a recorded opener, so the
+    suite never touches the live network. ``timeout`` is passed through to
+    the opener unchanged.
+    """
+    if opener is None:
+        opener = urllib.request.urlopen
+
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": _PROBE_API_VERSION,
+    }
+    if token:
+        headers["Authorization"] = "Bearer {}".format(token)
+    request = urllib.request.Request(url, headers=headers)
+
+    try:
+        with opener(request, timeout=timeout) as response:
+            status = response.getcode()
+            resp_headers = dict(response.headers)
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        # An HTTPError is a successful observation, not a failure: a 403 is
+        # the compliant answer to a probe, so return the status and headers
+        # as data. exc.hdrs is the attribute HTTPError always sets, even
+        # when no response body was captured (exc.headers is only present
+        # when one was).
+        body: Optional[bytes]
+        try:
+            body = exc.read()
+        except Exception:
+            body = None
+        # exc.hdrs is None when no response headers were captured.
+        return exc.code, dict(exc.hdrs) if exc.hdrs is not None else {}, body, None
+    except socket.timeout as exc:
+        return None, None, None, "probe timed out contacting {}: {}".format(url, exc)
+    except urllib.error.URLError as exc:
+        # URLError wraps the real cause, including socket.timeout on some
+        # versions (same pattern as fetch_branch_rules and
+        # anvilkit/health.py).
+        reason = exc.reason
+        if isinstance(reason, socket.timeout):
+            return None, None, None, "probe timed out contacting {}".format(url)
+        return None, None, None, "probe could not reach {}: {}".format(url, reason)
+    except OSError as exc:
+        return None, None, None, "probe could not reach {}: {}".format(url, exc)
+
+    return status, resp_headers, body, None
 
 
 def skipped_findings(reason: str) -> List[Dict[str, Any]]:
