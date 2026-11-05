@@ -1,5 +1,5 @@
 """Tests for anvilkit.pi.pitokenrecipe - the pre-filled fine-grained token
-creation recipe (behaviours 12-13 of plans/verify-guards-token.md).
+creation recipe (behaviours 12-14 of plans/verify-guards-token.md).
 
 Written before the implementation (TDD RED step). The production module
 ``anvilkit.pi.pitokenrecipe`` does not exist yet, so every test loads it
@@ -17,11 +17,13 @@ repository - "Only select repositories" is a UI choice, so the repo name
 must never appear in the URL.
 
 No test writes a file or makes a network call: ``build_recipe_url`` is a
-pure string builder, and its observable surface is the returned string.
+pure string builder and ``recipe_steps`` is a pure display-text builder;
+the observable surface of each is exactly what it returns.
 """
 
 import importlib
 import importlib.util
+import re
 import sys
 import unittest
 import urllib.parse
@@ -51,6 +53,11 @@ WITHHELD = ("administration", "workflows", "metadata")
 # Several owners for the pin, including two that are not plain ASCII-safe and
 # therefore need percent-encoding in the query.
 OWNERS = ("octodemo", "octo&demo+bot", "another owner")
+
+# Word-boundary matchers for the grant levels, so "writer" or "writeup"
+# cannot satisfy a permission assertion (behaviour 14's permission steps).
+_READ = re.compile(r"\bread\b", re.IGNORECASE)
+_WRITE = re.compile(r"\bwrite\b", re.IGNORECASE)
 
 
 class TokenRecipeTestCase(unittest.TestCase):
@@ -281,3 +288,175 @@ class WithholdingsByAbsencePinTests(TokenRecipeTestCase):
                     sorted(expected_keys), owner
                 ),
             )
+
+
+class RecipeStepsTests(TokenRecipeTestCase):
+    """Behaviour 14: ``recipe_steps(owner, repo, url)`` -> the creation steps.
+
+    The steps are display text for a human following the saved page's
+    "Creating a fine-grained personal access token" sequence
+    (``doc/external/github/fine-grained-personal-access-tokens.md``): the
+    target (the owner) is named, "Only select repositories" is chosen and
+    the repo is named there - the repo is not a URL parameter (behaviour
+    12), so the steps are the only place it appears - and the plan's three
+    recorded caveats are stated. The assertions pin substance and order,
+    not the full string of every step.
+    """
+
+    def _get_recipe_steps(self):
+        """Fetch ``anvilkit.pi.pitokenrecipe.recipe_steps``, failing clearly if absent."""
+        pitokenrecipe = self._pitokenrecipe()
+        steps = getattr(pitokenrecipe, "recipe_steps", None)
+        self.assertTrue(
+            callable(steps),
+            "anvilkit.pi.pitokenrecipe.recipe_steps is not callable; "
+            "behaviour 14 has not been implemented yet",
+        )
+        return steps
+
+    def _steps(self, owner="octodemo", repo="my-repo"):
+        """The recipe steps for ``owner``/``repo``, with the matching recipe URL."""
+        steps = self._get_recipe_steps()
+        url = self._get_build_recipe_url()(owner, repo)
+        return steps(owner, repo, url)
+
+    @staticmethod
+    def _first_index(steps, needle):
+        """The index of the first step containing ``needle`` (case-insensitive)."""
+        wanted = needle.lower()
+        for index, step in enumerate(steps):
+            if wanted in step.lower():
+                return index
+        raise AssertionError(
+            "no step mentions {!r}; steps: {!r}".format(needle, steps)
+        )
+
+    def test_recipe_steps_returns_a_non_empty_list_of_strings(self):
+        steps = self._steps()
+
+        self.assertIsInstance(steps, list, "recipe_steps must return a list")
+        self.assertTrue(
+            steps,
+            "the recipe must have at least one step",
+        )
+        for step in steps:
+            self.assertIsInstance(step, str, "each step must be a str")
+
+    def test_recipe_steps_name_the_target_and_the_repo_under_only_select_repositories(self):
+        # The plan: "the documented creation sequence with 'Only select
+        # repositories' and the target named"; the repo is not a URL
+        # parameter (behaviour 12), so the steps are the only place it is
+        # named.
+        steps = self._steps()
+
+        self._first_index(steps, "octodemo")
+        self._first_index(steps, "Only select repositories")
+        self._first_index(steps, "my-repo")
+
+    def test_recipe_steps_follow_the_saved_pages_creation_sequence_in_order(self):
+        steps = self._steps()
+
+        # The saved page's numbered sequence: Resource owner (9), Repository
+        # access "Only select repositories" (11), the selected repository
+        # (12), then the permission grants (13).
+        order = (
+            self._first_index(steps, "octodemo"),
+            self._first_index(steps, "Only select repositories"),
+            self._first_index(steps, "my-repo"),
+            self._first_index(steps, "Contents"),
+            self._first_index(steps, "Pull requests"),
+            self._first_index(steps, "Issues"),
+            self._first_index(steps, "Actions"),
+        )
+        self.assertEqual(
+            order,
+            tuple(sorted(order)),
+            "the steps must follow the saved page's creation sequence - "
+            "target owner, then repository access, then the permission "
+            "grants - got order {!r} for steps: {!r}".format(order, steps),
+        )
+
+    def test_recipe_steps_grant_read_and_write_for_contents_pull_requests_and_issues(self):
+        steps = self._steps()
+
+        for name in ("Contents", "Pull requests", "Issues"):
+            step = steps[self._first_index(steps, name)]
+            self.assertTrue(
+                _READ.search(step) and _WRITE.search(step),
+                "the {} step must grant both read and write; got: {}".format(
+                    name, step
+                ),
+            )
+
+    def test_recipe_steps_grant_actions_read_only_and_never_write(self):
+        steps = self._steps()
+
+        step = steps[self._first_index(steps, "Actions")]
+        self.assertTrue(
+            _READ.search(step),
+            "the Actions step must grant read (the loop inspects its own "
+            "CI); got: " + step,
+        )
+        self.assertIsNone(
+            _WRITE.search(step),
+            "the Actions step must not grant write - the CI edit path stays "
+            "closed behind the workflows withholding; got: " + step,
+        )
+
+    def test_recipe_steps_carry_the_three_recorded_caveats(self):
+        # The plan's three recorded caveats, each traced to the saved page.
+        # The same-step pairing keeps the pin from passing on two unrelated
+        # steps that happen to share one word.
+        steps = self._steps()
+        lowered = [step.lower() for step in steps]
+
+        self.assertTrue(
+            any("checks api" in step and "actions" in step for step in lowered),
+            "a step must record that a fine-grained PAT cannot call the "
+            "Checks API, so CI is read as Actions runs and jobs; steps: "
+            + repr(steps),
+        )
+        self.assertTrue(
+            any("public" in step and "read" in step for step in lowered),
+            "a step must record that every fine-grained token keeps "
+            "read-only access to all public repositories; steps: " + repr(steps),
+        )
+        self.assertTrue(
+            any("driver" in step and "container" in step for step in lowered),
+            "a step must record that the token lives on the host driver "
+            "outside the container, so the agent cannot read it; steps: "
+            + repr(steps),
+        )
+
+    def test_recipe_steps_interpolate_the_owner_and_repo_verbatim(self):
+        owner, repo = "another owner", "other-repo"
+
+        steps = self._steps(owner, repo)
+
+        # The steps are display text, not a URL: the space in the owner is
+        # no encoding concern and must appear verbatim.
+        self.assertTrue(
+            any(owner in step for step in steps),
+            "the owner {!r} must appear verbatim in the steps; steps: "
+            + repr(steps),
+        )
+        self.assertTrue(
+            any(repo in step for step in steps),
+            "the repo {!r} must appear verbatim in the steps; steps: "
+            + repr(steps),
+        )
+
+    def test_recipe_steps_are_pure_and_deterministic(self):
+        steps = self._get_recipe_steps()
+        url = self._get_build_recipe_url()("octodemo", "my-repo")
+
+        first = steps("octodemo", "my-repo", url)
+        second = steps("octodemo", "my-repo", url)
+
+        self.assertEqual(
+            first,
+            second,
+            "two calls with the same inputs must return equal lists; "
+            "recipe_steps is a pure display-text builder with no hidden "
+            "state",
+        )
