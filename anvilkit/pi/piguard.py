@@ -40,6 +40,11 @@ CHECK_ADMINISTRATION = "administration"
 # plans/verify-guards-token.md).
 CHECK_CLASSIC_TOKEN = "classic_token"
 
+# The check name for the workflows-withheld finding (behaviour 5 of
+# plans/verify-guards-token.md): the documented-unprovable case, one
+# constant finding per run, not one per repo or per probe.
+CHECK_WORKFLOWS_WITHHELD = "workflows_withheld"
+
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
 _RULES_API_BASE = "https://api.github.com"
@@ -80,6 +85,13 @@ _ACTIONS_PERMISSIONS_DOC = (
     "doc/external/github/rest-api-endpoints-for-actions-permissions.md"
 )
 
+# Cited by the workflows-withheld finding. It documents that the
+# workflows list endpoint requires "Actions" repository permissions
+# (read) - not the workflows permission - and that it works
+# unauthenticated on public repos, so a 200 proves nothing about the
+# token (behaviour 5).
+_WORKFLOWS_DOC = "doc/external/github/rest-api-endpoints-for-workflows.md"
+
 # Cited by the classic-token probe's findings. It documents that a token's
 # scope list is the X-OAuth-Scopes response header and that scopes are
 # normalized - which is exactly why the probe's discriminator is a
@@ -112,6 +124,17 @@ _CLASSIC_TOKEN_SKIP_DANGER = (
     "whether the token is classic is unmeasured: a classic token grants "
     "access to every repository the owner can see, so the repo-scope "
     "guarantee may be void, and this report cannot rule it out"
+)
+
+# The same, for the workflows-withheld finding: the unmeasured hole is
+# that the token may hold the workflows permission (write only), which
+# is the documented privilege-escalation path - editing the CI
+# workflows the agent's own runs flow through (behaviour 5).
+_WORKFLOWS_WITHHELD_SKIP_DANGER = (
+    "whether the workflows permission is withheld is unmeasured: the "
+    "token may be able to edit CI workflows on the target - the "
+    "documented privilege-escalation path - and no read-only call can "
+    "rule it out"
 )
 
 # What an agent could do if each rule is absent: the consequence, not the
@@ -796,6 +819,58 @@ def probe_classic_token(
                 "that says the response carried no scopes, not what kind "
                 "of token this is; see {}".format(_OAUTH_SCOPES_DOC)
             ),
+        }
+    ]
+
+
+def workflows_withheld_finding() -> List[Dict[str, Any]]:
+    """The workflows-withheld finding (behaviour 5 of plans/verify-guards-token.md).
+
+    Takes nothing - no network, no token, no owner or repo - and returns a
+    constant one-element findings list. The ``workflows`` permission has
+    access level ``write`` only - no ``read`` form exists - per the
+    permission table in doc/external/github/fine-grained-personal-access-
+    tokens.md, and the workflows list endpoint
+    (``GET /repos/{owner}/{repo}/actions/workflows``) is gated on
+    "Actions" repository permissions (read), not ``workflows``, and works
+    unauthenticated on public repos (doc/external/github/rest-api-endpoints-
+    for-workflows.md). So no read-only call can prove the ``workflows``
+    withholding: the only call that would is a write, which the probes must
+    not perform.
+
+    The finding is therefore ``skipped``, never ``passed`` - the #68
+    rule's exact case: an unprovable withholding must not read as clean.
+    Deterministic: every call returns equal findings. Never raises. The
+    finding renders through :func:`render_finding`'s existing ``skipped``
+    branch, which carries the ``reason``.
+    """
+    reason = (
+        "the workflows permission has no read level (write only, per the "
+        "permission table in {}) and no read-only endpoint is gated on it "
+        "- the workflows list endpoint is gated on Actions: read and works "
+        "unauthenticated on public repos, so a 200 from it proves nothing "
+        "about the token ({}); the only call that would prove the "
+        "workflows withholding is a write, which the probes must not "
+        "perform - the withholding is unprovable by a read-only call".format(
+            _FINE_GRAINED_DOC, _WORKFLOWS_DOC
+        )
+    )
+    remedy = (
+        "manual check: open the token's permission table in the GitHub "
+        "settings UI (or re-create the token per the recipe) and confirm "
+        "the workflows permission is absent there; the workflow list "
+        "endpoint is documented in {} and the workflows-permission row "
+        "(write only) in {}".format(_WORKFLOWS_DOC, _FINE_GRAINED_DOC)
+    )
+    return [
+        {
+            "status": "skipped",
+            "check": CHECK_WORKFLOWS_WITHHELD,
+            "rule": None,
+            "danger": _WORKFLOWS_WITHHELD_SKIP_DANGER,
+            "source": None,
+            "reason": reason,
+            "remedy": remedy,
         }
     ]
 
