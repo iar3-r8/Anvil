@@ -25,7 +25,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -6352,6 +6352,654 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
                 _field(warn, "danger"),
                 _field(warn, "remedy"),
             ),
+        )
+
+
+class TokenFindingInvariantSweepTests(unittest.TestCase):
+    """Behaviour 10 of plans/verify-guards-token.md: a [PIN] boundary pin over
+    the token-scope findings the probes of behaviours 2-6 can emit.
+
+    A [PIN] sweeps the invariants over the production code as it is: the code
+    is believed correct, so the sweep may already pass - and that is the
+    correct outcome for a boundary pin. Its job is to break on future drift:
+    a finding that later drops its remedy, loses its danger, or renders
+    through the ``unknown:`` fallthrough must fail these tests, and no
+    assertion may be weakened to reach green - a new probe absent from the
+    sweep silently un-pins the invariant, so the swept check set is pinned to
+    the five.
+
+    The sweep drives the probes over every recorded outcome: the recorded
+    200/403/404/401/500 responses, the transport failures (URLError,
+    socket.timeout, bare OSError), the no-token skip, and (named_repo) the
+    no-other-repo skip; ``check_token_all`` is driven over the same opener
+    matrix to sweep the fixed-order concatenation, and the constant
+    ``workflows_withheld`` finding is swept on its own. Every test runs over
+    a recorded opener - no live network.
+    """
+
+    TOKEN = "ghp_recordedtoken"
+    OWNER = "owner"
+    REPO = "repo"
+    OTHER = "other"
+    _API = "https://api.github.com"
+    _KNOWN_STATUSES = ("passed", "warn", "skipped", "fail")
+
+    # The fixed set of probe checks this sweep must cover: a probe added to
+    # the module that is absent from the sweep silently un-pins the
+    # invariant, so the swept set is pinned to exactly these five.
+    EXPECTED_SWEEP_CHECKS = (
+        "target_access",
+        "administration",
+        "classic_token",
+        "workflows_withheld",
+        "named_repo",
+    )
+
+    def _http_outcome(self, code: int) -> Any:
+        """One recorded HTTPError for the status code; a denial is data."""
+        return urllib.error.HTTPError(
+            self._API + "/user", code, "recorded", None, None
+        )
+
+    def _probe_cases(self) -> List[Tuple[str, Callable[..., List[Dict[str, Any]]]]]:
+        """(label, zero-argument probe call) over the full recorded matrix.
+
+        Every probe, over the recorded 200/403/404/401/500 responses, the
+        three documented transport failures, the no-token skip and
+        (named_repo) the no-other-repo skip - every finding behaviours
+        2-6 can emit.
+        """
+        outcomes = (
+            [
+                # The classic-token discriminator is the X-OAuth-Scopes
+                # header, so its 200 records the header
+                # present-and-non-empty: the same opener is the fail case
+                # there and the plain 200 for the other probes.
+                (
+                    "HTTP 200 (X-OAuth-Scopes: repo, user)",
+                    _opener(
+                        _FakeResponse(
+                            b"{}",
+                            200,
+                            headers={"X-OAuth-Scopes": "repo, user"},
+                        )
+                    ),
+                ),
+                ("HTTP 403", _opener(self._http_outcome(403))),
+                ("HTTP 404", _opener(self._http_outcome(404))),
+                ("HTTP 401", _opener(self._http_outcome(401))),
+                ("HTTP 500", _opener(self._http_outcome(500))),
+            ]
+        )
+        transport = (
+            (
+                "URLError",
+                urllib.error.URLError("Name or service not known"),
+            ),
+            ("socket.timeout", socket.timeout("timed out")),
+            ("bare OSError", OSError("Network is unreachable")),
+        )
+        cases: List[Tuple[str, Callable[..., List[Dict[str, Any]]]]] = [
+            (
+                "no token",
+                lambda: piguard.probe_target_access(self.OWNER, self.REPO),
+            ),
+            (
+                "no token",
+                lambda: piguard.probe_administration(self.OWNER, self.REPO),
+            ),
+            ("no token", lambda: piguard.probe_classic_token()),
+            (
+                "no other repo",
+                lambda: piguard.probe_named_repo(self.OWNER, None),
+            ),
+            (
+                "no token",
+                lambda: piguard.probe_named_repo(self.OWNER, self.OTHER),
+            ),
+        ]
+        for label, opener in outcomes:
+            cases.append(
+                (
+                    label,
+                    lambda opener=opener: piguard.probe_target_access(
+                        self.OWNER, self.REPO, self.TOKEN, opener
+                    ),
+                )
+            )
+            cases.append(
+                (
+                    label,
+                    lambda opener=opener: piguard.probe_administration(
+                        self.OWNER, self.REPO, self.TOKEN, opener
+                    ),
+                )
+            )
+            cases.append(
+                (
+                    label,
+                    lambda opener=opener: piguard.probe_classic_token(
+                        self.TOKEN, opener
+                    ),
+                )
+            )
+            cases.append(
+                (
+                    label,
+                    lambda opener=opener: piguard.probe_named_repo(
+                        self.OWNER, self.OTHER, self.TOKEN, opener
+                    ),
+                )
+            )
+        for label, failure in transport:
+            opener = _opener(failure)
+            cases.append(
+                (
+                    label,
+                    lambda opener=opener: piguard.probe_target_access(
+                        self.OWNER, self.REPO, self.TOKEN, opener
+                    ),
+                )
+            )
+            cases.append(
+                (
+                    label,
+                    lambda opener=opener: piguard.probe_administration(
+                        self.OWNER, self.REPO, self.TOKEN, opener
+                    ),
+                )
+            )
+            cases.append(
+                (
+                    label,
+                    lambda opener=opener: piguard.probe_classic_token(
+                        self.TOKEN, opener
+                    ),
+                )
+            )
+            cases.append(
+                (
+                    label,
+                    lambda opener=opener: piguard.probe_named_repo(
+                        self.OWNER, self.OTHER, self.TOKEN, opener
+                    ),
+                )
+            )
+        cases.append(
+            ("constant", lambda: piguard.workflows_withheld_finding())
+        )
+        return cases
+
+    def _every_token_finding(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Every token finding the probes can emit as of today, with a label.
+
+        Direct per-probe calls over the recorded matrix, plus the
+        ``check_token_all`` concatenation over the same opener matrix - a
+        probe or a status dropped from either side would shrink the swept
+        set and trip the non-vacuity pin.
+        """
+        findings: List[Tuple[str, Dict[str, Any]]] = []
+        for label, call in self._probe_cases():
+            for finding in call():
+                findings.append(
+                    (
+                        "{}/{}: {}".format(
+                            label,
+                            _field(finding, "check"),
+                            _field(finding, "status"),
+                        ),
+                        finding,
+                    )
+                )
+        for label, findings_list in self._check_token_all_matrix():
+            for finding in findings_list:
+                findings.append(
+                    (
+                        "check_token_all({})/{}/{}".format(
+                            label,
+                            _field(finding, "check"),
+                            _field(finding, "status"),
+                        ),
+                        finding,
+                    )
+                )
+        return findings
+
+    def _check_token_all_matrix(
+        self,
+    ) -> List[Tuple[str, List[Dict[str, Any]]]]:
+        """``check_token_all`` over the recorded opener matrix, with labels.
+
+        The one injected opener sees every endpoint, so each recorded
+        outcome plays back on every probe - the concatenation's five
+        findings are swept across the full matrix, plus the no-token and
+        no-other-repo calls.
+        """
+        checker = piguard.check_token_all
+        # (label, recorded outcome): a recorded response or a recorded
+        # exception, replayed on every probe call by the one injected
+        # _RecordingOpener.
+        outcomes = (
+            [
+                ("HTTP 200", _FakeResponse(b'{"ok": true}', 200)),
+                ("HTTP 403", self._http_outcome(403)),
+                ("HTTP 404", self._http_outcome(404)),
+                ("HTTP 401", self._http_outcome(401)),
+                ("HTTP 500", self._http_outcome(500)),
+                (
+                    "classic 200 + X-OAuth-Scopes",
+                    _FakeResponse(
+                        b"{}",
+                        200,
+                        headers={"X-OAuth-Scopes": "repo, user"},
+                    ),
+                ),
+                (
+                    "URLError",
+                    urllib.error.URLError("Name or service not known"),
+                ),
+                ("socket.timeout", socket.timeout("timed out")),
+                ("bare OSError", OSError("Network is unreachable")),
+            ]
+        )
+        pairs: List[Tuple[str, List[Dict[str, Any]]]] = []
+        for label, outcome in outcomes:
+            pairs.append(
+                (
+                    label,
+                    checker(
+                        self.OWNER,
+                        self.REPO,
+                        token=self.TOKEN,
+                        other_repo=self.OTHER,
+                        opener=_RecordingOpener(outcome),
+                        timeout=10.0,
+                    ),
+                )
+            )
+        pairs.append(
+            (
+                "no token",
+                checker(
+                    self.OWNER,
+                    self.REPO,
+                    token=None,
+                    other_repo=self.OTHER,
+                    opener=_RecordingOpener(
+                        _FakeResponse(b'{"ok": true}', 200)
+                    ),
+                    timeout=10.0,
+                ),
+            )
+        )
+        pairs.append(
+            (
+                "no other repo",
+                checker(
+                    self.OWNER,
+                    self.REPO,
+                    token=self.TOKEN,
+                    other_repo=None,
+                    opener=_RecordingOpener(
+                        _FakeResponse(b'{"ok": true}', 200)
+                    ),
+                    timeout=10.0,
+                ),
+            )
+        )
+        return pairs
+
+    def _assert_finding_invariants(self, finding: Dict[str, Any]) -> None:
+        """The per-finding invariants, asserted under the caller's subTest."""
+        status = _field(finding, "status")
+        self.assertIn(
+            status,
+            self._KNOWN_STATUSES,
+            "finding status {!r} is not one of the four known statuses; "
+            "the report cannot interpret it".format(status),
+        )
+        remedy = _field(finding, "remedy")
+        self.assertIsInstance(
+            remedy,
+            str,
+            "remedy must be a string, not {!r}".format(type(remedy).__name__),
+        )
+        self.assertTrue(
+            remedy,
+            "a token finding with an empty remedy is a programming error: "
+            "it cannot name the concrete fix",
+        )
+        if status != "passed":
+            danger = _field(finding, "danger")
+            self.assertIsInstance(
+                danger,
+                str,
+                "danger must be a string, not {!r}".format(type(danger).__name__),
+            )
+            self.assertTrue(
+                danger,
+                "a non-passing token finding ({}) must name what an agent "
+                "could do while the fact is unmeasured or violated; its "
+                "danger is empty".format(status),
+            )
+            self.assertIn(
+                "doc/external/github/",
+                remedy,
+                "the {} token finding for check {!r} must name a doc path "
+                "under doc/external/github/ in its remedy, so a reviewer "
+                "can check the claim against the saved documentation".format(
+                    status, _field(finding, "check")
+                ),
+            )
+        line = piguard.render_finding(finding)
+        self.assertIsInstance(line, str)
+        self.assertTrue(
+            line,
+            "render_finding must produce a non-empty line for every token "
+            "finding",
+        )
+        if status == "fail":
+            self.assertNotIn(
+                "unknown:",
+                line,
+                "a fail finding must not render through the 'unknown:' "
+                "fallthrough - that line would hide the first real failure "
+                "the family can emit: {!r}".format(line),
+            )
+
+    def test_every_token_finding_the_probes_can_emit_holds_the_invariants(self):
+        findings = self._every_token_finding()
+        self.assertGreater(
+            len(findings),
+            0,
+            "the sweep produced no findings; the recorded matrix must "
+            "exercise the probes' real output",
+        )
+        for label, finding in findings:
+            with self.subTest(finding=label):
+                self._assert_finding_invariants(finding)
+
+    def test_sweep_is_not_vacuous_and_covers_exactly_the_five_probe_checks(self):
+        findings = self._every_token_finding()
+        statuses = {_field(f, "status") for _label, f in findings}
+        checks = {_field(f, "check") for _label, f in findings}
+        for required in ("fail", "warn", "skipped"):
+            self.assertIn(
+                required,
+                statuses,
+                "the sweep must actually exercise at least one {} finding, "
+                "so a probe that stops emitting it - or drops out of the "
+                "sweep - breaks the pin instead of silently un-pinning "
+                "it".format(required),
+            )
+        self.assertEqual(
+            checks,
+            set(self.EXPECTED_SWEEP_CHECKS),
+            "the swept check set must be exactly the five token probes; a "
+            "new probe absent from the sweep silently un-pins the "
+            "invariant: swept={}".format(sorted(checks)),
+        )
+
+
+class SummarizeTokenFindingsTests(unittest.TestCase):
+    """Behaviour 11 of plans/verify-guards-token.md: a [PIN] boundary pin
+    over ``summarize`` on token findings.
+
+    The first live exercise of the reserved path: the token probes are the
+    first to emit a ``fail``, so the exit-status seam is pinned against the
+    findings they actually produce - not hand-built dicts. ``1`` when any
+    finding has status ``fail``, ``0`` otherwise; ``warn`` and ``skipped``
+    alone yield ``0``; the empty list yields ``0``; an unknown status is
+    not a fail. Every test runs over a recorded opener - no live network.
+    """
+
+    TOKEN = "ghp_recordedtoken"
+    OWNER = "owner"
+    REPO = "repo"
+    OTHER = "other"
+    _API = "https://api.github.com"
+
+    def _summarizer(self) -> Any:
+        summarizer = getattr(piguard, "summarize", None)
+        self.assertTrue(
+            callable(summarizer),
+            "anvilkit.pi.piguard.summarize is not callable; the exit-status "
+            "seam has not been implemented yet",
+        )
+        return summarizer
+
+    def _token_findings_without_fail(self) -> List[Dict[str, Any]]:
+        """Real token findings mixing passed/warn/skipped - no fail.
+
+        One finding per probe, each in a recorded non-fail mode:
+        target_access 200 (passed), administration 403 (passed),
+        classic_token 200 with no scope header (passed),
+        workflows_withheld (constant skipped), named_repo 404 (passed);
+        plus the warn and skipped findings the same probes emit on a 404
+        target and a transport failure.
+        """
+        http = lambda code: urllib.error.HTTPError(
+            self._API + "/user", code, "recorded", None, None
+        )
+        findings: List[Dict[str, Any]] = []
+        findings.extend(
+            piguard.probe_target_access(
+                self.OWNER,
+                self.REPO,
+                self.TOKEN,
+                _opener(_FakeResponse(b'{"ok": true}', 200)),
+            )
+        )
+        findings.extend(
+            piguard.probe_administration(
+                self.OWNER,
+                self.REPO,
+                self.TOKEN,
+                _opener(http(403)),
+            )
+        )
+        findings.extend(
+            piguard.probe_classic_token(
+                self.TOKEN, _opener(_FakeResponse(b"{}", 200))
+            )
+        )
+        findings.extend(piguard.workflows_withheld_finding())
+        findings.extend(
+            piguard.probe_named_repo(
+                self.OWNER,
+                self.OTHER,
+                self.TOKEN,
+                _opener(http(404)),
+            )
+        )
+        # The warn and skipped modes of the same probes.
+        findings.extend(
+            piguard.probe_target_access(
+                self.OWNER,
+                self.REPO,
+                self.TOKEN,
+                _opener(http(404)),
+            )
+        )
+        findings.extend(
+            piguard.probe_named_repo(
+                self.OWNER,
+                self.OTHER,
+                self.TOKEN,
+                _opener(http(200)),
+            )
+        )
+        findings.extend(
+            piguard.probe_administration(
+                self.OWNER,
+                self.REPO,
+                self.TOKEN,
+                _opener(urllib.error.URLError("Name or service not known")),
+            )
+        )
+        return findings
+
+    def _token_findings_all_fail(self) -> List[Dict[str, Any]]:
+        """A list every element of which is a real ``fail`` token finding.
+
+        Only two probes can emit a fail - administration (200) and
+        classic_token (non-empty scopes header) - so the all-fail list is
+        their fail findings together, each from the real probe over a
+        recorded opener.
+        """
+        findings: List[Dict[str, Any]] = []
+        findings.extend(
+            piguard.probe_administration(
+                self.OWNER,
+                self.REPO,
+                self.TOKEN,
+                _opener(_FakeResponse(b"{}", 200)),
+            )
+        )
+        findings.extend(
+            piguard.probe_classic_token(
+                self.TOKEN,
+                _opener(
+                    _FakeResponse(
+                        b"{}",
+                        200,
+                        headers={"X-OAuth-Scopes": "repo, user"},
+                    )
+                ),
+            )
+        )
+        return findings
+
+    def test_token_findings_mixed_passed_warn_skipped_without_fail_yield_zero(self):
+        summarize = self._summarizer()
+        findings = self._token_findings_without_fail()
+
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [],
+            "fixture sanity: the list carries no fail finding",
+        )
+        statuses = {_field(f, "status") for f in findings}
+        for required in ("passed", "warn", "skipped"):
+            self.assertIn(
+                required,
+                statuses,
+                "fixture sanity: the list must mix the three non-failing "
+                "statuses, and it lacks {}".format(required),
+            )
+
+        self.assertEqual(
+            summarize(findings),
+            0,
+            "token findings mixing passed, warn and skipped must exit 0 - "
+            "a warning or an unrunnable probe is reported, not a failure",
+        )
+
+    def test_exactly_one_real_token_fail_among_non_fail_findings_yields_one(self):
+        summarize = self._summarizer()
+        non_fail = self._token_findings_without_fail()
+        for label, fail_finding in (
+            (
+                "administration (behaviour 3, 200)",
+                piguard.probe_administration(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(_FakeResponse(b"{}", 200)),
+                )[0],
+            ),
+            (
+                "classic_token (behaviour 4, non-empty scopes header)",
+                piguard.probe_classic_token(
+                    self.TOKEN,
+                    _opener(
+                        _FakeResponse(
+                            b"{}",
+                            200,
+                            headers={"X-OAuth-Scopes": "repo, user"},
+                        )
+                    ),
+                )[0],
+            ),
+        ):
+            with self.subTest(fail=label):
+                self.assertEqual(
+                    _field(fail_finding, "status"),
+                    "fail",
+                    "fixture sanity: the probe emits a fail finding",
+                )
+                findings = non_fail + [fail_finding]
+                self.assertEqual(
+                    [f for f in findings if _field(f, "status") == "fail"],
+                    [fail_finding],
+                    "fixture sanity: exactly one fail finding among the "
+                    "token findings",
+                )
+
+                self.assertEqual(
+                    summarize(findings),
+                    1,
+                    "a single real token fail among passed, warn and "
+                    "skipped findings must yield the exit status 1 - the "
+                    "first live exercise of the reserved path",
+                )
+
+    def test_all_fail_token_findings_yield_one(self):
+        summarize = self._summarizer()
+        findings = self._token_findings_all_fail()
+
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["fail"] * len(findings),
+            "fixture sanity: every finding in the all-fail list is a fail",
+        )
+        self.assertGreaterEqual(
+            len(findings),
+            2,
+            "fixture sanity: both fail-emitting probes (administration, "
+            "classic_token) contribute their fail finding",
+        )
+        self.assertEqual(
+            [_field(f, "check") for f in findings],
+            ["administration", "classic_token"],
+            "fixture sanity: the all-fail list holds the two probes that "
+            "can emit a fail",
+        )
+
+        self.assertEqual(
+            summarize(findings),
+            1,
+            "a list of all-fail token findings must yield the exit "
+            "status 1",
+        )
+
+    def test_empty_token_findings_yield_zero(self):
+        summarize = self._summarizer()
+
+        self.assertEqual(
+            summarize([]),
+            0,
+            "no findings at all means nothing failed",
+        )
+
+    def test_unknown_status_is_not_a_fail(self):
+        summarize = self._summarizer()
+        finding = {
+            "status": "bogus",
+            "check": "administration",
+            "rule": None,
+            "danger": "d",
+            "source": None,
+            "remedy": "r; see doc/external/github/"
+            "rest-api-endpoints-for-actions-permissions.md",
+        }
+
+        self.assertEqual(
+            summarize([finding]),
+            0,
+            "a status that is not exactly 'fail' must not be read as a "
+            "failure - only the literal fail status drives the exit "
+            "status",
         )
 
 
