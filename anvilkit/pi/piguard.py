@@ -28,6 +28,10 @@ CHECK_REVIEW = "review"
 CHECK_UPDATE_RESTRICTION = "update_restriction"
 CHECK_FILE_PATHS = "file_paths"
 
+# The token-scope probe's check name (behaviour 2 of
+# plans/verify-guards-token.md).
+CHECK_TARGET_ACCESS = "target_access"
+
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
 _RULES_API_BASE = "https://api.github.com"
@@ -52,6 +56,23 @@ _HISTORY_REWRITE_RULES = ("non_fast_forward", "deletion")
 # saved endpoint documentation.
 _ENDPOINT_DOC = "doc/external/github/rest-api-endpoints-for-rules.md"
 _RULES_DOC = "doc/external/github/available-rules-for-rulesets.md"
+
+# Cited by the target-access probe's findings. No saved page documents
+# GET /repos/{owner}/{repo}'s access semantics directly, so the probe cites
+# the nearest saved page: it documents that a fine-grained token reaches
+# only the repositories selected at creation, which is exactly what a 404
+# on the target repo tells the report reader.
+_FINE_GRAINED_DOC = "doc/external/github/fine-grained-personal-access-tokens.md"
+
+# What an agent could do while the target access is unmeasured: the skipped
+# finding carries it so it stands on its own rather than leaning on the
+# renderer (the _SKIPPED_DANGERS pattern).
+_TARGET_ACCESS_SKIP_DANGER = (
+    "whether the token can reach the target repository at all is "
+    "unmeasured: no later probe's denial can be read as a withholding, "
+    "and this report cannot rule out that the probes ran against a "
+    "repository the token never had"
+)
 
 # What an agent could do if each rule is absent: the consequence, not the
 # mechanism, stated first.
@@ -280,6 +301,140 @@ def fetch_probe(
         return None, None, None, "probe could not reach {}: {}".format(url, exc)
 
     return status, resp_headers, body, None
+
+
+def probe_target_access(
+    owner: str,
+    repo: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The first token-scope probe: does the token reach the target repo at all?
+
+    Issues ``GET /repos/{owner}/{repo}`` through :func:`fetch_probe`
+    (behaviour 1 of plans/verify-guards-token.md) - one probe, one API call -
+    and interprets the observation:
+
+    - ``200`` -> one ``passed`` finding: the target is reachable, so a later
+      probe's denial can be read as a withholding.
+    - ``404`` -> one ``warn`` finding: the token cannot reach the target repo
+      at all, so no other probe's denial can be read as a withholding - an
+      under-scoped token and an unreachable target look identical on every
+      other probe, and this finding is the disambiguator.
+    - ``401`` or any other status -> one ``skipped`` finding whose reason
+      carries the status.
+    - a transport reason from :func:`fetch_probe` -> one ``skipped`` finding
+      with a non-empty reason.
+
+    This probe differs from :func:`fetch_branch_rules` in what a missing
+    token means: there, a missing token is an unauthenticated attempt the
+    endpoint allows on public repositories; here, a missing token is a
+    **skip** - no request is attempted at all - because a token-scope probe
+    reads a token's property, and an unauthenticated request establishes no
+    fact about any token (behaviour 7).
+
+    The 404 remedy cites ``doc/external/github/fine-grained-personal-access-
+    tokens.md`` - the nearest saved page, which documents that a fine-grained
+    token reaches only the repositories selected at creation; no saved page
+    documents ``GET /repos/{owner}/{repo}``'s access semantics directly.
+
+    Never raises; always returns a list of findings. Never echoes a token
+    into a finding or a reason (module invariant).
+    """
+    target = "{}/{}".format(owner, repo)
+    url = "{}/repos/{}/{}".format(_RULES_API_BASE, owner, repo)
+    skipped_remedy = (
+        "make the token valid and scoped to {} and api.github.com "
+        "reachable, then re-run; see {}".format(target, _FINE_GRAINED_DOC)
+    )
+
+    if not token:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_TARGET_ACCESS,
+                "rule": None,
+                "danger": _TARGET_ACCESS_SKIP_DANGER,
+                "source": None,
+                "reason": (
+                    "no token supplied: a token-scope probe with no token "
+                    "establishes no fact about any token, so the probe "
+                    "skips rather than issuing an unauthenticated request "
+                    "and reading its status as a token property - unlike "
+                    "fetch_branch_rules, where a missing token is an "
+                    "unauthenticated attempt"
+                ),
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    status, _headers, _body, reason = fetch_probe(
+        url, token, opener=opener, timeout=timeout
+    )
+
+    if reason is not None:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_TARGET_ACCESS,
+                "rule": None,
+                "danger": _TARGET_ACCESS_SKIP_DANGER,
+                "source": None,
+                "reason": reason,
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    if status == 200:
+        return [
+            {
+                "status": "passed",
+                "check": CHECK_TARGET_ACCESS,
+                "rule": None,
+                "danger": "",
+                "source": None,
+                "remedy": (
+                    "nothing to do - the token reaches {}, so later probes' "
+                    "denials are interpretable; see {}".format(
+                        target, _FINE_GRAINED_DOC
+                    )
+                ),
+            }
+        ]
+
+    if status == 404:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_TARGET_ACCESS,
+                "rule": None,
+                "danger": (
+                    "the token cannot reach {} at all, so no other probe's "
+                    "denial can be read as a withholding: an under-scoped "
+                    "token and an unreachable target look identical on "
+                    "every other probe".format(target)
+                ),
+                "source": None,
+                "remedy": (
+                    "recreate the token with Repository access "
+                    "'Only select repositories' including {}; see "
+                    "{}".format(target, _FINE_GRAINED_DOC)
+                ),
+            }
+        ]
+
+    return [
+        {
+            "status": "skipped",
+            "check": CHECK_TARGET_ACCESS,
+            "rule": None,
+            "danger": _TARGET_ACCESS_SKIP_DANGER,
+            "source": None,
+            "reason": "GitHub returned HTTP {} for {}".format(status, url),
+            "remedy": skipped_remedy,
+        }
+    ]
 
 
 def skipped_findings(reason: str) -> List[Dict[str, Any]]:
