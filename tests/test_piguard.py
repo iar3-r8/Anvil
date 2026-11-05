@@ -1176,11 +1176,17 @@ class RenderFindingTests(unittest.TestCase):
 
 
 class _FakeResponse:
-    """A minimal urlopen response: readable and usable as a context manager."""
+    """A minimal urlopen response: readable, statused, usable as a context manager."""
 
-    def __init__(self, body: bytes, status: int = 200) -> None:
+    def __init__(
+        self,
+        body: bytes,
+        status: int = 200,
+        headers: Optional[Dict[str, str]] = None,
+    ) -> None:
         self._body = body
         self.status = status
+        self.headers = dict(headers) if headers else {}
 
     def getcode(self) -> int:
         return self.status
@@ -1210,6 +1216,54 @@ def _opener(outcome: Any) -> Any:
         return outcome
 
     return opener
+
+
+class _CapturingOpener:
+    """An opener that records the request it was handed, then plays back one
+    recorded outcome.
+
+    ``outcome`` follows the same contract as :func:`_opener` (an exception to
+    raise or a :class:`_FakeResponse` to return). ``captured`` holds the
+    request object the implementation built - the first argument of the
+    opener call, recorded positionally so the test does not depend on the
+    exact call signature - or ``None`` if the opener was never called.
+    """
+
+    def __init__(self, outcome: Any) -> None:
+        self._outcome = outcome
+        self.captured: Any = None
+        self.timeout: Any = None
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        self.captured = args[0]
+        if len(args) > 1:
+            self.timeout = args[1]
+        elif "timeout" in kwargs:
+            self.timeout = kwargs["timeout"]
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+
+def _request_headers(request: Any) -> Dict[str, Any]:
+    """The headers the recorded request carries, keyed by canonical form.
+
+    Reads through :meth:`urllib.request.Request.get_header`, so a missing
+    header is ``None`` in the returned mapping rather than a KeyError.
+    """
+    if request is None:
+        return {}
+    keys = getattr(request, "header_items", None)
+    if not callable(keys):
+        return {}
+    try:
+        items = list(keys())
+    except Exception:
+        return {}
+    headers = {}
+    for key, value in items:
+        headers[str(key).lower()] = value
+    return headers
 
 
 class _SkippedAssertions:
@@ -1433,6 +1487,296 @@ class FetchBranchRulesTests(unittest.TestCase, _SkippedAssertions):
             1,
             "the recorded review count must survive the fetch",
         )
+
+
+class FetchProbeTests(unittest.TestCase):
+    """Behaviour 1 of plans/verify-guards-token.md: ``fetch_probe``.
+
+    ``fetch_probe(url, token, opener, timeout)`` issues one read-only GET
+    through an injected opener (a urlopen-like callable, the same seam
+    ``fetch_branch_rules`` in this module uses) and returns a four-tuple
+    ``(status, headers, body, reason)``. An ``HTTPError`` is a **successful
+    observation** - its ``code`` and ``headers`` are returned with
+    ``reason=None``, because a ``403`` is the compliant answer to a probe:
+    a denial is the data. Only transport-level failures - ``URLError``,
+    ``socket.timeout``, a bare ``OSError`` - yield ``(None, None, None,
+    reason)`` with a non-empty reason string. It never raises, and a
+    missing token means no ``Authorization`` header on the request.
+
+    Every test below runs over a recorded opener - no live network. The
+    version header is the one the saved endpoint docs pin for the probe
+    endpoints (``doc/external/github/rest-api-endpoints-for-actions-
+    permissions.md`` and ``doc/external/github/rest-api-endpoints-for-users.md``),
+    cited below - consistency with the module's pinned API version, not an
+    invention.
+    """
+
+    URL = "https://api.github.com/user"
+
+    def _prober(self) -> Any:
+        prober = getattr(piguard, "fetch_probe", None)
+        self.assertTrue(
+            callable(prober),
+            "anvilkit.pi.piguard.fetch_probe is not callable; the token-scope "
+            "probe fetch has not been implemented yet",
+        )
+        return prober
+
+    def test_recorded_200_returns_status_headers_body_and_none(self):
+        probe = self._prober()
+        headers = {"X-Frame-Options": "DENY"}
+        body = b'{"login": "owner"}'
+
+        status, resp_headers, resp_body, reason = probe(
+            self.URL, None, _opener(_FakeResponse(body, 200, headers)), 10.0
+        )
+
+        self.assertEqual(
+            status,
+            200,
+            "a recorded 200 must be observed as status 200",
+        )
+        self.assertIsNotNone(resp_headers, "a successful observation carries headers")
+        self.assertEqual(
+            resp_body,
+            body,
+            "the recorded body must come back unchanged",
+        )
+        self.assertIsNone(
+            reason,
+            "a 200 is a successful observation - no failure reason",
+        )
+
+    def test_recorded_http_error_403_is_a_successful_observation(self):
+        # The core assertion: a 403 is the compliant answer to a probe, so
+        # it must be returned as data, not swallowed into a reason.
+        probe = self._prober()
+        headers = {"X-Frame-Options": "DENY"}
+
+        status, resp_headers, _resp_body, reason = probe(
+            self.URL,
+            None,
+            _opener(
+                urllib.error.HTTPError(
+                    self.URL, 403, "Forbidden", headers, None
+                )
+            ),
+            10.0,
+        )
+
+        self.assertEqual(
+            status,
+            403,
+            "an HTTPError is a successful observation - its code must be "
+            "returned, because a 403 is the compliant answer",
+        )
+        self.assertIsInstance(
+            resp_headers,
+            dict,
+            "the observation must carry the recorded headers",
+        )
+        self.assertEqual(
+            resp_headers.get("X-Frame-Options"),
+            "DENY",
+            "the recorded 403 headers must be returned, not discarded",
+        )
+        self.assertIsNone(
+            reason,
+            "a 403 is data, not a failure - it must not produce a reason",
+        )
+
+    def test_recorded_http_error_404_is_a_successful_observation(self):
+        probe = self._prober()
+
+        status, _resp_headers, _resp_body, reason = probe(
+            self.URL,
+            None,
+            _opener(
+                urllib.error.HTTPError(self.URL, 404, "Not Found", None, None)
+            ),
+            10.0,
+        )
+
+        self.assertEqual(
+            status,
+            404,
+            "a 404 is data, not a failure - its code must be returned",
+        )
+        self.assertIsNone(
+            reason,
+            "a 404 must not produce a failure reason - it is a successful "
+            "observation",
+        )
+
+    def test_url_error_returns_none_triple_and_nonempty_reason(self):
+        probe = self._prober()
+
+        status, headers, body, reason = probe(
+            self.URL,
+            None,
+            _opener(urllib.error.URLError("Name or service not known")),
+            10.0,
+        )
+
+        self.assertIsNone(status)
+        self.assertIsNone(headers)
+        self.assertIsNone(body)
+        self.assertIsInstance(reason, str)
+        self.assertTrue(
+            reason, "a transport failure must record a non-empty reason"
+        )
+
+    def test_socket_timeout_returns_none_triple_and_nonempty_reason(self):
+        probe = self._prober()
+
+        status, headers, body, reason = probe(
+            self.URL, None, _opener(socket.timeout("timed out")), 10.0
+        )
+
+        self.assertIsNone(status)
+        self.assertIsNone(headers)
+        self.assertIsNone(body)
+        self.assertIsInstance(reason, str)
+        self.assertTrue(
+            reason, "a timeout must record a non-empty reason"
+        )
+
+    def test_bare_oserror_returns_none_triple_and_nonempty_reason(self):
+        probe = self._prober()
+
+        status, headers, body, reason = probe(
+            self.URL, None, _opener(OSError("Network is unreachable")), 10.0
+        )
+
+        self.assertIsNone(status)
+        self.assertIsNone(headers)
+        self.assertIsNone(body)
+        self.assertIsInstance(reason, str)
+        self.assertTrue(
+            reason, "a bare OSError must record a non-empty reason"
+        )
+
+    def test_no_token_request_carries_no_authorization_header(self):
+        probe = self._prober()
+        opener = _CapturingOpener(
+            _FakeResponse(b'{"login": "owner"}', 200)
+        )
+
+        probe(self.URL, None, opener, 10.0)
+
+        request = opener.captured
+        self.assertIsNotNone(
+            request,
+            "fetch_probe must hand its opener a request to open",
+        )
+        self.assertNotIn(
+            "authorization",
+            _request_headers(request),
+            "no token means no Authorization header on the request",
+        )
+
+    def test_token_request_carries_bearer_authorization_header(self):
+        # Same header shape fetch_branch_rules builds
+        # (anvilkit/pi/piguard.py: Authorization: Bearer {token}).
+        probe = self._prober()
+        opener = _CapturingOpener(
+            _FakeResponse(b'{"login": "owner"}', 200)
+        )
+
+        probe(self.URL, "ghp_recordedtoken", opener, 10.0)
+
+        request = opener.captured
+        self.assertIsNotNone(request, "fetch_probe must hand its opener a request")
+        headers = _request_headers(request)
+        self.assertEqual(
+            headers.get("authorization"),
+            "Bearer ghp_recordedtoken",
+            "a token must produce the same Authorization: Bearer <token> "
+            "header shape fetch_branch_rules uses",
+        )
+
+    def test_request_headers_match_pinned_api_version(self):
+        # Cited: doc/external/github/rest-api-endpoints-for-actions-
+        # permissions.md and doc/external/github/rest-api-endpoints-for-
+        # users.md pin X-GitHub-Api-Version: 2026-03-10 for the probe
+        # endpoints; Accept: application/vnd.github+json is the module's
+        # existing header for api.github.com requests.
+        probe = self._prober()
+        opener = _CapturingOpener(
+            _FakeResponse(b'{"login": "owner"}', 200)
+        )
+
+        probe(self.URL, None, opener, 10.0)
+
+        request = opener.captured
+        self.assertIsNotNone(request, "fetch_probe must hand its opener a request")
+        headers = _request_headers(request)
+        self.assertEqual(
+            headers.get("accept"),
+            "application/vnd.github+json",
+            "the probe must send the same Accept header the module already "
+            "uses for api.github.com requests",
+        )
+        self.assertEqual(
+            headers.get("x-github-api-version"),
+            "2026-03-10",
+            "the probe must pin the API version the saved endpoint docs use "
+            "for the probe endpoints",
+        )
+
+    def test_timeout_is_passed_through_to_the_opener(self):
+        probe = self._prober()
+        opener = _CapturingOpener(_FakeResponse(b'{"login": "owner"}', 200))
+
+        probe(self.URL, None, opener, 12.5)
+
+        self.assertIs(
+            opener.timeout,
+            12.5,
+            "fetch_probe must pass its timeout through to the opener",
+        )
+
+    def test_never_raises_across_every_recorded_failure_mode(self):
+        probe = self._prober()
+        for label, outcome in (
+            ("URLError", urllib.error.URLError("Name or service not known")),
+            ("socket.timeout", socket.timeout("timed out")),
+            ("bare OSError", OSError("Network is unreachable")),
+            (
+                "HTTPError 403",
+                urllib.error.HTTPError(self.URL, 403, "Forbidden", None, None),
+            ),
+            (
+                "HTTPError 404",
+                urllib.error.HTTPError(self.URL, 404, "Not Found", None, None),
+            ),
+        ):
+            with self.subTest(failure=label):
+                try:
+                    status, headers, body, reason = probe(
+                        self.URL, None, _opener(outcome), 10.0
+                    )
+                except Exception as exc:
+                    self.fail(
+                        "fetch_probe raised {} for the recorded {}; every "
+                        "recorded failure mode must be returned, not "
+                        "thrown".format(type(exc).__name__, label)
+                    )
+                if isinstance(outcome, urllib.error.HTTPError):
+                    self.assertIsNone(
+                        reason,
+                        "an HTTPError is a successful observation - no "
+                        "reason",
+                    )
+                    self.assertEqual(status, outcome.code)
+                else:
+                    self.assertEqual(
+                        (status, headers, body),
+                        (None, None, None),
+                        "a transport failure must return the none-triple",
+                    )
+                    self.assertIsInstance(reason, str)
+                    self.assertTrue(reason, "a transport failure must record a reason")
 
 
 class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
