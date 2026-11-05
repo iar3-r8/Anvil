@@ -6875,6 +6875,96 @@ class RenderFindingBlockTests(unittest.TestCase):
         )
         self._assert_substance_survives(_field(finding, "remedy"), block)
 
+    def test_passed_finding_block_does_not_repeat_the_see_line(self):
+        # Behaviour 19a: a passed finding carries its substance in the
+        # remedy field, so the block must not restate it twice - the
+        # detail lines must not repeat a 6-word-or-longer phrase from the
+        # see: line. The detail may be EMPTY (a headline plus remedy
+        # lines is a legal block), but the caveat substance must survive
+        # somewhere in the block, so the fix cannot delete the fact to
+        # dodge the duplication. warn/fail/skipped are out of scope: their
+        # remedy (a fix) is genuinely different from their danger.
+        def passed_finding_fixture():
+            # The same fixtures the two existing passed pins use.
+            branch = piguard.check_review(
+                [pull_request_rule("main-guard", 1)]
+            )[0]
+            token = [
+                f
+                for f in piguard.probe_target_access(
+                    "owner",
+                    "repo",
+                    "ghp_blocktest",
+                    opener=_opener(
+                        _FakeResponse(b'{"full_name": "owner/repo"}', 200)
+                    ),
+                    timeout=10.0,
+                )
+                if _field(f, "status") == "passed"
+            ][0]
+            return [
+                ("branch_rule", branch, "bypass_actors"),
+                ("token", token, None),
+            ]
+
+        for name, finding, caveat_phrase in passed_finding_fixture():
+            self.assertEqual(
+                "passed", _field(finding, "status"), "fixture sanity ({})".format(name)
+            )
+            block = self._block(finding, width=80)
+            # detail = every line after the headline that is not a remedy
+            # line; remedy_text = the remedy lines with the indented
+            # fix:/see: prefix stripped and whitespace compacted.
+            detail_lines = [
+                line
+                for line in block[1:]
+                if not line.lstrip().startswith(("fix:", "see:"))
+            ]
+            remedy_text = " ".join(
+                " ".join(line.lstrip()[4:].split())
+                for line in self._remedy_lines(block)
+            )
+            detail_compact = self._compact(" ".join(detail_lines)).lower()
+            words = remedy_text.split()
+            duplicated = [
+                " ".join(words[start:start + 6])
+                for start in range(len(words) - 5)
+                if self._compact(" ".join(words[start:start + 6])).lower()
+                in detail_compact
+            ]
+            self.assertEqual(
+                duplicated,
+                [],
+                "the {!r} block's detail lines restate the see: line "
+                "({} 6-word phrase(s) shared between them): {}\n"
+                "block: {!r}".format(name, len(duplicated), duplicated, block),
+            )
+            # The caveat substance must still appear somewhere in the
+            # block (detail or remedy), so de-duplicating cannot delete
+            # the fact.
+            block_compact = self._compact("\n".join(block))
+            if caveat_phrase is not None:
+                self.assertIn(
+                    self._compact(caveat_phrase),
+                    block_compact,
+                    "the {} caveat must survive somewhere in the "
+                    "block:\nblock: {!r}".format(name, block),
+                )
+            else:
+                self.assertIn(
+                    piguard.CHECK_TARGET_ACCESS,
+                    block_compact,
+                    "the token check name must survive somewhere in "
+                    "the block:\nblock: {!r}".format(block),
+                )
+                self.assertIn(
+                    "doc/external/github/fine-grained-personal-access-"
+                    "tokens.md",
+                    block_compact,
+                    "the remedy's doc path must survive somewhere in "
+                    "the block:\nblock: {!r}".format(block),
+                )
+
     def test_narrower_width_wraps_to_strictly_more_lines(self):
         # Width is a real parameter: the long skipped reason wraps to
         # strictly more lines at width 40 than at 80, and no line ever
