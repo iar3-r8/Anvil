@@ -5515,5 +5515,419 @@ class ProbeNamedRepoTests(unittest.TestCase):
                 )
 
 
+class _RecordingOpener:
+    """An opener that records every request path it is handed, then plays
+    back one recorded outcome (or raises) on each call.
+
+    The multi-request sibling of :class:`_CapturingOpener`:
+    ``check_token_all`` routes every network probe through the same single
+    opener, so one opener must survive several calls and remember all of
+    them - the recorded path list is how a test proves the probes share
+    one fetch seam.
+    """
+
+    def __init__(self, outcome: Any) -> None:
+        self._outcome = outcome
+        self.paths: List[str] = []
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        request = args[0]
+        url = getattr(request, "full_url", None) or getattr(request, "url", "")
+        self.paths.append(urllib.parse.urlparse(url).path)
+        if isinstance(self._outcome, Exception):
+            raise self._outcome
+        return self._outcome
+
+
+class CheckTokenAllTests(unittest.TestCase):
+    """Behaviour 8 of plans/verify-guards-token.md: ``check_token_all``.
+
+    ``check_token_all(owner, repo, token=None, other_repo=None, opener=None,
+    timeout=None)`` is the token-scope probe concatenation: the findings of
+    behaviours 2, 3, 4, 5 and 6 - target_access, administration,
+    classic_token, workflows_withheld and named_repo - returned in that
+    fixed order. It is the single seam both CLI call sites (verify-guards
+    and doctor's Guards section) will report through: a probe added here
+    reaches both with no edit at either, so the fixed, explicit order is
+    the load-bearing contract, and the one injected opener is the one seam
+    every network probe routes through (each probe routes through
+    ``fetch_probe``, never a parallel fetch path).
+
+    - ``token=None`` -> every network probe skips (behaviour 7) but the
+      constant ``workflows_withheld`` finding is still present in its
+      position - it takes no network and no token.
+    - no other repo supplied -> the named_repo slot is the probe's
+      no-other-repo ``skipped``, not a missing slot.
+    - an all-failing opener -> all five findings ``skipped``, never an
+      exception: never raises, never exits.
+
+    Every test below runs over a recorded opener - no live network.
+    """
+
+    TOKEN = "ghp_recordedtoken"
+    OWNER = "owner"
+    REPO = "repo"
+    OTHER = "other"
+
+    # The fixed concatenation order: behaviours 2, 3, 4, 5 and 6.
+    EXPECTED_CHECK_ORDER = (
+        "target_access",
+        "administration",
+        "classic_token",
+        "workflows_withheld",
+        "named_repo",
+    )
+
+    _KNOWN_STATUSES = ("passed", "warn", "skipped", "fail")
+
+    def _checker(self) -> Any:
+        checker = getattr(piguard, "check_token_all", None)
+        self.assertTrue(
+            callable(checker),
+            "anvilkit.pi.piguard.check_token_all is not callable; the "
+            "token-scope probe concatenation has not been implemented yet",
+        )
+        return checker
+
+    def _all_200_opener(self) -> Any:
+        return _RecordingOpener(_FakeResponse(b'{"ok": true}', 200))
+
+    def test_fully_succeeding_opener_yields_findings_in_the_fixed_check_order(self):
+        # The load-bearing assertion: with a fully-succeeding recorded
+        # opener (200 everywhere, no scope header) the findings must come
+        # out in the fixed order target_access, administration,
+        # classic_token, workflows_withheld, named_repo.
+        checker = self._checker()
+        opener = self._all_200_opener()
+
+        findings = checker(
+            self.OWNER,
+            self.REPO,
+            token=self.TOKEN,
+            other_repo=self.OTHER,
+            opener=opener,
+            timeout=10.0,
+        )
+
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            5,
+            "each of the five probes contributes its own one-element "
+            "finding list, so all probes running means exactly five "
+            "findings",
+        )
+        self.assertEqual(
+            [_field(f, "check") for f in findings],
+            list(self.EXPECTED_CHECK_ORDER),
+            "the findings must come out in the fixed order target_access, "
+            "administration, classic_token, workflows_withheld, "
+            "named_repo - both call sites gain a future probe with no "
+            "edit at either only because that order is explicit",
+        )
+
+    def test_each_probe_contributes_exactly_one_finding(self):
+        checker = self._checker()
+
+        findings = checker(
+            self.OWNER,
+            self.REPO,
+            token=self.TOKEN,
+            other_repo=self.OTHER,
+            opener=self._all_200_opener(),
+            timeout=10.0,
+        )
+
+        self.assertEqual(len(findings), 5)
+        for check in self.EXPECTED_CHECK_ORDER:
+            with self.subTest(check=check):
+                matching = [f for f in findings if _field(f, "check") == check]
+                self.assertEqual(
+                    len(matching),
+                    1,
+                    "the {} probe must contribute exactly its own "
+                    "one-element finding list - a probe contributing "
+                    "zero or two findings would break the fixed "
+                    "concatenation".format(check),
+                )
+
+    def test_workflows_withheld_is_present_in_position_when_the_other_probes_skip(self):
+        # The workflows_withheld finding is a constant: it takes no
+        # network and no token, so it must survive even when every
+        # network probe skips for a missing token - in its fixed
+        # position, not appended, not dropped.
+        checker = self._checker()
+        opener = _RecordingOpener(_FakeResponse(b'{"ok": true}', 200))
+
+        findings = checker(
+            self.OWNER,
+            self.REPO,
+            token=None,
+            other_repo=self.OTHER,
+            opener=opener,
+            timeout=10.0,
+        )
+
+        self.assertEqual(
+            [_field(f, "check") for f in findings],
+            list(self.EXPECTED_CHECK_ORDER),
+            "even when all four network probes skip, the five slots stay "
+            "in their fixed order",
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["skipped"] * 5,
+            "a missing token skips every network probe (behaviour 7), and "
+            "the constant workflows_withheld finding is skipped too - "
+            "nothing passes",
+        )
+        workflows = findings[3]
+        self.assertEqual(
+            _field(workflows, "check"),
+            "workflows_withheld",
+            "the workflows_withheld slot stays in its fourth position",
+        )
+        self.assertEqual(
+            _field(workflows, "status"),
+            "skipped",
+            "the workflows withholding is unprovable by a read-only call: "
+            "skipped, never passed, even when no token is supplied",
+        )
+        self.assertEqual(
+            opener.paths,
+            [],
+            "with no token no network probe may attempt a request - the "
+            "workflows_withheld finding must come from the constant, not "
+            "a fetch",
+        )
+
+    def test_no_other_repo_supplied_yields_the_named_repo_skip_not_a_missing_slot(self):
+        checker = self._checker()
+        opener = _RecordingOpener(_FakeResponse(b'{"ok": true}', 200))
+
+        findings = checker(
+            self.OWNER,
+            self.REPO,
+            token=self.TOKEN,
+            other_repo=None,
+            opener=opener,
+            timeout=10.0,
+        )
+
+        self.assertEqual(
+            [_field(f, "check") for f in findings],
+            list(self.EXPECTED_CHECK_ORDER),
+            "an absent other repo must not drop the named_repo slot or "
+            "shift the fixed order",
+        )
+        named = findings[4]
+        self.assertEqual(
+            _field(named, "status"),
+            "skipped",
+            "no other repo supplied is the probe's no-other-repo skipped - "
+            "never a pass, never a missing finding, never a crash",
+        )
+        self.assertNotIn(
+            "/repos/{}/{}".format(self.OWNER, self.OTHER),
+            opener.paths,
+            "with no other repo supplied the named-repo probe must not "
+            "attempt a request: there is nothing to probe",
+        )
+
+    def test_all_failing_opener_yields_five_skipped_findings_not_an_exception(self):
+        checker = self._checker()
+
+        try:
+            findings = checker(
+                self.OWNER,
+                self.REPO,
+                token=self.TOKEN,
+                other_repo=self.OTHER,
+                opener=_RecordingOpener(
+                    urllib.error.URLError("Name or service not known")
+                ),
+                timeout=10.0,
+            )
+        except Exception as exc:
+            self.fail(
+                "check_token_all raised {} for an opener failing every "
+                "call; an all-failing opener must yield all-skipped "
+                "findings, not an exception".format(type(exc).__name__)
+            )
+
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            5,
+            "an all-failing opener still yields one finding per probe "
+            "slot - a report that drops a slot hides a probe",
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["skipped"] * 5,
+            "a transport failure on every call skips every network probe, "
+            "and the constant workflows_withheld finding is skipped too - "
+            "nothing passes, nothing fails",
+        )
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                carried = _field(finding, "reason") or _field(finding, "danger")
+                self.assertIsInstance(carried, str)
+                self.assertTrue(
+                    carried,
+                    "every skipped finding carries a non-empty reason "
+                    "(or danger) naming why the probe did not run",
+                )
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every skipped finding carries a non-empty remedy",
+                )
+
+    def test_never_raises_across_the_documented_transport_set(self):
+        # fetch_probe documents exactly this transport set (URLError,
+        # socket.timeout, bare OSError); check_token_all must return
+        # their findings, never propagate them - across every probe.
+        checker = self._checker()
+        for label, outcome in (
+            ("URLError", urllib.error.URLError("Name or service not known")),
+            ("socket.timeout", socket.timeout("timed out")),
+            ("bare OSError", OSError("Network is unreachable")),
+        ):
+            with self.subTest(transport=label):
+                try:
+                    findings = checker(
+                        self.OWNER,
+                        self.REPO,
+                        token=self.TOKEN,
+                        other_repo=self.OTHER,
+                        opener=_RecordingOpener(outcome),
+                        timeout=10.0,
+                    )
+                except Exception as exc:
+                    self.fail(
+                        "check_token_all raised {} for the recorded {}; "
+                        "every documented transport failure must be "
+                        "returned as skipped findings, not thrown".format(
+                            type(exc).__name__, label
+                        )
+                    )
+                self.assertEqual(
+                    [_field(f, "status") for f in findings],
+                    ["skipped"] * 5,
+                    "every documented transport failure skips all five "
+                    "slots",
+                )
+
+    def test_every_finding_is_wellformed_in_the_all_ran_case(self):
+        # The module's finding invariant on behaviour 8's own output: a
+        # known status and a non-empty string remedy on every finding.
+        # Behaviour 10 will sweep the whole module; the concatenation's
+        # output should already be shape-correct.
+        checker = self._checker()
+
+        findings = checker(
+            self.OWNER,
+            self.REPO,
+            token=self.TOKEN,
+            other_repo=self.OTHER,
+            opener=self._all_200_opener(),
+            timeout=10.0,
+        )
+
+        self.assertEqual(len(findings), 5)
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                status = _field(finding, "status")
+                self.assertIn(
+                    status,
+                    self._KNOWN_STATUSES,
+                    "the finding's status {!r} is not one of the four "
+                    "known statuses; the report cannot interpret it".format(
+                        status
+                    ),
+                )
+                remedy = _field(finding, "remedy")
+                self.assertIsInstance(
+                    remedy,
+                    str,
+                    "remedy must be a string, not {!r}".format(
+                        type(remedy).__name__
+                    ),
+                )
+                self.assertTrue(
+                    remedy,
+                    "a finding with an empty remedy is a programming "
+                    "error: it cannot name the concrete fix",
+                )
+
+    def test_one_injected_opener_reaches_every_probe_endpoint_exactly_once(self):
+        # The opener is the single seam: with one injected opener, every
+        # network probe must reach its endpoint through it. The recorded
+        # paths pin that check_token_all routes through the probes (which
+        # route through fetch_probe), not a parallel fetch path.
+        checker = self._checker()
+        opener = self._all_200_opener()
+
+        checker(
+            self.OWNER,
+            self.REPO,
+            token=self.TOKEN,
+            other_repo=self.OTHER,
+            opener=opener,
+            timeout=10.0,
+        )
+
+        self.assertEqual(
+            sorted(opener.paths),
+            sorted(
+                [
+                    "/repos/{}/{}".format(self.OWNER, self.REPO),
+                    "/repos/{}/{}/actions/permissions".format(
+                        self.OWNER, self.REPO
+                    ),
+                    "/user",
+                    "/repos/{}/{}".format(self.OWNER, self.OTHER),
+                ]
+            ),
+            "the one injected opener must see exactly the four probe "
+            "endpoints - the target repo, its actions/permissions, "
+            "/user, and the named other repo - no more, no fewer, and "
+            "each exactly once",
+        )
+
+    def test_no_token_attempts_no_network_request_at_all(self):
+        checker = self._checker()
+        opener = _RecordingOpener(_FakeResponse(b'{"ok": true}', 200))
+
+        findings = checker(
+            self.OWNER,
+            self.REPO,
+            token=None,
+            other_repo=self.OTHER,
+            opener=opener,
+            timeout=10.0,
+        )
+
+        self.assertEqual(
+            opener.paths,
+            [],
+            "with no token no network request may be attempted at all: a "
+            "token-scope probe reads a token property, and an "
+            "unauthenticated request establishes no fact about any token",
+        )
+        self.assertEqual(len(findings), 5)
+        self.assertEqual(
+            [_field(f, "check") for f in findings],
+            list(self.EXPECTED_CHECK_ORDER),
+            "five findings: four probe-skips plus the constant "
+            "workflows_withheld skip, in their fixed order",
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["skipped"] * 5,
+            "with no token nothing passes",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
