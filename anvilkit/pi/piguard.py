@@ -891,7 +891,6 @@ def workflows_withheld_finding() -> List[Dict[str, Any]]:
 
 
 def probe_named_repo(
-    owner: str,
     other_repo: Optional[str],
     token: Optional[str] = None,
     opener: Optional[Callable[..., Any]] = None,
@@ -899,29 +898,39 @@ def probe_named_repo(
 ) -> List[Dict[str, Any]]:
     """The named-repo token-scope probe: does the token reach a named other repo?
 
-    Issues ``GET /repos/{owner}/{other_repo}`` through :func:`fetch_probe`
-    (behaviour 1 of plans/verify-guards-token.md) - one probe, one API call -
-    against the two halves of the user-supplied ``--other-repo OWNER/REPO``
-    value, which the caller splits (behaviour 15). The halves are never
-    guessed, and the owner in them is not assumed to equal the target's
-    owner (plan Assumptions). The probe hits the *other* repository, never
-    the target: a ``404`` on the target is behaviour 2's louder finding, not
-    this probe's.
+    Takes the raw user-supplied ``--other-repo OWNER/REPO`` string and
+    splits it itself (behaviour 18 amendment of plans/verify-guards-token.md):
+    exactly one ``/``, both parts non-empty after strip. The target owner is
+    no longer a parameter - the owner probed is the other repository's own
+    owner, as written in the string, and is never assumed to equal the
+    target's owner (plan Assumptions). Then issues
+    ``GET /repos/{other_owner}/{other_name}`` through :func:`fetch_probe`
+    (behaviour 1) - one probe, one API call. The probe hits the *other*
+    repository, never the target: a ``404`` on the target is behaviour 2's
+    louder finding, not this probe's.
+
+    Malformed input - ``None`` or empty (the no-other-repo skip), no
+    ``/``, more than one ``/``, or an empty owner or repo part after strip
+    - is exactly one ``skipped`` finding whose reason and remedy name
+    ``--other-repo`` as the fix, and the opener is never called: when the
+    input is unparseable there is nothing to probe. Never a crash.
 
     The framing rule this probe exists to encode: a ``404`` is the honest
     answer, and it only proves one thing.
 
     - ``404`` -> one ``passed`` finding worded "proves only that the token
-      is not scoped to {owner}/{other}; it cannot enumerate the token's
-      full repository list" - both halves: the specific proof and the
-      explicit non-claim. The remedy cites the saved page that documents a
-      fine-grained token reaching only the repositories selected at
-      creation.
+      is not scoped to {other_owner}/{other_name}; it cannot enumerate the
+      token's full repository list" - both halves: the specific proof and
+      the explicit non-claim, naming the split parts of the raw string.
+      The remedy cites the saved page that documents a fine-grained token
+      reaching only the repositories selected at creation.
     - ``200`` -> one ``warn`` finding: the token reaches more than the
       target, so a compromise of it is not confined to the target repo.
     - no other repo supplied -> one ``skipped`` finding naming
       ``--other-repo`` as the fix - never a pass - with no request
       attempted at all: there is nothing to probe.
+    - malformed other repo -> one ``skipped`` finding whose reason and
+      remedy name ``--other-repo`` as the fix, opener never called.
     - ``403`` -> one ``skipped`` finding: a permission denial is not a
       scope answer the probe can interpret.
     - any other status -> one ``skipped`` finding whose reason carries
@@ -937,13 +946,18 @@ def probe_named_repo(
     Never raises; always returns a list of findings. Never echoes a token
     into a finding or a reason (module invariant).
     """
-    other = "{}/{}".format(owner, other_repo) if other_repo else None
     skipped_remedy = (
         "supply a repository to probe via --other-repo OWNER/REPO, make "
         "the token valid, and make api.github.com reachable, then re-run; "
         "see {}".format(_FINE_GRAINED_DOC)
     )
 
+    # Split the raw --other-repo value: exactly one "/", both parts
+    # non-empty after strip. The owner probed is the string's own owner -
+    # the target owner never feeds this probe (behaviour 18). Malformed
+    # input is a skip, never a crash, and the opener is never called:
+    # when the input is unparseable there is nothing to probe.
+    other = None
     if not other_repo:
         return [
             {
@@ -965,6 +979,33 @@ def probe_named_repo(
                 ),
             }
         ]
+    parts = other_repo.split("/")
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": (
+                    "--other-repo value {!r} is not a well-formed "
+                    "OWNER/REPO (exactly one '/', both parts non-empty "
+                    "after strip): there is nothing to probe, and a pass "
+                    "with no repository named would claim a scope fact "
+                    "that was never measured".format(other_repo)
+                ),
+                "remedy": (
+                    "re-run with --other-repo OWNER/REPO naming a "
+                    "repository to probe; a fine-grained token reaches "
+                    "only the repositories selected at creation, per "
+                    "{}".format(_FINE_GRAINED_DOC)
+                ),
+            }
+        ]
+    other_owner = parts[0].strip()
+    other_name = parts[1].strip()
+    other = "{}/{}".format(other_owner, other_name)
 
     if not token:
         return [
@@ -986,7 +1027,7 @@ def probe_named_repo(
             }
         ]
 
-    url = "{}/repos/{}/{}".format(_RULES_API_BASE, owner, other_repo)
+    url = "{}/repos/{}/{}".format(_RULES_API_BASE, other_owner, other_name)
     status, _headers, _body, reason = fetch_probe(
         url, token, opener=opener, timeout=timeout
     )
@@ -1108,7 +1149,7 @@ def check_token_all(
     findings.extend(probe_administration(owner, repo, token, opener, timeout))
     findings.extend(probe_classic_token(token, opener, timeout))
     findings.extend(workflows_withheld_finding())
-    findings.extend(probe_named_repo(owner, other_repo, token, opener, timeout))
+    findings.extend(probe_named_repo(other_repo, token, opener, timeout))
     return findings
 
 
