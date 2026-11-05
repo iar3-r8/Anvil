@@ -18,6 +18,7 @@ import json
 import re
 import socket
 import subprocess
+import textwrap
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -1535,6 +1536,125 @@ def render_finding(finding: Dict[str, Any]) -> str:
             finding.get("check"), finding.get("danger"), finding.get("remedy")
         )
     return "unknown: {} finding for rule {}".format(status, rule)
+
+
+# The status prefixes a block headline uses, in the same convention
+# render_finding's line prefixes already use (ok:/warn:/fail:/skipped:).
+_BLOCK_PREFIXES = {
+    "passed": "ok",
+    "warn": "warn",
+    "fail": "fail",
+    "skipped": "skipped",
+}
+
+
+def _block_substance(finding: Dict[str, Any]) -> str:
+    """The block's detail text, derived from :func:`render_finding`'s line.
+
+    Takes the single-line renderer's output and strips what the block
+    renders on its own: the leading status prefix, the trailing
+    `` fix: {remedy}`` (which the block carries on its own indented
+    ``fix:``/``see:`` line), and - for a ``skipped`` line - the
+    ``{check} check could not run:`` phrasing the headline already names.
+    Deriving the substance this way keeps :func:`render_finding` the single
+    source of the finding's text: a word added to a probe's danger or reason
+    reaches the block automatically, without the block re-deriving it.
+
+    The one reword is a passed finding whose ``rule`` is None - a token
+    passed finding: :func:`render_finding`'s passed branch is written for
+    branch rules and would print "the None rule is present", a claim about
+    a ruleset object the token probes never looked at. The block instead
+    names the check and the fact it verified, from the finding's recorded
+    remedy.
+    """
+    status = finding.get("status")
+    prefix = _BLOCK_PREFIXES.get(status, "unknown")
+    line = render_finding(finding)
+    marker = "{}: ".format(prefix)
+    if not line.startswith(marker):
+        # render_finding's own "unknown:" fallthrough: nothing to strip.
+        return line
+    substance = line[len(marker):]
+
+    if status == "passed" and finding.get("rule") is None:
+        # The "ok: the None rule is present" fix (behaviour 19): a token
+        # passed finding (rule=None) must name the check and the fact it
+        # verified, without "the ... rule is present" and without None.
+        # The recorded remedy carries exactly that fact plus the doc path,
+        # so the substance is the remedy reworded from a fix instruction
+        # into a statement of what was verified.
+        remedy = finding.get("remedy") or ""
+        fact = remedy
+        if fact.startswith("nothing to do - "):
+            fact = fact[len("nothing to do - "):]
+        if fact.endswith("."):
+            fact = fact[:-1]
+        check = finding.get("check")
+        if fact and fact[0].isupper():
+            fact = fact[0].lower() + fact[1:]
+        substance = "the {} check verified: {}".format(check, fact)
+        return substance
+
+    fix_marker = " fix: "
+    cut = substance.rfind(fix_marker)
+    if cut != -1:
+        substance = substance[:cut]
+
+    if status == "skipped":
+        lead = "{} check could not run: ".format(finding.get("check"))
+        if substance.startswith(lead):
+            substance = substance[len(lead):]
+
+    return substance.strip()
+
+
+def render_finding_block(finding: Dict[str, Any], width: int = 80) -> List[str]:
+    """ONE finding as a small readable block: headline, detail, remedy.
+
+    The human-facing renderer (behaviour 19 of
+    plans/verify-guards-token.md), replacing the flat 300-600 character
+    lines the single-line :func:`render_finding` produced when its output
+    was printed whole: the block is a ``{prefix}: {label}`` headline - the
+    prefix from the finding's status (``ok``/``warn``/``fail``/
+    ``skipped``, the existing convention), the label the finding's
+    ``rule`` when it carries one, else its ``check`` - never a literal
+    ``None`` - followed by the finding's substance wrapped so every line
+    of the block is at most ``width`` characters, followed by an indented
+    remedy line: ``fix:`` for ``warn``/``fail``/``skipped`` and ``see:``
+    for ``passed``, the remedy text wrapped at ``width`` with the indent
+    included in the bound.
+
+    The block is derived from :func:`render_finding`'s text (see
+    :func:`_block_substance`): that single-line renderer remains the one
+    and only source of a finding's words, for programmatic consumers, and
+    the two cannot drift because the block's detail lines are its line
+    stripped and wrapped, never re-derived. The block is deterministic -
+    the same finding at the same width renders equal blocks - and
+    ``width`` is a real parameter: a narrower width wraps to more lines,
+    every one still within it.
+    """
+    status = finding.get("status")
+    label = finding.get("rule")
+    if not label:
+        label = finding.get("check")
+    if not label:
+        label = "unknown"
+    prefix = _BLOCK_PREFIXES.get(status, "unknown")
+    headline = "{}: {}".format(prefix, label)
+
+    detail = _block_substance(finding)
+    block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
+    if detail:
+        block.extend(textwrap.wrap(detail, width=width, break_long_words=True))
+
+    remedy = finding.get("remedy")
+    if isinstance(remedy, str) and remedy:
+        lead = "  see: " if status == "passed" else "  fix: "
+        remainder = width - len(lead)
+        for index, part in enumerate(textwrap.wrap(remedy, width=remainder)):
+            line = lead + part if index == 0 else "  " + part
+            block.append(line)
+    return block
 
 
 def summarize(findings: List[Dict[str, Any]]) -> int:

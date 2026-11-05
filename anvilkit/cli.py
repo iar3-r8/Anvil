@@ -1517,30 +1517,24 @@ def _report_guards(shared: Context) -> None:
             owner, repo, token=token, other_repo=None
         )
 
-    for finding in findings:
-        label = finding.get("rule")
-        if not label:
-            label = "skipped: {}".format(finding.get("check"))
-        shared.echo(
-            _report_line(
-                label,
-                "{} {}".format(
-                    _mark(finding.get("status") == "passed"),
-                    piguard.render_finding(finding),
-                ),
-            )
-        )
+    # Behaviour 19: the findings print as wrapped blocks - a status-prefixed
+    # headline, the finding's substance at 80 columns, and an indented fix:/
+    # see: line - under a section header per source, so branch and token
+    # findings no longer run together as unbroken lines.
+    shared.echo("Branch rules")
+    for index, finding in enumerate(findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
 
-    for finding in token_findings:
-        shared.echo(
-            _report_line(
-                finding.get("check"),
-                "{} {}".format(
-                    _mark(finding.get("status") == "passed"),
-                    piguard.render_finding(finding),
-                ),
-            )
-        )
+    shared.echo("")
+    shared.echo("Token scope")
+    for index, finding in enumerate(token_findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
 
 
 def _report_config_health(shared: Context) -> None:
@@ -1662,11 +1656,26 @@ def verify_guards(
         )
     else:
         shared.echo(_report_line("repository", "not resolvable from origin"))
+    # Behaviour 19: the findings print as wrapped blocks - a status-
+    # prefixed headline, the finding's substance at 80 columns, and an
+    # indented fix:/see: line - under a section header per source, so
+    # branch and token findings no longer run together as unbroken
+    # lines and no report line exceeds 80 characters.
     shared.echo("")
-    for line in piguard.render_report(findings):
-        shared.echo(line)
-    for line in piguard.render_report(token_findings):
-        shared.echo(line)
+    shared.echo("Branch rules")
+    for index, finding in enumerate(findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
+
+    shared.echo("")
+    shared.echo("Token scope")
+    for index, finding in enumerate(token_findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
     shared.echo(_SEPARATOR)
 
     raise typer.Exit(piguard.summarize(findings + token_findings))
