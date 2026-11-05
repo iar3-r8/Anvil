@@ -3816,5 +3816,636 @@ class ProbeAdministrationTests(unittest.TestCase):
                 )
 
 
+class ProbeClassicTokenTests(unittest.TestCase):
+    """Behaviour 4 of plans/verify-guards-token.md: ``probe_classic_token``.
+
+    ``probe_classic_token(token=None, opener=None, timeout=None)`` runs the
+    classic-token probe: a recorded ``GET /user`` through
+    :func:`anvilkit.pi.piguard.fetch_probe` (behaviour 1, already green) -
+    the endpoint needs no permissions on a fine-grained token and answers
+    ``401`` unauthenticated
+    (doc/external/github/rest-api-endpoints-for-users.md).
+
+    The saved page settles the discriminator by a **negative**: the
+    documented ``GET /user`` 200 body has **no ``scopes`` key at all**, so
+    the scope list travels in the ``X-OAuth-Scopes`` response header -
+    GitHub's own example shows ``X-OAuth-Scopes: repo, user`` - and scopes
+    are normalized, so the honest discriminator is the header **present and
+    non-empty**, never an exact scope string
+    (doc/external/github/scopes-for-oauth-apps.md):
+
+    - header present and non-empty (any casing) -> one ``fail`` finding
+      quoting the scopes verbatim: a classic token grants every repo the
+      owner can see, so the repo-scope guarantee is void regardless of the
+      other probes. The finding is asserted on its dict fields only -
+      ``render_finding``'s fail branch is behaviour 9's job.
+    - header present but empty, or absent -> one ``passed`` finding worded
+      "no classic OAuth scope header was returned" - never "this is a
+      fine-grained token", which the docs do not license.
+    - ``401`` -> one ``skipped`` finding whose reason carries the status.
+    - transport failure -> one ``skipped`` finding whose reason is
+      non-empty.
+    - ``token=None`` -> one ``skipped`` finding (behaviour 7), and no
+      request may be attempted at all.
+
+    The body is never parsed for a ``scopes`` field - no such field exists.
+    The finding dict shape is the one ``render_finding`` already consumes:
+    ``status``, ``check``, ``rule``, ``danger``, ``source`` and ``remedy``
+    (plus ``reason`` on a skip). Every test below runs over a recorded
+    opener - no live network.
+    """
+
+    TOKEN = "ghp_recordedtoken"
+    USER_PATH = "/user"
+    # The documented GET /user 200 body (abridged from the saved page): the
+    # full documented response contains no "scopes" key, and the probe must
+    # not look for one.
+    _USER_BODY = (
+        b'{"login": "octocat", "id": 1, "type": "User", "site_admin": false}'
+    )
+
+    def _prober(self) -> Any:
+        prober = getattr(piguard, "probe_classic_token", None)
+        self.assertTrue(
+            callable(prober),
+            "anvilkit.pi.piguard.probe_classic_token is not callable; the "
+            "classic-token token-scope probe has not been implemented yet",
+        )
+        return prober
+
+    def test_recorded_200_with_nonempty_scopes_header_yields_one_fail_quoting_scopes(self):
+        # The second emittable fail in the module. A non-empty
+        # X-OAuth-Scopes header means the token is classic: it grants
+        # access to every repository the owner can see, so the
+        # repo-scope guarantee the other probes protect is void
+        # (doc/external/github/scopes-for-oauth-apps.md,
+        # doc/external/github/fine-grained-personal-access-tokens.md).
+        # render_finding has no fail branch yet - behaviour 9 owns its
+        # rendering - so this test asserts the finding dict fields
+        # directly.
+        probe = self._prober()
+        opener = _CapturingOpener(
+            _FakeResponse(
+                self._USER_BODY,
+                200,
+                headers={"X-OAuth-Scopes": "repo, workflow"},
+            )
+        )
+
+        findings = probe(self.TOKEN, opener=opener, timeout=10.0)
+
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            1,
+            "the classic-token probe yields exactly one finding",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "fail",
+            "a non-empty X-OAuth-Scopes header means the token is "
+            "classic: the probe fails",
+        )
+        danger = _field(finding, "danger")
+        self.assertIsInstance(danger, str)
+        self.assertTrue(
+            danger,
+            "the fail finding must carry a non-empty danger stating the "
+            "consequence (behaviour 10)",
+        )
+        lowered = danger.lower()
+        self.assertIn(
+            "repo",
+            lowered,
+            "the fail danger must state that a classic token grants "
+            "access to the repositories the owner can see",
+        )
+        self.assertTrue(
+            "every" in lowered or "all" in lowered,
+            "the fail danger must state that the access is to every "
+            "repository the owner can see, not a selected subset",
+        )
+        self.assertIn(
+            "void",
+            lowered,
+            "the fail danger must state that the repo-scope guarantee "
+            "is void",
+        )
+        self.assertIn(
+            "guarantee",
+            lowered,
+            "the fail danger must name the repo-scope guarantee that is "
+            "void regardless of the other probes",
+        )
+        self.assertIn(
+            "repo, workflow",
+            danger,
+            "the fail danger must quote the recorded scopes verbatim",
+        )
+        remedy = _field(finding, "remedy")
+        self.assertIsInstance(remedy, str)
+        self.assertTrue(
+            remedy,
+            "the fail finding must carry a non-empty remedy - every "
+            "finding must say how to fix the danger",
+        )
+        self.assertIn(
+            "doc/external/github/",
+            remedy,
+            "the fail remedy must name a saved page under "
+            "doc/external/github/, so a reviewer can check the claim "
+            "against the saved documentation",
+        )
+
+    def test_recorded_200_with_empty_scopes_header_yields_exactly_one_passed_finding(self):
+        # An empty X-OAuth-Scopes header carries no scopes: the probe
+        # passes with the "no header returned" wording, never a claim
+        # about what kind of token this is.
+        probe = self._prober()
+        opener = _CapturingOpener(
+            _FakeResponse(self._USER_BODY, 200, headers={"X-OAuth-Scopes": ""})
+        )
+
+        findings = probe(self.TOKEN, opener=opener, timeout=10.0)
+
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            1,
+            "the classic-token probe yields exactly one finding",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "an empty X-OAuth-Scopes header carries no scopes: the "
+            "probe passes",
+        )
+        self.assertIsInstance(_field(finding, "remedy"), str)
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_recorded_200_with_scopes_header_absent_yields_exactly_one_passed_finding(self):
+        probe = self._prober()
+        opener = _CapturingOpener(_FakeResponse(self._USER_BODY, 200))
+
+        findings = probe(self.TOKEN, opener=opener, timeout=10.0)
+
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            1,
+            "the classic-token probe yields exactly one finding",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "a missing X-OAuth-Scopes header means no classic OAuth "
+            "scope header was returned: the probe passes",
+        )
+        self.assertIsInstance(_field(finding, "remedy"), str)
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_passed_finding_never_claims_the_token_is_fine_grained(self):
+        # The docs do not license "this is a fine-grained token": GitHub
+        # documents no X-OAuth-Scopes semantics for fine-grained PATs
+        # (doc/external/github/scopes-for-oauth-apps.md), so an absent or
+        # empty header is only "no classic OAuth scope header was
+        # returned" - a statement about what the response did not carry,
+        # not a classification of the token.
+        probe = self._prober()
+        cases = [
+            ("header absent", _FakeResponse(self._USER_BODY, 200)),
+            (
+                "header empty",
+                _FakeResponse(
+                    self._USER_BODY, 200, headers={"X-OAuth-Scopes": ""}
+                ),
+            ),
+        ]
+
+        for label, response in cases:
+            with self.subTest(case=label):
+                findings = probe(
+                    self.TOKEN, opener=_opener(response), timeout=10.0
+                )
+                self.assertEqual(len(findings), 1)
+                finding = findings[0]
+                self.assertEqual(_field(finding, "status"), "passed")
+                text = " ".join(
+                    part
+                    for part in (
+                        _field(finding, "danger") or "",
+                        _field(finding, "reason") or "",
+                        _field(finding, "remedy") or "",
+                        _field(finding, "source") or "",
+                    )
+                    if part
+                ).lower()
+                self.assertIn(
+                    "x-oauth-scopes",
+                    text,
+                    "the pass must name the header it observed (or did "
+                    "not), so the finding says what the response did not "
+                    "carry",
+                )
+                self.assertIn(
+                    "header",
+                    text,
+                    "the pass wording is about the header - 'no classic "
+                    "OAuth scope header was returned'",
+                )
+                self.assertNotIn(
+                    "fine-grained token",
+                    text,
+                    "the pass must not claim the token is fine-grained: "
+                    "GitHub documents no X-OAuth-Scopes semantics for "
+                    "fine-grained PATs",
+                )
+                self.assertNotIn(
+                    "fine grained token",
+                    text,
+                    "the pass must not claim the token is fine-grained",
+                )
+
+    def test_header_lookup_is_case_insensitive(self):
+        # HTTP headers are case-insensitive; the recorded fixture may
+        # spell the header however the server sent it, so the probe must
+        # read it the same way - lowercase included.
+        probe = self._prober()
+        for label, header_key in (
+            ("canonical casing", "X-OAuth-Scopes"),
+            ("lowercase", "x-oauth-scopes"),
+        ):
+            with self.subTest(casing=label):
+                findings = probe(
+                    self.TOKEN,
+                    opener=_opener(
+                        _FakeResponse(
+                            self._USER_BODY,
+                            200,
+                            headers={header_key: "repo, workflow"},
+                        )
+                    ),
+                    timeout=10.0,
+                )
+
+                self.assertEqual(len(findings), 1)
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "fail",
+                    "a non-empty X-OAuth-Scopes header is a fail in "
+                    "every casing",
+                )
+                self.assertIn(
+                    "repo, workflow",
+                    _field(finding, "danger") or "",
+                    "the fail danger must quote the recorded scopes "
+                    "verbatim in every casing",
+                )
+
+    def test_body_carrying_a_scopes_key_is_never_consulted(self):
+        # The saved page settles the negative: the documented GET /user
+        # body has no "scopes" key at all
+        # (doc/external/github/rest-api-endpoints-for-users.md), so a
+        # body that does carry one must not be read as classic - the
+        # finding depends only on the header.
+        probe = self._prober()
+        opener = _CapturingOpener(
+            _FakeResponse(b'{"login": "octocat", "scopes": ["repo"]}', 200)
+        )
+
+        findings = probe(self.TOKEN, opener=opener, timeout=10.0)
+
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "the body is never parsed for a 'scopes' field - no such "
+            "field exists: a 200 without the header passes regardless "
+            "of the body",
+        )
+
+    def test_recorded_401_yields_skipped_with_status_in_reason(self):
+        # A 401 on GET /user is the unauthenticated answer the saved page
+        # documents: not a scope answer the probe can interpret. The
+        # recorded error carries no headers (hdrs=None); the probe must
+        # not crash on them.
+        probe = self._prober()
+        url = "https://api.github.com" + self.USER_PATH
+
+        findings = probe(
+            self.TOKEN,
+            opener=_opener(
+                urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
+            ),
+            timeout=10.0,
+        )
+
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "skipped",
+            "a 401 on GET /user is not a scope answer the probe can "
+            "interpret: it skips",
+        )
+        reason = _field(finding, "reason") or _field(finding, "danger") or ""
+        self.assertIn(
+            "401",
+            reason,
+            "the skipped finding's reason must carry the status 401, so "
+            "the report shows why the probe did not run",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_transport_failure_yields_skipped_with_nonempty_reason(self):
+        probe = self._prober()
+        for label, outcome in (
+            ("URLError", urllib.error.URLError("Name or service not known")),
+            ("socket.timeout", socket.timeout("timed out")),
+            ("bare OSError", OSError("Network is unreachable")),
+        ):
+            with self.subTest(transport=label):
+                findings = probe(
+                    self.TOKEN, opener=_opener(outcome), timeout=10.0
+                )
+
+                self.assertIsInstance(findings, list)
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "a transport failure yields one skipped finding, not "
+                    "an exception",
+                )
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "skipped",
+                    "a transport failure is a skipped, not a pass or a "
+                    "fail: a slow GitHub must not read as a scope answer",
+                )
+                reason = (
+                    _field(finding, "reason")
+                    or _field(finding, "danger")
+                    or ""
+                )
+                self.assertIsInstance(reason, str)
+                self.assertTrue(
+                    reason,
+                    "the skipped finding must carry a non-empty reason "
+                    "naming the transport failure",
+                )
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every finding carries a non-empty remedy",
+                )
+
+    def test_no_token_yields_skipped_without_attempting_a_request(self):
+        # Behaviour 7, this probe's share: a token-scope probe with no
+        # token establishes no fact about any token, and no probe may
+        # issue an unauthenticated request and read its status as a token
+        # property.
+        probe = self._prober()
+        opener = _CapturingOpener(_FakeResponse(self._USER_BODY, 200))
+
+        findings = probe(None, opener=opener, timeout=10.0)
+
+        self.assertIsNone(
+            opener.captured,
+            "with no token the probe must not attempt a request at all: "
+            "a token-scope probe reads a token property, and an "
+            "unauthenticated request establishes no fact about any token",
+        )
+        self.assertIsInstance(findings, list)
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "skipped",
+            "no token means the probe skips - never a pass or a fail",
+        )
+        reason = (
+            _field(finding, "reason")
+            or _field(finding, "danger")
+            or ""
+        )
+        self.assertTrue(
+            reason,
+            "the skipped finding must carry a non-empty reason stating "
+            "that a token-scope probe with no token establishes no fact "
+            "about any token",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_request_targets_the_user_endpoint(self):
+        # The probe is GET /user: the recorded request it builds must
+        # carry that path, so the probe cannot be pointed at a different
+        # endpoint later without a test change.
+        probe = self._prober()
+        opener = _CapturingOpener(_FakeResponse(self._USER_BODY, 200))
+
+        probe(self.TOKEN, opener=opener, timeout=10.0)
+
+        request = opener.captured
+        self.assertIsNotNone(
+            request,
+            "the probe must hand its opener a request to open",
+        )
+        url = getattr(request, "full_url", None) or getattr(request, "url", "")
+        parsed = urllib.parse.urlparse(url)
+        self.assertEqual(
+            parsed.path,
+            self.USER_PATH,
+            "the probe must issue GET /user - the classic-token "
+            "endpoint - not any other path",
+        )
+
+    def test_findings_carry_the_module_finding_shape_and_render(self):
+        # The finding dicts must match what render_finding already
+        # consumes: a passed finding (header absent) renders without a
+        # danger, and a skipped finding (401) renders with its reason.
+        # The fail finding (header non-empty) is asserted on its dict
+        # fields only - render_finding has no fail branch yet, that is
+        # behaviour 9's job, and a render assertion here would fail for
+        # the wrong reason (the renderer, not the probe).
+        probe = self._prober()
+        url = "https://api.github.com" + self.USER_PATH
+        renderable_cases = [
+            (
+                "passed (header absent)",
+                _FakeResponse(self._USER_BODY, 200),
+            ),
+            (
+                "skipped (401)",
+                urllib.error.HTTPError(url, 401, "Unauthorized", None, None),
+            ),
+        ]
+
+        for label, outcome in renderable_cases:
+            with self.subTest(label=label):
+                findings = probe(
+                    self.TOKEN, opener=_opener(outcome), timeout=10.0
+                )
+                self.assertEqual(len(findings), 1)
+                finding = findings[0]
+                self.assertIn(
+                    _field(finding, "status"),
+                    ("passed", "warn", "skipped", "fail"),
+                    "finding status must be one of the four known statuses",
+                )
+                self.assertTrue(
+                    _field(finding, "check"),
+                    "every finding carries a non-empty check name",
+                )
+                self.assertIsInstance(_field(finding, "remedy"), str)
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every finding carries a non-empty remedy",
+                )
+                line = piguard.render_finding(finding)
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "render_finding must produce a non-empty line for the "
+                    "probe's finding",
+                )
+                self.assertNotIn(
+                    "unknown:",
+                    line,
+                    "the probe's finding must render through the known "
+                    "branches, not fall through to 'unknown:' - a shape "
+                    "mismatch would hide the probe's result",
+                )
+                if _field(finding, "status") == "skipped":
+                    reason = (
+                        _field(finding, "reason")
+                        or _field(finding, "danger")
+                        or ""
+                    )
+                    self.assertIn(
+                        reason,
+                        line,
+                        "the rendered skipped line must carry the reason",
+                    )
+
+        # The fail finding, dict-level only: behaviour 9 covers its
+        # rendering.
+        with self.subTest(label="fail (header non-empty), dict-level"):
+            findings = probe(
+                self.TOKEN,
+                opener=_opener(
+                    _FakeResponse(
+                        self._USER_BODY,
+                        200,
+                        headers={"X-OAuth-Scopes": "repo, workflow"},
+                    )
+                ),
+                timeout=10.0,
+            )
+            self.assertEqual(len(findings), 1)
+            finding = findings[0]
+            self.assertEqual(_field(finding, "status"), "fail")
+            self.assertTrue(
+                _field(finding, "check"),
+                "every finding carries a non-empty check name",
+            )
+            self.assertIsInstance(_field(finding, "danger"), str)
+            self.assertTrue(
+                _field(finding, "danger"),
+                "the fail finding's danger must be non-empty",
+            )
+            self.assertIsInstance(_field(finding, "remedy"), str)
+            self.assertTrue(
+                _field(finding, "remedy"),
+                "the fail finding's remedy must be non-empty",
+            )
+
+    def test_never_raises_across_every_recorded_mode(self):
+        probe = self._prober()
+        url = "https://api.github.com" + self.USER_PATH
+        modes = [
+            (
+                "200 (header non-empty)",
+                _FakeResponse(
+                    self._USER_BODY,
+                    200,
+                    headers={"X-OAuth-Scopes": "repo, workflow"},
+                ),
+            ),
+            (
+                "200 (header empty)",
+                _FakeResponse(
+                    self._USER_BODY, 200, headers={"X-OAuth-Scopes": ""}
+                ),
+            ),
+            ("200 (header absent)", _FakeResponse(self._USER_BODY, 200)),
+            (
+                "401",
+                urllib.error.HTTPError(url, 401, "Unauthorized", None, None),
+            ),
+            (
+                "500",
+                urllib.error.HTTPError(
+                    url, 500, "Internal Server Error", None, None
+                ),
+            ),
+            (
+                "URLError",
+                urllib.error.URLError("Name or service not known"),
+            ),
+            ("socket.timeout", socket.timeout("timed out")),
+            ("bare OSError", OSError("Network is unreachable")),
+        ]
+        for label, outcome in modes + [("no token", None)]:
+            with self.subTest(mode=label):
+                try:
+                    if outcome is None:
+                        findings = probe(
+                            None,
+                            opener=_CapturingOpener(
+                                _FakeResponse(self._USER_BODY, 200)
+                            ),
+                            timeout=10.0,
+                        )
+                    else:
+                        findings = probe(
+                            self.TOKEN, opener=_opener(outcome), timeout=10.0
+                        )
+                except Exception as exc:
+                    self.fail(
+                        "probe_classic_token raised {} for the recorded "
+                        "{}; every recorded mode must return a finding "
+                        "list, not an exception".format(
+                            type(exc).__name__, label
+                        )
+                    )
+                self.assertIsInstance(
+                    findings,
+                    list,
+                    "every recorded mode returns a finding list",
+                )
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "the classic-token probe yields exactly one finding",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
