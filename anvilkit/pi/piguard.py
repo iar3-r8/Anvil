@@ -1437,7 +1437,10 @@ def render_finding(finding: Dict[str, Any]) -> str:
     empty recorded list - explicit ``[]`` or an unreadable parameter -
     renders the explicit "no restricted paths recorded" rather than a
     bare "protected". A ``warn`` line names the danger and the remedy. A
-    ``skipped`` line carries the reason the check could not run.
+    ``skipped`` line carries the reason the check could not run. A
+    ``fail`` line names the danger and the remedy in the same shape as
+    ``warn``, but keyed on ``check`` rather than ``rule``: a token finding
+    carries ``rule=None``, and rendering it would print a literal "None".
     """
     rule = finding.get("rule")
     status = finding.get("status")
@@ -1474,6 +1477,12 @@ def render_finding(finding: Dict[str, Any]) -> str:
         )
         return "skipped: {} check could not run: {}".format(
             finding.get("check"), reason
+        )
+    if status == "fail":
+        # Keyed on ``check`` rather than ``rule``: a token finding carries
+        # ``rule=None``, and rendering it would print a literal "None".
+        return "fail: {} - {}; fix: {}".format(
+            finding.get("check"), finding.get("danger"), finding.get("remedy")
         )
     return "unknown: {} finding for rule {}".format(status, rule)
 
