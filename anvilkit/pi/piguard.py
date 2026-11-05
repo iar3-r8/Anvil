@@ -1074,6 +1074,44 @@ def probe_named_repo(
     ]
 
 
+def check_token_all(
+    owner: str,
+    repo: str,
+    token: Optional[str] = None,
+    other_repo: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The token-scope probe concatenation (behaviour 8 of plans/verify-guards-token.md).
+
+    Concatenates, in this fixed order, the one-element findings lists of the
+    token-scope probes: :func:`probe_target_access`,
+    :func:`probe_administration`, :func:`probe_classic_token`,
+    :func:`workflows_withheld_finding` (constant, no network or token) and
+    :func:`probe_named_repo` (with ``other_repo`` possibly ``None`` - the
+    probe's own no-other-repo skip). The fixed, explicit order is the
+    load-bearing contract: this is the single seam both CLI call sites
+    (verify-guards and doctor's Guards section) report through, so a probe
+    added here reaches both with no edit at either.
+
+    It is a thin concatenation: it delegates to the probes, each of which
+    handles its own no-token skip, transport skip and never-raises contract,
+    and fetches nothing itself. Every network probe reaches its endpoint
+    through the one injected ``opener`` (via :func:`fetch_probe`), never a
+    parallel fetch path. Never raises, never exits: an all-failing opener
+    yields all-``skipped`` findings, not an exception.
+    """
+    findings: List[Dict[str, Any]] = []
+    findings.extend(
+        probe_target_access(owner, repo, token, opener, timeout)
+    )
+    findings.extend(probe_administration(owner, repo, token, opener, timeout))
+    findings.extend(probe_classic_token(token, opener, timeout))
+    findings.extend(workflows_withheld_finding())
+    findings.extend(probe_named_repo(owner, other_repo, token, opener, timeout))
+    return findings
+
+
 def skipped_findings(reason: str) -> List[Dict[str, Any]]:
     """One ``skipped`` finding per defined check, in report order.
 
