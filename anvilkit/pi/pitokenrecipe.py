@@ -20,6 +20,7 @@ API, "read the CI logs" means Actions run/job logs, not Check Runs.
 """
 
 import urllib.parse
+from typing import List
 
 #: The creation page every recipe URL points at.
 _BASE_URL = "https://github.com/settings/personal-access-tokens/new"
@@ -66,3 +67,56 @@ def build_recipe_url(owner: str, repo: str) -> str:
         "actions": "read",
     }
     return _BASE_URL + "?" + urllib.parse.urlencode(query)
+
+
+def recipe_steps(owner: str, repo: str, url: str) -> List[str]:
+    """Return the ordered UI steps for creating the token from ``url``.
+
+    Display text for a human, following the saved page
+    ``doc/external/github/fine-grained-personal-access-tokens.md``, section
+    "Creating a fine-grained personal access token" (source URL:
+    https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/
+    managing-your-personal-access-tokens): the creation page, the resource
+    owner, Repository access with "Only select repositories", the selected
+    repository, then the four Repository permissions. The ``repo`` name
+    appears only here — it is not a URL parameter (behaviour 12). The last
+    three steps are the plan's recorded caveats, each also on the saved
+    page: a fine-grained PAT cannot call the Checks API; tokens always
+    include read-only access to all public repositories; and the token is
+    kept on the host driver outside the container, so the agent cannot
+    read it. No step instructs pasting the token anywhere Anvil reads.
+
+    The raw ``url`` is shown in its own step *after* the permission steps,
+    not in the first: its query text contains the literal parameter names
+    (``contents=write``, …, ``actions=read``) and the owner, and the
+    behaviour-14 ordering pins the first mentions of the target, the repo
+    and each permission to the documented sequence — the URL step would
+    jump ahead of them.
+    """
+    return [
+        "Open the pre-filled creation page: use the recipe URL printed "
+        "with these steps; it opens GitHub's 'Generate new token' page "
+        "with the target and the four grants already filled in.",
+        "Under Resource owner, keep the resource owner set to {} "
+        "(the URL pre-fills it as target_name).".format(owner),
+        "Under Repository access, choose Only select repositories.",
+        "Under the Selected repositories dropdown, select {} "
+        "and nothing else.".format(repo),
+        "Under Repository permissions, set Contents to Read and write "
+        "(pre-filled by the URL).",
+        "Set Pull requests to Read and write (pre-filled).",
+        "Set Issues to Read and write (pre-filled).",
+        "Set Actions to Read only (pre-filled); the CI edit path stays "
+        "closed behind the workflows withholding.",
+        "The recipe URL, which pre-fills exactly the grants above and "
+        "nothing else — administration, workflows and metadata are "
+        "withheld and visible by absence in its query: {}".format(url),
+        "Caveat: a fine-grained PAT cannot call the Checks API, so CI is "
+        "read as Actions runs and jobs, not Check Runs.",
+        "Caveat: every fine-grained token keeps read-only access to all "
+        "public repositories on GitHub — only this token's reach beyond "
+        "public repos is scoped to {}.".format(repo),
+        "Caveat: the token lives on the host driver outside the container, "
+        "so the agent cannot read it; GitHub's UI shows it once and Anvil "
+        "never takes it.",
+    ]
