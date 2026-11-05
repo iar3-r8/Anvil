@@ -877,6 +877,9 @@ def workflows_withheld_finding() -> List[Dict[str, Any]]:
         "endpoint is documented in {} and the workflows-permission row "
         "(write only) in {}".format(_WORKFLOWS_DOC, _FINE_GRAINED_DOC)
     )
+    # Do not "tidy" the constant to "passed": the withholding is
+    # unprovable, not proven. A passed here would turn "we could not
+    # check it" into "it is withheld" - the one lie the report must not tell.
     return [
         {
             "status": "skipped",

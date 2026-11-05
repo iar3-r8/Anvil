@@ -54,11 +54,13 @@ def build_recipe_url(owner: str, repo: str) -> str:
             "refusing to build a recipe URL without an owner: "
             "target_name is the resource owner and is never guessed"
         )
-    # Deliberately absent from this dict: administration (the repo could
-    # be deleted or reconfigured), workflows (CI could be edited) and
-    # metadata (implicit and read-only). The recipe's value is that the
-    # withholding is visible by absence — a convenience edit adding
-    # administration=read must break behaviour 13's [PIN] on the query.
+    # administration, workflows and metadata are deliberately absent from
+    # this dict: administration could delete or reconfigure the repository
+    # and workflows could edit CI, and the withholding is the value - a
+    # "tidying" edit that grants administration=read re-opens the exact
+    # hole the token-scope probes exist to catch. The pin over the query
+    # parameters in tests/test_pitokenrecipe.py is what turns that edit
+    # red.
     query = {
         "target_name": owner,
         "contents": "write",
