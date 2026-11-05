@@ -244,32 +244,53 @@ def token_finding(check, status, **extra):
     return finding
 
 
+def _finding_headline(finding):
+    """The expected headline (first line) of a finding's block.
+
+    The status maps to the existing prefix convention (ok:/warn:/fail:/
+    skipped:), and the label is the rule when the finding carries one,
+    otherwise the check name - never a literal None (behaviour 19).
+    """
+    prefix = {
+        "passed": "ok",
+        "warn": "warn",
+        "fail": "fail",
+        "skipped": "skipped",
+    }[finding.get("status")]
+    label = finding.get("rule") or finding.get("check")
+    return "{}: {}".format(prefix, label)
+
+
 def assert_findings_reported_branch_then_token(
     lines, branch_findings, token_findings, full_output
 ):
-    """Every branch-rule finding and every token finding renders, and the
-    last branch line precedes the first token line (behaviour 15)."""
-    from anvilkit.pi import piguard
+    """Every branch-rule finding block and every token finding block is
+    present, and the last branch block precedes the first token block
+    (behaviour 19's order pin).
 
-    def index_of(rendered):
+    A finding's block is located by its headline: the block's first line,
+    which starts with the status prefix and the label (rule when present,
+    else check). The detail and remedy lines are wrapped at 80 columns and
+    may span multiple lines, so only the headline is a reliable anchor.
+    """
+    def index_of(finding):
+        headline = _finding_headline(finding)
         for index, line in enumerate(lines):
-            if rendered in line:
+            # The doctor's Guards section indents its lines; a block's
+            # headline anchor must hold with or without that indent.
+            if line.lstrip().startswith(headline):
                 return index
         raise AssertionError(
-            "finding not reported: {!r}\n{}".format(rendered, full_output)
+            "finding block not reported; expected a line starting with "
+            "{!r}\n{}".format(headline, full_output)
         )
 
-    last_branch = max(
-        index_of(piguard.render_finding(finding)) for finding in branch_findings
-    )
-    first_token = min(
-        index_of(piguard.render_finding(finding)) for finding in token_findings
-    )
+    last_branch = max(index_of(f) for f in branch_findings)
+    first_token = min(index_of(f) for f in token_findings)
     if last_branch >= first_token:
         raise AssertionError(
-            "token findings must be reported after the branch-rule findings:\n{}".format(
-                full_output
-            )
+            "token finding blocks must be reported after the branch-rule "
+            "finding blocks:\n{}".format(full_output)
         )
 
 
@@ -2674,35 +2695,24 @@ class TestDoctor(CliCase):
     def test_doctor_reports_a_guards_section_with_broken_guards(self):
         # An empty rules array: both history-rewrite rules and the review
         # rule are absent, so every guard is broken (behaviour 8).
+        # Behaviour 19: findings render as blocks, not _report_line rows;
+        # the broken guard's block headline carries the "warn:" prefix
+        # and the rule name.
         result, _, _ = self.run_doctor_with_guards(
             ("iar3-r8", "Anvil"), ([], None)
         )
         self.assertEqual(0, result.exit_code)
         for rule in ("non_fast_forward", "deletion", "pull_request"):
-            line = next(
-                (candidate for candidate in self.guards_lines(result)
-                 if rule in candidate),
-                None,
-            )
-            self.assertIsNotNone(
-                line,
-                "no Guards report line for the {!r} rule:\n{}".format(
-                    rule, result.output
-                ),
-            )
-            # _report_line renders two leading spaces; the broken guard must
-            # carry the failing marker _mark(False) returns.
+            headline = "warn: {}".format(rule)
+            matching = [
+                candidate for candidate in self.guards_lines(result)
+                if candidate.lstrip().startswith(headline)
+            ]
             self.assertTrue(
-                line.startswith("  "),
-                "guard line for {!r} is not a _report_line shape: {!r}".format(
-                    rule, line
+                matching,
+                "no Guards block headline {!r} for the {!r} rule:\n{}".format(
+                    headline, rule, result.output
                 ),
-            )
-            self.assertIn(
-                cli._mark(False),
-                line,
-                "guard line for {!r} does not carry the {!r} marker: "
-                "{!r}".format(rule, cli._mark(False), line),
             )
 
     def test_doctor_exit_unchanged_with_broken_guards(self):
@@ -2899,6 +2909,69 @@ class TestDoctorGuardsTokenFindings(CliCase):
         )
         self.assertIn("fail:", result.output)
 
+    def test_guards_has_branch_rules_header(self):
+        # Behaviour 19: the Guards section has a "Branch rules" header
+        # before the branch finding blocks.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _ = self.run_doctor_with_token_findings(token)
+        section = self.guards_section(result)
+        self.assertTrue(
+            "Branch rules" in section,
+            "no 'Branch rules' header in the Guards section:\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_guards_has_token_scope_header(self):
+        # Behaviour 19: the Guards section has a "Token scope" header
+        # before the token finding blocks.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _ = self.run_doctor_with_token_findings(token)
+        section = self.guards_section(result)
+        self.assertTrue(
+            "Token scope" in section,
+            "no 'Token scope' header in the Guards section:\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_token_finding_blocks_present_in_guards(self):
+        # Behaviour 19: each token finding's block headline appears in
+        # the Guards section, and doctor still exits 0.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+            token_finding(
+                "administration",
+                "warn",
+                danger="the repository could be deleted or reconfigured",
+                remedy="doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+            ),
+        ]
+        result, _ = self.run_doctor_with_token_findings(token)
+        section = self.guards_section(result)
+        for finding in token:
+            headline = _finding_headline(finding)
+            self.assertTrue(
+                any(line.startswith(headline) for line in section),
+                "no token finding block headline {!r} in the Guards "
+                "section:\n{}".format(headline, result.output),
+            )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "doctor must still exit 0 with token finding blocks",
+        )
+
 
 class TestVerifyGuards(CliCase):
     """``verify-guards`` reports through the single check_all seam."""
@@ -2965,18 +3038,24 @@ class TestVerifyGuards(CliCase):
                     rule, result.output
                 ),
             )
-        # The report prints one line per check_all finding, via
-        # render_report. Counted per finding rather than as a report total:
+        # The report prints one block per check_all finding, via
+        # render_finding_block. The block's headline (status prefix + label)
+        # is the stable anchor: the detail and remedy lines are wrapped at
+        # 80 columns and may span multiple lines, so only the headline is
+        # searched. Counted per finding rather than as a report total:
         # behaviour 15 adds the token findings to the same report, so a
         # total would be invalidated by the wiring it was meant to guard.
         report_lines = result.output.splitlines()
         for finding in findings:
-            rendered = piguard.render_finding(finding)
+            headline = _finding_headline(finding)
             self.assertEqual(
                 1,
-                sum(1 for candidate in report_lines if rendered in candidate),
-                "the report must print exactly one line for the finding "
-                "{!r}:\n{}".format(rendered, result.output),
+                sum(1 for candidate in report_lines
+                    if candidate.startswith(headline)),
+                "the report must print exactly one block for the finding "
+                "{!r} (headline {!r}):\n{}".format(
+                    finding, headline, result.output
+                ),
             )
         # No fail finding among the five passed rules: exit status unchanged.
         self.assertEqual(0, result.exit_code)
@@ -3230,6 +3309,130 @@ class TestVerifyGuardsTokenFindings(CliCase):
         )
         self.assertEqual(1, result.exit_code)
         self.assertIn("fail:", result.output)
+
+    def test_report_has_branch_rules_header_before_first_branch_finding(self):
+        # Behaviour 19: the report has a "Branch rules" section header
+        # before the first branch finding block.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _, _ = self.run_verify_guards_with_token_findings(token)
+        lines = result.output.splitlines()
+        header_index = next(
+            (index for index, line in enumerate(lines)
+             if line == "Branch rules"),
+            None,
+        )
+        self.assertIsNotNone(
+            header_index,
+            "no 'Branch rules' header in the report:\n{}".format(result.output),
+        )
+        branch = self.branch_findings()
+        first_headline = _finding_headline(branch[0])
+        first_index = next(
+            (index for index, line in enumerate(lines)
+             if line.startswith(first_headline)),
+            None,
+        )
+        self.assertIsNotNone(
+            first_index,
+            "no branch finding block in the report:\n{}".format(result.output),
+        )
+        self.assertGreater(
+            first_index,
+            header_index,
+            "'Branch rules' header must precede the first branch finding "
+            "block:\n{}".format(result.output),
+        )
+
+    def test_report_has_token_scope_header_before_first_token_finding(self):
+        # Behaviour 19: the report has a "Token scope" section header
+        # before the first token finding block.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _, _ = self.run_verify_guards_with_token_findings(token)
+        lines = result.output.splitlines()
+        header_index = next(
+            (index for index, line in enumerate(lines)
+             if line == "Token scope"),
+            None,
+        )
+        self.assertIsNotNone(
+            header_index,
+            "no 'Token scope' header in the report:\n{}".format(result.output),
+        )
+        first_headline = _finding_headline(token[0])
+        first_index = next(
+            (index for index, line in enumerate(lines)
+             if line.startswith(first_headline)),
+            None,
+        )
+        self.assertIsNotNone(
+            first_index,
+            "no token finding block in the report:\n{}".format(result.output),
+        )
+        self.assertGreater(
+            first_index,
+            header_index,
+            "'Token scope' header must precede the first token finding "
+            "block:\n{}".format(result.output),
+        )
+
+    def test_no_report_line_exceeds_80_characters(self):
+        # Behaviour 19: the report is 80 columns wide. The harness's
+        # target path is a short TemporaryDirectory path, so the metadata
+        # lines (target/branch/repository) are well under 80; the
+        # _SEPARATOR is 60 dashes. Every line must be at most 80.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _, _ = self.run_verify_guards_with_token_findings(token)
+        for line in result.output.splitlines():
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a report line exceeds 80 characters ({} chars): {!r}"
+                "\n---\n{}".format(len(line), line, result.output),
+            )
+
+    def test_fail_token_finding_remedy_on_fix_line(self):
+        # Behaviour 19: a fail finding's remedy rides on an indented line
+        # beginning "fix:" (the pinned convention: fix: for warn/fail/
+        # skipped, see: for passed).
+        remedy_text = "recreate the token"
+        token = [
+            token_finding(
+                "administration",
+                "fail",
+                danger="the repository could be deleted or reconfigured",
+                remedy="{}; see "
+                "doc/external/github/rest-api-endpoints-for-actions-permissions.md".format(
+                    remedy_text
+                ),
+            ),
+        ]
+        result, _, _ = self.run_verify_guards_with_token_findings(token)
+        lines = result.output.splitlines()
+        fix_lines = [
+            line for line in lines if line.lstrip().startswith("fix:")
+        ]
+        self.assertTrue(
+            fix_lines,
+            "no 'fix:' line in the report:\n{}".format(result.output),
+        )
+        self.assertIn(
+            remedy_text,
+            "\n".join(fix_lines),
+            "the remedy must appear on the fix: line(s):\n"
+            "fix lines: {!r}\n{}".format(fix_lines, result.output),
+        )
 
 
 class TestVerifyGuardsDocstringCorrection(CliCase):

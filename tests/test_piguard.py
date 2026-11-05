@@ -6509,6 +6509,398 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
         )
 
 
+class RenderFindingBlockTests(unittest.TestCase):
+    """Behaviour 19 of plans/verify-guards-token.md: ``render_finding_block``.
+
+    The new human-facing renderer for ONE finding. ``render_finding_block(
+    finding, width=80)`` returns a small block of lines:
+
+    - a headline line - a status prefix consistent with the existing
+      ``ok:``/``warn:``/``fail:``/``skipped:`` convention, then a label: the
+      ``rule`` when the finding carries one, otherwise the ``check`` name,
+      never a literal ``None``;
+    - detail lines carrying the finding's substance (the danger for
+      warn/fail, the reason for skipped, the caveat + recorded values for
+      passed) wrapped so every line is at most ``width`` characters, with the
+      substance surviving word-for-word across the wrap;
+    - a remedy line, indented and beginning ``fix:`` for warn/fail/skipped
+      and ``see:`` for passed (the pinned convention - both prefixes are
+      accepted, one carries the full remedy text wrapped at the same width).
+
+    The existing single-line ``render_finding`` is untouched; its
+    byte-for-byte pins (behaviours 9/17) keep passing, and this class pins
+    only the new block's substance and shape - never the wrap points.
+    """
+
+    def _block(self, finding, width=80):
+        """Render ONE finding as a block, asserting its outer shape.
+
+        Fails at the callability seam when ``render_finding_block`` does not
+        exist yet - the RED reason for this whole class.
+        """
+        renderer = getattr(piguard, "render_finding_block", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.pi.piguard.render_finding_block is not callable; the "
+            "behaviour-19 block renderer has not been implemented yet",
+        )
+        block = renderer(finding, width=width)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        self.assertGreaterEqual(
+            len(block), 2, "a finding block has a headline plus detail lines"
+        )
+        for line in block:
+            self.assertIsInstance(line, str)
+            self.assertLessEqual(
+                len(line),
+                width,
+                "a block line exceeds the requested width {!r}: {!r}".format(
+                    width, line
+                ),
+            )
+        return block
+
+    def _remedy_lines(self, block, allowed=("fix:", "see:")):
+        """The block's remedy lines: indented, beginning one of ``allowed``.
+
+        The pinned convention: ``fix:`` for warn/fail/skipped, ``see:`` for
+        passed - the remedy text, wrapped at the same width, carried on a
+        line of that convention.
+        """
+        return [
+            line for line in block if line.lstrip().startswith(allowed)
+        ]
+
+    @staticmethod
+    def _compact(text):
+        """The text with every whitespace character removed.
+
+        A wrap may only change whitespace (line breaks, indentation), so
+        word-for-word survival of a substance is checkable by comparing
+        the whitespace-free forms - without pinning the wrap points.
+        """
+        return "".join(text.split())
+
+    def _assert_substance_survives(self, substance, block):
+        """The substance recovers from the block word-for-word, in order."""
+        self.assertIn(
+            self._compact(substance),
+            self._compact("\n".join(block)),
+            "the substance must survive the wrap word-for-word; missing: "
+            "{!r}\nblock: {!r}".format(substance, block),
+        )
+
+    def test_fail_finding_block_names_check_wraps_danger_and_carries_fix(self):
+        # The real behaviour-3 finding: a 200 on the actions-permissions
+        # endpoint is the first emittable fail, and it carries rule=None, so
+        # the headline must name the check, never the rule.
+        findings = piguard.probe_administration(
+            "owner",
+            "repo",
+            "ghp_blocktest",
+            opener=_opener(
+                _FakeResponse(b'{"enabled": true, "allowed_actions": "selected"}', 200)
+            ),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "fail"
+        ][0]
+        self.assertIsNone(
+            _field(finding, "rule"),
+            "fixture sanity: the administration fail carries rule=None",
+        )
+
+        block = self._block(finding)
+        headline = block[0]
+        self.assertTrue(
+            headline.startswith("fail:"),
+            "the block headline must carry the status prefix: {!r}".format(headline),
+        )
+        self.assertIn(
+            piguard.CHECK_ADMINISTRATION,
+            headline,
+            "the fail headline must name the check: {!r}".format(headline),
+        )
+        self.assertNotIn("None", headline)
+        # The substance survives the wrap word-for-word (whitespace is the
+        # only thing a wrap may change), so the whole danger and the whole
+        # remedy recover from the block.
+        self._assert_substance_survives(_field(finding, "danger"), block)
+        self._assert_substance_survives(_field(finding, "remedy"), block)
+        self.assertIn(
+            "doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+            self._compact("\n".join(block)),
+            "the remedy's doc path must survive the wrap intact:\n"
+            "block: {!r}".format(block),
+        )
+        # Pinned convention: a warn/fail remedy rides on a ``fix:`` line.
+        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
+        self.assertGreaterEqual(
+            len(remedy_lines),
+            1,
+            "the block must carry an indented 'fix:' line with the "
+            "remedy:\nblock: {!r}".format(block),
+        )
+        self.assertIn(
+            "recreate the token",
+            remedy_lines[0],
+            "the fix line must carry the start of the remedy:\n"
+            "block: {!r}".format(block),
+        )
+
+    def test_warn_finding_block_names_check_carries_danger_and_fix(self):
+        # The real behaviour-6 warn: a 200 on the named other repo means the
+        # token reaches more than the target - rule=None, so the headline
+        # keys on the check.
+        findings = piguard.probe_named_repo(
+            "someorg/other-repo",
+            "ghp_blocktest",
+            opener=_opener(
+                _FakeResponse(b'{"full_name": "someorg/other-repo"}', 200)
+            ),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "warn"
+        ][0]
+
+        block = self._block(finding)
+        headline = block[0]
+        self.assertTrue(
+            headline.startswith("warn:"),
+            "the block headline must carry the status prefix: {!r}".format(headline),
+        )
+        self.assertIn(
+            piguard.CHECK_NAMED_REPO,
+            headline,
+            "the warn headline must name the check: {!r}".format(headline),
+        )
+        self.assertNotIn("None", headline)
+        self._assert_substance_survives(_field(finding, "danger"), block)
+        self._assert_substance_survives(_field(finding, "remedy"), block)
+        self.assertIn(
+            "doc/external/github/fine-grained-personal-access-tokens.md",
+            self._compact("\n".join(block)),
+            "the remedy's doc path must survive the wrap intact:\n"
+            "block: {!r}".format(block),
+        )
+        # Pinned convention: a warn remedy rides on a ``fix:`` line.
+        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
+        self.assertGreaterEqual(
+            len(remedy_lines),
+            1,
+            "the block must carry an indented 'fix:' line with the "
+            "remedy:\nblock: {!r}".format(block),
+        )
+        self.assertIn(
+            "recreate the token",
+            remedy_lines[0],
+            "the fix line must carry the start of the remedy:\n"
+            "block: {!r}".format(block),
+        )
+
+    def test_skipped_finding_block_wraps_the_long_reason(self):
+        # The real behaviour-5 finding: the workflows-withheld reason is the
+        # longest substance in the module, so it is the ideal wrap fixture -
+        # at width 80 it cannot fit on one line.
+        finding = piguard.workflows_withheld_finding()[0]
+        self.assertEqual(
+            "skipped", _field(finding, "status"), "fixture sanity"
+        )
+
+        block = self._block(finding)
+        headline = block[0]
+        self.assertTrue(
+            headline.startswith("skipped:"),
+            "the block headline must carry the status prefix: {!r}".format(headline),
+        )
+        self.assertIn(
+            piguard.CHECK_WORKFLOWS_WITHHELD,
+            headline,
+            "the skipped headline must name the check: {!r}".format(headline),
+        )
+        # The reason is the longest substance in the module: it must recover
+        # word-for-word across the wrap, as must the remedy.
+        self._assert_substance_survives(_field(finding, "reason"), block)
+        self._assert_substance_survives(_field(finding, "remedy"), block)
+        self.assertIn(
+            "doc/external/github/rest-api-endpoints-for-workflows.md",
+            self._compact("\n".join(block)),
+            "the reason's doc path must survive the wrap intact:\n"
+            "block: {!r}".format(block),
+        )
+        self.assertGreater(
+            len(block),
+            2,
+            "the long reason must wrap to more than the headline and the "
+            "remedy line:\nblock: {!r}".format(block),
+        )
+        # Pinned convention: a skipped remedy (how to un-skip) rides on a
+        # ``fix:`` line.
+        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
+        self.assertGreaterEqual(
+            len(remedy_lines),
+            1,
+            "the block must carry an indented 'fix:' line saying how to "
+            "un-skip:\nblock: {!r}".format(block),
+        )
+        self.assertIn(
+            "manual check",
+            remedy_lines[0],
+            "the fix line must carry the start of the remedy:\n"
+            "block: {!r}".format(block),
+        )
+
+    def test_branch_rule_passed_block_keeps_caveat_and_recorded_count(self):
+        # A rule-based passed finding (rule set) keeps its substance: the
+        # rule name on the headline, the bypass-actors caveat, and the
+        # recorded approval count - all still present, wrapped.
+        findings = piguard.check_review([pull_request_rule("main-guard", 1)])
+        finding = findings[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            "pull_request", _field(finding, "rule"), "fixture sanity"
+        )
+        self.assertEqual(
+            1,
+            _field(finding, "required_approving_review_count"),
+            "fixture sanity: the recorded count must be 1",
+        )
+
+        block = self._block(finding)
+        headline = block[0]
+        self.assertTrue(
+            headline.startswith("ok:"),
+            "the block headline must carry the status prefix: {!r}".format(headline),
+        )
+        self.assertIn(
+            "pull_request",
+            headline,
+            "a rule-based passed headline must name the rule: {!r}".format(
+                headline
+            ),
+        )
+        self.assertNotIn("None", headline)
+        # The substance is the caveat (bypass_actors visible only to write
+        # access) plus the recorded count; a wrap may only change whitespace,
+        # so the check runs on the whitespace-free form: the caveat phrase
+        # and the "(1 required approvals)" parenthetical recover
+        # word-for-word without pinning the wrap points.
+        compact = self._compact("\n".join(block))
+        self.assertIn(
+            self._compact("bypass_actors is only returned"),
+            compact,
+            "the bypass-visibility caveat must survive the wrap word-for-word:"
+            "\nblock: {!r}".format(block),
+        )
+        self.assertIn(
+            "1requiredapprovals",
+            compact,
+            "the recorded approval count must survive the wrap intact:\n"
+            "block: {!r}".format(block),
+        )
+        # Pinned convention: a passed finding's remedy (the doc path) rides
+        # on a ``see:`` line.
+        self.assertGreaterEqual(
+            len(self._remedy_lines(block, allowed=("see:",))),
+            1,
+            "a passed block must carry an indented 'see:' line with the "
+            "doc path:\nblock: {!r}".format(block),
+        )
+
+    def test_token_passed_block_never_prints_none_or_a_rule_claim(self):
+        # The "ok: the None rule is present" bug: a token passed finding
+        # (rule=None) must render a headline naming the check, must not
+        # contain the substring "None", and must not claim a "rule is
+        # present" - the passed-branch text is written for branch rules.
+        findings = piguard.probe_target_access(
+            "owner",
+            "repo",
+            "ghp_blocktest",
+            opener=_opener(_FakeResponse(b'{"full_name": "owner/repo"}', 200)),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "passed"
+        ][0]
+        self.assertIsNone(
+            _field(finding, "rule"),
+            "fixture sanity: a token passed finding carries rule=None",
+        )
+
+        block = self._block(finding)
+        headline = block[0]
+        self.assertTrue(
+            headline.startswith("ok:"),
+            "the block headline must carry the status prefix: {!r}".format(headline),
+        )
+        self.assertIn(
+            piguard.CHECK_TARGET_ACCESS,
+            headline,
+            "a token passed headline must name the check: {!r}".format(headline),
+        )
+        self.assertNotIn(
+            "None",
+            "\n".join(block),
+            "a token passed block must never print a literal None:\n"
+            "block: {!r}".format(block),
+        )
+        self.assertNotIn(
+            "rule is present",
+            "\n".join(block),
+            "a token passed block must not claim a 'rule is present' - "
+            "that text is written for branch rules:\nblock: {!r}".format(block),
+        )
+        # Pinned convention: a passed finding's remedy (the doc path) rides
+        # on a ``see:`` line.
+        self.assertGreaterEqual(
+            len(self._remedy_lines(block, allowed=("see:",))),
+            1,
+            "the block must carry an indented 'see:' line with the "
+            "doc path:\nblock: {!r}".format(block),
+        )
+        # The passed substance is the caveat + the recorded fact that the
+        # target is reachable; a wrap may only change whitespace.
+        compact = self._compact("\n".join(block))
+        self.assertIn(
+            "reaches",
+            compact,
+            "the passed substance must still state that the target is "
+            "reachable:\nblock: {!r}".format(block),
+        )
+        self._assert_substance_survives(_field(finding, "remedy"), block)
+
+    def test_narrower_width_wraps_to_strictly_more_lines(self):
+        # Width is a real parameter: the long skipped reason wraps to
+        # strictly more lines at width 40 than at 80, and no line ever
+        # exceeds the given width.
+        finding = piguard.workflows_withheld_finding()[0]
+        wide = self._block(finding, width=80)
+        narrow = self._block(finding, width=40)
+        for line in narrow:
+            self.assertLessEqual(len(line), 40)
+        for line in wide:
+            self.assertLessEqual(len(line), 80)
+        self.assertGreater(
+            len(narrow),
+            len(wide),
+            "width=40 must wrap to strictly more lines than width=80 for "
+            "a long finding:\nwidth=80 ({!r} lines): {!r}\nwidth=40 ({!r} "
+            "lines): {!r}".format(len(wide), wide, len(narrow), narrow),
+        )
+
+    def test_same_finding_and_width_render_equal_blocks(self):
+        # Deterministic: same finding, same width -> equal blocks, so the
+        # report is diffable across runs.
+        finding = piguard.workflows_withheld_finding()[0]
+        self.assertEqual(self._block(finding), self._block(finding))
+
+
 class TokenFindingInvariantSweepTests(unittest.TestCase):
     """Behaviour 10 of plans/verify-guards-token.md: a [PIN] boundary pin over
     the token-scope findings the probes of behaviours 2-6 can emit.
