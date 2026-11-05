@@ -1466,8 +1466,14 @@ def render_finding(finding: Dict[str, Any]) -> str:
                 line += " (no restricted paths recorded)"
         return line
     if status == "warn":
+        # Keyed on ``check`` when ``rule`` is None: a token finding carries
+        # rule=None, and rendering it would print a literal "None" - the
+        # same shape the ``fail`` branch (behaviour 9) uses. A non-None
+        # rule renders byte-for-byte as before.
         return "warn: {} - {}; fix: {}".format(
-            rule, finding.get("danger"), finding.get("remedy")
+            rule if rule is not None else finding.get("check"),
+            finding.get("danger"),
+            finding.get("remedy"),
         )
     if status == "skipped":
         reason = (

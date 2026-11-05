@@ -6219,7 +6219,7 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
         self.assertTrue(
             line.startswith("warn: {} - ".format(check)),
             "the warn line must name the check first, mirroring the "
-            "fail branch's 'fail: {check} - ...' shape: {!r}".format(line),
+            "fail branch's 'fail: {{check}} - ...' shape: {!r}".format(line),
         )
         self.assertIn(
             danger,
