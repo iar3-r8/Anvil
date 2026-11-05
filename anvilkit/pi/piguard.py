@@ -36,6 +36,10 @@ CHECK_TARGET_ACCESS = "target_access"
 # plans/verify-guards-token.md).
 CHECK_ADMINISTRATION = "administration"
 
+# The classic-token probe's check name (behaviour 4 of
+# plans/verify-guards-token.md).
+CHECK_CLASSIC_TOKEN = "classic_token"
+
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
 _RULES_API_BASE = "https://api.github.com"
@@ -76,6 +80,12 @@ _ACTIONS_PERMISSIONS_DOC = (
     "doc/external/github/rest-api-endpoints-for-actions-permissions.md"
 )
 
+# Cited by the classic-token probe's findings. It documents that a token's
+# scope list is the X-OAuth-Scopes response header and that scopes are
+# normalized - which is exactly why the probe's discriminator is a
+# non-empty header, never an exact scope string (behaviour 4).
+_OAUTH_SCOPES_DOC = "doc/external/github/scopes-for-oauth-apps.md"
+
 # What an agent could do while the target access is unmeasured: the skipped
 # finding carries it so it stands on its own rather than leaning on the
 # renderer (the _SKIPPED_DANGERS pattern).
@@ -93,6 +103,15 @@ _ADMINISTRATION_SKIP_DANGER = (
     "unmeasured: this report cannot rule out that the token can delete or "
     "reconfigure the repository and raise the default GITHUB_TOKEN "
     "permissions to write"
+)
+
+# The same, for the classic-token probe: the unmeasured hole is that the
+# token may be classic, in which case it reaches every repository the
+# owner can see.
+_CLASSIC_TOKEN_SKIP_DANGER = (
+    "whether the token is classic is unmeasured: a classic token grants "
+    "access to every repository the owner can see, so the repo-scope "
+    "guarantee may be void, and this report cannot rule it out"
 )
 
 # What an agent could do if each rule is absent: the consequence, not the
@@ -622,6 +641,161 @@ def probe_administration(
             "source": None,
             "reason": "GitHub returned HTTP {} for {}".format(status, url),
             "remedy": skipped_remedy,
+        }
+    ]
+
+
+def probe_classic_token(
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The third token-scope probe: is the token a classic (OAuth-scoped) token?
+
+    Issues ``GET /user`` through :func:`fetch_probe` (behaviour 1 of
+    plans/verify-guards-token.md) - one probe, one API call, no owner or repo
+    - and reads the ``X-OAuth-Scopes`` response header, looked up
+    case-insensitively (HTTP headers are case-insensitive; the ``headers``
+    value from :func:`fetch_probe` is a dict that may be empty). The saved
+    page doc/external/github/scopes-for-oauth-apps.md settles the
+    discriminator: a token's scope list is that header - GitHub's own
+    example shows ``X-OAuth-Scopes: repo, user`` - and scopes are
+    normalized, so exact-string matching is brittle; the honest
+    discriminator is the header **present and non-empty**.
+
+    - header present and non-empty -> one ``fail`` finding - the second
+      emittable ``fail`` in the module: a classic token grants access to
+      *every* repository the owner can see (the saved page says the same),
+      so the repo-scope guarantee the other probes protect is void
+      regardless of their answers. The finding quotes the recorded scopes
+      verbatim and carries a non-empty remedy citing the saved page.
+    - header present but empty, or absent -> one ``passed`` finding worded
+      "no classic OAuth scope header was returned" - deliberately *not*
+      "this is a fine-grained token", because the saved page documents no
+      ``X-OAuth-Scopes`` semantics for fine-grained PATs and does not
+      license that claim.
+    - ``401`` or any other status -> one ``skipped`` finding whose reason
+      carries the status; for an ``HTTPError`` the headers may be absent,
+      and the skip records the status, never the header.
+    - a transport reason from :func:`fetch_probe` -> one ``skipped`` finding
+      with a non-empty reason.
+
+    The body is **never** parsed for a ``scopes`` field: the documented
+    ``GET /user`` 200 body (doc/external/github/rest-api-endpoints-for-users.
+    md) contains no such key, so a recorded body carrying one is ignored.
+
+    Like :func:`probe_target_access` and :func:`probe_administration`, a
+    missing or empty token is a **skip** - no request is attempted at all -
+    because a token-scope probe reads a token's property, and an
+    unauthenticated request establishes no fact about any token (behaviour
+    7).
+
+    Never raises; always returns a list of findings. Never echoes a token
+    into a finding or a reason (module invariant).
+    """
+    url = "{}/user".format(_RULES_API_BASE)
+    skipped_remedy = (
+        "make the token valid and api.github.com reachable, then re-run; "
+        "see {}".format(_OAUTH_SCOPES_DOC)
+    )
+
+    if not token:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_CLASSIC_TOKEN,
+                "rule": None,
+                "danger": _CLASSIC_TOKEN_SKIP_DANGER,
+                "source": None,
+                "reason": (
+                    "no token supplied: a token-scope probe with no token "
+                    "establishes no fact about any token, so the probe "
+                    "skips rather than issuing an unauthenticated request "
+                    "and reading its status as a token property - unlike "
+                    "fetch_branch_rules, where a missing token is an "
+                    "unauthenticated attempt"
+                ),
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    status, headers, _body, reason = fetch_probe(
+        url, token, opener=opener, timeout=timeout
+    )
+
+    if reason is not None:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_CLASSIC_TOKEN,
+                "rule": None,
+                "danger": _CLASSIC_TOKEN_SKIP_DANGER,
+                "source": None,
+                "reason": reason,
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    if status != 200:
+        # 401 is the unauthenticated answer the saved page documents for
+        # GET /user; any other status is likewise not a scope answer. The
+        # headers of a non-200 are not consulted: an HTTPError's headers
+        # may be absent, and a skip records the status, not the header.
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_CLASSIC_TOKEN,
+                "rule": None,
+                "danger": _CLASSIC_TOKEN_SKIP_DANGER,
+                "source": None,
+                "reason": "GitHub returned HTTP {} for {}".format(status, url),
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    scopes = ""
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            if isinstance(key, str) and key.lower() == "x-oauth-scopes":
+                scopes = value if isinstance(value, str) else str(value)
+                break
+
+    if scopes:
+        return [
+            {
+                "status": "fail",
+                "check": CHECK_CLASSIC_TOKEN,
+                "rule": None,
+                "danger": (
+                    "the response carried the X-OAuth-Scopes header "
+                    "verbatim: {!r} - a classic token grants access to "
+                    "every repository the owner can see, so the "
+                    "repo-scope guarantee is void regardless of the other "
+                    "probes".format(scopes)
+                ),
+                "source": None,
+                "remedy": (
+                    "recreate the token as a fine-grained PAT with "
+                    "Repository access 'Only select repositories' and no "
+                    "classic scopes; where scopes live and how they are "
+                    "normalized: {}".format(_OAUTH_SCOPES_DOC)
+                ),
+            }
+        ]
+
+    return [
+        {
+            "status": "passed",
+            "check": CHECK_CLASSIC_TOKEN,
+            "rule": None,
+            "danger": "",
+            "source": None,
+            "remedy": (
+                "nothing to do - no classic OAuth scope header was "
+                "returned (the X-OAuth-Scopes header was absent or empty); "
+                "that says the response carried no scopes, not what kind "
+                "of token this is; see {}".format(_OAUTH_SCOPES_DOC)
+            ),
         }
     ]
 
