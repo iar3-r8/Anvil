@@ -5929,5 +5929,252 @@ class CheckTokenAllTests(unittest.TestCase):
         )
 
 
+class RenderFindingFailBranchTests(unittest.TestCase):
+    """Behaviour 9: render_finding renders a fail finding.
+
+    The token probes (behaviours 3 and 4 of plans/verify-guards-token.md)
+    are the first to emit a ``fail`` finding. ``render_finding`` has no
+    ``fail`` branch yet, so a ``fail`` falls through to the
+    ``"unknown: ... finding for rule None"`` line - which would hide the
+    first real failure the family can emit.
+
+    The fail line must be marked as a failure (a ``fail:`` prefix,
+    consistent with the ``ok:`` / ``warn:`` / ``skipped:`` convention the
+    other branches use), name the danger and the remedy (a ``fix:``-like
+    position, consistent with the ``warn:`` branch), and work for token
+    findings whose ``rule`` is ``None`` - the fallthrough's ``for rule
+    None`` is exactly the bug being fixed.
+
+    The empty-danger / empty-remedy programming-error case is NOT
+    asserted here: behaviour 10's sweep owns it.
+    """
+
+    def _assert_fail_line(
+        self, line: str, danger: str, remedy: str
+    ) -> None:
+        self.assertIsInstance(line, str)
+        self.assertTrue(
+            line,
+            "a fail finding must render a non-empty line",
+        )
+        self.assertNotIn(
+            "unknown:",
+            line,
+            "a fail finding must be distinct from the 'unknown:' "
+            "fallthrough - that line would hide the first real failure "
+            "the family can emit: {!r}".format(line),
+        )
+        self.assertTrue(
+            line.startswith("fail:"),
+            "the fail line must be marked as a failure with a 'fail:' "
+            "prefix, consistent with the ok:/warn:/skipped: prefix "
+            "convention the other branches use: {!r}".format(line),
+        )
+        self.assertIn(
+            danger,
+            line,
+            "the rendered fail line must name the danger",
+        )
+        self.assertIn(
+            "fix:",
+            line,
+            "the rendered fail line must carry the remedy in a 'fix:' "
+            "position, consistent with the warn branch: {!r}".format(line),
+        )
+        self.assertIn(
+            remedy,
+            line,
+            "the rendered fail line must name the remedy",
+        )
+
+    def test_wellformed_fail_finding_renders_failure_line_naming_danger_and_remedy(self):
+        finding = {
+            "status": "fail",
+            "check": "administration",
+            "rule": None,
+            "danger": (
+                "the token holds Administration (read) on owner/repo: "
+                "the repository can be deleted or reconfigured, and the "
+                "default GITHUB_TOKEN permissions can be raised to write"
+            ),
+            "source": None,
+            "remedy": (
+                "recreate the token without the Administration "
+                "permission - the token recipe omits it on purpose; see "
+                "doc/external/github/"
+                "rest-api-endpoints-for-actions-permissions.md"
+            ),
+        }
+
+        line = piguard.render_finding(finding)
+
+        self._assert_fail_line(line, finding["danger"], finding["remedy"])
+
+    def test_probe_fail_findings_with_rule_none_do_not_render_rule_none(self):
+        # The real fail findings behaviours 3 and 4 emit: both carry
+        # rule=None, so the fail line must not depend on rule being
+        # non-None.
+        for label, finding in (
+            (
+                "administration (behaviour 3, 200)",
+                piguard.probe_administration(
+                    "owner",
+                    "repo",
+                    token="token-xyz",
+                    opener=_opener(_FakeResponse(b"{}", 200)),
+                )[0],
+            ),
+            (
+                "classic_token (behaviour 4, non-empty scopes header)",
+                piguard.probe_classic_token(
+                    "token-xyz",
+                    opener=_opener(
+                        _FakeResponse(
+                            b"{}",
+                            200,
+                            headers={"X-OAuth-Scopes": "repo, user"},
+                        )
+                    ),
+                )[0],
+            ),
+        ):
+            with self.subTest(probe=label):
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "fail",
+                    "fixture sanity: the probe emits a fail finding",
+                )
+                self.assertIsNone(
+                    _field(finding, "rule"),
+                    "fixture sanity: a token finding carries rule=None",
+                )
+
+                line = piguard.render_finding(finding)
+
+                self._assert_fail_line(
+                    line, _field(finding, "danger"), _field(finding, "remedy")
+                )
+                self.assertNotIn(
+                    "rule None",
+                    line,
+                    "the fail line must not render the token finding's "
+                    "rule as 'rule None' - the fallthrough's 'for rule "
+                    "None' is the bug being fixed: {!r}".format(line),
+                )
+                self.assertNotIn(
+                    "None",
+                    line,
+                    "the fail line must not depend on rule being "
+                    "non-None: neither the danger nor the remedy of a "
+                    "token fail finding carries 'None': {!r}".format(line),
+                )
+
+    def test_minimal_fail_finding_is_not_routed_through_another_branch(self):
+        # Only the fields a fail finding carries - no reason, no source -
+        # so a green that routes fail through the warn (or any other)
+        # branch cannot quietly work: it would render a 'warn:' line for
+        # a finding the report must mark as a failure.
+        finding = {
+            "status": "fail",
+            "check": "administration",
+            "rule": None,
+            "danger": "the repository can be deleted",
+            "remedy": "recreate the token without Administration",
+        }
+
+        line = piguard.render_finding(finding)
+
+        self.assertTrue(
+            line.startswith("fail:"),
+            "a fail finding must render the fail line, not be routed "
+            "through another branch: {!r}".format(line),
+        )
+        for prefix in ("warn:", "ok:", "skipped:", "unknown:"):
+            self.assertNotIn(
+                prefix,
+                line,
+                "a fail finding must not carry a {!r} marker: "
+                "{!r}".format(prefix, line),
+            )
+        self.assertIn("the repository can be deleted", line)
+        self.assertIn("recreate the token without Administration", line)
+
+    def test_existing_branches_render_unchanged(self):
+        # Behaviour 9 adds a fail branch without rewriting the existing
+        # ones: a known passed, warn and skipped finding must render
+        # exactly as today.
+        render = piguard.render_finding
+
+        # passed: the fixed caveat line, verbatim.
+        passed = piguard.check_history_rewrite(
+            [rule("non_fast_forward", "main-guard")]
+        )[0]
+        self.assertEqual(
+            _field(passed, "status"),
+            "passed",
+            "fixture sanity: an active rule passes",
+        )
+        self.assertEqual(
+            render(passed),
+            "ok: the non_fast_forward rule is present - but the bypass "
+            "list is not visible on a read-only token (bypass_actors is "
+            "only returned to users with write access to the ruleset)",
+        )
+
+        # warn: the "warn: {rule} - {danger}; fix: {remedy}" format,
+        # built from the finding's own fields.
+        warn = [
+            f
+            for f in piguard.check_history_rewrite(
+                [rule("non_fast_forward", "main-guard")]
+            )
+            if _field(f, "status") == "warn"
+        ][0]
+        self.assertEqual(
+            render(warn),
+            "warn: {} - {}; fix: {}".format(
+                _field(warn, "rule"),
+                _field(warn, "danger"),
+                _field(warn, "remedy"),
+            ),
+        )
+
+        # skipped: the "skipped: {check} check could not run: {reason}"
+        # format, verbatim.
+        skipped = piguard.skipped_findings(
+            "GitHub was unreachable: connection refused"
+        )[0]
+        self.assertEqual(
+            render(skipped),
+            "skipped: history_rewrite check could not run: GitHub was "
+            "unreachable: connection refused",
+        )
+
+    def test_genuinely_unknown_status_still_falls_through_to_unknown_line(self):
+        finding = {
+            "status": "bogus",
+            "check": "history_rewrite",
+            "rule": "deletion",
+            "danger": "",
+            "source": None,
+            "remedy": "",
+        }
+
+        line = piguard.render_finding(finding)
+
+        self.assertEqual(
+            line,
+            "unknown: bogus finding for rule deletion",
+            "a status that is not passed, warn, skipped or fail must "
+            "still fall through to the 'unknown:' line - only 'fail' is "
+            "given a real branch",
+        )
+        self.assertTrue(
+            line.startswith("unknown:"),
+            "the fallthrough for truly-unknown statuses must be "
+            "preserved: {!r}".format(line),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
