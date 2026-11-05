@@ -4790,5 +4790,730 @@ class WorkflowsWithheldFindingTests(unittest.TestCase):
             )
 
 
+class ProbeNamedRepoTests(unittest.TestCase):
+    """Behaviour 6 of plans/verify-guards-token.md: ``probe_named_repo``.
+
+    ``probe_named_repo(owner, other_repo, token, opener=None, timeout=None)``
+    runs the named-repo probe: a recorded ``GET /repos/{owner}/{other}``
+    through :func:`anvilkit.pi.piguard.fetch_probe` (behaviour 1, already
+    green) against a user-supplied repository. The two positional halves
+    are the split of the user-supplied ``--other-repo OWNER/REPO`` value -
+    it is never guessed, and the owner in it is not assumed to equal the
+    target's owner (plan Assumptions).
+
+    The framing rule this probe exists to encode: a ``404`` is the honest
+    answer, and it only proves one thing. A repository the token is not
+    scoped to returns ``404``, so the probe establishes "the token is not
+    scoped to that one repository" - it cannot enumerate the token's full
+    repository list, and the finding must say exactly that. (A ``404`` on
+    the *target* repository is the louder, different finding: behaviour 2's
+    target-access warn, not this probe's.)
+
+    - ``404``  -> one ``passed`` finding worded "proves only that the
+      token is not scoped to {owner}/{other}; it cannot enumerate the
+      token's full repository list" - both halves: the specific proof and
+      the explicit non-claim - with a non-empty remedy carrying a
+      ``doc/external/github/`` path.
+    - ``200``  -> one ``warn`` finding: the token reaches more than the
+      target, so a compromise of it is not confined to the target repo.
+    - ``403``  -> one ``skipped`` finding: a permission denial is not a
+      scope answer the probe can interpret.
+    - any other status -> one ``skipped`` finding whose reason carries
+      the status.
+    - transport failure -> one ``skipped`` finding whose reason is
+      non-empty.
+    - ``token=None`` -> one ``skipped`` finding (behaviour 7), and no
+      request may be attempted at all.
+    - ``other_repo`` missing or empty -> one ``skipped`` finding naming
+      ``--other-repo`` as the fix, never a pass, and no request may be
+      attempted at all.
+
+    The finding dict shape is the one ``render_finding`` already
+    consumes: ``status``, ``check``, ``rule``, ``danger``, ``source``
+    and ``remedy`` (plus ``reason`` on a skip). Every test below runs
+    over a recorded opener - no live network.
+    """
+
+    TOKEN = "ghp_recordedtoken"
+    OWNER = "owner"
+    OTHER = "other"
+    REPO_PATH = "/repos/owner/other"
+    _200_BODY = b'{"full_name": "owner/other"}'
+
+    def _prober(self) -> Any:
+        prober = getattr(piguard, "probe_named_repo", None)
+        self.assertTrue(
+            callable(prober),
+            "anvilkit.pi.piguard.probe_named_repo is not callable; the "
+            "named-repo token-scope probe has not been implemented yet",
+        )
+        return prober
+
+    def test_check_named_repo_constant_is_present_and_stable(self):
+        # The probe's check-name constant, in the module's stable CHECK_*
+        # vocabulary: snake_case of the probe's subject, the same spelling
+        # pattern as CHECK_TARGET_ACCESS ("target_access"),
+        # CHECK_ADMINISTRATION ("administration") and CHECK_CLASSIC_TOKEN
+        # ("classic_token").
+        constant = getattr(piguard, "CHECK_NAMED_REPO", None)
+        self.assertIsNotNone(
+            constant,
+            "anvilkit.pi.piguard.CHECK_NAMED_REPO must exist: the "
+            "named-repo probe's check-name constant is part of the "
+            "module's stable CHECK_* vocabulary",
+        )
+        self.assertEqual(
+            constant,
+            "named_repo",
+            "CHECK_NAMED_REPO follows the sibling check-name spelling "
+            "pattern (target_access, administration, classic_token)",
+        )
+
+    def test_recorded_404_yields_exactly_one_passed_finding_naming_the_scope_limit(self):
+        # The framing rule: a 404 is the honest answer, and it only proves
+        # one thing - the token is not scoped to that one repository. It
+        # cannot enumerate the token's full repository list, so the
+        # finding must say exactly that: the specific proof AND the
+        # explicit non-claim.
+        probe = self._prober()
+        url = "https://api.github.com" + self.REPO_PATH
+
+        findings = probe(
+            self.OWNER,
+            self.OTHER,
+            self.TOKEN,
+            opener=_opener(
+                urllib.error.HTTPError(url, 404, "Not Found", None, None)
+            ),
+            timeout=10.0,
+        )
+
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            1,
+            "the named-repo probe yields exactly one finding",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "a 404 on the other repo is the honest answer: the token is "
+            "not scoped to it - the probe passes",
+        )
+        remedy = _field(finding, "remedy")
+        self.assertIsInstance(remedy, str)
+        self.assertTrue(
+            remedy,
+            "every finding carries a non-empty remedy",
+        )
+        self.assertIn(
+            "not scoped to {}/{}".format(self.OWNER, self.OTHER),
+            remedy,
+            "the passed finding must state the specific proof: the token "
+            "is not scoped to that one repository ({}/{})".format(
+                self.OWNER, self.OTHER
+            ),
+        )
+        self.assertIn(
+            "cannot enumerate",
+            remedy,
+            "the passed finding must carry the explicit non-claim: the "
+            "probe cannot enumerate the token's full repository list - a "
+            "pass that claims more than one 404 proves overstates the "
+            "evidence",
+        )
+        self.assertIn(
+            "full repository list",
+            remedy,
+            "the non-claim must name what cannot be enumerated: the "
+            "token's full repository list",
+        )
+        self.assertIn(
+            "doc/external/github/",
+            remedy,
+            "the passed remedy must name a saved page under "
+            "doc/external/github/, consistent with the other probes' "
+            "passed findings",
+        )
+
+    def test_recorded_200_yields_exactly_one_warn_finding_reaching_more_than_the_target(self):
+        # A 200 means the token reaches this other repository too: the
+        # scope is wider than the target, so a compromise of the token is
+        # not confined to the target repository. The warn carries the
+        # consequence (the danger) and a remedy naming a saved page under
+        # doc/external/github/.
+        probe = self._prober()
+        opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
+
+        findings = probe(
+            self.OWNER, self.OTHER, self.TOKEN, opener=opener, timeout=10.0
+        )
+
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            1,
+            "the named-repo probe yields exactly one finding",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "warn",
+            "a 200 on the other repo means the token reaches more than "
+            "the target - a warn, not a pass and not a fail",
+        )
+        danger = _field(finding, "danger")
+        self.assertIsInstance(danger, str)
+        self.assertTrue(
+            danger,
+            "the warn must carry a non-empty danger stating the "
+            "consequence: a compromise of this token is not confined to "
+            "the target repository",
+        )
+        self.assertIn(
+            "target",
+            danger,
+            "the warn's danger must state that the token reaches more "
+            "than the target - that is what the 200 establishes",
+        )
+        remedy = _field(finding, "remedy")
+        self.assertIsInstance(remedy, str)
+        self.assertTrue(
+            remedy,
+            "every finding carries a non-empty remedy",
+        )
+        self.assertIn(
+            "doc/external/github/",
+            remedy,
+            "the warn remedy must name a saved page under "
+            "doc/external/github/, so a reviewer can check the claim "
+            "against the saved documentation",
+        )
+
+    def test_no_other_repo_supplied_yields_skipped_naming_the_flag_without_request(self):
+        # Nothing to probe: no request is attempted, and the finding must
+        # name --other-repo as the fix, never a pass - a pass with no
+        # repository named would claim a scope fact that was never
+        # measured.
+        probe = self._prober()
+        for label, other_repo in (("None", None), ("empty string", "")):
+            with self.subTest(other_repo=label):
+                opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
+
+                findings = probe(
+                    self.OWNER,
+                    other_repo,
+                    self.TOKEN,
+                    opener=opener,
+                    timeout=10.0,
+                )
+
+                self.assertIsNone(
+                    opener.captured,
+                    "with no other repository supplied the probe must not "
+                    "attempt a request at all: there is nothing to probe",
+                )
+                self.assertIsInstance(findings, list)
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "the named-repo probe yields exactly one finding",
+                )
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "skipped",
+                    "no other repo supplied means the probe skips - never "
+                    "a pass",
+                )
+                reason = (
+                    _field(finding, "reason")
+                    or _field(finding, "danger")
+                    or ""
+                )
+                self.assertTrue(
+                    reason,
+                    "the skipped finding must carry a non-empty reason",
+                )
+                self.assertIn(
+                    "--other-repo",
+                    _field(finding, "remedy") or "",
+                    "the skipped finding must name --other-repo as the "
+                    "fix: supplying a repository is what makes the probe "
+                    "runnable",
+                )
+
+    def test_recorded_403_yields_skipped_permission_denial_not_scope_answer(self):
+        # A 403 on the other repo is a permission denial, not a scope
+        # answer: unlike the administration probe, where 403 is the
+        # compliant withholding, here the probe cannot read a denial as
+        # "not scoped to" - it skips.
+        probe = self._prober()
+        url = "https://api.github.com" + self.REPO_PATH
+
+        findings = probe(
+            self.OWNER,
+            self.OTHER,
+            self.TOKEN,
+            opener=_opener(
+                urllib.error.HTTPError(url, 403, "Forbidden", None, None)
+            ),
+            timeout=10.0,
+        )
+
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            1,
+            "the named-repo probe yields exactly one finding",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "skipped",
+            "a 403 on the other repo is a permission denial, not a scope "
+            "answer the probe can interpret: it skips, it does not pass "
+            "and it does not warn",
+        )
+        reason = (
+            _field(finding, "reason")
+            or _field(finding, "danger")
+            or ""
+        )
+        self.assertTrue(
+            reason,
+            "the skipped finding must carry a non-empty reason naming "
+            "the denial",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_recorded_other_status_yields_skipped_with_status_in_reason(self):
+        probe = self._prober()
+        url = "https://api.github.com" + self.REPO_PATH
+
+        for status, phrase in (
+            (500, "Internal Server Error"),
+            (503, "Service Unavailable"),
+        ):
+            with self.subTest(status=status):
+                findings = probe(
+                    self.OWNER,
+                    self.OTHER,
+                    self.TOKEN,
+                    opener=_opener(
+                        urllib.error.HTTPError(url, status, phrase, None, None)
+                    ),
+                    timeout=10.0,
+                )
+
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "the named-repo probe yields exactly one finding",
+                )
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "skipped",
+                    "any status other than 404 or 200 is not a scope "
+                    "answer the probe can interpret: it skips",
+                )
+                reason = (
+                    _field(finding, "reason")
+                    or _field(finding, "danger")
+                    or ""
+                )
+                self.assertIn(
+                    str(status),
+                    reason,
+                    "the skipped finding's reason must carry the status "
+                    "{}, so the report shows why the probe did not "
+                    "run".format(status),
+                )
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every finding carries a non-empty remedy",
+                )
+
+    def test_transport_failure_yields_skipped_with_nonempty_reason(self):
+        probe = self._prober()
+        for label, outcome in (
+            ("URLError", urllib.error.URLError("Name or service not known")),
+            ("socket.timeout", socket.timeout("timed out")),
+            ("bare OSError", OSError("Network is unreachable")),
+        ):
+            with self.subTest(transport=label):
+                findings = probe(
+                    self.OWNER,
+                    self.OTHER,
+                    self.TOKEN,
+                    opener=_opener(outcome),
+                    timeout=10.0,
+                )
+
+                self.assertIsInstance(findings, list)
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "a transport failure yields one skipped finding, not "
+                    "an exception",
+                )
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "skipped",
+                    "a transport failure is a skipped, not a pass or a "
+                    "fail: a slow GitHub must not read as a scope answer",
+                )
+                reason = (
+                    _field(finding, "reason")
+                    or _field(finding, "danger")
+                    or ""
+                )
+                self.assertIsInstance(reason, str)
+                self.assertTrue(
+                    reason,
+                    "the skipped finding must carry a non-empty reason "
+                    "naming the transport failure",
+                )
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every finding carries a non-empty remedy",
+                )
+
+    def test_no_token_yields_skipped_without_attempting_a_request(self):
+        # Behaviour 7, this probe's share: a token-scope probe with no
+        # token establishes no fact about any token, and no probe may
+        # issue an unauthenticated request and read its status as a token
+        # property.
+        probe = self._prober()
+        opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
+
+        findings = probe(
+            self.OWNER, self.OTHER, None, opener=opener, timeout=10.0
+        )
+
+        self.assertIsNone(
+            opener.captured,
+            "with no token the probe must not attempt a request at all: "
+            "a token-scope probe reads a token property, and an "
+            "unauthenticated request establishes no fact about any token",
+        )
+        self.assertIsInstance(findings, list)
+        self.assertEqual(
+            len(findings),
+            1,
+            "the named-repo probe yields exactly one finding",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "skipped",
+            "no token means the probe skips - never a pass, a warn or a "
+            "fail",
+        )
+        reason = (
+            _field(finding, "reason")
+            or _field(finding, "danger")
+            or ""
+        )
+        self.assertTrue(
+            reason,
+            "the skipped finding must carry a non-empty reason stating "
+            "that a token-scope probe with no token establishes no fact "
+            "about any token",
+        )
+        self.assertTrue(
+            _field(finding, "remedy"),
+            "every finding carries a non-empty remedy",
+        )
+
+    def test_request_targets_the_other_repo_endpoint_never_the_target(self):
+        # The probe is GET /repos/{owner}/{other}: the recorded request it
+        # builds must carry that path for the supplied other-repo halves,
+        # so the probe hits the *other* repository - never the target -
+        # and the owner in --other-repo is not assumed to equal the
+        # target's owner (plan Assumptions).
+        probe = self._prober()
+        for label, owner, other, expected in (
+            (
+                "supplied halves",
+                self.OWNER,
+                self.OTHER,
+                "/repos/owner/other",
+            ),
+            (
+                "owner differs from the target's owner",
+                "somebody-else",
+                "other-repo",
+                "/repos/somebody-else/other-repo",
+            ),
+        ):
+            with self.subTest(label=label):
+                opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
+
+                probe(owner, other, self.TOKEN, opener=opener, timeout=10.0)
+
+                request = opener.captured
+                self.assertIsNotNone(
+                    request,
+                    "the probe must hand its opener a request to open",
+                )
+                url = getattr(request, "full_url", None) or getattr(
+                    request, "url", ""
+                )
+                parsed = urllib.parse.urlparse(url)
+                self.assertEqual(
+                    parsed.path,
+                    expected,
+                    "the probe must issue GET /repos/{{owner}}/{{other}} "
+                    "for the supplied halves - {} - not any other "
+                    "path".format(expected),
+                )
+                self.assertNotEqual(
+                    parsed.path,
+                    "/repos/owner/repo",
+                    "the probe must never hit the target repository: a "
+                    "404 there is behaviour 2's louder finding, not "
+                    "this probe's",
+                )
+
+    def test_findings_carry_the_module_finding_shape_and_render(self):
+        # The finding dicts must match what render_finding already
+        # consumes: a passed finding (404) renders without falling to the
+        # unknown line, a warn (200) carries a non-empty danger and
+        # remedy that survive rendering, and the skipped findings (403,
+        # no other repo, no token) render with their reason. A shape
+        # mismatch would make render_finding fall through to the
+        # "unknown: ..." line and hide the probe's result.
+        probe = self._prober()
+        url = "https://api.github.com" + self.REPO_PATH
+        cases = [
+            (
+                "passed (404)",
+                urllib.error.HTTPError(url, 404, "Not Found", None, None),
+            ),
+            ("warn (200)", _FakeResponse(self._200_BODY, 200)),
+            (
+                "skipped (403)",
+                urllib.error.HTTPError(url, 403, "Forbidden", None, None),
+            ),
+        ]
+
+        for label, outcome in cases:
+            with self.subTest(label=label):
+                findings = probe(
+                    self.OWNER,
+                    self.OTHER,
+                    self.TOKEN,
+                    opener=_opener(outcome),
+                    timeout=10.0,
+                )
+                self.assertEqual(len(findings), 1)
+                finding = findings[0]
+                self.assertIn(
+                    _field(finding, "status"),
+                    ("passed", "warn", "skipped", "fail"),
+                    "finding status must be one of the four known statuses",
+                )
+                self.assertTrue(
+                    _field(finding, "check"),
+                    "every finding carries a non-empty check name",
+                )
+                self.assertIsInstance(_field(finding, "remedy"), str)
+                self.assertTrue(
+                    _field(finding, "remedy"),
+                    "every finding carries a non-empty remedy",
+                )
+                line = piguard.render_finding(finding)
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "render_finding must produce a non-empty line for the "
+                    "probe's finding",
+                )
+                self.assertNotIn(
+                    "unknown:",
+                    line,
+                    "the probe's finding must render through the known "
+                    "branches, not fall through to 'unknown:' - a shape "
+                    "mismatch would hide the probe's result",
+                )
+                if _field(finding, "status") == "warn":
+                    self.assertIn(
+                        _field(finding, "danger"),
+                        line,
+                        "the rendered warn line must name the danger",
+                    )
+                    self.assertIn(
+                        _field(finding, "remedy"),
+                        line,
+                        "the rendered warn line must name the remedy",
+                    )
+                if _field(finding, "status") == "passed":
+                    self.assertNotIn(
+                        "warn:",
+                        line,
+                        "a passed finding must not render as a warn",
+                    )
+                if _field(finding, "status") == "skipped":
+                    reason = (
+                        _field(finding, "reason")
+                        or _field(finding, "danger")
+                        or ""
+                    )
+                    self.assertIn(
+                        reason,
+                        line,
+                        "the rendered skipped line must carry the reason",
+                    )
+
+        # The two skip modes that must not attempt a request render with
+        # their reason, through the same skipped branch.
+        skip_cases = (
+            (
+                "skipped (no other repo)",
+                self.OWNER,
+                None,
+                self.TOKEN,
+            ),
+            (
+                "skipped (no token)",
+                self.OWNER,
+                self.OTHER,
+                None,
+            ),
+        )
+        for label, owner, other_repo, token in skip_cases:
+            with self.subTest(label=label):
+                opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
+                findings = probe(
+                    owner,
+                    other_repo,
+                    token,
+                    opener=opener,
+                    timeout=10.0,
+                )
+                self.assertEqual(len(findings), 1)
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "skipped",
+                    "an unrunnable named-repo probe renders as a skip",
+                )
+                line = piguard.render_finding(finding)
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "render_finding must produce a non-empty line for the "
+                    "probe's skipped finding",
+                )
+                self.assertNotIn(
+                    "unknown:",
+                    line,
+                    "the skipped finding must render through the known "
+                    "branches, not fall through to 'unknown:'",
+                )
+                reason = (
+                    _field(finding, "reason")
+                    or _field(finding, "danger")
+                    or ""
+                )
+                self.assertIn(
+                    reason,
+                    line,
+                    "the rendered skipped line must carry the reason",
+                )
+
+    def test_never_raises_across_every_recorded_mode(self):
+        probe = self._prober()
+        url = "https://api.github.com" + self.REPO_PATH
+        modes = [
+            (
+                "404",
+                urllib.error.HTTPError(url, 404, "Not Found", None, None),
+            ),
+            ("200", _FakeResponse(self._200_BODY, 200)),
+            (
+                "403",
+                urllib.error.HTTPError(url, 403, "Forbidden", None, None),
+            ),
+            (
+                "500",
+                urllib.error.HTTPError(url, 500, "Internal Server Error", None, None),
+            ),
+            (
+                "URLError",
+                urllib.error.URLError("Name or service not known"),
+            ),
+            ("socket.timeout", socket.timeout("timed out")),
+            ("bare OSError", OSError("Network is unreachable")),
+        ]
+        for label, outcome in modes:
+            with self.subTest(mode=label):
+                try:
+                    findings = probe(
+                        self.OWNER,
+                        self.OTHER,
+                        self.TOKEN,
+                        opener=_opener(outcome),
+                        timeout=10.0,
+                    )
+                except Exception as exc:
+                    self.fail(
+                        "probe_named_repo raised {} for the recorded "
+                        "{}; every recorded mode must return a finding "
+                        "list, not an exception".format(
+                            type(exc).__name__, label
+                        )
+                    )
+                self.assertIsInstance(
+                    findings,
+                    list,
+                    "every recorded mode returns a finding list",
+                )
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "the named-repo probe yields exactly one finding",
+                )
+
+        for label, other_repo, token in (
+            ("no other repo", None, self.TOKEN),
+            ("no token", self.OTHER, None),
+        ):
+            with self.subTest(mode=label):
+                try:
+                    findings = probe(
+                        self.OWNER,
+                        other_repo,
+                        token,
+                        opener=_CapturingOpener(
+                            _FakeResponse(self._200_BODY, 200)
+                        ),
+                        timeout=10.0,
+                    )
+                except Exception as exc:
+                    self.fail(
+                        "probe_named_repo raised {} for the {}; every "
+                        "mode must return a finding list, not an "
+                        "exception".format(type(exc).__name__, label)
+                    )
+                self.assertIsInstance(
+                    findings,
+                    list,
+                    "every recorded mode returns a finding list",
+                )
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "the named-repo probe yields exactly one finding",
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
