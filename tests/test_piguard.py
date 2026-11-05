@@ -4793,13 +4793,16 @@ class WorkflowsWithheldFindingTests(unittest.TestCase):
 class ProbeNamedRepoTests(unittest.TestCase):
     """Behaviour 6 of plans/verify-guards-token.md: ``probe_named_repo``.
 
-    ``probe_named_repo(owner, other_repo, token, opener=None, timeout=None)``
-    runs the named-repo probe: a recorded ``GET /repos/{owner}/{other}``
-    through :func:`anvilkit.pi.piguard.fetch_probe` (behaviour 1, already
-    green) against a user-supplied repository. The two positional halves
-    are the split of the user-supplied ``--other-repo OWNER/REPO`` value -
+    ``probe_named_repo(other_repo, token=None, opener=None, timeout=None)``
+    runs the named-repo probe: a recorded ``GET /repos/{other_owner}/
+    {other_name}`` through :func:`anvilkit.pi.piguard.fetch_probe`
+    (behaviour 1, already green) against the raw user-supplied
+    ``--other-repo OWNER/REPO`` string. The probe splits the string
+    itself (behaviour 18 amendment of the committed behaviour 6/8 seam):
     it is never guessed, and the owner in it is not assumed to equal the
-    target's owner (plan Assumptions).
+    target's owner (plan Assumptions) - the target owner is no longer a
+    parameter at all, so a ``somebody-else/other-repo`` string is probed
+    as written.
 
     The framing rule this probe exists to encode: a ``404`` is the honest
     answer, and it only proves one thing. A repository the token is not
@@ -4810,10 +4813,10 @@ class ProbeNamedRepoTests(unittest.TestCase):
     target-access warn, not this probe's.)
 
     - ``404``  -> one ``passed`` finding worded "proves only that the
-      token is not scoped to {owner}/{other}; it cannot enumerate the
-      token's full repository list" - both halves: the specific proof and
-      the explicit non-claim - with a non-empty remedy carrying a
-      ``doc/external/github/`` path.
+      token is not scoped to {other_owner}/{other_name}; it cannot
+      enumerate the token's full repository list" - both halves: the
+      specific proof and the explicit non-claim - with a non-empty
+      remedy carrying a ``doc/external/github/`` path.
     - ``200``  -> one ``warn`` finding: the token reaches more than the
       target, so a compromise of it is not confined to the target repo.
     - ``403``  -> one ``skipped`` finding: a permission denial is not a
@@ -4824,9 +4827,11 @@ class ProbeNamedRepoTests(unittest.TestCase):
       non-empty.
     - ``token=None`` -> one ``skipped`` finding (behaviour 7), and no
       request may be attempted at all.
-    - ``other_repo`` missing or empty -> one ``skipped`` finding naming
-      ``--other-repo`` as the fix, never a pass, and no request may be
-      attempted at all.
+    - ``other_repo`` missing, empty or malformed (no ``/``, more than
+      one ``/``, or an empty owner/repo part after strip) -> exactly
+      one ``skipped`` finding whose reason and remedy name ``--other-repo``
+      as the fix, never a pass, and the opener is never called: when
+      the input is unparseable there is nothing to probe.
 
     The finding dict shape is the one ``render_finding`` already
     consumes: ``status``, ``check``, ``rule``, ``danger``, ``source``
@@ -4835,10 +4840,9 @@ class ProbeNamedRepoTests(unittest.TestCase):
     """
 
     TOKEN = "ghp_recordedtoken"
-    OWNER = "owner"
-    OTHER = "other"
-    REPO_PATH = "/repos/owner/other"
-    _200_BODY = b'{"full_name": "owner/other"}'
+    OTHER_REPO = "someorg/other-repo"
+    REPO_PATH = "/repos/someorg/other-repo"
+    _200_BODY = b'{"full_name": "someorg/other-repo"}'
 
     def _prober(self) -> Any:
         prober = getattr(piguard, "probe_named_repo", None)
@@ -4874,13 +4878,13 @@ class ProbeNamedRepoTests(unittest.TestCase):
         # one thing - the token is not scoped to that one repository. It
         # cannot enumerate the token's full repository list, so the
         # finding must say exactly that: the specific proof AND the
-        # explicit non-claim.
+        # explicit non-claim, naming the split parts of the raw
+        # --other-repo string as written.
         probe = self._prober()
         url = "https://api.github.com" + self.REPO_PATH
 
         findings = probe(
-            self.OWNER,
-            self.OTHER,
+            self.OTHER_REPO,
             self.TOKEN,
             opener=_opener(
                 urllib.error.HTTPError(url, 404, "Not Found", None, None)
@@ -4908,12 +4912,11 @@ class ProbeNamedRepoTests(unittest.TestCase):
             "every finding carries a non-empty remedy",
         )
         self.assertIn(
-            "not scoped to {}/{}".format(self.OWNER, self.OTHER),
+            "not scoped to someorg/other-repo",
             remedy,
             "the passed finding must state the specific proof: the token "
-            "is not scoped to that one repository ({}/{})".format(
-                self.OWNER, self.OTHER
-            ),
+            "is not scoped to that one repository - the split parts of "
+            "the raw --other-repo string, as written",
         )
         self.assertIn(
             "cannot enumerate",
@@ -4947,7 +4950,7 @@ class ProbeNamedRepoTests(unittest.TestCase):
         opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
 
         findings = probe(
-            self.OWNER, self.OTHER, self.TOKEN, opener=opener, timeout=10.0
+            self.OTHER_REPO, self.TOKEN, opener=opener, timeout=10.0
         )
 
         self.assertIsInstance(findings, list)
@@ -5002,7 +5005,6 @@ class ProbeNamedRepoTests(unittest.TestCase):
                 opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
 
                 findings = probe(
-                    self.OWNER,
                     other_repo,
                     self.TOKEN,
                     opener=opener,
@@ -5053,8 +5055,7 @@ class ProbeNamedRepoTests(unittest.TestCase):
         url = "https://api.github.com" + self.REPO_PATH
 
         findings = probe(
-            self.OWNER,
-            self.OTHER,
+            self.OTHER_REPO,
             self.TOKEN,
             opener=_opener(
                 urllib.error.HTTPError(url, 403, "Forbidden", None, None)
@@ -5101,8 +5102,7 @@ class ProbeNamedRepoTests(unittest.TestCase):
         ):
             with self.subTest(status=status):
                 findings = probe(
-                    self.OWNER,
-                    self.OTHER,
+                    self.OTHER_REPO,
                     self.TOKEN,
                     opener=_opener(
                         urllib.error.HTTPError(url, status, phrase, None, None)
@@ -5148,8 +5148,7 @@ class ProbeNamedRepoTests(unittest.TestCase):
         ):
             with self.subTest(transport=label):
                 findings = probe(
-                    self.OWNER,
-                    self.OTHER,
+                    self.OTHER_REPO,
                     self.TOKEN,
                     opener=_opener(outcome),
                     timeout=10.0,
@@ -5194,7 +5193,7 @@ class ProbeNamedRepoTests(unittest.TestCase):
         opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
 
         findings = probe(
-            self.OWNER, self.OTHER, None, opener=opener, timeout=10.0
+            self.OTHER_REPO, None, opener=opener, timeout=10.0
         )
 
         self.assertIsNone(
@@ -5233,30 +5232,30 @@ class ProbeNamedRepoTests(unittest.TestCase):
         )
 
     def test_request_targets_the_other_repo_endpoint_never_the_target(self):
-        # The probe is GET /repos/{owner}/{other}: the recorded request it
-        # builds must carry that path for the supplied other-repo halves,
-        # so the probe hits the *other* repository - never the target -
-        # and the owner in --other-repo is not assumed to equal the
-        # target's owner (plan Assumptions).
+        # The probe is GET /repos/{other_owner}/{other_name} for the raw
+        # --other-repo string: the recorded request it builds must carry
+        # that path as written, so the probe hits the *other* repository
+        # - never the target. The owner in the string is the owner
+        # probed: with no target owner in the signature, a string whose
+        # owner differs from any target is probed as written (plan
+        # Assumptions, behaviour 18).
         probe = self._prober()
-        for label, owner, other, expected in (
+        for label, other_repo, expected in (
             (
                 "supplied halves",
-                self.OWNER,
-                self.OTHER,
-                "/repos/owner/other",
+                "someorg/other-repo",
+                "/repos/someorg/other-repo",
             ),
             (
-                "owner differs from the target's owner",
-                "somebody-else",
-                "other-repo",
+                "owner differs from any target owner",
+                "somebody-else/other-repo",
                 "/repos/somebody-else/other-repo",
             ),
         ):
             with self.subTest(label=label):
                 opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
 
-                probe(owner, other, self.TOKEN, opener=opener, timeout=10.0)
+                probe(other_repo, self.TOKEN, opener=opener, timeout=10.0)
 
                 request = opener.captured
                 self.assertIsNotNone(
@@ -5270,9 +5269,11 @@ class ProbeNamedRepoTests(unittest.TestCase):
                 self.assertEqual(
                     parsed.path,
                     expected,
-                    "the probe must issue GET /repos/{{owner}}/{{other}} "
-                    "for the supplied halves - {} - not any other "
-                    "path".format(expected),
+                    "the probe must issue GET "
+                    "/repos/{{other_owner}}/{{other_name}} for the "
+                    "supplied string - {} - not any other path".format(
+                        expected
+                    ),
                 )
                 self.assertNotEqual(
                     parsed.path,
@@ -5287,9 +5288,9 @@ class ProbeNamedRepoTests(unittest.TestCase):
         # consumes: a passed finding (404) renders without falling to the
         # unknown line, a warn (200) carries a non-empty danger and
         # remedy that survive rendering, and the skipped findings (403,
-        # no other repo, no token) render with their reason. A shape
-        # mismatch would make render_finding fall through to the
-        # "unknown: ..." line and hide the probe's result.
+        # no other repo, malformed other repo, no token) render with
+        # their reason. A shape mismatch would make render_finding fall
+        # through to the "unknown: ..." line and hide the probe's result.
         probe = self._prober()
         url = "https://api.github.com" + self.REPO_PATH
         cases = [
@@ -5307,8 +5308,7 @@ class ProbeNamedRepoTests(unittest.TestCase):
         for label, outcome in cases:
             with self.subTest(label=label):
                 findings = probe(
-                    self.OWNER,
-                    self.OTHER,
+                    self.OTHER_REPO,
                     self.TOKEN,
                     opener=_opener(outcome),
                     timeout=10.0,
@@ -5372,27 +5372,29 @@ class ProbeNamedRepoTests(unittest.TestCase):
                         "the rendered skipped line must carry the reason",
                     )
 
-        # The two skip modes that must not attempt a request render with
-        # their reason, through the same skipped branch.
+        # The three skip modes that must not attempt a request render
+        # with their reason, through the same skipped branch.
         skip_cases = (
             (
                 "skipped (no other repo)",
-                self.OWNER,
                 None,
                 self.TOKEN,
             ),
             (
+                "skipped (malformed other repo)",
+                "no-slash-here",
+                self.TOKEN,
+            ),
+            (
                 "skipped (no token)",
-                self.OWNER,
-                self.OTHER,
+                self.OTHER_REPO,
                 None,
             ),
         )
-        for label, owner, other_repo, token in skip_cases:
+        for label, other_repo, token in skip_cases:
             with self.subTest(label=label):
                 opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
                 findings = probe(
-                    owner,
                     other_repo,
                     token,
                     opener=opener,
@@ -5457,8 +5459,7 @@ class ProbeNamedRepoTests(unittest.TestCase):
             with self.subTest(mode=label):
                 try:
                     findings = probe(
-                        self.OWNER,
-                        self.OTHER,
+                        self.OTHER_REPO,
                         self.TOKEN,
                         opener=_opener(outcome),
                         timeout=10.0,
@@ -5484,12 +5485,12 @@ class ProbeNamedRepoTests(unittest.TestCase):
 
         for label, other_repo, token in (
             ("no other repo", None, self.TOKEN),
-            ("no token", self.OTHER, None),
+            ("malformed other repo", "a/b/c", self.TOKEN),
+            ("no token", self.OTHER_REPO, None),
         ):
             with self.subTest(mode=label):
                 try:
                     findings = probe(
-                        self.OWNER,
                         other_repo,
                         token,
                         opener=_CapturingOpener(
@@ -5512,6 +5513,79 @@ class ProbeNamedRepoTests(unittest.TestCase):
                     len(findings),
                     1,
                     "the named-repo probe yields exactly one finding",
+                )
+
+    def test_malformed_other_repo_yields_one_skipped_naming_the_flag_and_never_calls_the_opener(self):
+        # Behaviour 18: a --other-repo value that is not OWNER/REPO -
+        # no slash, more than one slash, or an empty owner/repo part
+        # after strip - cannot be probed: exactly one skipped finding
+        # whose reason and remedy name --other-repo as the fix, and the
+        # opener is never called, because when the input is unparseable
+        # there is nothing to probe.
+        probe = self._prober()
+        for label, other_repo in (
+            ("no slash", "no-slash-here"),
+            ("two slashes", "a/b/c"),
+            ("empty owner part", "/other-repo"),
+            ("empty repo part", "owner/"),
+            ("whitespace only", "   "),
+        ):
+            with self.subTest(other_repo=other_repo):
+                opener = _CapturingOpener(_FakeResponse(self._200_BODY, 200))
+
+                findings = probe(
+                    other_repo,
+                    self.TOKEN,
+                    opener=opener,
+                    timeout=10.0,
+                )
+
+                self.assertIsNone(
+                    opener.captured,
+                    "with a malformed --other-repo the opener must never "
+                    "be called: the input is unparseable, so there is "
+                    "nothing to probe",
+                )
+                self.assertIsInstance(findings, list)
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "a malformed --other-repo yields exactly one "
+                    "finding - a skip, never a crash",
+                )
+                finding = findings[0]
+                self.assertEqual(
+                    _field(finding, "check"),
+                    "named_repo",
+                    "the malformed input is reported in the named-repo "
+                    "slot under the probe's check constant",
+                )
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "skipped",
+                    "a malformed --other-repo is a skip - never a pass, "
+                    "a warn or a fail",
+                )
+                reason = (
+                    _field(finding, "reason") or _field(finding, "danger")
+                )
+                self.assertTrue(
+                    reason,
+                    "the skipped finding must carry a non-empty reason "
+                    "naming the unparseable input",
+                )
+                self.assertIn(
+                    "--other-repo",
+                    reason,
+                    "the skipped finding's reason must name --other-repo "
+                    "as the value that is wrong",
+                )
+                self.assertIn(
+                    "--other-repo",
+                    _field(finding, "remedy") or "",
+                    "the skipped finding's remedy must name --other-repo "
+                    "as the fix: supplying a well-formed OWNER/REPO is "
+                    "what makes the probe runnable",
                 )
 
 
@@ -5553,11 +5627,21 @@ class CheckTokenAllTests(unittest.TestCase):
     every network probe routes through (each probe routes through
     ``fetch_probe``, never a parallel fetch path).
 
+    ``other_repo`` is the raw user-supplied ``--other-repo OWNER/REPO``
+    value, passed to :func:`anvilkit.pi.piguard.probe_named_repo`
+    unsplit: the target ``owner`` feeds the other four probes only, never
+    the named-repo probe, whose request uses the string's own owner
+    (behaviour 18).
+
     - ``token=None`` -> every network probe skips (behaviour 7) but the
       constant ``workflows_withheld`` finding is still present in its
       position - it takes no network and no token.
     - no other repo supplied -> the named_repo slot is the probe's
       no-other-repo ``skipped``, not a missing slot.
+    - a malformed other repo (not ``OWNER/REPO``) -> the named_repo slot
+      is the probe's malformed-input ``skipped`` naming
+      ``--other-repo``, not a missing slot and not an exception
+      (behaviour 18).
     - an all-failing opener -> all five findings ``skipped``, never an
       exception: never raises, never exits.
 
@@ -5567,7 +5651,11 @@ class CheckTokenAllTests(unittest.TestCase):
     TOKEN = "ghp_recordedtoken"
     OWNER = "owner"
     REPO = "repo"
-    OTHER = "other"
+    # The raw --other-repo value: its own owner (someorg) differs from
+    # the target's owner (owner), so the named_repo slot's request is
+    # distinguishable from the target probes' requests - behaviour 18:
+    # the target owner never feeds the named-repo probe.
+    OTHER_REPO = "someorg/other-repo"
 
     # The fixed concatenation order: behaviours 2, 3, 4, 5 and 6.
     EXPECTED_CHECK_ORDER = (
@@ -5604,7 +5692,7 @@ class CheckTokenAllTests(unittest.TestCase):
             self.OWNER,
             self.REPO,
             token=self.TOKEN,
-            other_repo=self.OTHER,
+            other_repo=self.OTHER_REPO,
             opener=opener,
             timeout=10.0,
         )
@@ -5633,7 +5721,7 @@ class CheckTokenAllTests(unittest.TestCase):
             self.OWNER,
             self.REPO,
             token=self.TOKEN,
-            other_repo=self.OTHER,
+            other_repo=self.OTHER_REPO,
             opener=self._all_200_opener(),
             timeout=10.0,
         )
@@ -5663,7 +5751,7 @@ class CheckTokenAllTests(unittest.TestCase):
             self.OWNER,
             self.REPO,
             token=None,
-            other_repo=self.OTHER,
+            other_repo=self.OTHER_REPO,
             opener=opener,
             timeout=10.0,
         )
@@ -5728,7 +5816,7 @@ class CheckTokenAllTests(unittest.TestCase):
             "never a pass, never a missing finding, never a crash",
         )
         self.assertNotIn(
-            "/repos/{}/{}".format(self.OWNER, self.OTHER),
+            "/repos/{}".format(self.OTHER_REPO),
             opener.paths,
             "with no other repo supplied the named-repo probe must not "
             "attempt a request: there is nothing to probe",
@@ -5742,7 +5830,7 @@ class CheckTokenAllTests(unittest.TestCase):
                 self.OWNER,
                 self.REPO,
                 token=self.TOKEN,
-                other_repo=self.OTHER,
+                other_repo=self.OTHER_REPO,
                 opener=_RecordingOpener(
                     urllib.error.URLError("Name or service not known")
                 ),
@@ -5799,7 +5887,7 @@ class CheckTokenAllTests(unittest.TestCase):
                         self.OWNER,
                         self.REPO,
                         token=self.TOKEN,
-                        other_repo=self.OTHER,
+                        other_repo=self.OTHER_REPO,
                         opener=_RecordingOpener(outcome),
                         timeout=10.0,
                     )
@@ -5829,7 +5917,7 @@ class CheckTokenAllTests(unittest.TestCase):
             self.OWNER,
             self.REPO,
             token=self.TOKEN,
-            other_repo=self.OTHER,
+            other_repo=self.OTHER_REPO,
             opener=self._all_200_opener(),
             timeout=10.0,
         )
@@ -5872,7 +5960,7 @@ class CheckTokenAllTests(unittest.TestCase):
             self.OWNER,
             self.REPO,
             token=self.TOKEN,
-            other_repo=self.OTHER,
+            other_repo=self.OTHER_REPO,
             opener=opener,
             timeout=10.0,
         )
@@ -5886,13 +5974,16 @@ class CheckTokenAllTests(unittest.TestCase):
                         self.OWNER, self.REPO
                     ),
                     "/user",
-                    "/repos/{}/{}".format(self.OWNER, self.OTHER),
+                    "/repos/{}".format(self.OTHER_REPO),
                 ]
             ),
             "the one injected opener must see exactly the four probe "
             "endpoints - the target repo, its actions/permissions, "
             "/user, and the named other repo - no more, no fewer, and "
-            "each exactly once",
+            "each exactly once. The named-repo endpoint is /repos/"
+            "someorg/other-repo - the string's OWN owner, not the "
+            "target's: the target /repos/owner/repo is hit by the "
+            "first probes only (behaviour 18)",
         )
 
     def test_no_token_attempts_no_network_request_at_all(self):
@@ -5903,7 +5994,7 @@ class CheckTokenAllTests(unittest.TestCase):
             self.OWNER,
             self.REPO,
             token=None,
-            other_repo=self.OTHER,
+            other_repo=self.OTHER_REPO,
             opener=opener,
             timeout=10.0,
         )
@@ -5926,6 +6017,70 @@ class CheckTokenAllTests(unittest.TestCase):
             [_field(f, "status") for f in findings],
             ["skipped"] * 5,
             "with no token nothing passes",
+        )
+
+    def test_malformed_other_repo_yields_the_named_repo_skip_not_an_exception(self):
+        # Behaviour 18: a raw --other-repo value that is not OWNER/REPO
+        # must surface as the named_repo slot's skipped finding - the
+        # total stays five, the fixed order holds, and no exception
+        # escapes the concatenation.
+        checker = self._checker()
+        opener = _RecordingOpener(_FakeResponse(b'{"ok": true}', 200))
+
+        try:
+            findings = checker(
+                self.OWNER,
+                self.REPO,
+                token=self.TOKEN,
+                other_repo="no-slash-here",
+                opener=opener,
+                timeout=10.0,
+            )
+        except Exception as exc:
+            self.fail(
+                "check_token_all raised {} for a malformed other_repo; "
+                "the malformed value must surface as the named-repo "
+                "skipped slot, not an exception".format(
+                    type(exc).__name__
+                )
+            )
+
+        self.assertEqual(
+            len(findings),
+            5,
+            "a malformed other_repo still yields five findings - the "
+            "named_repo slot is its skipped finding, not a missing "
+            "slot",
+        )
+        self.assertEqual(
+            [_field(f, "check") for f in findings],
+            list(self.EXPECTED_CHECK_ORDER),
+            "the fixed order must survive a malformed other_repo",
+        )
+        named = findings[4]
+        self.assertEqual(
+            _field(named, "status"),
+            "skipped",
+            "the named_repo slot for a malformed other_repo is a skip - "
+            "never a pass, a warn or a fail",
+        )
+        carried = (
+            _field(named, "reason")
+            or _field(named, "danger")
+            or _field(named, "remedy")
+            or ""
+        )
+        self.assertIn(
+            "--other-repo",
+            carried,
+            "the named_repo skip for a malformed other_repo must name "
+            "--other-repo as the value to fix",
+        )
+        self.assertNotIn(
+            "/repos/no-slash-here",
+            opener.paths,
+            "a malformed other_repo has no parseable repository: the "
+            "named-repo probe must not attempt a request for it",
         )
 
 
@@ -6277,8 +6432,7 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
             (
                 "named_repo (behaviour 6, 200)",
                 piguard.probe_named_repo(
-                    "owner",
-                    "other",
+                    "owner/other",
                     token="token-xyz",
                     opener=_opener(
                         _FakeResponse(b'{"full_name": "owner/other"}', 200)
@@ -6380,7 +6534,10 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
     TOKEN = "ghp_recordedtoken"
     OWNER = "owner"
     REPO = "repo"
-    OTHER = "other"
+    # Raw --other-repo value (behaviour 18): the sweep used the target
+    # owner as the other's owner, so the recorded URLs stay identical to
+    # the pre-amendment sweep - only the call shape changed.
+    OTHER_REPO = "{}/{}".format("owner", "other")
     _API = "https://api.github.com"
     _KNOWN_STATUSES = ("passed", "warn", "skipped", "fail")
 
@@ -6451,11 +6608,11 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
             ("no token", lambda: piguard.probe_classic_token()),
             (
                 "no other repo",
-                lambda: piguard.probe_named_repo(self.OWNER, None),
+                lambda: piguard.probe_named_repo(None),
             ),
             (
                 "no token",
-                lambda: piguard.probe_named_repo(self.OWNER, self.OTHER),
+                lambda: piguard.probe_named_repo(self.OTHER_REPO),
             ),
         ]
         for label, opener in outcomes:
@@ -6487,7 +6644,7 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
                 (
                     label,
                     lambda opener=opener: piguard.probe_named_repo(
-                        self.OWNER, self.OTHER, self.TOKEN, opener
+                        self.OTHER_REPO, self.TOKEN, opener
                     ),
                 )
             )
@@ -6521,7 +6678,7 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
                 (
                     label,
                     lambda opener=opener: piguard.probe_named_repo(
-                        self.OWNER, self.OTHER, self.TOKEN, opener
+                        self.OTHER_REPO, self.TOKEN, opener
                     ),
                 )
             )
@@ -6611,7 +6768,7 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
                         self.OWNER,
                         self.REPO,
                         token=self.TOKEN,
-                        other_repo=self.OTHER,
+                        other_repo=self.OTHER_REPO,
                         opener=_RecordingOpener(outcome),
                         timeout=10.0,
                     ),
@@ -6624,7 +6781,7 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
                     self.OWNER,
                     self.REPO,
                     token=None,
-                    other_repo=self.OTHER,
+                    other_repo=self.OTHER_REPO,
                     opener=_RecordingOpener(
                         _FakeResponse(b'{"ok": true}', 200)
                     ),
@@ -6756,7 +6913,10 @@ class SummarizeTokenFindingsTests(unittest.TestCase):
     TOKEN = "ghp_recordedtoken"
     OWNER = "owner"
     REPO = "repo"
-    OTHER = "other"
+    # Raw --other-repo value (behaviour 18): the same owner/repo pair the
+    # pre-amendment call passed as the two positional halves, now the
+    # single raw string the probe splits itself.
+    OTHER_REPO = "owner/other"
     _API = "https://api.github.com"
 
     def _summarizer(self) -> Any:
@@ -6806,8 +6966,7 @@ class SummarizeTokenFindingsTests(unittest.TestCase):
         findings.extend(piguard.workflows_withheld_finding())
         findings.extend(
             piguard.probe_named_repo(
-                self.OWNER,
-                self.OTHER,
+                self.OTHER_REPO,
                 self.TOKEN,
                 _opener(http(404)),
             )
@@ -6823,8 +6982,7 @@ class SummarizeTokenFindingsTests(unittest.TestCase):
         )
         findings.extend(
             piguard.probe_named_repo(
-                self.OWNER,
-                self.OTHER,
+                self.OTHER_REPO,
                 self.TOKEN,
                 _opener(http(200)),
             )
