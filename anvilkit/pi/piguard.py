@@ -32,6 +32,10 @@ CHECK_FILE_PATHS = "file_paths"
 # plans/verify-guards-token.md).
 CHECK_TARGET_ACCESS = "target_access"
 
+# The administration probe's check name (behaviour 3 of
+# plans/verify-guards-token.md).
+CHECK_ADMINISTRATION = "administration"
+
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
 _RULES_API_BASE = "https://api.github.com"
@@ -64,6 +68,14 @@ _RULES_DOC = "doc/external/github/available-rules-for-rulesets.md"
 # on the target repo tells the report reader.
 _FINE_GRAINED_DOC = "doc/external/github/fine-grained-personal-access-tokens.md"
 
+# Cited by the administration probe's findings. It documents that the
+# endpoint requires Administration repository permissions (read) and
+# documents only 200 - the denial code is not stated - which is exactly
+# what makes a 404 there ambiguous (behaviour 3).
+_ACTIONS_PERMISSIONS_DOC = (
+    "doc/external/github/rest-api-endpoints-for-actions-permissions.md"
+)
+
 # What an agent could do while the target access is unmeasured: the skipped
 # finding carries it so it stands on its own rather than leaning on the
 # renderer (the _SKIPPED_DANGERS pattern).
@@ -72,6 +84,15 @@ _TARGET_ACCESS_SKIP_DANGER = (
     "unmeasured: no later probe's denial can be read as a withholding, "
     "and this report cannot rule out that the probes ran against a "
     "repository the token never had"
+)
+
+# The same, for the administration probe: the unmeasured hole is that the
+# token may hold Administration (read) on the target.
+_ADMINISTRATION_SKIP_DANGER = (
+    "whether the token holds Administration (read) on the target is "
+    "unmeasured: this report cannot rule out that the token can delete or "
+    "reconfigure the repository and raise the default GITHUB_TOKEN "
+    "permissions to write"
 )
 
 # What an agent could do if each rule is absent: the consequence, not the
@@ -430,6 +451,174 @@ def probe_target_access(
             "check": CHECK_TARGET_ACCESS,
             "rule": None,
             "danger": _TARGET_ACCESS_SKIP_DANGER,
+            "source": None,
+            "reason": "GitHub returned HTTP {} for {}".format(status, url),
+            "remedy": skipped_remedy,
+        }
+    ]
+
+
+def probe_administration(
+    owner: str,
+    repo: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The second token-scope probe: does the token hold Administration on the target?
+
+    Issues ``GET /repos/{owner}/{repo}/actions/permissions`` through
+    :func:`fetch_probe` (behaviour 1 of plans/verify-guards-token.md) - one
+    probe, one API call - and interprets the observation. The saved page
+    doc/external/github/rest-api-endpoints-for-actions-permissions.md
+    documents the endpoint as gated on **Administration repository
+    permissions (read)** and documents **only ``200``** - the denial code is
+    not stated - so a ``403`` is read as the withholding and a ``404`` is
+    left ambiguous:
+
+    - ``403`` -> one ``passed`` finding: administration is withheld - the
+      compliant answer, because a fine-grained token created per the recipe
+      has no ``administration`` permission.
+    - ``200`` -> one ``fail`` finding - the first emittable ``fail`` in the
+      module: the token holds ``administration: read`` on the target, so the
+      repository can be deleted or reconfigured and the default
+      ``GITHUB_TOKEN`` permissions raised to write (the plan's danger
+      wording, per the saved page). The finding carries a non-empty danger
+      (the consequence first) and a non-empty remedy citing the saved page.
+    - ``404`` -> one ``warn`` finding: the page documents only ``200``, so a
+      404 is ambiguous between "administration withheld" and "no access at
+      all" - the finding names the target-access probe
+      (:func:`probe_target_access`, :data:`CHECK_TARGET_ACCESS`) as the
+      disambiguator.
+    - ``401`` or any other status -> one ``skipped`` finding whose reason
+      carries the status.
+    - a transport reason from :func:`fetch_probe` -> one ``skipped`` finding
+      with a non-empty reason.
+
+    Like :func:`probe_target_access`, a missing or empty token is a
+    **skip** - no request is attempted at all - because a token-scope probe
+    reads a token's property, and an unauthenticated request establishes no
+    fact about any token (behaviour 7).
+
+    Never raises; always returns a list of findings. Never echoes a token
+    into a finding or a reason (module invariant).
+    """
+    target = "{}/{}".format(owner, repo)
+    url = "{}/repos/{}/{}/actions/permissions".format(
+        _RULES_API_BASE, owner, repo
+    )
+    skipped_remedy = (
+        "make the token valid and scoped to {}, and api.github.com "
+        "reachable, then re-run; see {}".format(
+            target, _ACTIONS_PERMISSIONS_DOC
+        )
+    )
+
+    if not token:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "danger": _ADMINISTRATION_SKIP_DANGER,
+                "source": None,
+                "reason": (
+                    "no token supplied: a token-scope probe with no token "
+                    "establishes no fact about any token, so the probe "
+                    "skips rather than issuing an unauthenticated request "
+                    "and reading its status as a token property - unlike "
+                    "fetch_branch_rules, where a missing token is an "
+                    "unauthenticated attempt"
+                ),
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    status, _headers, _body, reason = fetch_probe(
+        url, token, opener=opener, timeout=timeout
+    )
+
+    if reason is not None:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "danger": _ADMINISTRATION_SKIP_DANGER,
+                "source": None,
+                "reason": reason,
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    if status == 403:
+        return [
+            {
+                "status": "passed",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "danger": "",
+                "source": None,
+                "remedy": (
+                    "nothing to do - a 403 means Administration is "
+                    "withheld on {}, the compliant answer for a "
+                    "fine-grained token created without the permission; "
+                    "see {}".format(target, _ACTIONS_PERMISSIONS_DOC)
+                ),
+            }
+        ]
+
+    if status == 200:
+        return [
+            {
+                "status": "fail",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "danger": (
+                    "the token holds Administration (read) on {}: the "
+                    "repository can be deleted or reconfigured, and the "
+                    "default GITHUB_TOKEN permissions can be raised to "
+                    "write".format(target)
+                ),
+                "source": None,
+                "remedy": (
+                    "recreate the token without the Administration "
+                    "permission - the token recipe omits it on purpose; "
+                    "see {}".format(_ACTIONS_PERMISSIONS_DOC)
+                ),
+            }
+        ]
+
+    if status == 404:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "danger": (
+                    "the saved page documents only 200 for this endpoint, "
+                    "so a 404 is ambiguous between 'administration "
+                    "withheld' and 'no access at all' - the denial code is "
+                    "not documented: this report cannot rule out that the "
+                    "token holds Administration, only that the denial is "
+                    "unreadable - the {} check (target access) is the "
+                    "disambiguator".format(CHECK_TARGET_ACCESS)
+                ),
+                "source": None,
+                "remedy": (
+                    "run the target-access probe to distinguish an "
+                    "under-scoped token from an unreachable target; "
+                    "endpoint in {}".format(_ACTIONS_PERMISSIONS_DOC)
+                ),
+            }
+        ]
+
+    return [
+        {
+            "status": "skipped",
+            "check": CHECK_ADMINISTRATION,
+            "rule": None,
+            "danger": _ADMINISTRATION_SKIP_DANGER,
             "source": None,
             "reason": "GitHub returned HTTP {} for {}".format(status, url),
             "remedy": skipped_remedy,
