@@ -4447,5 +4447,348 @@ class ProbeClassicTokenTests(unittest.TestCase):
                 )
 
 
+class WorkflowsWithheldFindingTests(unittest.TestCase):
+    """Behaviour 5 of plans/verify-guards-token.md: ``workflows_withheld_finding``.
+
+    ``workflows_withheld_finding()`` takes no network and no token - and, per
+    the plan, no arguments at all: "Given: nothing; the function takes no
+    network and no token". It is the documented-unprovable case, so the
+    honest result is a constant ``skipped`` finding, never ``passed``:
+
+    - the ``workflows`` permission has access level **``write`` only** - no
+      ``read`` form exists (the permission table in
+      ``doc/external/github/fine-grained-personal-access-tokens.md``);
+    - the workflows list endpoint,
+      ``GET /repos/{owner}/{repo}/actions/workflows``, is gated on
+      **"Actions" repository permissions (read)** - not ``workflows`` - and
+      works unauthenticated on public repos, so a ``200`` from it proves
+      nothing about the token
+      (``doc/external/github/rest-api-endpoints-for-workflows.md``);
+    - so **no read-only call can prove the ``workflows`` withholding**: the
+      only call that would prove it is a write, which the probes must not
+      perform.
+
+    Under the #68 rule - a check that cannot run is ``skipped``, never
+    ``passed`` - an unprovable withholding must report as ``skipped`` with
+    that reason, and the finding's ``remedy`` must tell a human how to verify
+    the withholding by hand (a saved page plus a manual check), since the
+    probe cannot. The finding dict shape is the one ``render_finding``
+    already consumes: ``status``, ``check``, ``rule``, ``danger``,
+    ``source`` and ``remedy`` (plus ``reason`` on a skip). No test below
+    touches the network: the function takes no opener and no token at all.
+    """
+
+    # The saved pages the finding may cite, per the plan: "the remedy names
+    # the saved page and the manual UI check".
+    _WORKFLOWS_DOC = "doc/external/github/rest-api-endpoints-for-workflows.md"
+    _FINE_GRAINED_DOC = (
+        "doc/external/github/fine-grained-personal-access-tokens.md"
+    )
+
+    def _producer(self) -> Any:
+        producer = getattr(piguard, "workflows_withheld_finding", None)
+        self.assertTrue(
+            callable(producer),
+            "anvilkit.pi.piguard.workflows_withheld_finding is not callable; "
+            "the workflows-withheld finding has not been implemented yet",
+        )
+        return producer
+
+    def test_called_with_no_arguments_yields_exactly_one_skipped_finding(self):
+        # The plan's contract, verbatim in substance: Given nothing, When it
+        # is called, Then exactly one skipped finding. The function takes no
+        # network and no token, so the call carries no opener and no token -
+        # the callability-seam failure (the function does not exist yet) is
+        # the expected red.
+        produce = self._producer()
+
+        findings = produce()
+
+        self.assertIsInstance(
+            findings,
+            list,
+            "the finding must be returned as a list of findings, like every "
+            "other finding producer in the module",
+        )
+        self.assertEqual(
+            len(findings),
+            1,
+            "exactly one finding expected: the workflows withholding is "
+            "one documented-unprovable case, not one per repo or per run",
+        )
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "skipped",
+            "the workflows withholding is unprovable by a read-only call, so "
+            "it must be reported skipped - the #68 rule's exact case",
+        )
+
+    def test_finding_is_never_passed(self):
+        # An explicit pin distinct from the equality above: an unprovable
+        # withholding must never read as clean. If a later edit made the
+        # finding "pass" because nothing bad was observed, this fails -
+        # "nothing bad observed" is the opposite of "the withholding is
+        # verified".
+        produce = self._producer()
+
+        findings = produce()
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "fixture sanity: exactly one finding",
+        )
+        status = _field(findings[0], "status")
+        self.assertNotEqual(
+            status,
+            "passed",
+            "an unprovable withholding must never read as clean: 'we saw "
+            "nothing bad' is not 'the workflows permission is withheld', "
+            "and a passed status would let the report claim a guarantee no "
+            "read-only call established",
+        )
+
+    def test_reason_names_no_read_level_and_read_only_unprovability(self):
+        # The core fact the finding must carry: the ``workflows`` permission
+        # has no ``read`` level, no read-only endpoint is gated on it, so
+        # the withholding is unprovable without a write. The wording may be
+        # split across ``reason`` and ``danger``, so assert across both -
+        # but the substance must be there, and it must name the workflows
+        # permission specifically, not just "some permission".
+        produce = self._producer()
+
+        findings = produce()
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "fixture sanity: exactly one finding",
+        )
+        finding = findings[0]
+        text = " ".join(
+            part
+            for part in (
+                _field(finding, "reason") or "",
+                _field(finding, "danger") or "",
+            )
+            if part
+        )
+        self.assertTrue(
+            text,
+            "the skipped finding must carry a non-empty reason or danger "
+            "naming why the check did not run",
+        )
+        lowered = text.lower()
+        self.assertIn(
+            "workflows",
+            lowered,
+            "the finding must name the 'workflows' permission specifically - "
+            "it is the documented-unprovable case, not a generic skip",
+        )
+        self.assertRegex(
+            lowered,
+            r"\bno read\b",
+            "the reason must state that the workflows permission has no "
+            "read level (doc/external/github/fine-grained-personal-access-"
+            "tokens.md: the permission table lists 'write' only)",
+        )
+        self.assertRegex(
+            lowered,
+            r"\bread[- ]only\b",
+            "the reason must state that the withholding is unprovable by a "
+            "read-only call: the workflows list endpoint is gated on "
+            "Actions: read and works unauthenticated on public repos, so no "
+            "read endpoint is gated on the workflows permission "
+            "(doc/external/github/rest-api-endpoints-for-workflows.md)",
+        )
+        self.assertRegex(
+            lowered,
+            r"\bwrite\b",
+            "the reason must state that the only call that would prove the "
+            "withholding is a write, which the probes must not perform",
+        )
+
+    def test_remedy_cites_a_saved_page_and_points_to_a_manual_check(self):
+        # The probe cannot verify the withholding, so the remedy must tell a
+        # human how to verify it by hand: a saved page under
+        # doc/external/github/ (the workflows page or the fine-grained-PAT
+        # page, both cited in the plan) and a manual check.
+        produce = self._producer()
+
+        findings = produce()
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "fixture sanity: exactly one finding",
+        )
+        finding = findings[0]
+        remedy = _field(finding, "remedy")
+        self.assertIsInstance(
+            remedy,
+            str,
+            "remedy must be a string",
+        )
+        self.assertTrue(
+            remedy,
+            "every finding carries a non-empty remedy: a finding that "
+            "cannot say what the user can do to verify the withholding is "
+            "a programming error",
+        )
+        self.assertTrue(
+            self._WORKFLOWS_DOC in remedy
+            or self._FINE_GRAINED_DOC in remedy,
+            "the remedy must name a saved page under doc/external/github/ "
+            "- the workflows endpoint page or the fine-grained-PAT page - "
+            "so a reviewer can check the claim against the saved "
+            "documentation",
+        )
+        remedy_lower = remedy.lower()
+        self.assertIn(
+            "manual",
+            remedy_lower,
+            "the remedy must tell a human how to verify the withholding by "
+            "hand - the probe cannot do it",
+        )
+        self.assertTrue(
+            "ui" in remedy_lower
+            or "interface" in remedy_lower
+            or "settings" in remedy_lower,
+            "the remedy must point at the manual check's place - the "
+            "token's permission table in the GitHub settings UI, where "
+            "the workflows permission is visible by absence",
+        )
+
+    def test_repeated_calls_are_deterministic_and_never_raise(self):
+        # The finding is a constant, not derived from any input: no
+        # network, no token, no owner/repo - so calling it any number of
+        # times must return the same finding, and never raise. A function
+        # that secretly took an opener or a token and read from it could
+        # not satisfy this with no arguments supplied.
+        produce = self._producer()
+
+        first = produce()
+        second = produce()
+        third = produce()
+
+        for label, findings in (
+            ("first call", first),
+            ("second call", second),
+            ("third call", third),
+        ):
+            with self.subTest(call=label):
+                self.assertIsInstance(findings, list)
+                self.assertEqual(
+                    len(findings),
+                    1,
+                    "every call yields exactly one finding, with no "
+                    "opener or token supplied",
+                )
+        self.assertEqual(
+            first,
+            second,
+            "the finding is a constant: two calls with no network and no "
+            "token must return equal findings - one derived from an input "
+            "would not be",
+        )
+        self.assertEqual(
+            second,
+            third,
+            "the finding is a constant: a third call must return the same "
+            "finding again, and calling it any number of times never "
+            "raises",
+        )
+
+    def test_finding_carries_check_constant_and_nonempty_danger(self):
+        # The module's finding shape: a check name (the new
+        # CHECK_WORKFLOWS_WITHHELD constant - present and stable across
+        # calls), a non-empty danger (behaviour 10: a non-empty danger on
+        # every non-passing finding), and a non-empty remedy.
+        produce = self._producer()
+
+        findings = produce()
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "fixture sanity: exactly one finding",
+        )
+        finding = findings[0]
+        check = _field(finding, "check")
+        self.assertIsInstance(
+            check,
+            str,
+            "the finding must carry a check name",
+        )
+        self.assertTrue(
+            check,
+            "the finding must carry a non-empty check name - the new "
+            "CHECK_WORKFLOWS_WITHHELD constant, so check_token_all can "
+            "report it alongside the other probes",
+        )
+        self.assertEqual(
+            check,
+            "workflows_withheld",
+            "the check name must be the stable CHECK_WORKFLOWS_WITHHELD "
+            "value - a renamed or missing check would un-pin the "
+            "behaviour-10 sweep and the behaviour-8 concatenation order",
+        )
+        danger = _field(finding, "danger")
+        self.assertIsInstance(
+            danger,
+            str,
+            "danger must be a string",
+        )
+        self.assertTrue(
+            danger,
+            "a non-passing finding must carry a non-empty danger naming "
+            "the hole the report cannot rule out (behaviour 10): that the "
+            "workflows withholding is unverified",
+        )
+        remedy = _field(finding, "remedy")
+        self.assertIsInstance(remedy, str)
+        self.assertTrue(remedy, "every finding carries a non-empty remedy")
+
+    def test_rendered_finding_is_nonempty_and_mentions_the_reason(self):
+        # A skipped finding renders through render_finding's existing
+        # skipped branch - no new branch is needed, and it must not fall
+        # through to the bare "unknown:" line, which would hide the
+        # unprovable-withholding case in the report.
+        produce = self._producer()
+
+        findings = produce()
+
+        self.assertEqual(
+            len(findings),
+            1,
+            "fixture sanity: exactly one finding",
+        )
+        finding = findings[0]
+        line = piguard.render_finding(finding)
+
+        self.assertIsInstance(line, str)
+        self.assertTrue(
+            line,
+            "render_finding must produce a non-empty line for the "
+            "workflows-withheld finding",
+        )
+        self.assertNotIn(
+            "unknown:",
+            line,
+            "the finding must render through the known branches, not fall "
+            "through to 'unknown:' - a shape mismatch would hide the "
+            "unprovable-withholding case in the report",
+        )
+        reason = _field(finding, "reason")
+        if reason:
+            self.assertIn(
+                reason,
+                line,
+                "the rendered skipped line must carry the reason, so the "
+                "report shows why the check did not run",
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
