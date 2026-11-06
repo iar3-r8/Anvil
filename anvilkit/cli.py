@@ -1637,8 +1637,18 @@ def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
     ``RulesetError`` is reported, naming the path, and never raised -
     the run still ends blocked, never masked into success. This
     function raises no other exception type.
+
+    Under ``--dry-run`` nothing is written and no existing file is
+    claimed: the path the run would write is announced in the file's
+    ``would write`` phrasing, and the import steps still follow, since
+    printing is not writing (plans/setup-repo-guards.md behaviour 12).
     """
     path = piruleset.default_output_path(target)
+    if shared.dry_run:
+        shared.echo("would write {}:".format(path))
+        for line in piruleset.import_steps(None, path):
+            shared.echo("  - {}".format(line))
+        return
     if path.exists():
         shared.echo(
             "the ruleset is already prepared at {} - import it as "
