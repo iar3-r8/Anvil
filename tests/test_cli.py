@@ -3409,6 +3409,233 @@ class TestSetupRepoGuardGate(CliCase):
             "exit code 9 is reused by: {}".format(colliding),
         )
 
+    # -- behaviour 11: non-interactive and --yes ---------------------------
+    # A blocked run must never ask a question it will then discard: the gate
+    # sits after _resolve_github_token (a stored token is reused without
+    # prompting - the store lookup precedes the interactivity guard) and
+    # before _resolve_frontier / _resolve_oxylabs. _prompt_traps booby-traps
+    # every question function those resolvers use (prompts.confirm,
+    # prompts.ask_required, prompts.choose, plus the low-level readers), so
+    # any prompt asked on a blocked run fails the test loudly.
+
+    def _prompt_traps(self):
+        """Patcher over every question function a blocked run must not
+        reach: ``prompts.confirm``, ``prompts.ask``, ``prompts.ask_required``,
+        ``prompts.ask_port`` and ``prompts.choose`` (the seams
+        ``_resolve_github_token``, ``_resolve_frontier`` and
+        ``_resolve_oxylabs`` call), plus the low-level ``_read_line`` /
+        ``_read_confirmation`` readers, so any read of stdin fails the test.
+        Patched on ``cli.prompts`` - the same module object cli imports, so
+        the traps arm the real call path."""
+        boom = AssertionError("prompt asked on a blocked run")
+        return (
+            mock.patch.object(cli.prompts, "confirm", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    def test_blocked_gate_with_yes_prints_fixes_and_exits_nine_no_prompt(
+        self,
+    ):
+        """Blocked run with ``--yes`` (token stored in .env, so no token
+        prompt is needed): the report headers, the prepared ruleset fix
+        (the written path named plus an import step) and the exit 9 all
+        print, with no prompt asked and provision never called
+        (behaviour 11)."""
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for patcher in self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate under --yes exits 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertIn(
+            "Branch rules",
+            result.output,
+            "the blocked report must carry the 'Branch rules' "
+            "header:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "Token scope",
+            result.output,
+            "the blocked report must carry the 'Token scope' "
+            "header:\n{}".format(result.output),
+        )
+        # The prepared fix: the class's default blocked seams trigger
+        # needs_ruleset (branch warns, no token fail), so the written path
+        # is named and at least one manual import step is printed.
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the prepared ruleset "
+            "path:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "Import a",
+            result.output,
+            "the blocked report must carry the ruleset import "
+            "steps:\n{}".format(result.output),
+        )
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        self.assertNotIn(self.GATE_TOKEN, result.output)
+
+    def test_blocked_gate_non_interactive_no_yes_exits_nine(self):
+        """Blocked run with no ``--yes`` and stdin genuinely closed
+        (``input=""`` - the CI runner's EOF; CliRunner's stdin is not a
+        tty, so the real ``_is_interactive`` seam resolves non-interactive
+        itself, unpatched): the stored token is reused without the token
+        prompt (its lookup precedes the interactivity guard), the gate
+        blocks, and the run ends with the report and the prepared fixes at
+        exit 9 - not usage 2, not missing-value 6, no prompt asked,
+        provision never called (behaviour 11, the CI story)."""
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for patcher in self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target], input=""
+        )
+
+        self.assertNotIn(
+            result.exit_code,
+            (cli.EXIT_USAGE, cli.EXIT_CONFIG, cli.EXIT_PROMPT),
+            "a blocked gate on a closed stdin is not a usage, config or "
+            "missing-value error: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate on a closed stdin exits 9: exit "
+            "{}:\n{}".format(result.exit_code, result.output),
+        )
+        # The stored-token branch of _resolve_github_token is the one that
+        # ran - reused without prompting, before any interactivity decision.
+        self.assertIn(
+            "Reusing existing GITHUB_TOKEN from .env",
+            result.output,
+            "the stored token must be reused without prompting:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            "Branch rules",
+            result.output,
+            "the blocked report must carry the 'Branch rules' "
+            "header:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "Token scope",
+            result.output,
+            "the blocked report must carry the 'Token scope' "
+            "header:\n{}".format(result.output),
+        )
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the prepared ruleset "
+            "path:\n{}".format(result.output),
+        )
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        self.assertNotIn(self.GATE_TOKEN, result.output)
+
+    def test_yes_does_not_auto_import_anything(self):
+        """Blocked run with ``--yes`` and both fixes triggered (a token
+        ``fail`` earns the recipe): ``--yes`` auto-imports nothing. The run
+        makes zero HTTP calls - every GitHub call the gate can make is a
+        GET (the read-only probes, all kept offline by the class's seams),
+        and anvilkit/pi/piguard.py exposes no write-to-GitHub function at
+        all - no import/create seam exists to arm - so the opener itself
+        (``urllib.request.urlopen``) is booby-trapped instead: any HTTP
+        request fails the test. The ruleset is written only as a local
+        file, the token recipe is only printed, the run still exits 9, and
+        the token value is not echoed (behaviour 11's Error clause)."""
+        from anvilkit.pi import pitokenrecipe
+
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams_with_token_findings(
+            self._blocked_token_findings()
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        boom = AssertionError(
+            "--yes auto-imported something: the gate made an HTTP request"
+        )
+        opener_patcher = mock.patch.object(
+            cli.piguard.urllib.request, "urlopen", side_effect=boom
+        )
+        opener_patcher.start()
+        self.addCleanup(opener_patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "--yes changes nothing about the gate's refusal to import: "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        # The only write the run makes is the local ruleset file, with the
+        # rendered five-rule content.
+        ruleset_path = self._ruleset_path()
+        self.assertTrue(
+            ruleset_path.is_file(),
+            "the blocked gate must write the ruleset to {}:\n{}".format(
+                ruleset_path, result.output
+            ),
+        )
+        self.assertEqual(
+            piruleset.render_ruleset_json(piruleset.build_ruleset()),
+            ruleset_path.read_text(encoding="utf-8"),
+        )
+        # The recipe is printed, not executed: the pre-filled URL as its
+        # own line, then the ordered UI steps.
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        self.assertIn(
+            url,
+            result.output,
+            "the blocked report must print the pre-filled creation "
+            "URL:\n{}".format(result.output),
+        )
+        steps = pitokenrecipe.recipe_steps(self.OWNER, self.REPO, url)
+        self.assertIn(
+            steps[0],
+            result.output,
+            "the blocked report must print the token recipe steps:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotIn(self.GATE_TOKEN, result.output)
+
 
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
