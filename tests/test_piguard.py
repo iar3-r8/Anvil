@@ -2535,6 +2535,238 @@ class SummarizeTests(unittest.TestCase):
         )
 
 
+class GateVerdictTests(unittest.TestCase):
+    """Behaviour 1 of plans/setup-repo-guards.md - ``gate_verdict(findings)``.
+
+    The gate seam ``setup-repo`` runs before any provisioning:
+    ``"clean"`` iff no finding is ``fail`` and none is ``warn``;
+    ``"blocked"`` otherwise. ``skipped`` never blocks - it is an honest
+    "could not verify" (issue #100, decision 2) - and an unknown status is
+    neither a fail nor a warn. This is a SIBLING of ``summarize``, not a
+    change to it: ``verify-guards`` keeps "1 iff any fail" with a ``warn``
+    still exiting 0, while the gate needs a fail OR a warn to block. Pure:
+    one positional findings list, a ``str`` result, no network, no write,
+    never raises.
+    """
+
+    def _verdict(self) -> Any:
+        gate = getattr(piguard, "gate_verdict", None)
+        self.assertTrue(
+            callable(gate),
+            "anvilkit.pi.piguard.gate_verdict is not callable; the gate "
+            "verdict seam has not been implemented yet",
+        )
+        return gate
+
+    def _finding(self, status: str, check: str) -> Dict[str, Any]:
+        """One finding in the module's own shape, carrying ``status``/``check``."""
+        return {
+            "status": status,
+            "check": check,
+            "rule": None,
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+
+    def test_clean_when_all_passed_and_skipped(self):
+        verdict = self._verdict()
+        findings = (
+            piguard.check_history_rewrite(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") in ("fail", "warn")],
+            [],
+            "fixture sanity: only passed and skipped findings",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "clean",
+            "passed and skipped alone must be clean - skipped is an honest "
+            "'could not verify' and never blocks",
+        )
+
+    def test_clean_when_empty(self):
+        verdict = self._verdict()
+
+        self.assertEqual(
+            verdict([]),
+            "clean",
+            "no findings at all means nothing failed and nothing warned",
+        )
+
+    def test_blocked_on_a_single_warn(self):
+        verdict = self._verdict()
+        findings = (
+            piguard.check_history_rewrite(
+                [rule("non_fast_forward", "main-guard")]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "warn"],
+            [findings[1]],
+            "fixture sanity: exactly one warn among the passed and skipped",
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [],
+            "fixture sanity: no fail finding - this is the case summarize "
+            "reports as 0, the key difference this gate must close",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "a single warn among passed and skipped must block the gate: "
+            "unlike summarize, a warn is a reportable problem here, not an "
+            "exit-0",
+        )
+
+    def test_blocked_on_a_single_fail(self):
+        verdict = self._verdict()
+        fail_finding = self._finding("fail", "administration")
+        findings = (
+            piguard.check_history_rewrite(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+            + [fail_finding]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [fail_finding],
+            "fixture sanity: exactly one fail among the passed and skipped",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "a single fail among passed and skipped must block the gate",
+        )
+
+    def test_blocked_when_both_warn_and_fail_present(self):
+        verdict = self._verdict()
+        fail_finding = self._finding("fail", "administration")
+        findings = (
+            piguard.check_history_rewrite(
+                [rule("non_fast_forward", "main-guard")]
+            )
+            + [fail_finding]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "warn"],
+            [findings[1]],
+            "fixture sanity: exactly one warn is present",
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [fail_finding],
+            "fixture sanity: exactly one fail is present",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "a warn and a fail together must block the gate",
+        )
+
+    def test_skipped_never_blocks(self):
+        verdict = self._verdict()
+        findings = piguard.skipped_findings("no origin remote: could not verify")
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["skipped"] * len(findings),
+            "fixture sanity: the list is skipped-only - the no-origin / "
+            "could-not-verify case",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "clean",
+            "skipped-only findings must be clean: a check that could not "
+            "verify is honest, not a block (issue #100, decision 2)",
+        )
+
+    def test_unknown_status_is_neither_fail_nor_warn(self):
+        verdict = self._verdict()
+        unknown = self._finding("weird", "history_rewrite")
+        findings = (
+            piguard.check_history_rewrite(
+                [rule("non_fast_forward", "main-guard")]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+            + [unknown]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "weird"],
+            [unknown],
+            "fixture sanity: a finding with a status outside the four "
+            "documented ones is present",
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") in ("fail", "warn")],
+            [],
+            "fixture sanity: the unknown status is neither a fail nor a "
+            "warn",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "clean",
+            "an unknown status must be neither a fail nor a warn - the "
+            "gate must not crash on it and must not block on it",
+        )
+
+    def test_pure_and_never_raises(self):
+        verdict = self._verdict()
+        # _verdict already pinned callability. One positional findings list
+        # is the whole call shape: no token, no repo, no network, no write.
+        for label, findings in (
+            (
+                "clean side",
+                piguard.check_history_rewrite(
+                    [
+                        rule("non_fast_forward", "main-guard"),
+                        rule("deletion", "main-guard"),
+                    ]
+                )
+                + piguard.skipped_findings("GitHub was unreachable"),
+            ),
+            (
+                "blocked side",
+                piguard.check_history_rewrite(
+                    [rule("non_fast_forward", "main-guard")]
+                )
+                + [self._finding("fail", "administration")],
+            ),
+        ):
+            with self.subTest(side=label):
+                result = verdict(findings)
+                self.assertIsInstance(
+                    result,
+                    str,
+                    "gate_verdict returns the verdict as a str, not an int "
+                    "or a bool",
+                )
+                self.assertIn(
+                    result,
+                    {"clean", "blocked"},
+                    "the verdict is exactly 'clean' or 'blocked'",
+                )
+
+
 class RenderReportTests(unittest.TestCase):
     """Behaviour 7: the report seam - ``render_report(findings)``.
 
