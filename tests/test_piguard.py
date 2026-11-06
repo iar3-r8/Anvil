@@ -8888,7 +8888,7 @@ class FindingBriefTests(unittest.TestCase):
             "file_path_restriction passed ({} paths)".format(len(paths)),
         )
         self.assertTrue(
-            brief.endswith("(") and brief.endswith(")"),
+            brief.endswith(")"),
             "the passed file-path brief must end with the recorded paths "
             "in parentheses, got: {!r}".format(brief),
         )
