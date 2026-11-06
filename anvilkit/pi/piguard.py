@@ -1667,6 +1667,74 @@ def summarize(findings: List[Dict[str, Any]]) -> int:
     return 0
 
 
+def gate_verdict(findings: List[Dict[str, Any]]) -> str:
+    """The gate seam ``setup-repo`` runs before any provisioning:
+    ``"blocked"`` when any finding has status ``fail`` or ``warn``, else
+    ``"clean"``.
+
+    A ``skipped`` never blocks: it is an honest "could not verify" (issue
+    #100, decision 2), and a target with no GitHub origin yields only
+    skipped findings yet must still provision. A ``warn`` blocks, though,
+    because a junior must fix it - or consciously accept it - before the
+    repo is called guarded. An unknown status is neither a fail nor a
+    warn, so it neither blocks nor crashes the gate.
+
+    This is a sibling of :func:`summarize`, not a replacement:
+    ``verify-guards`` keeps its ``1``-iff-any-``fail`` contract, with a
+    ``warn`` still exiting ``0``, while the gate needs a fail OR a warn to
+    block. Pure: one positional findings list, a ``str`` result, no
+    network, no write, never raises (behaviour 1 of
+    plans/setup-repo-guards.md).
+    """
+    for finding in findings:
+        if finding.get("status") in ("fail", "warn"):
+            return "blocked"
+    return "clean"
+
+
+def gate_remediation(
+    branch_findings: List[Dict[str, Any]],
+    token_findings: List[Dict[str, Any]],
+) -> Dict[str, bool]:
+    """The remediation seam ``setup-repo`` runs once the gate is blocked:
+    which of the two prepared fixes a junior must apply.
+
+    ``needs_ruleset`` is true iff any **branch** finding has status ``fail``
+    or ``warn`` - the importable ruleset is the fix for a branch rule that is
+    missing or weak (issue #100, decision 3: the gate prepares the fix a
+    junior can follow). ``needs_token_recipe`` is true iff any **token**
+    finding has status ``fail`` - the pre-filled token recipe is the fix for
+    a bad token. The two booleans are computed independently from their own
+    list: a token fail must not need the ruleset, a branch fail must not
+    need the recipe.
+
+    The warn asymmetry is deliberate: a branch ``warn`` sets
+    ``needs_ruleset``, because the ruleset IS the fix for a missing/weak
+    rule; a token ``warn`` (a reachable named repo) does NOT set
+    ``needs_token_recipe``, because the warn is a scope judgement with its
+    own remedy text saying what to decide - only a bad token (``fail``)
+    gets the recipe. A token warn still blocks the gate via its sibling
+    :func:`gate_verdict`; it simply prints no recipe.
+
+    A ``skipped`` triggers neither - it is an honest "could not verify" - and
+    an unknown status triggers neither, the same discipline as
+    :func:`gate_verdict`. Pure: two positional findings lists, a
+    ``Dict[str, bool]`` with exactly the keys ``"needs_ruleset"`` and
+    ``"needs_token_recipe"``, no network, no write, never raises
+    (behaviour 2 of plans/setup-repo-guards.md).
+    """
+    needs_ruleset = any(
+        finding.get("status") in ("fail", "warn") for finding in branch_findings
+    )
+    needs_token_recipe = any(
+        finding.get("status") == "fail" for finding in token_findings
+    )
+    return {
+        "needs_ruleset": needs_ruleset,
+        "needs_token_recipe": needs_token_recipe,
+    }
+
+
 def render_report(findings: List[Dict[str, Any]]) -> List[str]:
     """One line per finding, in order; empty findings yield an empty report.
 

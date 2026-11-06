@@ -50,6 +50,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from anvilkit import cli  # noqa: E402
 from anvilkit import smoke  # noqa: E402
+from anvilkit.pi import piruleset  # noqa: E402
 # The six layer names in layer order, pinned by tests/test_smoke.py and
 # imported (never re-spelled) so the two suites cannot drift.
 from tests.test_smoke import LAYER_NAMES  # noqa: E402
@@ -368,9 +369,7 @@ class TestSubcommandsExist(CliCase):
         "doctor",
         "stress",
         "verify-guards",
-        "ruleset-write",
         "smoke-test",
-        "token-recipe",
     )
 
     def registered_names(self):
@@ -2561,6 +2560,1225 @@ class TestSetupRepo(CliCase):
         self.assertIn("does not exist", result.output)
 
 
+# ---------------------------------------------------------------------------
+# setup-repo guard gate (plans/setup-repo-guards.md): behaviour 4 is the red;
+# behaviours 5 and 10 are boundary pins that pass now and must keep passing
+# once the gate is wired in.
+# ---------------------------------------------------------------------------
+
+
+class TestSetupRepoGuardGate(CliCase):
+    """``setup-repo`` gates on the guards before any provisioning.
+
+    Behaviour 4 (red): with the guard seams patched to a blocked result,
+    the run must never reach ``provision.setup_repo`` and must leave the
+    target unchanged except for behaviour 7's one allowed file,
+    ``.github-ruleset.json``. The before/after snapshot is the same
+    recursive walk, minus that one allowed path - no .roo, no settings
+    file, no .env write into it.
+
+    Behaviour 5 (pin): a plain temp target has no git origin, so the real
+    ``resolve_repository`` returns None, the branch findings are all
+    skipped, the gate is clean, and provisioning proceeds exactly as
+    before the gate existed.
+
+    Behaviour 10 (pin): ``--no-github`` never touches a guard seam - the
+    seams are booby-trapped, so any call fails the test - and
+    provisioning proceeds with an empty token.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+
+    def setUp(self):
+        super().setUp()
+        # The harness's usual default: a port to resolve, nothing else
+        # stored. The blocked-gate tests store a token themselves, since
+        # the gate needs one.
+        self.write_env(LLM_PORT="8000")
+        self._target = tempfile.TemporaryDirectory()
+        self.target = self._target.name
+        self.addCleanup(self._target.cleanup)
+
+    # -- helpers -----------------------------------------------------------
+
+    def _target_snapshot(self):
+        """Every file under the target, mapped to its bytes."""
+        root = Path(self.target)
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    def _blocked_seams(self):
+        """Patcher trio: the guard seams yield a blocked result.
+
+        The repository resolves, the fetched rules are an empty array, so
+        the real ``check_all`` emits five ``warn`` findings (the plan's
+        Interface facts). The token probes return no findings - only the
+        branch warns are needed to block - which also keeps the run
+        offline.
+        """
+        return (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=([], None),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "check_token_all",
+                return_value=[],
+            ),
+        )
+
+    def _spy_provision(self, invoke_real=True):
+        """A recorder over ``provision.setup_repo``.
+
+        With ``invoke_real`` the spy delegates to the real provision, so a
+        run that should not provision actually provisions - the target then
+        gains files and the before/after snapshot proves it.
+        """
+        self._provision_calls = []
+
+        if invoke_real:
+            real = cli.provision.setup_repo
+
+            def spy(target, repo_plan, **kwargs):
+                self._provision_calls.append((str(target), repo_plan, kwargs))
+                return real(target, repo_plan, **kwargs)
+        else:
+            def spy(target, repo_plan, **kwargs):
+                self._provision_calls.append((str(target), repo_plan, kwargs))
+                return str(target)
+
+        patcher = mock.patch.object(cli.provision, "setup_repo", spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    # -- behaviour 4: the gate runs before any provisioning (RED) ----------
+
+    def test_blocked_gate_never_provisions(self):
+        """A blocked gate stops the run: provision is never called and the
+        target is byte-for-byte unchanged - no .roo, no settings file, no
+        .env write into it (the project .env lives outside the target)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        before = self._target_snapshot()
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            0,
+            len(self._provision_calls),
+            "a blocked gate must never reach provision.setup_repo:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            result.exit_code,
+            "a blocked gate must stop the run, exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        after = self._target_snapshot()
+        # Behaviour 7's relaxation: the one file the blocked run may
+        # create in the target is the ruleset it prepares; nothing else
+        # may appear, and the allowed file's content, if present, must be
+        # the rendered ruleset itself.
+        allowed = ".github-ruleset.json"
+        unexpected = sorted(
+            (set(after) - set(before)) - {allowed}
+        )
+        self.assertEqual(
+            [],
+            unexpected,
+            "a blocked run must leave the target unchanged apart from "
+            "{}; files that appeared: {}".format(allowed, unexpected),
+        )
+        if allowed in after:
+            self.assertEqual(
+                piruleset.render_ruleset_json(piruleset.build_ruleset()),
+                after[allowed].decode("utf-8"),
+            )
+
+    def test_blocked_gate_exit_is_not_a_usage_or_config_error(self):
+        """A blocked gate is a new failure class: whatever its code, it is
+        not 2 (usage) and not 3 (config) - behaviour 9 pins the exact 9."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        self.assertNotIn(
+            result.exit_code,
+            (cli.EXIT_USAGE, cli.EXIT_CONFIG),
+            "a blocked gate is neither a usage nor a config error, "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+
+    # -- behaviour 5: a clean gate provisions exactly as today (PIN) -------
+
+    def test_clean_gate_provisions_as_today(self):
+        """A plain temp target has no git origin, so the real
+        resolve_repository returns None (unpatched - the genuine
+        all-skipped case), the gate is clean, and provisioning proceeds
+        exactly as before the gate existed: one provision.setup_repo
+        call, exit 0, the usual provisioned artifacts, no
+        .github-ruleset.json, no recipe text."""
+        self._spy_provision(invoke_real=True)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(1, len(self._provision_calls), result.output)
+        provisioned_target, plan, _kwargs = self._provision_calls[0]
+        self.assertEqual(self.target, provisioned_target)
+        # The same RepoPlan fields the existing TestSetupRepo pins.
+        self.assertEqual(8000, plan.port)
+        self.assertEqual("", plan.github_token)
+        self.assertFalse(plan.use_anthropic_for_frontier_modes)
+        # The real provision wrote its usual artifacts into the target.
+        self.assertTrue(
+            (Path(self.target) / "zoo-code-settings.json").is_file()
+        )
+        self.assertTrue((Path(self.target) / ".roo" / "mcp.json").is_file())
+        self.assertTrue(
+            (Path(self.target) / ".vscode" / "extensions.json").is_file()
+        )
+        # A clean gate writes no ruleset and prints no recipe.
+        self.assertFalse((Path(self.target) / ".github-ruleset.json").exists())
+        self.assertNotIn("personal-access-tokens/new", result.output)
+        self.assertNotIn("recipe", result.output.lower())
+
+    # -- behaviour 10: --no-github skips the gate (PIN) ---------------------
+
+    def test_no_github_skips_the_guard_seams(self):
+        """With no GitHub there is nothing to gate: no resolve_repository,
+        no fetch_branch_rules, no check_token_all - the seams are
+        booby-trapped, so any call fails this test - and provisioning
+        proceeds with an empty token."""
+        boom = AssertionError("guard seam invoked under --no-github")
+        self._spy_provision(invoke_real=False)
+        traps = (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", side_effect=boom
+            ),
+            mock.patch.object(
+                cli.piguard, "fetch_branch_rules", side_effect=boom
+            ),
+            mock.patch.object(
+                cli.piguard, "check_token_all", side_effect=boom
+            ),
+        )
+        for patcher in traps:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes", "--no-github"]
+        )
+
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(1, len(self._provision_calls), result.output)
+        _provisioned_target, plan, _kwargs = self._provision_calls[0]
+        self.assertEqual("", plan.github_token)
+
+    # -- behaviour 6: a blocked gate prints the sectioned report (RED) ----
+    # The gate reuses render_finding_block exactly as verify-guards does -
+    # the behaviour-19 blocks, never re-derived - under the "Branch rules"
+    # and "Token scope" headers, in that order.
+
+    GATE_TOKEN = "ghp_blockedgate_secret_token"
+
+    def _blocked_seams_with_token_findings(self, token_findings):
+        """``_blocked_seams`` extended: ``check_token_all`` yields
+        ``token_findings`` rather than none, so the blocked run has both
+        branch warns and token findings to report."""
+        seams = list(self._blocked_seams())
+        seams[2] = mock.patch.object(
+            cli.piguard,
+            "check_token_all",
+            return_value=token_findings,
+        )
+        return seams
+
+    def _blocked_token_findings(self):
+        """The token findings the blocked-report tests feed the seam: one
+        ``fail`` (administration) in the shape the real probe emits -
+        rule=None, the check name, a danger and a remedy - plus the
+        constant ``skipped`` (workflows_withheld)."""
+        return [
+            token_finding(
+                "administration",
+                "fail",
+                danger="the token can administer the target repository",
+                remedy=(
+                    "doc/external/github/rest-api-endpoints-for-actions-"
+                    "permissions.md"
+                ),
+            ),
+            cli.piguard.workflows_withheld_finding()[0],
+        ]
+
+    def _blocked_branch_findings(self):
+        """The branch findings the seam yields: the real ``check_all`` over
+        the empty rules the fetch seam returns - the same objects the run
+        reports on, so the expected blocks are never re-derived."""
+        return cli.piguard.check_all([])
+
+    def _run_blocked_report(self, token_findings):
+        """One blocked ``setup-repo`` run with the report fixtures wired in:
+        a token in .env (the gate needs one), the branch warns from the
+        empty-rules seam, and the given token findings. Returns the runner
+        result."""
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        for patcher in self._blocked_seams_with_token_findings(token_findings):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+    def _block_headline(self, finding):
+        return cli.piguard.render_finding_block(finding)[0]
+
+    def test_blocked_gate_prints_branch_rules_header_then_token_scope_header(
+        self,
+    ):
+        """The blocked report carries a 'Branch rules' header before the
+        first branch finding block and a 'Token scope' header before the
+        first token finding block - branch headers precede the token
+        header (behaviour 6)."""
+        branch_findings = self._blocked_branch_findings()
+        token_findings = self._blocked_token_findings()
+        result = self._run_blocked_report(token_findings)
+        lines = result.output.splitlines()
+
+        def header_index(name):
+            for index, line in enumerate(lines):
+                if line == name:
+                    return index
+            self.fail(
+                "the blocked report has no {!r} header line:\n{}".format(
+                    name, result.output
+                )
+            )
+
+        def first_headline_index(finding):
+            headline = self._block_headline(finding)
+            for index, line in enumerate(lines):
+                if line.lstrip() == headline:
+                    return index
+            self.fail(
+                "the blocked report has no block for the finding with "
+                "headline {!r}:\n{}".format(headline, result.output)
+            )
+
+        branch_header = header_index("Branch rules")
+        token_header = header_index("Token scope")
+        self.assertLess(
+            branch_header,
+            token_header,
+            "the 'Branch rules' header must precede the 'Token scope' "
+            "header:\n{}".format(result.output),
+        )
+        self.assertGreater(
+            first_headline_index(branch_findings[0]),
+            branch_header,
+            "'Branch rules' must come before the first branch finding "
+            "block (headline {!r}):\n{}".format(
+                self._block_headline(branch_findings[0]), result.output
+            ),
+        )
+        self.assertGreater(
+            first_headline_index(token_findings[0]),
+            token_header,
+            "'Token scope' must come before the first token finding "
+            "block (headline {!r}):\n{}".format(
+                self._block_headline(token_findings[0]), result.output
+            ),
+        )
+
+    def test_blocked_gate_finding_lines_match_render_finding_block(self):
+        """Every line of ``render_finding_block(finding)`` - computed in
+        this test from the same fixture the seam returns - appears in the
+        blocked output in report order: the block is reused, never
+        re-derived (behaviour 6)."""
+        branch_finding = self._blocked_branch_findings()[0]
+        token_findings = self._blocked_token_findings()
+        token_finding = token_findings[0]
+        result = self._run_blocked_report(token_findings)
+        lines = result.output.splitlines()
+
+        expected = (
+            cli.piguard.render_finding_block(branch_finding)
+            + cli.piguard.render_finding_block(token_finding)
+        )
+        # The branch block reports before the token block, so a single
+        # forward cursor pins both blocks' lines in report order without
+        # pinning the surrounding whitespace.
+        cursor = 0
+        for block_line in expected:
+            for index in range(cursor, len(lines)):
+                if lines[index].lstrip() == block_line.lstrip():
+                    cursor = index + 1
+                    break
+            else:
+                self.fail(
+                    "a line of the reused finding block is missing or out "
+                    "of order: {!r}\n{}".format(block_line, result.output)
+                )
+
+    def test_no_report_line_exceeds_80_characters(self):
+        """Every line of the sectioned report - from the 'Branch rules'
+        header to the end of the last token block - is at most 80
+        characters (behaviour 6)."""
+        token_findings = self._blocked_token_findings()
+        result = self._run_blocked_report(token_findings)
+        lines = result.output.splitlines()
+
+        start = None
+        for index, line in enumerate(lines):
+            if line == "Branch rules":
+                start = index
+                break
+        if start is None:
+            self.fail(
+                "the blocked report has no 'Branch rules' header:\n{}".format(
+                    result.output
+                )
+            )
+
+        last_block = cli.piguard.render_finding_block(token_findings[-1])
+        headline_index = None
+        for index, line in enumerate(lines[start:], start):
+            if line.lstrip() == last_block[0]:
+                headline_index = index
+                break
+        if headline_index is None:
+            self.fail(
+                "no block for the last token finding (headline {!r}):\n{}".format(
+                    last_block[0], result.output
+                )
+            )
+
+        end = headline_index + len(last_block)
+        offenders = [line for line in lines[start:end] if len(line) > 80]
+        self.assertEqual(
+            [],
+            offenders,
+            "report lines exceed 80 characters:\n{}".format(
+                "\n".join(repr(line) for line in offenders)
+            ),
+        )
+
+    def test_a_skipped_finding_is_shown_not_hidden(self):
+        """A ``skipped`` finding is reported too - it is honest, not hidden
+        (behaviour 6)."""
+        token_findings = self._blocked_token_findings()
+        skipped = token_findings[-1]
+        self.assertEqual("skipped", skipped["status"])
+        result = self._run_blocked_report(token_findings)
+
+        headline = self._block_headline(skipped)
+        self.assertTrue(
+            any(
+                line.lstrip() == headline
+                for line in result.output.splitlines()
+            ),
+            "the skipped finding's block headline {!r} must be "
+            "reported:\n{}".format(headline, result.output),
+        )
+
+    def test_the_token_value_is_never_echoed(self):
+        """Guard (already green while the one-line placeholder is in
+        place): the ``GITHUB_TOKEN`` value in .env never appears in the
+        blocked report (behaviour 6)."""
+        result = self._run_blocked_report(self._blocked_token_findings())
+        self.assertNotIn(self.GATE_TOKEN, result.output)
+
+    # -- behaviour 7: a blocked gate prepares the ruleset (RED) ------------
+    # needs_ruleset is true for the class's default blocked seams (five
+    # branch warns, no token findings), so every blocked run below is a
+    # run that must prepare TARGET/.github-ruleset.json.
+
+    RULESET_NAME = ".github-ruleset.json"
+
+    def _blocked_run_wiring(self, write_spy=None):
+        """The blocked-run seams plus, optionally, a spy over
+        ``piruleset.write_ruleset`` (recording ``force`` and returning the
+        path, or raising the given exception)."""
+        patchers = self._blocked_seams()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        if write_spy is not None:
+            spy_patcher = mock.patch.object(
+                cli.piruleset, "write_ruleset", write_spy
+            )
+            spy_patcher.start()
+            self.addCleanup(spy_patcher.stop)
+
+    def _ruleset_path(self):
+        return Path(self.target) / self.RULESET_NAME
+
+    def test_blocked_gate_writes_the_ruleset_when_absent(self):
+        """Blocked run, ruleset absent: the gate writes
+        TARGET/.github-ruleset.json with the rendered five-rule ruleset
+        byte-for-byte, prints the written path and the manual import
+        steps, and still exits blocked (RED - the blocked path writes no
+        file yet)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        self.assertFalse(self._ruleset_path().exists())
+        self._spy_provision(invoke_real=True)
+        self._blocked_run_wiring()
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            0, len(self._provision_calls), result.output
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate that prepared the ruleset still exits "
+            "blocked, not success: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        ruleset_path = self._ruleset_path()
+        self.assertTrue(
+            ruleset_path.is_file(),
+            "the blocked gate must write the ruleset to {}:\n{}".format(
+                ruleset_path, result.output
+            ),
+        )
+        self.assertEqual(
+            piruleset.render_ruleset_json(piruleset.build_ruleset()),
+            ruleset_path.read_text(encoding="utf-8"),
+            "the written ruleset is not the rendered five-rule ruleset",
+        )
+        # The ruleset print pattern, pinned (moved in from the outgoing
+        # ruleset-write command in the behaviour-13 cycle): the written path
+        # is named, and at least one import step (the "Import a ruleset" line
+        # from piruleset.import_steps) is printed.
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the written ruleset path "
+            "{}:\n{}".format(ruleset_path, result.output),
+        )
+        self.assertIn(
+            "Import a",
+            result.output,
+            "the blocked report must carry the import steps for the "
+            "prepared ruleset (import_steps):\n{}".format(result.output),
+        )
+
+    def test_blocked_gate_never_overwrites_an_existing_ruleset(self):
+        """Blocked run with TARGET/.github-ruleset.json pre-existing:
+        force is never passed true, the file's bytes stay untouched, the
+        report names the file as already prepared, and the run still
+        exits blocked (RED - the gate never names the file yet)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        sentinel = "sentinel-do-not-touch"
+        self._ruleset_path().write_text(sentinel, encoding="utf-8")
+        self._spy_provision(invoke_real=True)
+        force_kwargs = []
+
+        def write_spy(path, text, force=False):
+            # Mirrors the real write_ruleset over an existing file, so a
+            # gate that checks existence itself and a gate that calls
+            # write_ruleset and catches the RulesetError both run; force
+            # is recorded either way.
+            force_kwargs.append(force)
+            raise piruleset.RulesetError(
+                "refusing to overwrite {path}: an existing file is "
+                "present; pass --force to overwrite it".format(path=path)
+            )
+
+        self._blocked_run_wiring(write_spy=write_spy)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            0, len(self._provision_calls), result.output
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "an already-prepared ruleset never masks the block: "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertEqual(
+            sentinel,
+            self._ruleset_path().read_text(encoding="utf-8"),
+            "the existing ruleset file must be left untouched",
+        )
+        self.assertEqual([], force_kwargs)
+        # The report names the file as already prepared: the path appears
+        # alongside an 'already' phrasing (the existing command has no
+        # equivalent - a write always claimed success - so the gate's
+        # own line is pinned here).
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the existing ruleset path:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            "already",
+            result.output.lower(),
+            "the blocked report must say the ruleset is already "
+            "prepared (not claim to have written it):\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_blocked_gate_ruleset_error_is_reported_and_still_blocked(self):
+        """Blocked run where the ruleset write fails: the failure is
+        named in the report and the run still exits blocked - a
+        RulesetError is never masked into success (pass-now guard:
+        nothing is written yet, so no error occurs yet)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        self._spy_provision(invoke_real=True)
+
+        def write_spy(path, text, force=False):
+            raise piruleset.RulesetError(
+                "cannot write ruleset to {}: its parent directory "
+                "does not exist".format(path)
+            )
+
+        self._blocked_run_wiring(write_spy=write_spy)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            0, len(self._provision_calls), result.output
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a ruleset write failure must never be masked into "
+            "success: exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        # The failure is reported, not swallowed: the report names the
+        # ruleset path and carries a clear could-not-write phrasing.
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the ruleset path the write "
+            "failed on:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "could not write",
+            result.output.lower(),
+            "the blocked report must say the ruleset could not be "
+            "written:\n{}".format(result.output),
+        )
+
+    # -- behaviour 8: a blocked gate prints the token recipe (RED) ---------
+    # needs_token_recipe is true for the class's default token fixtures (the
+    # administration fail), and the class's blocked seams resolve the
+    # repository to (OWNER, REPO), so the blocked runs below are runs that
+    # must print the pre-filled creation URL and the ordered UI steps - the
+    # same substance the outgoing token-recipe command prints (moved in here
+    # in the behaviour-13 cycle).
+
+    def test_blocked_gate_prints_the_recipe_when_a_token_finding_fails(self):
+        """Blocked run with a token ``fail``: the gate prints the exact
+        pre-filled creation URL for the resolved owner/repo and every line
+        of ``recipe_steps`` in order, and still exits blocked (RED - the
+        blocked path prints no recipe yet, so the URL and steps are
+        absent)."""
+        from anvilkit.pi import pitokenrecipe
+
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        steps = pitokenrecipe.recipe_steps(self.OWNER, self.REPO, url)
+        result = self._run_blocked_report(self._blocked_token_findings())
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate that printed the recipe still exits "
+            "blocked: exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        lines = result.output.splitlines()
+        url_index = None
+        for index, line in enumerate(lines):
+            if line.lstrip() == url:
+                url_index = index
+                break
+        self.assertIsNotNone(
+            url_index,
+            "the blocked report has no line carrying the pre-filled "
+            "creation URL {!r}:\n{}".format(url, result.output),
+        )
+        # The same lstrip-both-sides cursor the behaviour-6 block test
+        # uses: every step line appears after the URL line, in order.
+        cursor = url_index
+        for step in steps:
+            for index in range(cursor, len(lines)):
+                if lines[index].lstrip() == step.lstrip():
+                    cursor = index + 1
+                    break
+            else:
+                self.fail(
+                    "a recipe step line is missing or out of order: "
+                    "{!r}\n{}".format(step, result.output)
+                )
+
+    def test_no_recipe_when_no_token_finding_fails(self):
+        """Blocked run whose token findings are ``skipped`` only (the
+        constant workflows-withheld finding): the branch warns still block,
+        but with no token ``fail`` the gate prints no recipe at all -
+        neither the pre-filled URL nor any step line (pass-now guard)."""
+        from anvilkit.pi import pitokenrecipe
+
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        steps = pitokenrecipe.recipe_steps(self.OWNER, self.REPO, url)
+        result = self._run_blocked_report(
+            [cli.piguard.workflows_withheld_finding()[0]]
+        )
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "skipped-only token findings still block via the branch "
+            "warns: exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertNotIn(
+            url,
+            result.output,
+            "no token fail means no recipe: the pre-filled URL {!r} must "
+            "not be printed:\n{}".format(url, result.output),
+        )
+        for step in steps:
+            self.assertNotIn(
+                step,
+                result.output,
+                "no token fail means no recipe: the step line {!r} must "
+                "not be printed:\n{}".format(step, result.output),
+            )
+
+    def test_recipe_error_is_reported_and_still_blocked(self):
+        """Blocked run where ``build_recipe_url`` raises
+        ``TokenRecipeError``: the failure is reported in the blocked output
+        and the run still exits blocked - the recipe error never masks the
+        block (red now, for the wrong reason: the blocked path attempts no
+        recipe, so the 'could not build' line is absent; the exit-9 half
+        already holds)."""
+        from anvilkit.pi import pitokenrecipe
+
+        patcher = mock.patch.object(
+            cli.pitokenrecipe,
+            "build_recipe_url",
+            side_effect=pitokenrecipe.TokenRecipeError(
+                "refusing to build a recipe URL without an owner: "
+                "target_name is the resource owner and is never guessed"
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        result = self._run_blocked_report(self._blocked_token_findings())
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a recipe build failure must never be masked into "
+            "success: exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        # The same could-not phrasing the behaviour-7 ruleset error pins
+        # ("could not write"): a clear what-happened line, not the raw
+        # exception text.
+        self.assertIn(
+            "could not build the token recipe",
+            result.output.lower(),
+            "the blocked report must say the token recipe could not be "
+            "built:\n{}".format(result.output),
+        )
+
+    # -- behaviour 9: a blocked gate exits 9 (PIN) --------------------------
+    # The code was implemented in behaviour 4's green (the blocked path
+    # already raises EXIT_GUARDS_BLOCKED); these boundary pins tighten the
+    # earlier `!= 0` and `not in (2, 3)` pins to the exact code, pin the
+    # re-run-setup-repo message, and pin the non-reuse of 9.
+
+    def test_blocked_gate_exits_exactly_nine(self):
+        """A blocked run exits ``EXIT_GUARDS_BLOCKED`` and that constant
+        is literally 9 - a new failure class: nothing was provisioned and
+        nothing is wrong with Anvil, so neither 5 (provisioning failed
+        part-way) nor 1 (internal) (behaviour 9). Tightens the existing
+        ``!= 0`` / ``not in (2, 3)`` pins to the exact code."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        self.assertEqual(
+            9,
+            cli.EXIT_GUARDS_BLOCKED,
+            "EXIT_GUARDS_BLOCKED is literally 9, got {}".format(
+                cli.EXIT_GUARDS_BLOCKED
+            ),
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate exits exactly 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+
+    def test_blocked_gate_message_names_re_running_setup_repo(self):
+        """The last line a blocked run prints - the ``⛔`` line after the
+        last prepared fix - tells the junior to fix GitHub and re-run
+        ``setup-repo``: the line carries both (behaviour 9)."""
+        result = self._run_blocked_report(self._blocked_token_findings())
+
+        lines = [line for line in result.output.splitlines() if line.strip()]
+        trailing = lines[-1]
+        self.assertTrue(
+            trailing.lstrip().startswith("⛔"),
+            "the last line of a blocked run is the ⛔ re-run line, "
+            "got {!r}:\n{}".format(trailing, result.output),
+        )
+        message = trailing.lower()
+        self.assertIn(
+            "setup-repo",
+            message,
+            "the blocked report must name setup-repo as the command "
+            "to re-run:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "re-run",
+            message,
+            "the blocked report must tell the junior to re-run after "
+            "fixing GitHub:\n{}".format(result.output),
+        )
+
+    def test_exit_nine_is_not_reused_by_any_other_command(self):
+        """The blocked gate's code is its own failure class: no other
+        ``EXIT_*`` constant in cli carries the value 9 (behaviour 9)."""
+        self.assertEqual(9, cli.EXIT_GUARDS_BLOCKED)
+        colliding = sorted(
+            name
+            for name, value in vars(cli).items()
+            if name.startswith("EXIT_")
+            and name != "EXIT_GUARDS_BLOCKED"
+            and value == 9
+        )
+        self.assertEqual(
+            [],
+            colliding,
+            "exit code 9 is reused by: {}".format(colliding),
+        )
+
+    # -- behaviour 11: non-interactive and --yes ---------------------------
+    # A blocked run must never ask a question it will then discard: the gate
+    # sits after _resolve_github_token (a stored token is reused without
+    # prompting - the store lookup precedes the interactivity guard) and
+    # before _resolve_frontier / _resolve_oxylabs. _prompt_traps booby-traps
+    # every question function those resolvers use (prompts.confirm,
+    # prompts.ask_required, prompts.choose, plus the low-level readers), so
+    # any prompt asked on a blocked run fails the test loudly.
+
+    def _prompt_traps(self):
+        """Patcher over every question function a blocked run must not
+        reach: ``prompts.confirm``, ``prompts.ask``, ``prompts.ask_required``,
+        ``prompts.ask_port`` and ``prompts.choose`` (the seams
+        ``_resolve_github_token``, ``_resolve_frontier`` and
+        ``_resolve_oxylabs`` call), plus the low-level ``_read_line`` /
+        ``_read_confirmation`` readers, so any read of stdin fails the test.
+        Patched on ``cli.prompts`` - the same module object cli imports, so
+        the traps arm the real call path."""
+        boom = AssertionError("prompt asked on a blocked run")
+        return (
+            mock.patch.object(cli.prompts, "confirm", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    def test_blocked_gate_with_yes_prints_fixes_and_exits_nine_no_prompt(
+        self,
+    ):
+        """Blocked run with ``--yes`` (token stored in .env, so no token
+        prompt is needed): the report headers, the prepared ruleset fix
+        (the written path named plus an import step) and the exit 9 all
+        print, with no prompt asked and provision never called
+        (behaviour 11)."""
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for patcher in self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate under --yes exits 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertIn(
+            "Branch rules",
+            result.output,
+            "the blocked report must carry the 'Branch rules' "
+            "header:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "Token scope",
+            result.output,
+            "the blocked report must carry the 'Token scope' "
+            "header:\n{}".format(result.output),
+        )
+        # The prepared fix: the class's default blocked seams trigger
+        # needs_ruleset (branch warns, no token fail), so the written path
+        # is named and at least one manual import step is printed.
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the prepared ruleset "
+            "path:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "Import a",
+            result.output,
+            "the blocked report must carry the ruleset import "
+            "steps:\n{}".format(result.output),
+        )
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        self.assertNotIn(self.GATE_TOKEN, result.output)
+
+    def test_blocked_gate_non_interactive_no_yes_exits_nine(self):
+        """Blocked run with no ``--yes`` and stdin genuinely closed
+        (``input=""`` - the CI runner's EOF; CliRunner's stdin is not a
+        tty, so the real ``_is_interactive`` seam resolves non-interactive
+        itself, unpatched): the stored token is reused without the token
+        prompt (its lookup precedes the interactivity guard), the gate
+        blocks, and the run ends with the report and the prepared fixes at
+        exit 9 - not usage 2, not missing-value 6, no prompt asked,
+        provision never called (behaviour 11, the CI story)."""
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for patcher in self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target], input=""
+        )
+
+        self.assertNotIn(
+            result.exit_code,
+            (cli.EXIT_USAGE, cli.EXIT_CONFIG, cli.EXIT_PROMPT),
+            "a blocked gate on a closed stdin is not a usage, config or "
+            "missing-value error: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate on a closed stdin exits 9: exit "
+            "{}:\n{}".format(result.exit_code, result.output),
+        )
+        # The stored-token branch of _resolve_github_token is the one that
+        # ran - reused without prompting, before any interactivity decision.
+        self.assertIn(
+            "Reusing existing GITHUB_TOKEN from .env",
+            result.output,
+            "the stored token must be reused without prompting:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            "Branch rules",
+            result.output,
+            "the blocked report must carry the 'Branch rules' "
+            "header:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "Token scope",
+            result.output,
+            "the blocked report must carry the 'Token scope' "
+            "header:\n{}".format(result.output),
+        )
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the prepared ruleset "
+            "path:\n{}".format(result.output),
+        )
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        self.assertNotIn(self.GATE_TOKEN, result.output)
+
+    def test_yes_does_not_auto_import_anything(self):
+        """Blocked run with ``--yes`` and both fixes triggered (a token
+        ``fail`` earns the recipe): ``--yes`` auto-imports nothing. The run
+        makes zero HTTP calls - every GitHub call the gate can make is a
+        GET (the read-only probes, all kept offline by the class's seams),
+        and anvilkit/pi/piguard.py exposes no write-to-GitHub function at
+        all - no import/create seam exists to arm - so the opener itself
+        (``urllib.request.urlopen``) is booby-trapped instead: any HTTP
+        request fails the test. The ruleset is written only as a local
+        file, the token recipe is only printed, the run still exits 9, and
+        the token value is not echoed (behaviour 11's Error clause)."""
+        from anvilkit.pi import pitokenrecipe
+
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams_with_token_findings(
+            self._blocked_token_findings()
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        boom = AssertionError(
+            "--yes auto-imported something: the gate made an HTTP request"
+        )
+        opener_patcher = mock.patch.object(
+            cli.piguard.urllib.request, "urlopen", side_effect=boom
+        )
+        opener_patcher.start()
+        self.addCleanup(opener_patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "--yes changes nothing about the gate's refusal to import: "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        # The only write the run makes is the local ruleset file, with the
+        # rendered five-rule content.
+        ruleset_path = self._ruleset_path()
+        self.assertTrue(
+            ruleset_path.is_file(),
+            "the blocked gate must write the ruleset to {}:\n{}".format(
+                ruleset_path, result.output
+            ),
+        )
+        self.assertEqual(
+            piruleset.render_ruleset_json(piruleset.build_ruleset()),
+            ruleset_path.read_text(encoding="utf-8"),
+        )
+        # The recipe is printed, not executed: the pre-filled URL as its
+        # own line, then the ordered UI steps.
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        self.assertIn(
+            url,
+            result.output,
+            "the blocked report must print the pre-filled creation "
+            "URL:\n{}".format(result.output),
+        )
+        steps = pitokenrecipe.recipe_steps(self.OWNER, self.REPO, url)
+        self.assertIn(
+            steps[0],
+            result.output,
+            "the blocked report must print the token recipe steps:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotIn(self.GATE_TOKEN, result.output)
+
+    # -- behaviour 12: --dry-run and a blocked gate (RED) ------------------
+    # --dry-run is the module's global promise that nothing is written.
+    # The blocked gate's _prepare_gate_ruleset ignores shared.dry_run
+    # today and writes TARGET/.github-ruleset.json unconditionally, so the
+    # first two tests below are the reds; the recipe test is a pass-now
+    # guard - printing is not writing, and the recipe is only echoed.
+
+    def _run_dry_run_blocked_gate(self):
+        """A ``--dry-run setup-repo`` run with both fixes triggered: the
+        branch warns (``needs_ruleset``) plus a token ``fail``
+        (``needs_token_recipe``), the token stored in .env, provision
+        spied with the real provision underneath. Returns the runner
+        result."""
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams_with_token_findings(
+            self._blocked_token_findings()
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return self.invoke_allowing_exception(
+            ["--dry-run", "setup-repo", self.target, "--yes"]
+        )
+
+    def test_dry_run_blocked_gate_writes_nothing(self):
+        """``--dry-run setup-repo`` with a blocked gate and both fixes
+        triggered writes nothing into the target: the recursive
+        before/after snapshot is identical - no ``.github-ruleset.json``,
+        nothing else either - provision is never reached, and the exit is
+        still 9 (behaviour 12, RED: the gate writes the ruleset
+        unconditionally today)."""
+        before = self._target_snapshot()
+
+        result = self._run_dry_run_blocked_gate()
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a dry-run blocked gate still exits 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        after = self._target_snapshot()
+        self.assertEqual(
+            before,
+            after,
+            "--dry-run must leave the target byte-for-byte unchanged; "
+            "files that appeared: {}".format(
+                sorted(set(after) - set(before))
+            ),
+        )
+        self.assertFalse(
+            self._ruleset_path().is_file(),
+            "--dry-run must not create the ruleset at {}:\n{}".format(
+                self._ruleset_path(), result.output
+            ),
+        )
+
+    def test_dry_run_blocked_gate_announces_the_ruleset_path(self):
+        """``--dry-run setup-repo`` with a blocked gate announces the
+        ruleset path it *would* write: a line of the output carries both
+        the path and the file's dry-run announcement phrasing 'would'
+        ('would write', 'would store', 'would create', 'would merge'),
+        and the output never claims the file was written (behaviour 12,
+        RED: today the gate writes and announces 'Wrote the ruleset
+        to')."""
+        result = self._run_dry_run_blocked_gate()
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a dry-run blocked gate still exits 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        announced = [
+            line
+            for line in result.output.splitlines()
+            if "would" in line.lower() and self.RULESET_NAME in line
+        ]
+        self.assertNotEqual(
+            [],
+            announced,
+            "--dry-run must announce the ruleset path it would write "
+            "({}): no line carries both 'would' and the path:\n{}".format(
+                self._ruleset_path(), result.output
+            ),
+        )
+        self.assertNotIn(
+            "wrote the ruleset",
+            result.output.lower(),
+            "--dry-run must not claim to have written the ruleset:\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_dry_run_blocked_gate_still_prints_the_recipe(self):
+        """``--dry-run setup-repo`` with a blocked gate and a token
+        ``fail`` still prints the token recipe: the pre-filled creation
+        URL as its own line, then every ``recipe_steps`` line in order -
+        printing is not writing, so the module's --dry-run rule (no
+        writes) does not suppress it (behaviour 12; pass-now guard: the
+        recipe is only echoed and already prints under --dry-run)."""
+        from anvilkit.pi import pitokenrecipe
+
+        result = self._run_dry_run_blocked_gate()
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a dry-run blocked gate still exits 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        steps = pitokenrecipe.recipe_steps(self.OWNER, self.REPO, url)
+        lines = result.output.splitlines()
+        url_index = None
+        for index, line in enumerate(lines):
+            if line.lstrip() == url:
+                url_index = index
+                break
+        self.assertIsNotNone(
+            url_index,
+            "the dry-run blocked report must still print the pre-filled "
+            "creation URL {!r}:\n{}".format(url, result.output),
+        )
+        # The same lstrip-both-sides cursor the behaviour-8 test uses:
+        # every step line appears after the URL line, in order.
+        cursor = url_index
+        for step in steps:
+            for index in range(cursor, len(lines)):
+                if lines[index].lstrip() == step.lstrip():
+                    cursor = index + 1
+                    break
+            else:
+                self.fail(
+                    "a recipe step line is missing or out of order under "
+                    "--dry-run: {!r}\n{}".format(step, result.output)
+                )
+
+
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
 
@@ -3310,6 +4528,79 @@ class TestVerifyGuardsTokenFindings(CliCase):
         self.assertEqual(1, result.exit_code)
         self.assertIn("fail:", result.output)
 
+    def test_verify_guards_still_exits_summarize_not_nine(self):
+        # Behaviour 9 of plans/setup-repo-guards.md (pin): the gate is a
+        # SIBLING of summarize, not a change to it - verify-guards exits
+        # 0 on warn/skipped-only findings and 1 on a fail (the 0/1
+        # contract itself is already pinned by
+        # test_reports_all_five_rules_through_check_all and
+        # test_fail_token_finding_makes_verify_guards_exit_nonzero); what
+        # this pin adds is the negative: a blocked verify-guards is 0 or
+        # 1, never the setup-repo gate's code.
+        warn = [
+            token_finding(
+                "administration",
+                "warn",
+                danger="the repository could be deleted or reconfigured",
+                remedy=(
+                    "doc/external/github/rest-api-endpoints-for-actions-"
+                    "permissions.md"
+                ),
+            ),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        result, _token_all, _ = self.run_verify_guards_with_token_findings(
+            warn
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "warn/skipped-only findings exit 0 through summarize:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "verify-guards never exits the setup-repo gate's code: "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+
+        fail = [
+            token_finding(
+                "administration",
+                "fail",
+                danger="the repository could be deleted or reconfigured",
+                remedy=(
+                    "doc/external/github/rest-api-endpoints-for-actions-"
+                    "permissions.md"
+                ),
+            ),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        result, _token_all, _ = self.run_verify_guards_with_token_findings(
+            fail
+        )
+        self.assertEqual(
+            1,
+            result.exit_code,
+            "a fail finding exits 1 through summarize:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a failing verify-guards exits 1, never the setup-repo "
+            "gate's code: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+
     def test_report_has_branch_rules_header_before_first_branch_finding(self):
         # Behaviour 19: the report has a "Branch rules" section header
         # before the first branch finding block.
@@ -3478,105 +4769,6 @@ class TestVerifyGuardsDocstringCorrection(CliCase):
             "agent cannot read",
             text,
             "the help text must say the agent cannot read the token",
-        )
-
-
-class TestTokenRecipe(CliCase):
-    """``token-recipe`` prints the creation URL and the steps (behaviour 15).
-
-    It reads no token, makes no network call and writes no file: the token
-    text is shown once by GitHub's UI and never passes through Anvil.
-    """
-
-    OWNER = "octodemo"
-    REPO = "my-repo"
-
-    def run_token_recipe(self, resolve_value):
-        """token-recipe against the project with the token seams booby-trapped:
-        the .env token seam, the branch-rule fetch and the token probes must
-        all stay untouched. Returns
-        ``(result, resolve, env_get, fetch, token_all)``."""
-        resolve = mock.patch.object(
-            cli.piguard, "resolve_repository", return_value=resolve_value
-        )
-        env_get = mock.patch.object(cli.env, "get")
-        fetch = mock.patch.object(cli.piguard, "fetch_branch_rules")
-        token_all = mock.patch.object(cli.piguard, "check_token_all")
-        resolve_mock = resolve.start()
-        env_get_mock = env_get.start()
-        fetch_mock = fetch.start()
-        token_all_mock = token_all.start()
-        try:
-            result = self.invoke(["token-recipe", str(self.project)])
-        finally:
-            for patcher in (resolve, env_get, fetch, token_all):
-                patcher.stop()
-        return result, resolve_mock, env_get_mock, fetch_mock, token_all_mock
-
-    def test_prints_the_recipe_url_and_the_documented_steps(self):
-        from anvilkit.pi import pitokenrecipe
-
-        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
-        result, resolve_mock, _, _, _ = self.run_token_recipe(
-            (self.OWNER, self.REPO)
-        )
-        self.assertEqual(0, result.exit_code)
-        self.assertEqual(1, resolve_mock.call_count)
-        # The exact pre-filled URL, with its query intact.
-        self.assertIn(url, result.output)
-        for parameter in (
-            "target_name={}".format(self.OWNER),
-            "contents=write",
-            "pull_requests=write",
-            "issues=write",
-            "actions=read",
-        ):
-            self.assertIn(parameter, result.output)
-        # The steps name the owner, the repository, the single-repository
-        # choice, the four grants, the Actions read-only grant and the three
-        # recorded caveats.
-        for text in (
-            self.OWNER,
-            self.REPO,
-            "Only select repositories",
-            "Contents to Read and write",
-            "Pull requests to Read and write",
-            "Issues to Read and write",
-            "Actions to Read only",
-            "cannot call the Checks API",
-            "read-only access to all public repositories",
-            "host driver outside the container",
-        ):
-            self.assertIn(text, result.output)
-
-    def test_reads_no_token_and_makes_no_network_call(self):
-        result, _, env_get_mock, fetch_mock, token_all_mock = (
-            self.run_token_recipe((self.OWNER, self.REPO))
-        )
-        env_get_mock.assert_not_called()
-        fetch_mock.assert_not_called()
-        token_all_mock.assert_not_called()
-
-    def test_writes_no_file_in_the_target(self):
-        before = self.snapshot()
-        result, _, _, _, _ = self.run_token_recipe((self.OWNER, self.REPO))
-        self.assertEqual(0, result.exit_code)
-        self.assertEqual(
-            before,
-            self.snapshot(),
-            "token-recipe must write nothing to the target",
-        )
-
-    def test_target_without_a_github_origin_exits_nonzero_and_never_guesses(self):
-        result, resolve_mock, _, _, _ = self.run_token_recipe(None)
-        self.assertEqual(1, resolve_mock.call_count)
-        self.assertNotEqual(0, result.exit_code)
-        self.assertIn(
-            "never guessed",
-            result.output,
-            "the refusal must name that the owner is never guessed:\n{}".format(
-                result.output
-            ),
         )
 
 
@@ -5553,100 +6745,6 @@ class TestNoGithubRunNeverBlanksStoredRepoToken(CliCase):
 
 
 # ---------------------------------------------------------------------------
-# ruleset-write  (plans/ruleset-write.md behaviour 7 — the command and its
-# registration)
-# ---------------------------------------------------------------------------
-
-
-class TestRulesetWrite(CliCase):
-    """``ruleset-write`` builds and writes the importable GitHub ruleset.
-
-    The target is a plain temporary directory: no git repository, no
-    ``GITHUB_TOKEN`` in the environment, and both the subprocess and the
-    network seams are booby-trapped, so a run that tried to read git or
-    reach the network would fail — success proves the command needs
-    neither.
-    """
-
-    SENTINEL = b"\x00 not ruleset JSON \xff\n"
-    RULE_TYPES = (
-        "non_fast_forward",
-        "deletion",
-        "update",
-        "pull_request",
-        "file_path_restriction",
-    )
-
-    def setUp(self):
-        super().setUp()
-        self._target = tempfile.TemporaryDirectory()
-        self.target = Path(self._target.name)
-        self.addCleanup(self._target.cleanup)
-
-        env = dict(os.environ)
-        env.pop("GITHUB_TOKEN", None)
-        self._env_patcher = mock.patch.dict(os.environ, env)
-        self._env_patcher.start()
-        self.addCleanup(self._env_patcher.stop)
-        self._subprocess_patcher = mock.patch(
-            "subprocess.run",
-            side_effect=AssertionError("ruleset-write must not run subprocesses"),
-        )
-        self._subprocess_patcher.start()
-        self.addCleanup(self._subprocess_patcher.stop)
-        self._urllib_patcher = mock.patch(
-            "urllib.request.urlopen",
-            side_effect=AssertionError("ruleset-write must not use the network"),
-        )
-        self._urllib_patcher.start()
-        self.addCleanup(self._urllib_patcher.stop)
-
-    def default_output(self):
-        return self.target / ".github-ruleset.json"
-
-    def test_ruleset_write_creates_the_default_file(self):
-        result = self.invoke(["ruleset-write", str(self.target)])
-        self.assertEqual(0, result.exit_code, result.output)
-        self.assertTrue(self.default_output().is_file())
-
-    def test_ruleset_write_output_names_file_and_import_steps_without_github_url(self):
-        result = self.invoke(["ruleset-write", str(self.target)])
-        self.assertEqual(0, result.exit_code, result.output)
-        self.assertIn(".github-ruleset.json", result.output)
-        self.assertIn("import a ruleset", result.output.lower())
-        # No GitHub origin, so no guessed URL.
-        self.assertNotIn("github.com", result.output)
-
-    def test_ruleset_write_output_flag_honours_a_custom_path(self):
-        custom = self.target / "my-ruleset.json"
-        result = self.invoke(
-            ["ruleset-write", str(self.target), "--output", str(custom)]
-        )
-        self.assertEqual(0, result.exit_code, result.output)
-        self.assertTrue(custom.is_file())
-        self.assertFalse(self.default_output().exists())
-
-    def test_ruleset_write_refuses_to_overwrite_without_force(self):
-        existing = self.default_output()
-        existing.write_bytes(self.SENTINEL)
-        result = self.invoke_allowing_exception(
-            ["ruleset-write", str(self.target)]
-        )
-        self.assertEqual(cli.EXIT_CONFIG, result.exit_code, result.output)
-        self.assertIn(str(existing), result.output)
-        self.assertIn("--force", result.output)
-        self.assertEqual(self.SENTINEL, existing.read_bytes())
-
-    def test_ruleset_write_force_overwrites_with_the_generated_ruleset(self):
-        existing = self.default_output()
-        existing.write_bytes(self.SENTINEL)
-        result = self.invoke(["ruleset-write", str(self.target), "--force"])
-        self.assertEqual(0, result.exit_code, result.output)
-        data = json.loads(existing.read_text(encoding="utf-8"))
-        self.assertEqual(list(self.RULE_TYPES), [rule["type"] for rule in data["rules"]])
-
-
-# ---------------------------------------------------------------------------
 # smoke-test subcommand (behaviour 18 of plans/smoke-test.md)
 # ---------------------------------------------------------------------------
 #
@@ -6788,3 +7886,389 @@ class TestSmokeTestDumpEvents(CliCase):
             % result.output,
         )
         self.assertNotIn(_DUMPER_STREAM_LINE, result.output)
+
+
+# ---------------------------------------------------------------------------
+# _collect_guard_findings  (behaviour 3 of plans/setup-repo-guards.md — the
+# resolve → fetch → check_all → check_token_all flow verify-guards and
+# doctor's Guards section each duplicate today, extracted once)
+# ---------------------------------------------------------------------------
+
+
+def _require_collect_guard_findings():
+    """Return the behaviour-3 helper, or fail naming what is missing."""
+    helper = getattr(cli, "_collect_guard_findings", None)
+    if not callable(helper):
+        raise AssertionError(
+            "anvilkit.cli does not define a callable "
+            "_collect_guard_findings(target, token, branch, other_repo=None, "
+            'noun="target") '
+            "yet (behaviour 3 of plans/setup-repo-guards.md)"
+        )
+    return helper
+
+
+def _call_arg(mocked, name, index):
+    """One call argument by name, falling back to its positional slot, so
+    the pin holds whether the helper passes it by keyword or position."""
+    args, kwargs = mocked.call_args
+    if name in kwargs:
+        return kwargs[name]
+    if len(args) > index:
+        return args[index]
+    return mock.DEFAULT
+
+
+class TestCollectGuardFindings(CliCase):
+    """The shared guard flow: resolve → fetch → check_all → check_token_all.
+
+    Behaviour 3 of plans/setup-repo-guards.md: verify-guards and doctor's
+    Guards section each duplicate this flow today; the helper must return
+    ``(branch_findings, token_findings, repository)`` reproducing, for every
+    input, exactly what both call sites do now, so the green step can rewire
+    them with byte-for-byte unchanged output.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    TOKEN = "ghp_collect_token"
+
+    def run_collect(
+        self,
+        target,
+        token,
+        branch,
+        other_repo=None,
+        noun="target",
+        repository=None,
+        rules=None,
+        fetch_reason=None,
+        branch_findings=None,
+        token_findings=None,
+    ):
+        """``_collect_guard_findings`` with the four piguard seams replaced,
+        so the flow runs offline. Returns ``result`` plus a dict of the seam
+        mocks (``resolve``, ``fetch``, ``check_all``, ``token_all``) for
+        call-argument assertions.
+        """
+        collect = _require_collect_guard_findings()
+        resolve_patcher = mock.patch.object(
+            cli.piguard, "resolve_repository", return_value=repository
+        )
+        fetch_patcher = mock.patch.object(
+            cli.piguard,
+            "fetch_branch_rules",
+            return_value=(rules, fetch_reason),
+        )
+        check_all_patcher = mock.patch.object(
+            cli.piguard, "check_all", return_value=branch_findings
+        )
+        token_all_patcher = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=token_findings
+        )
+        resolve = resolve_patcher.start()
+        fetch = fetch_patcher.start()
+        check_all = check_all_patcher.start()
+        token_all = token_all_patcher.start()
+        try:
+            result = collect(
+                target,
+                token,
+                branch,
+                other_repo=other_repo,
+                noun=noun,
+            )
+        finally:
+            for patcher in (
+                resolve_patcher,
+                fetch_patcher,
+                check_all_patcher,
+                token_all_patcher,
+            ):
+                patcher.stop()
+        return result, {
+            "resolve": resolve,
+            "fetch": fetch,
+            "check_all": check_all,
+            "token_all": token_all,
+        }
+
+    def test_resolvable_target_collects_branch_and_token_findings(self):
+        # The full flow: resolve → fetch → check_all → check_token_all,
+        # returning the exact objects the seams produced, not copies.
+        from anvilkit.pi import piguard
+
+        branch = piguard.check_all(five_rule_branch_rules())
+        token = [
+            token_finding("target_access", "passed"),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        target = self.project
+        rules = five_rule_branch_rules()
+        (branch_out, token_out, repository), seams = self.run_collect(
+            target,
+            self.TOKEN,
+            "main",
+            repository=(self.OWNER, self.REPO),
+            rules=rules,
+            branch_findings=branch,
+            token_findings=token,
+        )
+        # check_all receives exactly the rules fetch returned: the flow is
+        # resolve -> fetch -> check_all(fetched rules), not a re-fetch or a
+        # guess.
+        check_all_args, check_all_kwargs = seams["check_all"].call_args
+        self.assertIs(
+            rules,
+            check_all_kwargs.get("rules", check_all_args[0]),
+            "check_all must run on the exact rules fetch_branch_rules "
+            "returned",
+        )
+        self.assertIs(
+            branch,
+            branch_out,
+            "the branch findings must be the exact objects check_all "
+            "returned, so the call sites' summarize and rendering are "
+            "unchanged",
+        )
+        self.assertIs(
+            token,
+            token_out,
+            "the token findings must be the exact objects check_token_all "
+            "returned",
+        )
+        self.assertEqual(
+            (self.OWNER, self.REPO),
+            repository,
+            "the third return element must be the repository resolve "
+            "returned",
+        )
+        # The flow drives the seams with the resolved identity:
+        # fetch_branch_rules(owner, repo, branch, token).
+        self.assertEqual(
+            self.OWNER, _call_arg(seams["fetch"], "owner", 0)
+        )
+        self.assertEqual(
+            self.REPO, _call_arg(seams["fetch"], "repo", 1)
+        )
+        self.assertEqual(
+            "main", _call_arg(seams["fetch"], "branch", 2)
+        )
+        self.assertEqual(
+            self.TOKEN, _call_arg(seams["fetch"], "token", 3)
+        )
+        # check_all is the single seam for the branch rules.
+        self.assertEqual(
+            1,
+            seams["check_all"].call_count,
+            "the branch rules must be reported through the single check_all "
+            "seam",
+        )
+        # check_token_all receives the resolved identity, the token, and
+        # other_repo=None by default (matching doctor's call site).
+        self.assertEqual(
+            self.OWNER, _call_arg(seams["token_all"], "owner", 0)
+        )
+        self.assertEqual(
+            self.REPO, _call_arg(seams["token_all"], "repo", 1)
+        )
+        self.assertEqual(
+            self.TOKEN, _call_arg(seams["token_all"], "token", 2)
+        )
+        self.assertIsNone(
+            _call_arg(seams["token_all"], "other_repo", 3),
+            "other_repo must default to None, so the named-repo probe emits "
+            "its skip rather than guessing (the call sites' default)",
+        )
+
+    def test_other_repo_is_forwarded_to_check_token_all(self):
+        # --other-repo's raw value reaches check_token_all unchanged, as it
+        # does at verify-guards today: the CLI never re-validates it.
+        from anvilkit.pi import piguard
+
+        branch = piguard.check_all(five_rule_branch_rules())
+        token = [
+            token_finding(
+                "named_repo", "skipped",
+                reason="the named repository was not reached",
+            )
+        ]
+        (_branch_out, _token_out, _repository), seams = self.run_collect(
+            self.project,
+            self.TOKEN,
+            "main",
+            other_repo="someorg/other",
+            repository=(self.OWNER, self.REPO),
+            rules=five_rule_branch_rules(),
+            branch_findings=branch,
+            token_findings=token,
+        )
+        self.assertEqual(
+            "someorg/other",
+            _call_arg(seams["token_all"], "other_repo", 3),
+            "the raw other_repo value must reach check_token_all unchanged",
+        )
+
+    def test_unresolvable_target_yields_four_skips_and_no_token_findings(
+        self,
+    ):
+        # No resolvable repository: four skipped branch findings carrying
+        # the same reason verify_guards builds today (it names the target
+        # path), no token findings at all, and none of fetch/check_all/
+        # check_token_all is called — a probe without an identity would be
+        # a guess.
+        from anvilkit.pi import piguard
+
+        target = self.project
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the target has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(target)
+        )
+        (branch_out, token_out, repository), seams = self.run_collect(
+            target, self.TOKEN, "main", repository=None
+        )
+        self.assertEqual(
+            piguard.skipped_findings(reason),
+            branch_out,
+            "the branch findings must be skipped_findings of the exact "
+            "reason verify_guards builds (it names the target path)",
+        )
+        self.assertEqual(
+            4,
+            len(branch_out),
+            "one skipped finding per defined branch check is expected",
+        )
+        for finding in branch_out:
+            self.assertEqual("skipped", finding["status"])
+        self.assertIn(str(target), branch_out[0]["reason"])
+        self.assertEqual(
+            [],
+            token_out,
+            "no token findings without a resolvable repository - the token "
+            "probes never run",
+        )
+        self.assertIsNone(repository)
+        self.assertFalse(
+            seams["fetch"].called,
+            "fetch_branch_rules must not run without a resolvable "
+            "repository",
+        )
+        self.assertFalse(
+            seams["check_all"].called,
+            "check_all must not run without a resolvable repository",
+        )
+        self.assertFalse(
+            seams["token_all"].called,
+            "check_token_all must not run without a resolvable repository",
+        )
+
+    def test_doctor_noun_keeps_the_project_wording(self):
+        # doctor's _report_guards builds the same unresolvable-target reason
+        # but says "the project" where verify_guards says "the target". With
+        # noun="project" the helper must reproduce doctor's exact reason, so
+        # the extraction leaves doctor's output byte-for-byte unchanged.
+        from anvilkit.pi import piguard
+
+        target = self.project
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the project has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(target)
+        )
+        (branch_out, token_out, repository), seams = self.run_collect(
+            target, self.TOKEN, "main", noun="project", repository=None
+        )
+        self.assertEqual(
+            piguard.skipped_findings(reason),
+            branch_out,
+            "the branch findings must be skipped_findings of the exact "
+            'reason doctor builds (the noun "project" replaces "target")',
+        )
+        self.assertIn("the project has no origin", branch_out[0]["reason"])
+        self.assertNotIn(
+            "the target has no origin",
+            branch_out[0]["reason"],
+            'with noun="project" the "target" wording must be gone, not '
+            "appended",
+        )
+        self.assertEqual(
+            [],
+            token_out,
+            "no token findings without a resolvable repository - the token "
+            "probes never run",
+        )
+        self.assertIsNone(repository)
+        self.assertFalse(
+            seams["fetch"].called,
+            "fetch_branch_rules must not run without a resolvable "
+            "repository",
+        )
+        self.assertFalse(
+            seams["check_all"].called,
+            "check_all must not run without a resolvable repository",
+        )
+        self.assertFalse(
+            seams["token_all"].called,
+            "check_token_all must not run without a resolvable repository",
+        )
+
+    def test_fetch_failure_yields_skipped_findings(self):
+        # The repository resolves but the fetch fails: four skipped branch
+        # findings carrying the fetch reason, and check_all never runs. The
+        # token probes DO still run - verified against today's code: both
+        # call sites assign token_findings outside the rules if/else (the
+        # verify_guards and _report_guards ``else`` branches both reach
+        # check_token_all), so the helper must do the same.
+        from anvilkit.pi import piguard
+
+        fetch_reason = "the fetch reason"
+        token = [
+            token_finding("target_access", "passed"),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        (branch_out, token_out, repository), seams = self.run_collect(
+            self.project,
+            self.TOKEN,
+            "main",
+            repository=(self.OWNER, self.REPO),
+            rules=None,
+            fetch_reason=fetch_reason,
+            token_findings=token,
+        )
+        self.assertEqual(
+            piguard.skipped_findings(fetch_reason),
+            branch_out,
+            "a failed fetch must yield skipped_findings of the fetch reason",
+        )
+        self.assertEqual(
+            4,
+            len(branch_out),
+            "one skipped finding per defined branch check is expected",
+        )
+        for finding in branch_out:
+            self.assertEqual("skipped", finding["status"])
+        self.assertFalse(
+            seams["check_all"].called,
+            "a failed fetch must not reach check_all",
+        )
+        self.assertIs(
+            token,
+            token_out,
+            "the token findings must still come from check_token_all when "
+            "the fetch fails, as both call sites do today",
+        )
+        self.assertTrue(
+            seams["token_all"].called,
+            "the token probes run whenever the repository resolves, even "
+            "when the branch-rules fetch fails",
+        )
+        self.assertEqual(
+            (self.OWNER, self.REPO),
+            repository,
+            "the repository is returned even when the fetch fails",
+        )

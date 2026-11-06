@@ -69,6 +69,10 @@ EXIT_PROMPT = 6
 # code rather than reusing EXIT_ERROR.
 EXIT_STRESS_UNAVAILABLE = 7
 EXIT_STRESS_FAILURES = 8
+# A blocked setup-repo guard gate: nothing was provisioned and nothing is
+# wrong with Anvil - the user's GitHub needs a fix (plans/setup-repo-guards.md
+# behaviour 9 pins the code and the message wording in a later cycle).
+EXIT_GUARDS_BLOCKED = 9
 
 ENV_FILENAME = ".env"
 SETTINGS_FILENAME = "anvil.yaml"
@@ -1342,6 +1346,49 @@ def setup_repo(
     try:
         token = _resolve_github_token(shared, github_token, no_github)
         shared.echo("")
+        # The guard gate: after the token (the gate needs it) and before the
+        # frontier/oxylabs prompts, so a blocked run asks no question it will
+        # then discard. --no-github skips it entirely: with no GitHub there is
+        # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
+        if not no_github:
+            branch_findings, token_findings, repository = _collect_guard_findings(
+                Path(path), token, "main"
+            )
+            if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
+                shared.echo("")
+                # Behaviour 6: the sectioned report, the same blocks
+                # verify-guards prints - never re-derived. The findings
+                # carry no token value, so nothing secret is echoed.
+                _echo_guard_report(shared, branch_findings, token_findings)
+                shared.echo("")
+                remediation = piguard.gate_remediation(
+                    branch_findings, token_findings
+                )
+                # Behaviour 7: the gate prepares the fix a junior can
+                # follow - the importable ruleset - after the report and
+                # before the final exit. The run still ends blocked; the
+                # prepared fix never masks the block.
+                if remediation["needs_ruleset"]:
+                    _prepare_gate_ruleset(shared, Path(path))
+                    shared.echo("")
+                # Behaviour 8: the gate prints the token fix a junior
+                # can follow - the pre-filled creation URL and the
+                # ordered steps - after the ruleset preparation (branch
+                # rules first, then the token fix) and before the final
+                # exit. Only a bad token (a token finding with status
+                # fail) earns the recipe (the warn asymmetry). The URL
+                # carries no token value, so nothing secret is echoed.
+                # ``repository`` is only None when no repository could be
+                # resolved, in which case the token probes never ran, so
+                # the guard is defensive and unreachable.
+                if remediation["needs_token_recipe"] and repository is not None:
+                    _prepare_gate_token_recipe(shared, repository)
+                    shared.echo("")
+                shared.echo(
+                    "⛔ Fix the branch rules and token scope above, then "
+                    "re-run setup-repo."
+                )
+                raise typer.Exit(EXIT_GUARDS_BLOCKED)
         frontier = _resolve_frontier(
             shared,
             settings,
@@ -1490,51 +1537,19 @@ def _report_guards(shared: Context) -> None:
     shared.echo("")
     shared.echo("Guards")
 
-    repository = piguard.resolve_repository(shared.root)
     token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
 
-    findings: List[Dict[str, Any]]
-    token_findings: List[Dict[str, Any]] = []
-    if repository is None:
-        reason = (
-            "owner/repo could not be resolved from the origin remote of "
-            "{}: the project has no origin, or its remote is not a GitHub "
-            "repository, and the identity is never guessed".format(shared.root)
-        )
-        findings = piguard.skipped_findings(reason)
-    else:
-        owner, repo = repository
-        rules, fetch_reason = piguard.fetch_branch_rules(
-            owner, repo, "main", token
-        )
-        if rules is None:
-            findings = piguard.skipped_findings(fetch_reason)
-        else:
-            findings = piguard.check_all(rules)
-        # The same single seam verify-guards reports through: a probe added
-        # there reaches doctor with no edit at this call site.
-        token_findings = piguard.check_token_all(
-            owner, repo, token=token, other_repo=None
-        )
+    # The same single flow verify-guards runs, with doctor's noun; a probe
+    # added to _collect_guard_findings reaches doctor with no edit here.
+    findings, token_findings, _repository = _collect_guard_findings(
+        shared.root, token, "main", noun="project"
+    )
 
     # Behaviour 19: the findings print as wrapped blocks - a status-prefixed
     # headline, the finding's substance at 80 columns, and an indented fix:/
     # see: line - under a section header per source, so branch and token
     # findings no longer run together as unbroken lines.
-    shared.echo("Branch rules")
-    for index, finding in enumerate(findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
-
-    shared.echo("")
-    shared.echo("Token scope")
-    for index, finding in enumerate(token_findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
+    _echo_guard_report(shared, findings, token_findings)
 
 
 def _report_config_health(shared: Context) -> None:
@@ -1574,6 +1589,154 @@ def _report_config_health(shared: Context) -> None:
                     MODELS_FILENAME + " parse", "{} {}".format(_mark(False), exc)
                 )
             )
+
+
+def _echo_guard_report(
+    shared: Context,
+    branch_findings: List[Dict[str, Any]],
+    token_findings: List[Dict[str, Any]],
+) -> None:
+    """The sectioned guards report: a "Branch rules" header, each branch
+    finding as a wrapped block, a "Token scope" header, each token finding
+    the same way - one blank line between blocks.
+
+    The blocks come from ``piguard.render_finding_block`` - the behaviour-19
+    blocks reused, never re-derived, so no line exceeds 80 characters.
+    verify-guards, doctor's Guards section and the blocked setup-repo gate
+    all print through this, so the report shape cannot drift between them
+    (plans/setup-repo-guards.md behaviour 6).
+    """
+    shared.echo("Branch rules")
+    for index, finding in enumerate(branch_findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
+
+    shared.echo("")
+    shared.echo("Token scope")
+    for index, finding in enumerate(token_findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
+
+
+def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
+    """Prepare the importable ruleset a blocked gate reports on.
+
+    Writes ``target/.github-ruleset.json`` through the
+    ``piruleset.write_ruleset`` seam (the five-rule ruleset, rendered,
+    ``force=False``), then prints the written path and the manual import
+    steps, so a junior sees exactly what to import next.
+
+    An existing file is never overwritten: it is named as already
+    prepared and left untouched (``force`` is never passed true). A
+    ``RulesetError`` is reported, naming the path, and never raised -
+    the run still ends blocked, never masked into success. This
+    function raises no other exception type.
+
+    Under ``--dry-run`` nothing is written and no existing file is
+    claimed: the path the run would write is announced in the file's
+    ``would write`` phrasing, and the import steps still follow, since
+    printing is not writing (plans/setup-repo-guards.md behaviour 12).
+    """
+    path = piruleset.default_output_path(target)
+    if shared.dry_run:
+        shared.echo("would write {}:".format(path))
+        for line in piruleset.import_steps(None, path):
+            shared.echo("  - {}".format(line))
+        return
+    if path.exists():
+        shared.echo(
+            "the ruleset is already prepared at {} - import it as "
+            "below".format(path)
+        )
+        return
+    try:
+        written = piruleset.write_ruleset(
+            path,
+            piruleset.render_ruleset_json(piruleset.build_ruleset()),
+            force=False,
+        )
+    except RulesetError as exc:
+        shared.echo(
+            "could not write the ruleset to {}: {}".format(path, exc)
+        )
+        return
+    shared.echo("Wrote the ruleset to {}:".format(written))
+    for line in piruleset.import_steps(None, written):
+        shared.echo("  - {}".format(line))
+
+
+def _prepare_gate_token_recipe(
+    shared: Context, repository: Tuple[str, str]
+) -> None:
+    """Print the token fix a blocked gate reports on.
+
+    The pre-filled fine-grained creation URL as its own line, then the
+    ordered UI steps from ``pitokenrecipe.recipe_steps``, built by the
+    module and never re-derived. The URL carries no token value (the token
+    text is shown by GitHub's UI once and never passes through Anvil), so
+    nothing secret is echoed.
+
+    A ``TokenRecipeError`` is reported, naming the failure, and never
+    raised - the run still ends blocked, never masked into success. This
+    function raises no other exception type.
+    """
+    owner, repo = repository
+    try:
+        url = pitokenrecipe.build_recipe_url(owner, repo)
+    except pitokenrecipe.TokenRecipeError as exc:
+        shared.echo("could not build the token recipe: {}".format(exc))
+        return
+    shared.echo(url)
+    for step in pitokenrecipe.recipe_steps(owner, repo, url):
+        shared.echo(step)
+
+
+def _collect_guard_findings(
+    target: Path,
+    token: str,
+    branch: str,
+    other_repo: Optional[str] = None,
+    noun: str = "target",
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Optional[Tuple[str, str]]]:
+    """The shared guard flow: resolve -> fetch -> check_all -> check_token_all.
+
+    verify-guards and doctor's Guards section each ran this flow inline; this
+    is the single implementation. Returns ``(branch_findings, token_findings,
+    repository)``: the branch findings are ``check_all`` of the fetched rules,
+    or ``skipped_findings`` of the reason the repository could not be resolved
+    or the fetch failed, and the token findings are ``check_token_all``
+    whenever the repository resolves - even when the fetch failed. ``noun`` is
+    the word the unresolvable reason uses: "target" (verify-guards) or
+    "project" (doctor).
+    """
+    repository = piguard.resolve_repository(target)
+    if repository is None:
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the {} has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(target, noun)
+        )
+        branch_findings: List[Dict[str, Any]] = piguard.skipped_findings(reason)
+        token_findings: List[Dict[str, Any]] = []
+    else:
+        owner, repo = repository
+        rules, fetch_reason = piguard.fetch_branch_rules(
+            owner, repo, branch, token
+        )
+        if rules is None:
+            branch_findings = piguard.skipped_findings(fetch_reason)
+        else:
+            branch_findings = piguard.check_all(rules)
+        # The token probes run whenever the repository resolves, even when the
+        # branch-rules fetch failed.
+        token_findings = piguard.check_token_all(
+            owner, repo, token=token, other_repo=other_repo
+        )
+    return branch_findings, token_findings, repository
 
 
 # ---------------------------------------------------------------------------
@@ -1622,29 +1785,11 @@ def verify_guards(
     """
     shared = _context(ctx)
 
-    repository = piguard.resolve_repository(target)
     token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
 
-    token_findings: List[Dict[str, Any]] = []
-    if repository is None:
-        reason = (
-            "owner/repo could not be resolved from the origin remote of "
-            "{}: the target has no origin, or its remote is not a GitHub "
-            "repository, and the identity is never guessed".format(target)
-        )
-        findings = piguard.skipped_findings(reason)
-    else:
-        owner, repo = repository
-        rules, fetch_reason = piguard.fetch_branch_rules(
-            owner, repo, branch, token
-        )
-        if rules is None:
-            findings = piguard.skipped_findings(fetch_reason)
-        else:
-            findings = piguard.check_all(rules)
-        token_findings = piguard.check_token_all(
-            owner, repo, token=token, other_repo=other_repo
-        )
+    findings, token_findings, repository = _collect_guard_findings(
+        target, token, branch, other_repo=other_repo
+    )
 
     shared.echo("Guards report")
     shared.echo(_SEPARATOR)
@@ -1662,76 +1807,10 @@ def verify_guards(
     # branch and token findings no longer run together as unbroken
     # lines and no report line exceeds 80 characters.
     shared.echo("")
-    shared.echo("Branch rules")
-    for index, finding in enumerate(findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
-
-    shared.echo("")
-    shared.echo("Token scope")
-    for index, finding in enumerate(token_findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
+    _echo_guard_report(shared, findings, token_findings)
     shared.echo(_SEPARATOR)
 
     raise typer.Exit(piguard.summarize(findings + token_findings))
-# ruleset-write
-# ---------------------------------------------------------------------------
-
-
-@app.command(name="ruleset-write")
-def ruleset_write(
-    ctx: typer.Context,
-    target: str = typer.Argument(
-        ".", metavar="TARGET", help="Target directory for the written ruleset."
-    ),
-    output: Optional[Path] = typer.Option(
-        None, "--output", help="Write the ruleset file here instead of the default path."
-    ),
-    force: bool = typer.Option(
-        False, "--force", help="Overwrite the file at the output path if it exists."
-    ),
-) -> None:
-    """Write the importable GitHub main-branch guard ruleset to a file.
-
-    Builds the five-rule ruleset (non_fast_forward, deletion, update,
-    pull_request, file_path_restriction), renders it to JSON, writes it to
-    ``TARGET/.github-ruleset.json`` (or ``--output``), then echoes the
-    written path and the manual import steps.
-
-    Reads no token and makes no network call: importing a ruleset is a
-    UI-only step. ``import_steps`` is always called with
-    ``repository=None``, so the direct ``/settings/rules`` URL branch is
-    deliberately not reached from the CLI - resolving the target's git
-    origin is out of scope for this command, not dead code.
-    """
-    shared = _context(ctx)
-    _banner(shared)
-
-    output_path = (
-        output
-        if output is not None
-        else piruleset.default_output_path(Path(target))
-    )
-
-    try:
-        written = piruleset.write_ruleset(
-            output_path,
-            piruleset.render_ruleset_json(piruleset.build_ruleset()),
-            force=force,
-        )
-    except RulesetError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
-
-    shared.echo("Wrote the ruleset to {}:".format(written))
-    for line in piruleset.import_steps(None, written):
-        shared.echo("  - {}".format(line))
-
-
 # ---------------------------------------------------------------------------
 # smoke-test
 # ---------------------------------------------------------------------------
@@ -1847,47 +1926,6 @@ def smoke_test(
 
     typer.echo(report, nl=False)
     raise typer.Exit(exit_code)
-
-
-# ---------------------------------------------------------------------------
-# token-recipe
-# ---------------------------------------------------------------------------
-
-
-@app.command(name="token-recipe")
-def token_recipe(
-    ctx: typer.Context,
-    target: Path = typer.Argument(
-        Path("."),
-        metavar="TARGET",
-        help="Target repository directory; defaults to the current directory.",
-    ),
-) -> None:
-    """Print the pre-filled token creation URL and the steps to create it.
-
-    The target's owner/repo is resolved from its origin remote; the owner is
-    never guessed, so a target with no resolvable GitHub origin exits
-    non-zero. Reads no token, makes no network call and writes no file: the
-    token text is shown by GitHub's UI once and never passes through Anvil -
-    the same separation ``ruleset-write`` has.
-    """
-    shared = _context(ctx)
-
-    repository = piguard.resolve_repository(target)
-    if repository is None:
-        shared.echo(
-            "owner/repo could not be resolved from the origin remote of "
-            "{}: the target has no origin, or its remote is not a GitHub "
-            "repository, and the owner is never guessed".format(target)
-        )
-        raise typer.Exit(EXIT_ERROR)
-
-    owner, repo = repository
-    url = pitokenrecipe.build_recipe_url(owner, repo)
-    shared.echo(url)
-    for step in pitokenrecipe.recipe_steps(owner, repo, url):
-        shared.echo(step)
-    raise typer.Exit(EXIT_OK)
 
 
 # ---------------------------------------------------------------------------

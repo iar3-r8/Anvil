@@ -2535,6 +2535,869 @@ class SummarizeTests(unittest.TestCase):
         )
 
 
+class GateVerdictTests(unittest.TestCase):
+    """Behaviour 1 of plans/setup-repo-guards.md - ``gate_verdict(findings)``.
+
+    The gate seam ``setup-repo`` runs before any provisioning:
+    ``"clean"`` iff no finding is ``fail`` and none is ``warn``;
+    ``"blocked"`` otherwise. ``skipped`` never blocks - it is an honest
+    "could not verify" (issue #100, decision 2) - and an unknown status is
+    neither a fail nor a warn. This is a SIBLING of ``summarize``, not a
+    change to it: ``verify-guards`` keeps "1 iff any fail" with a ``warn``
+    still exiting 0, while the gate needs a fail OR a warn to block. Pure:
+    one positional findings list, a ``str`` result, no network, no write,
+    never raises.
+    """
+
+    def _verdict(self) -> Any:
+        gate = getattr(piguard, "gate_verdict", None)
+        self.assertTrue(
+            callable(gate),
+            "anvilkit.pi.piguard.gate_verdict is not callable; the gate "
+            "verdict seam has not been implemented yet",
+        )
+        return gate
+
+    def _finding(self, status: str, check: str) -> Dict[str, Any]:
+        """One finding in the module's own shape, carrying ``status``/``check``."""
+        return {
+            "status": status,
+            "check": check,
+            "rule": None,
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+
+    def test_clean_when_all_passed_and_skipped(self):
+        verdict = self._verdict()
+        findings = (
+            piguard.check_history_rewrite(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") in ("fail", "warn")],
+            [],
+            "fixture sanity: only passed and skipped findings",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "clean",
+            "passed and skipped alone must be clean - skipped is an honest "
+            "'could not verify' and never blocks",
+        )
+
+    def test_clean_when_empty(self):
+        verdict = self._verdict()
+
+        self.assertEqual(
+            verdict([]),
+            "clean",
+            "no findings at all means nothing failed and nothing warned",
+        )
+
+    def test_blocked_on_a_single_warn(self):
+        verdict = self._verdict()
+        findings = (
+            piguard.check_history_rewrite(
+                [rule("non_fast_forward", "main-guard")]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "warn"],
+            [findings[1]],
+            "fixture sanity: exactly one warn among the passed and skipped",
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [],
+            "fixture sanity: no fail finding - this is the case summarize "
+            "reports as 0, the key difference this gate must close",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "a single warn among passed and skipped must block the gate: "
+            "unlike summarize, a warn is a reportable problem here, not an "
+            "exit-0",
+        )
+
+    def test_blocked_on_a_single_fail(self):
+        verdict = self._verdict()
+        fail_finding = self._finding("fail", "administration")
+        findings = (
+            piguard.check_history_rewrite(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+            + [fail_finding]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [fail_finding],
+            "fixture sanity: exactly one fail among the passed and skipped",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "a single fail among passed and skipped must block the gate",
+        )
+
+    def test_blocked_when_both_warn_and_fail_present(self):
+        verdict = self._verdict()
+        fail_finding = self._finding("fail", "administration")
+        findings = (
+            piguard.check_history_rewrite(
+                [rule("non_fast_forward", "main-guard")]
+            )
+            + [fail_finding]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "warn"],
+            [findings[1]],
+            "fixture sanity: exactly one warn is present",
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [fail_finding],
+            "fixture sanity: exactly one fail is present",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "a warn and a fail together must block the gate",
+        )
+
+    def test_skipped_never_blocks(self):
+        verdict = self._verdict()
+        findings = piguard.skipped_findings("no origin remote: could not verify")
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["skipped"] * len(findings),
+            "fixture sanity: the list is skipped-only - the no-origin / "
+            "could-not-verify case",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "clean",
+            "skipped-only findings must be clean: a check that could not "
+            "verify is honest, not a block (issue #100, decision 2)",
+        )
+
+    def test_unknown_status_is_neither_fail_nor_warn(self):
+        verdict = self._verdict()
+        unknown = self._finding("weird", "history_rewrite")
+        findings = (
+            piguard.check_history_rewrite(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+            + [unknown]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "weird"],
+            [unknown],
+            "fixture sanity: a finding with a status outside the four "
+            "documented ones is present",
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") in ("fail", "warn")],
+            [],
+            "fixture sanity: the unknown status is neither a fail nor a "
+            "warn",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "clean",
+            "an unknown status must be neither a fail nor a warn - the "
+            "gate must not crash on it and must not block on it",
+        )
+
+    def test_pure_and_never_raises(self):
+        verdict = self._verdict()
+        # _verdict already pinned callability. One positional findings list
+        # is the whole call shape: no token, no repo, no network, no write.
+        for label, findings in (
+            (
+                "clean side",
+                piguard.check_history_rewrite(
+                    [
+                        rule("non_fast_forward", "main-guard"),
+                        rule("deletion", "main-guard"),
+                    ]
+                )
+                + piguard.skipped_findings("GitHub was unreachable"),
+            ),
+            (
+                "blocked side",
+                piguard.check_history_rewrite(
+                    [rule("non_fast_forward", "main-guard")]
+                )
+                + [self._finding("fail", "administration")],
+            ),
+        ):
+            with self.subTest(side=label):
+                result = verdict(findings)
+                self.assertIsInstance(
+                    result,
+                    str,
+                    "gate_verdict returns the verdict as a str, not an int "
+                    "or a bool",
+                )
+                self.assertIn(
+                    result,
+                    {"clean", "blocked"},
+                    "the verdict is exactly 'clean' or 'blocked'",
+                )
+
+
+class GateRemediationTests(unittest.TestCase):
+    """Behaviour 2 of plans/setup-repo-guards.md - ``gate_remediation``.
+
+    The remediation seam ``setup-repo`` runs once the gate is blocked: given
+    the branch findings and the token findings as two separate lists it
+    answers which of the two prepared fixes a junior must apply.
+    ``needs_ruleset`` is true iff any BRANCH finding is ``fail`` or ``warn``;
+    ``needs_token_recipe`` is true iff any TOKEN finding is ``fail``. The
+    recipe is the fix for a bad token, and a token ``warn`` (a reachable
+    named repo) is a scope judgement with its own remedy text: it blocks the
+    gate via :func:`gate_verdict`, but it prints no recipe. Pure: two
+    positional findings lists, a ``Dict[str, bool]`` with exactly the keys
+    ``"needs_ruleset"`` and ``"needs_token_recipe"``, no network, no write,
+    never raises.
+    """
+
+    def _remediation(self) -> Any:
+        remediation = getattr(piguard, "gate_remediation", None)
+        self.assertTrue(
+            callable(remediation),
+            "anvilkit.pi.piguard.gate_remediation is not callable; the gate "
+            "remediation seam has not been implemented yet",
+        )
+        return remediation
+
+    def _finding(self, status: str, check: str) -> Dict[str, Any]:
+        """One finding in the module's own shape, carrying ``status``/``check``."""
+        return {
+            "status": status,
+            "check": check,
+            "rule": None,
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+
+    def _branch_warn(self) -> List[Dict[str, Any]]:
+        """A branch list mixing ``passed``, ``warn`` and ``skipped``.
+
+        ``check_history_rewrite`` over a single active rule yields one
+        ``passed`` (the rule present) and one ``warn`` (the other rule
+        absent); ``skipped_findings`` supplies the ``skipped`` side.
+        """
+        findings = (
+            piguard.check_history_rewrite([rule("non_fast_forward", "main-guard")])
+            + piguard.skipped_findings("GitHub was unreachable")
+        )
+        self.assertIn(
+            "warn",
+            [_field(f, "status") for f in findings],
+            "fixture sanity: the branch list carries a warn finding",
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "fail"],
+            [],
+            "fixture sanity: the branch list carries no fail finding",
+        )
+        return findings
+
+    def _token_fail_finding(self) -> Dict[str, Any]:
+        """The real ``administration`` 200 ``fail`` the probe emits."""
+        finding = piguard.probe_administration(
+            "owner",
+            "repo",
+            token="token-xyz",
+            opener=_opener(_FakeResponse(b"{}", 200)),
+        )[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "fail",
+            "fixture sanity: a 200 on the administration endpoint is a fail",
+        )
+        self.assertEqual(
+            _field(finding, "check"),
+            "administration",
+            "fixture sanity: the fail finding names the administration probe",
+        )
+        return finding
+
+    def _token_warn_finding(self) -> Dict[str, Any]:
+        """The real ``named_repo`` 200 ``warn`` the probe emits.
+
+        A reachable named repo is a scope judgement with its own remedy
+        text: it blocks the gate but is NOT a bad token, so it must never
+        set ``needs_token_recipe``.
+        """
+        finding = piguard.probe_named_repo(
+            "owner/other",
+            token="token-xyz",
+            opener=_opener(_FakeResponse(b'{"full_name": "owner/other"}', 200)),
+        )[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "warn",
+            "fixture sanity: a 200 on the named repo is a warn, not a fail",
+        )
+        self.assertEqual(
+            _field(finding, "check"),
+            "named_repo",
+            "fixture sanity: the warn finding names the named_repo probe",
+        )
+        return finding
+
+    def test_empty_lists_need_nothing(self):
+        remediation = self._remediation()
+        empty: List[Dict[str, Any]] = []
+
+        result = remediation(empty, empty)
+
+        self.assertEqual(
+            result,
+            {"needs_ruleset": False, "needs_token_recipe": False},
+            "no findings at all means no ruleset and no token recipe",
+        )
+
+    def test_branch_warn_needs_ruleset(self):
+        remediation = self._remediation()
+        branch = self._branch_warn()
+
+        result = remediation(branch, [])
+
+        self.assertEqual(
+            result,
+            {"needs_ruleset": True, "needs_token_recipe": False},
+            "a single branch warn (no fail) needs the ruleset, and an "
+            "empty token list needs no recipe",
+        )
+
+    def test_branch_fail_needs_ruleset(self):
+        remediation = self._remediation()
+        fail_finding = self._finding("fail", "history_rewrite")
+        branch = (
+            piguard.check_history_rewrite(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + [fail_finding]
+        )
+        self.assertEqual(
+            [f for f in branch if _field(f, "status") == "fail"],
+            [fail_finding],
+            "fixture sanity: exactly one fail among the passed branch "
+            "findings",
+        )
+
+        result = remediation(branch, [])
+
+        self.assertEqual(
+            result,
+            {"needs_ruleset": True, "needs_token_recipe": False},
+            "a single branch fail needs the ruleset, and an empty token "
+            "list needs no recipe",
+        )
+
+    def test_branch_clean_needs_no_ruleset(self):
+        remediation = self._remediation()
+        branch = (
+            piguard.check_history_rewrite(
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
+            )
+            + piguard.skipped_findings("GitHub was unreachable")
+        )
+        self.assertEqual(
+            [f for f in branch if _field(f, "status") in ("fail", "warn")],
+            [],
+            "fixture sanity: only passed and skipped branch findings",
+        )
+
+        result = remediation(branch, [])
+
+        self.assertEqual(
+            result,
+            {"needs_ruleset": False, "needs_token_recipe": False},
+            "passed and skipped branch findings alone need no ruleset - "
+            "skipped is an honest 'could not verify' and never triggers "
+            "a fix",
+        )
+
+    def test_token_fail_needs_recipe(self):
+        remediation = self._remediation()
+        fail_finding = self._token_fail_finding()
+        branch = [self._finding("passed", "history_rewrite")]
+        self.assertEqual(
+            [f for f in branch if _field(f, "status") in ("fail", "warn")],
+            [],
+            "fixture sanity: the branch side is a clean passed finding",
+        )
+
+        result = remediation(branch, [fail_finding])
+
+        self.assertEqual(
+            result,
+            {"needs_ruleset": False, "needs_token_recipe": True},
+            "a single token fail needs the recipe - the recipe is the fix "
+            "for a bad token - and a clean branch list needs no ruleset",
+        )
+
+    def test_token_warn_blocks_but_needs_no_recipe(self):
+        remediation = self._remediation()
+        warn_finding = self._token_warn_finding()
+        branch = [self._finding("passed", "history_rewrite")]
+        self.assertEqual(
+            [f for f in branch if _field(f, "status") in ("fail", "warn")],
+            [],
+            "fixture sanity: the branch side is clean",
+        )
+        self.assertEqual(
+            [f for f in [warn_finding] if _field(f, "status") == "fail"],
+            [],
+            "fixture sanity: the token warn is NOT a fail - the key "
+            "subtlety of the behaviour",
+        )
+
+        result = remediation(branch, [warn_finding])
+
+        self.assertFalse(
+            result["needs_token_recipe"],
+            "a token warn (a reachable named repo) is a scope judgement "
+            "with its own remedy text: it blocks the gate via gate_verdict "
+            "but the recipe is only for a bad token, so it must not set "
+            "needs_token_recipe",
+        )
+        self.assertFalse(
+            result["needs_ruleset"],
+            "a clean branch list must not need the ruleset just because "
+            "a token warn is present - the two booleans are computed "
+            "from the right list",
+        )
+
+    def test_token_skipped_needs_no_recipe(self):
+        remediation = self._remediation()
+        skipped = piguard.workflows_withheld_finding()
+        self.assertEqual(
+            [_field(f, "status") for f in skipped],
+            ["skipped"] * len(skipped),
+            "fixture sanity: the workflows-withheld finding is the "
+            "constant skipped token finding",
+        )
+
+        result = remediation([], skipped)
+
+        self.assertEqual(
+            result,
+            {"needs_ruleset": False, "needs_token_recipe": False},
+            "a skipped token finding triggers neither fix - a check that "
+            "could not verify is honest, not a bad token",
+        )
+
+    def test_the_lists_are_independent(self):
+        remediation = self._remediation()
+        branch_fail = self._finding("fail", "history_rewrite")
+        branch_warn = self._finding("warn", "history_rewrite")
+        token_fail = self._token_fail_finding()
+
+        # A branch fail and a token fail together: BOTH flags true, each
+        # computed from its own list.
+        both = remediation([branch_fail], [token_fail])
+        self.assertEqual(
+            both,
+            {"needs_ruleset": True, "needs_token_recipe": True},
+            "a branch fail and a token fail together set both flags - the "
+            "two booleans are computed independently from the right list",
+        )
+
+        # A branch warn and a token fail: both true, for the same reason.
+        warn_fail = remediation([branch_warn], [token_fail])
+        self.assertEqual(
+            warn_fail,
+            {"needs_ruleset": True, "needs_token_recipe": True},
+            "a branch warn and a token fail together set both flags",
+        )
+
+        # Cross-check: a token fail must NOT set needs_ruleset.
+        token_only = remediation([], [token_fail])
+        self.assertFalse(
+            token_only["needs_ruleset"],
+            "a token fail must not set needs_ruleset - the ruleset is the "
+            "fix for a branch finding, not a token finding",
+        )
+
+        # Cross-check: a branch fail must NOT set needs_token_recipe.
+        branch_only = remediation([branch_fail], [])
+        self.assertFalse(
+            branch_only["needs_token_recipe"],
+            "a branch fail must not set needs_token_recipe - the recipe is "
+            "the fix for a token finding, not a branch finding",
+        )
+
+    def test_pure_and_never_raises(self):
+        remediation = self._remediation()
+        # _remediation already pinned callability. Two positional findings
+        # lists are the whole call shape: no token, no repo, no network,
+        # no write.
+        for label, branch, token in (
+            (
+                "clean side",
+                piguard.check_history_rewrite(
+                    [
+                        rule("non_fast_forward", "main-guard"),
+                        rule("deletion", "main-guard"),
+                    ]
+                ),
+                [],
+            ),
+            (
+                "blocked side",
+                piguard.check_history_rewrite([rule("non_fast_forward", "main-guard")]),
+                [self._token_fail_finding()],
+            ),
+        ):
+            with self.subTest(side=label):
+                # Snapshot the inputs so the purity check can prove the
+                # function did not mutate them.
+                branch_before = [dict(f) for f in branch]
+                token_before = [dict(f) for f in token]
+
+                result = remediation(branch, token)
+
+                self.assertIsInstance(
+                    result,
+                    dict,
+                    "gate_remediation returns a dict, not a tuple, list or "
+                    "bool",
+                )
+                self.assertEqual(
+                    set(result),
+                    {"needs_ruleset", "needs_token_recipe"},
+                    "the result carries exactly the two pinned keys, no "
+                    "more and no fewer: got {!r}".format(sorted(result)),
+                )
+                for key in ("needs_ruleset", "needs_token_recipe"):
+                    self.assertIsInstance(
+                        result[key],
+                        bool,
+                        "the value for {!r} is a bool, not an int or a "
+                        "string".format(key),
+                    )
+                self.assertEqual(
+                    [dict(f) for f in branch],
+                    branch_before,
+                    "gate_remediation must not mutate its branch findings",
+                )
+                self.assertEqual(
+                    [dict(f) for f in token],
+                    token_before,
+                    "gate_remediation must not mutate its token findings",
+                )
+                # Idempotent: a second call returns the same mapping.
+                self.assertEqual(
+                    remediation(branch, token),
+                    result,
+                    "gate_remediation is pure: the same inputs yield the "
+                    "same mapping on every call",
+                )
+
+
+class GateInvariantSweep(unittest.TestCase):
+    """Behaviour 14 of plans/setup-repo-guards.md - the gate invariants,
+    one sweep over EVERY status the probes can emit.
+
+    Not a repeat of the per-status tests in :class:`GateVerdictTests` and
+    :class:`GateRemediationTests` (which pin the cells one by one, mixed
+    with real probe fixtures); this is the MATRIX in one place: every
+    single-status set, alone, for both functions, plus the mixed clean
+    case and the unknown-status behaviour. Its value is completeness:
+    :attr:`STATUSES` names every status a probe can emit, so a future
+    probe that invents a new status must be deliberately classified here
+    - it cannot silently un-pin the gate. The "clean gate writes no file
+    and prints no recipe" half of behaviour 14 is pinned by
+    ``test_clean_gate_provisions_as_today`` in tests/test_cli.py, which
+    this sweep reuses rather than duplicates.
+    """
+
+    # The exact status vocabulary of anvilkit/pi/piguard.py, derived from
+    # every "status": literal the probes emit: the branch checks
+    # (check_history_rewrite / check_review / check_update_restriction /
+    # check_file_paths) emit passed / warn / skipped via skipped_findings,
+    # and the token probes (probe_target_access / probe_administration /
+    # probe_classic_token / workflows_withheld_finding / probe_named_repo)
+    # add fail. There is no "ok" status: "ok" appears in the module only
+    # as a render prefix for a passed block (_BLOCK_PREFIXES), so the
+    # plan's "passed" resolves to the real spelling "passed".
+    STATUSES = ("passed", "warn", "fail", "skipped")
+
+    # The check name carried by a finding of each status, in the shape the
+    # probes really emit it. fail never comes from a branch check - only
+    # from the token probes (administration 200, classic_token scopes) -
+    # but the gate must still block on a lone fail finding wherever it sits
+    # in the concatenated list, which is what the branch-side sweep pins.
+    _BRANCH_CHECK_BY_STATUS = {
+        "passed": "history_rewrite",   # rule present
+        "warn": "history_rewrite",      # rule absent
+        "fail": "administration",       # token probe's fail; verdict blocks anyway
+        "skipped": "history_rewrite",   # skipped_findings over a branch check
+    }
+    _TOKEN_CHECK_BY_STATUS = {
+        "passed": "administration",     # probe_administration 403
+        "warn": "named_repo",           # probe_named_repo 200
+        "fail": "administration",       # probe_administration 200
+        "skipped": "workflows_withheld",  # the constant skipped finding
+    }
+
+    # The pinned matrix, one column per status in STATUSES.
+    _VERDICT_BY_STATUS = {
+        "passed": "clean",
+        "warn": "blocked",
+        "fail": "blocked",
+        "skipped": "clean",
+    }
+    # (needs_ruleset, needs_token_recipe) for a LONE branch finding.
+    _REMED_BRANCH_BY_STATUS = {
+        "passed": (False, False),
+        "warn": (True, False),   # warn asymmetry: the ruleset IS the fix
+        "fail": (True, False),
+        "skipped": (False, False),
+    }
+    # (needs_ruleset, needs_token_recipe) for a LONE token finding.
+    _REMED_TOKEN_BY_STATUS = {
+        "passed": (False, False),
+        "warn": (False, False),   # warn asymmetry: a scope judgement, no recipe
+        "fail": (False, True),    # only a bad token gets the recipe
+        "skipped": (False, False),
+    }
+
+    def _finding(self, status: str, check: str) -> Dict[str, Any]:
+        """One finding in the module's own shape, carrying ``status``/``check``."""
+        return {
+            "status": status,
+            "check": check,
+            "rule": None,
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+
+    def test_status_set_is_exactly_the_probe_vocabulary(self):
+        """STATUSES is not vacuous: every entry is emitted by a real probe,
+        and the probes exercised cover exactly that set."""
+        produced = {
+            _field(f, "status")
+            for f in (
+                piguard.check_history_rewrite(
+                    [
+                        rule("non_fast_forward", "main-guard"),
+                        rule("deletion", "main-guard"),
+                    ]
+                )
+                + piguard.check_history_rewrite(
+                    [rule("non_fast_forward", "main-guard")]
+                )
+                + piguard.skipped_findings("no origin remote")
+                + piguard.probe_administration(
+                    "owner",
+                    "repo",
+                    token="token-xyz",
+                    opener=_opener(_FakeResponse(b"{}", 200)),
+                )
+                + piguard.probe_administration(
+                    "owner",
+                    "repo",
+                    token="token-xyz",
+                    opener=_opener(_FakeResponse(b"{}", 403)),
+                )
+                + piguard.probe_named_repo(
+                    "owner/other",
+                    token="token-xyz",
+                    opener=_opener(_FakeResponse(b'{"full_name": "owner/other"}', 200)),
+                )
+                + piguard.workflows_withheld_finding()
+            )
+        }
+
+        self.assertEqual(
+            produced,
+            set(self.STATUSES),
+            "the sweep's status list must match the statuses the probes "
+            "actually emit - a new status here means a new row in the "
+            "matrix, not a silently un-pinned gate",
+        )
+
+    def test_verdict_for_each_status_alone_in_the_branch_list(self):
+        verdict = getattr(piguard, "gate_verdict", None)
+        self.assertTrue(callable(verdict), "gate_verdict seam missing")
+        self.assertEqual(
+            set(self._VERDICT_BY_STATUS),
+            set(self.STATUSES),
+            "the verdict matrix must name every status in STATUSES",
+        )
+
+        for status in self.STATUSES:
+            with self.subTest(status=status):
+                finding = self._finding(
+                    status, self._BRANCH_CHECK_BY_STATUS[status]
+                )
+                self.assertEqual(
+                    verdict([finding]),
+                    self._VERDICT_BY_STATUS[status],
+                    "a lone {} finding in the branch list must yield "
+                    "{}".format(status, self._VERDICT_BY_STATUS[status]),
+                )
+
+    def test_verdict_for_each_status_alone_in_the_token_list(self):
+        """gate_verdict sees one concatenated list, so a lone token finding
+        of each status must yield the same verdict as its branch
+        counterpart: the warn asymmetry is about remediation, not the
+        verdict - a lone token warn still BLOCKS."""
+        verdict = getattr(piguard, "gate_verdict", None)
+        self.assertTrue(callable(verdict), "gate_verdict seam missing")
+
+        for status in self.STATUSES:
+            with self.subTest(status=status):
+                finding = self._finding(
+                    status, self._TOKEN_CHECK_BY_STATUS[status]
+                )
+                self.assertEqual(
+                    verdict([finding]),
+                    self._VERDICT_BY_STATUS[status],
+                    "a lone {} token finding must yield the same verdict "
+                    "as a branch finding: {}".format(
+                        status, self._VERDICT_BY_STATUS[status]
+                    ),
+                )
+
+    def test_remediation_for_each_branch_status_alone(self):
+        remediation = getattr(piguard, "gate_remediation", None)
+        self.assertTrue(callable(remediation), "gate_remediation seam missing")
+        self.assertEqual(
+            set(self._REMED_BRANCH_BY_STATUS),
+            set(self.STATUSES),
+            "the branch remediation matrix must name every status in STATUSES",
+        )
+
+        for status in self.STATUSES:
+            with self.subTest(status=status):
+                finding = self._finding(
+                    status, self._BRANCH_CHECK_BY_STATUS[status]
+                )
+                needs_ruleset, needs_recipe = self._REMED_BRANCH_BY_STATUS[status]
+                self.assertEqual(
+                    remediation([finding], []),
+                    {"needs_ruleset": needs_ruleset, "needs_token_recipe": needs_recipe},
+                    "a lone branch {} finding must set exactly "
+                    "needs_ruleset={} and needs_token_recipe={}".format(
+                        status, needs_ruleset, needs_recipe
+                    ),
+                )
+
+    def test_remediation_for_each_token_status_alone(self):
+        remediation = getattr(piguard, "gate_remediation", None)
+        self.assertTrue(callable(remediation), "gate_remediation seam missing")
+        self.assertEqual(
+            set(self._REMED_TOKEN_BY_STATUS),
+            set(self.STATUSES),
+            "the token remediation matrix must name every status in STATUSES",
+        )
+
+        for status in self.STATUSES:
+            with self.subTest(status=status):
+                finding = self._finding(
+                    status, self._TOKEN_CHECK_BY_STATUS[status]
+                )
+                needs_ruleset, needs_recipe = self._REMED_TOKEN_BY_STATUS[status]
+                self.assertEqual(
+                    remediation([], [finding]),
+                    {"needs_ruleset": needs_ruleset, "needs_token_recipe": needs_recipe},
+                    "a lone token {} finding must set exactly "
+                    "needs_ruleset={} and needs_token_recipe={}".format(
+                        status, needs_ruleset, needs_recipe
+                    ),
+                )
+
+    def test_mixed_passed_and_skipped_in_both_lists_is_clean(self):
+        """The caller concatenates the two lists for the verdict; a
+        passed+skipped set on both sides must be clean and need no fix."""
+        verdict = piguard.gate_verdict
+        remediation = piguard.gate_remediation
+
+        branch = [
+            self._finding("passed", "history_rewrite"),
+            self._finding("skipped", "history_rewrite"),
+        ]
+        token = [
+            self._finding("passed", "administration"),
+            self._finding("skipped", "workflows_withheld"),
+        ]
+
+        self.assertEqual(
+            verdict(branch + token),
+            "clean",
+            "passed and skipped in both lists, concatenated as the caller "
+            "does, must be clean",
+        )
+        self.assertEqual(
+            remediation(branch, token),
+            {"needs_ruleset": False, "needs_token_recipe": False},
+            "passed and skipped trigger neither prepared fix",
+        )
+
+    def test_unknown_status_pins_nothing(self):
+        """A status string the probes never emit must be deliberately
+        classified, not silently absorbed: today it neither blocks nor
+        triggers a fix, and this sweep keeps that pin explicit."""
+        verdict = piguard.gate_verdict
+        remediation = piguard.gate_remediation
+
+        bogus = self._finding("bogus", "history_rewrite")
+
+        self.assertEqual(
+            verdict([bogus]),
+            "clean",
+            "an unknown status must not block the gate today; if the gate "
+            "starts blocking on unknown statuses, this pin must be changed "
+            "deliberately",
+        )
+        self.assertEqual(
+            remediation([bogus], [bogus]),
+            {"needs_ruleset": False, "needs_token_recipe": False},
+            "an unknown status must not trigger either prepared fix today",
+        )
+
+
 class RenderReportTests(unittest.TestCase):
     """Behaviour 7: the report seam - ``render_report(findings)``.
 
