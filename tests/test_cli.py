@@ -3636,6 +3636,148 @@ class TestSetupRepoGuardGate(CliCase):
         )
         self.assertNotIn(self.GATE_TOKEN, result.output)
 
+    # -- behaviour 12: --dry-run and a blocked gate (RED) ------------------
+    # --dry-run is the module's global promise that nothing is written.
+    # The blocked gate's _prepare_gate_ruleset ignores shared.dry_run
+    # today and writes TARGET/.github-ruleset.json unconditionally, so the
+    # first two tests below are the reds; the recipe test is a pass-now
+    # guard - printing is not writing, and the recipe is only echoed.
+
+    def _run_dry_run_blocked_gate(self):
+        """A ``--dry-run setup-repo`` run with both fixes triggered: the
+        branch warns (``needs_ruleset``) plus a token ``fail``
+        (``needs_token_recipe``), the token stored in .env, provision
+        spied with the real provision underneath. Returns the runner
+        result."""
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams_with_token_findings(
+            self._blocked_token_findings()
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return self.invoke_allowing_exception(
+            ["--dry-run", "setup-repo", self.target, "--yes"]
+        )
+
+    def test_dry_run_blocked_gate_writes_nothing(self):
+        """``--dry-run setup-repo`` with a blocked gate and both fixes
+        triggered writes nothing into the target: the recursive
+        before/after snapshot is identical - no ``.github-ruleset.json``,
+        nothing else either - provision is never reached, and the exit is
+        still 9 (behaviour 12, RED: the gate writes the ruleset
+        unconditionally today)."""
+        before = self._target_snapshot()
+
+        result = self._run_dry_run_blocked_gate()
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a dry-run blocked gate still exits 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        after = self._target_snapshot()
+        self.assertEqual(
+            before,
+            after,
+            "--dry-run must leave the target byte-for-byte unchanged; "
+            "files that appeared: {}".format(
+                sorted(set(after) - set(before))
+            ),
+        )
+        self.assertFalse(
+            self._ruleset_path().is_file(),
+            "--dry-run must not create the ruleset at {}:\n{}".format(
+                self._ruleset_path(), result.output
+            ),
+        )
+
+    def test_dry_run_blocked_gate_announces_the_ruleset_path(self):
+        """``--dry-run setup-repo`` with a blocked gate announces the
+        ruleset path it *would* write: a line of the output carries both
+        the path and the file's dry-run announcement phrasing 'would'
+        ('would write', 'would store', 'would create', 'would merge'),
+        and the output never claims the file was written (behaviour 12,
+        RED: today the gate writes and announces 'Wrote the ruleset
+        to')."""
+        result = self._run_dry_run_blocked_gate()
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a dry-run blocked gate still exits 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        announced = [
+            line
+            for line in result.output.splitlines()
+            if "would" in line.lower() and self.RULESET_NAME in line
+        ]
+        self.assertNotEqual(
+            [],
+            announced,
+            "--dry-run must announce the ruleset path it would write "
+            "({}): no line carries both 'would' and the path:\n{}".format(
+                self._ruleset_path(), result.output
+            ),
+        )
+        self.assertNotIn(
+            "wrote the ruleset",
+            result.output.lower(),
+            "--dry-run must not claim to have written the ruleset:\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_dry_run_blocked_gate_still_prints_the_recipe(self):
+        """``--dry-run setup-repo`` with a blocked gate and a token
+        ``fail`` still prints the token recipe: the pre-filled creation
+        URL as its own line, then every ``recipe_steps`` line in order -
+        printing is not writing, so the module's --dry-run rule (no
+        writes) does not suppress it (behaviour 12; pass-now guard: the
+        recipe is only echoed and already prints under --dry-run)."""
+        from anvilkit.pi import pitokenrecipe
+
+        result = self._run_dry_run_blocked_gate()
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a dry-run blocked gate still exits 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        steps = pitokenrecipe.recipe_steps(self.OWNER, self.REPO, url)
+        lines = result.output.splitlines()
+        url_index = None
+        for index, line in enumerate(lines):
+            if line.lstrip() == url:
+                url_index = index
+                break
+        self.assertIsNotNone(
+            url_index,
+            "the dry-run blocked report must still print the pre-filled "
+            "creation URL {!r}:\n{}".format(url, result.output),
+        )
+        # The same lstrip-both-sides cursor the behaviour-8 test uses:
+        # every step line appears after the URL line, in order.
+        cursor = url_index
+        for step in steps:
+            for index in range(cursor, len(lines)):
+                if lines[index].lstrip() == step.lstrip():
+                    cursor = index + 1
+                    break
+            else:
+                self.fail(
+                    "a recipe step line is missing or out of order under "
+                    "--dry-run: {!r}\n{}".format(step, result.output)
+                )
+
 
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
