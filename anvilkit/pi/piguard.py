@@ -1547,6 +1547,17 @@ _BLOCK_PREFIXES = {
     "skipped": "skipped",
 }
 
+# The status mark a block headline prepends (one space between the mark
+# and the plain headline), so a report's findings read at a glance. A
+# status absent here (anything other than the four above) gets no mark:
+# its headline stays the plain ``unknown: {label}``.
+_HEADLINE_MARKS = {
+    "passed": "\u2705",
+    "warn": "\u26a0\ufe0f",
+    "fail": "\u274c",
+    "skipped": "\u23ed\ufe0f",
+}
+
 
 def _block_substance(finding: Dict[str, Any]) -> str:
     """The block's detail text, derived from :func:`render_finding`'s line.
@@ -1634,6 +1645,11 @@ def render_finding_block(finding: Dict[str, Any], width: int = 80) -> List[str]:
         label = "unknown"
     prefix = _BLOCK_PREFIXES.get(status, "unknown")
     headline = "{}: {}".format(prefix, label)
+    mark = _HEADLINE_MARKS.get(status)
+    if mark:
+        # One space between the mark and the plain headline; the mark is
+        # part of the wrapped headline, so the wrap budget includes it.
+        headline = "{} {}".format(mark, headline)
 
     detail = _block_substance(finding)
     block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
