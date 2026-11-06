@@ -1355,9 +1355,15 @@ def setup_repo(
                 Path(path), token, "main"
             )
             if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
+                shared.echo("")
+                # Behaviour 6: the sectioned report, the same blocks
+                # verify-guards prints - never re-derived. The findings
+                # carry no token value, so nothing secret is echoed.
+                _echo_guard_report(shared, branch_findings, token_findings)
+                shared.echo("")
                 shared.echo(
-                    "⛔ The setup-repo guards are not clean: fix the GitHub "
-                    "branch rules and token scope, then re-run setup-repo."
+                    "⛔ Fix the branch rules and token scope above, then "
+                    "re-run setup-repo."
                 )
                 raise typer.Exit(EXIT_GUARDS_BLOCKED)
         frontier = _resolve_frontier(
@@ -1520,20 +1526,7 @@ def _report_guards(shared: Context) -> None:
     # headline, the finding's substance at 80 columns, and an indented fix:/
     # see: line - under a section header per source, so branch and token
     # findings no longer run together as unbroken lines.
-    shared.echo("Branch rules")
-    for index, finding in enumerate(findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
-
-    shared.echo("")
-    shared.echo("Token scope")
-    for index, finding in enumerate(token_findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
+    _echo_guard_report(shared, findings, token_findings)
 
 
 def _report_config_health(shared: Context) -> None:
@@ -1573,6 +1566,37 @@ def _report_config_health(shared: Context) -> None:
                     MODELS_FILENAME + " parse", "{} {}".format(_mark(False), exc)
                 )
             )
+
+
+def _echo_guard_report(
+    shared: Context,
+    branch_findings: List[Dict[str, Any]],
+    token_findings: List[Dict[str, Any]],
+) -> None:
+    """The sectioned guards report: a "Branch rules" header, each branch
+    finding as a wrapped block, a "Token scope" header, each token finding
+    the same way - one blank line between blocks.
+
+    The blocks come from ``piguard.render_finding_block`` - the behaviour-19
+    blocks reused, never re-derived, so no line exceeds 80 characters.
+    verify-guards, doctor's Guards section and the blocked setup-repo gate
+    all print through this, so the report shape cannot drift between them
+    (plans/setup-repo-guards.md behaviour 6).
+    """
+    shared.echo("Branch rules")
+    for index, finding in enumerate(branch_findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
+
+    shared.echo("")
+    shared.echo("Token scope")
+    for index, finding in enumerate(token_findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
 
 
 def _collect_guard_findings(
@@ -1687,20 +1711,7 @@ def verify_guards(
     # branch and token findings no longer run together as unbroken
     # lines and no report line exceeds 80 characters.
     shared.echo("")
-    shared.echo("Branch rules")
-    for index, finding in enumerate(findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
-
-    shared.echo("")
-    shared.echo("Token scope")
-    for index, finding in enumerate(token_findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
+    _echo_guard_report(shared, findings, token_findings)
     shared.echo(_SEPARATOR)
 
     raise typer.Exit(piguard.summarize(findings + token_findings))

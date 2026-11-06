@@ -2931,7 +2931,7 @@ class TestSetupRepoGuardGate(CliCase):
         cursor = 0
         for block_line in expected:
             for index in range(cursor, len(lines)):
-                if lines[index].lstrip() == block_line:
+                if lines[index].lstrip() == block_line.lstrip():
                     cursor = index + 1
                     break
             else:
