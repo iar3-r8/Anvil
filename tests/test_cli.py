@@ -2794,6 +2794,220 @@ class TestSetupRepoGuardGate(CliCase):
         _provisioned_target, plan, _kwargs = self._provision_calls[0]
         self.assertEqual("", plan.github_token)
 
+    # -- behaviour 6: a blocked gate prints the sectioned report (RED) ----
+    # The gate reuses render_finding_block exactly as verify-guards does -
+    # the behaviour-19 blocks, never re-derived - under the "Branch rules"
+    # and "Token scope" headers, in that order.
+
+    GATE_TOKEN = "ghp_blockedgate_secret_token"
+
+    def _blocked_seams_with_token_findings(self, token_findings):
+        """``_blocked_seams`` extended: ``check_token_all`` yields
+        ``token_findings`` rather than none, so the blocked run has both
+        branch warns and token findings to report."""
+        seams = list(self._blocked_seams())
+        seams[2] = mock.patch.object(
+            cli.piguard,
+            "check_token_all",
+            return_value=token_findings,
+        )
+        return seams
+
+    def _blocked_token_findings(self):
+        """The token findings the blocked-report tests feed the seam: one
+        ``fail`` (administration) in the shape the real probe emits -
+        rule=None, the check name, a danger and a remedy - plus the
+        constant ``skipped`` (workflows_withheld)."""
+        return [
+            token_finding(
+                "administration",
+                "fail",
+                danger="the token can administer the target repository",
+                remedy=(
+                    "doc/external/github/rest-api-endpoints-for-actions-"
+                    "permissions.md"
+                ),
+            ),
+            cli.piguard.workflows_withheld_finding()[0],
+        ]
+
+    def _blocked_branch_findings(self):
+        """The branch findings the seam yields: the real ``check_all`` over
+        the empty rules the fetch seam returns - the same objects the run
+        reports on, so the expected blocks are never re-derived."""
+        return cli.piguard.check_all([])
+
+    def _run_blocked_report(self, token_findings):
+        """One blocked ``setup-repo`` run with the report fixtures wired in:
+        a token in .env (the gate needs one), the branch warns from the
+        empty-rules seam, and the given token findings. Returns the runner
+        result."""
+        self.write_env(GITHUB_TOKEN=self.GATE_TOKEN)
+        for patcher in self._blocked_seams_with_token_findings(token_findings):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+    def _block_headline(self, finding):
+        return cli.piguard.render_finding_block(finding)[0]
+
+    def test_blocked_gate_prints_branch_rules_header_then_token_scope_header(
+        self,
+    ):
+        """The blocked report carries a 'Branch rules' header before the
+        first branch finding block and a 'Token scope' header before the
+        first token finding block - branch headers precede the token
+        header (behaviour 6)."""
+        branch_findings = self._blocked_branch_findings()
+        token_findings = self._blocked_token_findings()
+        result = self._run_blocked_report(token_findings)
+        lines = result.output.splitlines()
+
+        def header_index(name):
+            for index, line in enumerate(lines):
+                if line == name:
+                    return index
+            self.fail(
+                "the blocked report has no {!r} header line:\n{}".format(
+                    name, result.output
+                )
+            )
+
+        def first_headline_index(finding):
+            headline = self._block_headline(finding)
+            for index, line in enumerate(lines):
+                if line.lstrip() == headline:
+                    return index
+            self.fail(
+                "the blocked report has no block for the finding with "
+                "headline {!r}:\n{}".format(headline, result.output)
+            )
+
+        branch_header = header_index("Branch rules")
+        token_header = header_index("Token scope")
+        self.assertLess(
+            branch_header,
+            token_header,
+            "the 'Branch rules' header must precede the 'Token scope' "
+            "header:\n{}".format(result.output),
+        )
+        self.assertGreater(
+            first_headline_index(branch_findings[0]),
+            branch_header,
+            "'Branch rules' must come before the first branch finding "
+            "block (headline {!r}):\n{}".format(
+                self._block_headline(branch_findings[0]), result.output
+            ),
+        )
+        self.assertGreater(
+            first_headline_index(token_findings[0]),
+            token_header,
+            "'Token scope' must come before the first token finding "
+            "block (headline {!r}):\n{}".format(
+                self._block_headline(token_findings[0]), result.output
+            ),
+        )
+
+    def test_blocked_gate_finding_lines_match_render_finding_block(self):
+        """Every line of ``render_finding_block(finding)`` - computed in
+        this test from the same fixture the seam returns - appears in the
+        blocked output in report order: the block is reused, never
+        re-derived (behaviour 6)."""
+        branch_finding = self._blocked_branch_findings()[0]
+        token_findings = self._blocked_token_findings()
+        token_finding = token_findings[0]
+        result = self._run_blocked_report(token_findings)
+        lines = result.output.splitlines()
+
+        expected = (
+            cli.piguard.render_finding_block(branch_finding)
+            + cli.piguard.render_finding_block(token_finding)
+        )
+        # The branch block reports before the token block, so a single
+        # forward cursor pins both blocks' lines in report order without
+        # pinning the surrounding whitespace.
+        cursor = 0
+        for block_line in expected:
+            for index in range(cursor, len(lines)):
+                if lines[index].lstrip() == block_line:
+                    cursor = index + 1
+                    break
+            else:
+                self.fail(
+                    "a line of the reused finding block is missing or out "
+                    "of order: {!r}\n{}".format(block_line, result.output)
+                )
+
+    def test_no_report_line_exceeds_80_characters(self):
+        """Every line of the sectioned report - from the 'Branch rules'
+        header to the end of the last token block - is at most 80
+        characters (behaviour 6)."""
+        token_findings = self._blocked_token_findings()
+        result = self._run_blocked_report(token_findings)
+        lines = result.output.splitlines()
+
+        start = None
+        for index, line in enumerate(lines):
+            if line == "Branch rules":
+                start = index
+                break
+        if start is None:
+            self.fail(
+                "the blocked report has no 'Branch rules' header:\n{}".format(
+                    result.output
+                )
+            )
+
+        last_block = cli.piguard.render_finding_block(token_findings[-1])
+        headline_index = None
+        for index, line in enumerate(lines[start:], start):
+            if line.lstrip() == last_block[0]:
+                headline_index = index
+                break
+        if headline_index is None:
+            self.fail(
+                "no block for the last token finding (headline {!r}):\n{}".format(
+                    last_block[0], result.output
+                )
+            )
+
+        end = headline_index + len(last_block)
+        offenders = [line for line in lines[start:end] if len(line) > 80]
+        self.assertEqual(
+            [],
+            offenders,
+            "report lines exceed 80 characters:\n{}".format(
+                "\n".join(repr(line) for line in offenders)
+            ),
+        )
+
+    def test_a_skipped_finding_is_shown_not_hidden(self):
+        """A ``skipped`` finding is reported too - it is honest, not hidden
+        (behaviour 6)."""
+        token_findings = self._blocked_token_findings()
+        skipped = token_findings[-1]
+        self.assertEqual("skipped", skipped["status"])
+        result = self._run_blocked_report(token_findings)
+
+        headline = self._block_headline(skipped)
+        self.assertTrue(
+            any(
+                line.lstrip() == headline
+                for line in result.output.splitlines()
+            ),
+            "the skipped finding's block headline {!r} must be "
+            "reported:\n{}".format(headline, result.output),
+        )
+
+    def test_the_token_value_is_never_echoed(self):
+        """Guard (already green while the one-line placeholder is in
+        place): the ``GITHUB_TOKEN`` value in .env never appears in the
+        blocked report (behaviour 6)."""
+        result = self._run_blocked_report(self._blocked_token_findings())
+        self.assertNotIn(self.GATE_TOKEN, result.output)
+
 
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
