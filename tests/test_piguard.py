@@ -7479,8 +7479,8 @@ class RenderFindingBlockTests(unittest.TestCase):
         block = self._block(finding)
         headline = block[0]
         self.assertTrue(
-            headline.startswith("fail:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+            headline.startswith("❌ fail:"),
+            "the block headline must carry the marked status prefix: {!r}".format(headline),
         )
         self.assertIn(
             piguard.CHECK_ADMINISTRATION,
@@ -7533,8 +7533,8 @@ class RenderFindingBlockTests(unittest.TestCase):
         block = self._block(finding)
         headline = block[0]
         self.assertTrue(
-            headline.startswith("warn:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+            headline.startswith("⚠️ warn:"),
+            "the block headline must carry the marked status prefix: {!r}".format(headline),
         )
         self.assertIn(
             piguard.CHECK_NAMED_REPO,
@@ -7577,8 +7577,8 @@ class RenderFindingBlockTests(unittest.TestCase):
         block = self._block(finding)
         headline = block[0]
         self.assertTrue(
-            headline.startswith("skipped:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+            headline.startswith("⏭️ skipped:"),
+            "the block headline must carry the marked status prefix: {!r}".format(headline),
         )
         self.assertIn(
             piguard.CHECK_WORKFLOWS_WITHHELD,
@@ -7638,8 +7638,8 @@ class RenderFindingBlockTests(unittest.TestCase):
         block = self._block(finding)
         headline = block[0]
         self.assertTrue(
-            headline.startswith("ok:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+            headline.startswith("✅ ok:"),
+            "the block headline must carry the marked status prefix: {!r}".format(headline),
         )
         self.assertIn(
             "pull_request",
@@ -7699,8 +7699,8 @@ class RenderFindingBlockTests(unittest.TestCase):
         block = self._block(finding)
         headline = block[0]
         self.assertTrue(
-            headline.startswith("ok:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+            headline.startswith("✅ ok:"),
+            "the block headline must carry the marked status prefix: {!r}".format(headline),
         )
         self.assertIn(
             piguard.CHECK_TARGET_ACCESS,
@@ -7852,6 +7852,135 @@ class RenderFindingBlockTests(unittest.TestCase):
         # report is diffable across runs.
         finding = piguard.workflows_withheld_finding()[0]
         self.assertEqual(self._block(finding), self._block(finding))
+
+
+class FindingBlockHeadlineMarkTests(unittest.TestCase):
+    """The status mark on a finding block's headline.
+
+    Every guard finding block's headline gains a status mark prepended
+    with one space, so doctor's Guards section and the other report sites
+    read at a glance:
+
+    - ``passed``  -> ``✅ ok: {label}``
+    - ``warn``    -> ``⚠️ warn: {label}``
+    - ``fail``    -> ``❌ fail: {label}``
+    - ``skipped`` -> ``⏭️ skipped: {label}``
+    - anything else -> unchanged: ``unknown: {label}`` (no mark)
+
+    The mark is part of the wrapped headline (the wrap budget includes it),
+    and the detail and ``fix:``/``see:`` lines are unchanged.
+    """
+
+    # The four marks, pinned as literal strings - the set is exactly these.
+    PASSED_MARK = "✅"
+    WARN_MARK = "⚠️"
+    FAIL_MARK = "❌"
+    SKIPPED_MARK = "⏭️"
+
+    @staticmethod
+    def _finding(status, label, detail="the guard detail", remedy="fix the guard"):
+        """One finding carrying ``status`` and a headline ``label`` (rule)."""
+        return {
+            "status": status,
+            "check": "history_rewrite",
+            "rule": label,
+            "danger": detail,
+            "remedy": remedy,
+        }
+
+    def _first_line(self, finding, width=80):
+        block = piguard.render_finding_block(finding, width=width)
+        self.assertIsInstance(block, list)
+        self.assertGreaterEqual(len(block), 1)
+        return block[0]
+
+    def test_passed_headline_starts_with_check_mark(self):
+        finding = self._finding("passed", "non_fast_forward")
+        self.assertEqual(
+            self._first_line(finding),
+            "{} ok: non_fast_forward".format(self.PASSED_MARK),
+            "a passed headline must be the mark, one space, the plain "
+            "headline: {!r}",
+        )
+
+    def test_warn_headline_starts_with_warning_mark(self):
+        finding = self._finding("warn", "deletion")
+        self.assertEqual(
+            self._first_line(finding),
+            "{} warn: deletion".format(self.WARN_MARK),
+            "a warn headline must be the mark, one space, the plain "
+            "headline: {!r}",
+        )
+
+    def test_fail_headline_starts_with_cross_mark(self):
+        finding = self._finding("fail", "pull_request")
+        self.assertEqual(
+            self._first_line(finding),
+            "{} fail: pull_request".format(self.FAIL_MARK),
+            "a fail headline must be the mark, one space, the plain "
+            "headline: {!r}",
+        )
+
+    def test_skipped_headline_starts_with_skipped_mark(self):
+        finding = self._finding("skipped", "workflows_withheld")
+        self.assertEqual(
+            self._first_line(finding),
+            "{} skipped: workflows_withheld".format(self.SKIPPED_MARK),
+            "a skipped headline must be the mark, one space, the plain "
+            "headline: {!r}",
+        )
+
+    def test_unknown_status_headline_carries_no_mark(self):
+        finding = self._finding("mystery", "non_fast_forward")
+        line = self._first_line(finding)
+        self.assertEqual(
+            line,
+            "unknown: non_fast_forward",
+            "an unknown-status headline is unchanged - no mark: {!r}",
+        )
+        for mark in (
+            self.PASSED_MARK,
+            self.WARN_MARK,
+            self.FAIL_MARK,
+            self.SKIPPED_MARK,
+        ):
+            self.assertNotIn(mark, line)
+
+    def test_mark_participates_in_the_wrap_at_narrow_width(self):
+        # A long label at a narrow width: the mark is part of the wrapped
+        # headline, so every line of the block is still at most the width.
+        long_label = "a_very_long_rule_name_that_needs_wrapping"
+        finding = self._finding("warn", long_label)
+        block = piguard.render_finding_block(finding, width=40)
+        for line in block:
+            self.assertLessEqual(
+                len(line),
+                40,
+                "a block line exceeds the width 40: {!r}".format(line),
+            )
+        # The mark must be on a line (the wrapped headline carries it).
+        self.assertTrue(
+            any(self.WARN_MARK in line for line in block),
+            "the warn mark must appear on a line of the block:\n{!r}".format(
+                block
+            ),
+        )
+
+    def test_detail_and_remedy_lines_unchanged_by_the_mark(self):
+        # Only the headline moved: for one finding, the non-headline lines
+        # equal what today's renderer produces past its own headline, so
+        # the detail and fix:/see: lines are pinned byte-for-byte.
+        finding = self._finding("warn", "file_path_restriction")
+        block = piguard.render_finding_block(finding)
+        self.assertEqual(
+            block[1:],
+            [
+                "file_path_restriction - the guard detail;",
+                "  fix: fix the guard",
+            ],
+            "the detail and remedy lines must be unchanged by the "
+            "headline mark:\nblock: {!r}".format(block),
+        )
 
 
 class TokenFindingInvariantSweepTests(unittest.TestCase):

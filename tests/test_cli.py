@@ -248,15 +248,16 @@ def token_finding(check, status, **extra):
 def _finding_headline(finding):
     """The expected headline (first line) of a finding's block.
 
-    The status maps to the existing prefix convention (ok:/warn:/fail:/
-    skipped:), and the label is the rule when the finding carries one,
+    The status maps to the marked prefix convention (✅ ok:/⚠️ warn:/
+    ❌ fail:/⏭️ skipped: - the status mark, one space, then the existing
+    prefix), and the label is the rule when the finding carries one,
     otherwise the check name - never a literal None (behaviour 19).
     """
     prefix = {
-        "passed": "ok",
-        "warn": "warn",
-        "fail": "fail",
-        "skipped": "skipped",
+        "passed": "✅ ok",
+        "warn": "⚠️ warn",
+        "fail": "❌ fail",
+        "skipped": "⏭️ skipped",
     }[finding.get("status")]
     label = finding.get("rule") or finding.get("check")
     return "{}: {}".format(prefix, label)
@@ -2860,9 +2861,6 @@ class TestSetupRepoGuardGate(CliCase):
             ["setup-repo", self.target, "--yes"]
         )
 
-    def _block_headline(self, finding):
-        return cli.piguard.render_finding_block(finding)[0]
-
     def test_blocked_gate_prints_branch_rules_header_then_token_scope_header(
         self,
     ):
@@ -2886,7 +2884,7 @@ class TestSetupRepoGuardGate(CliCase):
             )
 
         def first_headline_index(finding):
-            headline = self._block_headline(finding)
+            headline = _finding_headline(finding)
             for index, line in enumerate(lines):
                 if line.lstrip() == headline:
                     return index
@@ -2908,7 +2906,7 @@ class TestSetupRepoGuardGate(CliCase):
             branch_header,
             "'Branch rules' must come before the first branch finding "
             "block (headline {!r}):\n{}".format(
-                self._block_headline(branch_findings[0]), result.output
+                _finding_headline(branch_findings[0]), result.output
             ),
         )
         self.assertGreater(
@@ -2916,7 +2914,7 @@ class TestSetupRepoGuardGate(CliCase):
             token_header,
             "'Token scope' must come before the first token finding "
             "block (headline {!r}):\n{}".format(
-                self._block_headline(token_findings[0]), result.output
+                _finding_headline(token_findings[0]), result.output
             ),
         )
 
@@ -2995,13 +2993,15 @@ class TestSetupRepoGuardGate(CliCase):
 
     def test_a_skipped_finding_is_shown_not_hidden(self):
         """A ``skipped`` finding is reported too - it is honest, not hidden
-        (behaviour 6)."""
+        (behaviour 6). The pinned headline is the marked form - ``lstrip``
+        does not remove the glyph, so this pin fails while the
+        implementation prints an unmarked headline."""
         token_findings = self._blocked_token_findings()
         skipped = token_findings[-1]
         self.assertEqual("skipped", skipped["status"])
         result = self._run_blocked_report(token_findings)
 
-        headline = self._block_headline(skipped)
+        headline = _finding_headline(skipped)
         self.assertTrue(
             any(
                 line.lstrip() == headline
@@ -3914,14 +3914,14 @@ class TestDoctor(CliCase):
         # An empty rules array: both history-rewrite rules and the review
         # rule are absent, so every guard is broken (behaviour 8).
         # Behaviour 19: findings render as blocks, not _report_line rows;
-        # the broken guard's block headline carries the "warn:" prefix
-        # and the rule name.
+        # the broken guard's block headline carries the marked
+        # "⚠️ warn:" prefix and the rule name.
         result, _, _ = self.run_doctor_with_guards(
             ("iar3-r8", "Anvil"), ([], None)
         )
         self.assertEqual(0, result.exit_code)
         for rule in ("non_fast_forward", "deletion", "pull_request"):
-            headline = "warn: {}".format(rule)
+            headline = "⚠️ warn: {}".format(rule)
             matching = [
                 candidate for candidate in self.guards_lines(result)
                 if candidate.lstrip().startswith(headline)
