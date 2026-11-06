@@ -219,6 +219,81 @@ def five_rule_branch_rules():
     return rules
 
 
+def token_finding(check, status, **extra):
+    """A token-scope finding in the shape check_token_all returns.
+
+    The CLI report tests build their fixtures through this so they pin the
+    renderer's input - ``rule=None``, the check name, the status - rather
+    than re-implementing a probe's output.
+    """
+    finding = {
+        "check": check,
+        "rule": None,
+        "status": status,
+        "danger": extra.get("danger", ""),
+        "remedy": extra.get(
+            "remedy",
+            "doc/external/github/fine-grained-personal-access-tokens.md",
+        ),
+    }
+    if status == "skipped":
+        finding["reason"] = extra.get(
+            "reason",
+            "a token-scope probe with no token establishes no fact about any token",
+        )
+    return finding
+
+
+def _finding_headline(finding):
+    """The expected headline (first line) of a finding's block.
+
+    The status maps to the existing prefix convention (ok:/warn:/fail:/
+    skipped:), and the label is the rule when the finding carries one,
+    otherwise the check name - never a literal None (behaviour 19).
+    """
+    prefix = {
+        "passed": "ok",
+        "warn": "warn",
+        "fail": "fail",
+        "skipped": "skipped",
+    }[finding.get("status")]
+    label = finding.get("rule") or finding.get("check")
+    return "{}: {}".format(prefix, label)
+
+
+def assert_findings_reported_branch_then_token(
+    lines, branch_findings, token_findings, full_output
+):
+    """Every branch-rule finding block and every token finding block is
+    present, and the last branch block precedes the first token block
+    (behaviour 19's order pin).
+
+    A finding's block is located by its headline: the block's first line,
+    which starts with the status prefix and the label (rule when present,
+    else check). The detail and remedy lines are wrapped at 80 columns and
+    may span multiple lines, so only the headline is a reliable anchor.
+    """
+    def index_of(finding):
+        headline = _finding_headline(finding)
+        for index, line in enumerate(lines):
+            # The doctor's Guards section indents its lines; a block's
+            # headline anchor must hold with or without that indent.
+            if line.lstrip().startswith(headline):
+                return index
+        raise AssertionError(
+            "finding block not reported; expected a line starting with "
+            "{!r}\n{}".format(headline, full_output)
+        )
+
+    last_branch = max(index_of(f) for f in branch_findings)
+    first_token = min(index_of(f) for f in token_findings)
+    if last_branch >= first_token:
+        raise AssertionError(
+            "token finding blocks must be reported after the branch-rule "
+            "finding blocks:\n{}".format(full_output)
+        )
+
+
 class CliCase(unittest.TestCase):
     """Base class: an isolated repository root and a patched Compose."""
 
@@ -295,6 +370,7 @@ class TestSubcommandsExist(CliCase):
         "verify-guards",
         "ruleset-write",
         "smoke-test",
+        "token-recipe",
     )
 
     def registered_names(self):
@@ -2619,35 +2695,24 @@ class TestDoctor(CliCase):
     def test_doctor_reports_a_guards_section_with_broken_guards(self):
         # An empty rules array: both history-rewrite rules and the review
         # rule are absent, so every guard is broken (behaviour 8).
+        # Behaviour 19: findings render as blocks, not _report_line rows;
+        # the broken guard's block headline carries the "warn:" prefix
+        # and the rule name.
         result, _, _ = self.run_doctor_with_guards(
             ("iar3-r8", "Anvil"), ([], None)
         )
         self.assertEqual(0, result.exit_code)
         for rule in ("non_fast_forward", "deletion", "pull_request"):
-            line = next(
-                (candidate for candidate in self.guards_lines(result)
-                 if rule in candidate),
-                None,
-            )
-            self.assertIsNotNone(
-                line,
-                "no Guards report line for the {!r} rule:\n{}".format(
-                    rule, result.output
-                ),
-            )
-            # _report_line renders two leading spaces; the broken guard must
-            # carry the failing marker _mark(False) returns.
+            headline = "warn: {}".format(rule)
+            matching = [
+                candidate for candidate in self.guards_lines(result)
+                if candidate.lstrip().startswith(headline)
+            ]
             self.assertTrue(
-                line.startswith("  "),
-                "guard line for {!r} is not a _report_line shape: {!r}".format(
-                    rule, line
+                matching,
+                "no Guards block headline {!r} for the {!r} rule:\n{}".format(
+                    headline, rule, result.output
                 ),
-            )
-            self.assertIn(
-                cli._mark(False),
-                line,
-                "guard line for {!r} does not carry the {!r} marker: "
-                "{!r}".format(rule, cli._mark(False), line),
             )
 
     def test_doctor_exit_unchanged_with_broken_guards(self):
@@ -2723,6 +2788,191 @@ class TestDoctor(CliCase):
             )
 
 
+class TestDoctorGuardsTokenFindings(CliCase):
+    """doctor's Guards section picks up the token findings (behaviour 15).
+
+    The section reports through the same ``check_token_all`` seam
+    verify-guards uses, after the branch-rule findings, and a token finding
+    - even a ``fail`` - never changes doctor's own exit status.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    TOKEN = "ghp_doctor_token"
+
+    def run_doctor_with_token_findings(self, token_findings, token=TOKEN):
+        """``doctor`` with the compose probes and the piguard seams replaced,
+        so the guard flow runs offline. Returns ``(result, token_all_mock)``.
+        """
+        # Patcher objects, not their .start() mocks: stopping a MagicMock is
+        # a no-op, and a leaked env.get patch poisons every later test in the
+        # suite (it would answer every key with the token).
+        docker = mock.patch.object(
+            cli.compose, "docker_available", return_value=True
+        )
+        compose = mock.patch.object(
+            cli.compose, "compose_v2_available", return_value=True
+        )
+        nvidia = mock.patch.object(
+            cli.compose, "nvidia_available", return_value=True
+        )
+        resolve = mock.patch.object(
+            cli.piguard,
+            "resolve_repository",
+            return_value=(self.OWNER, self.REPO),
+        )
+        fetch = mock.patch.object(
+            cli.piguard,
+            "fetch_branch_rules",
+            return_value=(five_rule_branch_rules(), None),
+        )
+        token_all = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=token_findings
+        )
+        env_get = mock.patch.object(cli.env, "get", return_value=token)
+        docker.start()
+        compose.start()
+        nvidia.start()
+        resolve.start()
+        fetch.start()
+        token_all_mock = token_all.start()
+        env_get.start()
+        try:
+            result = self.invoke_allowing_exception(["doctor"])
+        finally:
+            for patcher in (docker, compose, nvidia, resolve, fetch, token_all, env_get):
+                patcher.stop()
+        return result, token_all_mock
+
+    def guards_section(self, result):
+        """The Guards section of a doctor report, or fail saying it is absent."""
+        lines = result.output.splitlines()
+        try:
+            start = lines.index("Guards")
+        except ValueError:
+            self.fail(
+                "doctor output has no 'Guards' section:\n{}".format(result.output)
+            )
+        return lines[start:]
+
+    def branch_findings(self):
+        from anvilkit.pi import piguard
+
+        return piguard.check_all(five_rule_branch_rules())
+
+    def test_guards_reports_token_findings_after_the_branch_findings(self):
+        # The token findings flow through the same check_token_all seam, so
+        # a probe added there reaches doctor with no edit at the call site -
+        # and they report after the branch-rule findings, as verify-guards
+        # reports them.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+            token_finding(
+                "administration",
+                "warn",
+                danger="the repository could be deleted or reconfigured",
+                remedy="doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+            ),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        result, token_all = self.run_doctor_with_token_findings(token)
+        self.assertEqual(0, result.exit_code)
+        self.assertTrue(
+            token_all.called,
+            "doctor's Guards section never reached check_token_all, so a "
+            "probe added there would not reach doctor",
+        )
+        assert_findings_reported_branch_then_token(
+            self.guards_section(result), self.branch_findings(), token, result.output
+        )
+
+    def test_fail_token_finding_does_not_change_doctors_exit_status(self):
+        # doctor never fails on what it diagnoses: a fail finding is
+        # reported, and doctor still exits 0.
+        token = [
+            token_finding(
+                "administration",
+                "fail",
+                danger="the repository could be deleted or reconfigured",
+                remedy="doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+            ),
+        ]
+        result, token_all = self.run_doctor_with_token_findings(token)
+        self.assertEqual(0, result.exit_code)
+        self.assertTrue(
+            token_all.called,
+            "doctor's Guards section never reached check_token_all",
+        )
+        self.assertIn("fail:", result.output)
+
+    def test_guards_has_branch_rules_header(self):
+        # Behaviour 19: the Guards section has a "Branch rules" header
+        # before the branch finding blocks.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _ = self.run_doctor_with_token_findings(token)
+        section = self.guards_section(result)
+        self.assertTrue(
+            "Branch rules" in section,
+            "no 'Branch rules' header in the Guards section:\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_guards_has_token_scope_header(self):
+        # Behaviour 19: the Guards section has a "Token scope" header
+        # before the token finding blocks.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _ = self.run_doctor_with_token_findings(token)
+        section = self.guards_section(result)
+        self.assertTrue(
+            "Token scope" in section,
+            "no 'Token scope' header in the Guards section:\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_token_finding_blocks_present_in_guards(self):
+        # Behaviour 19: each token finding's block headline appears in
+        # the Guards section, and doctor still exits 0.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+            token_finding(
+                "administration",
+                "warn",
+                danger="the repository could be deleted or reconfigured",
+                remedy="doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+            ),
+        ]
+        result, _ = self.run_doctor_with_token_findings(token)
+        section = self.guards_section(result)
+        for finding in token:
+            headline = _finding_headline(finding)
+            self.assertTrue(
+                any(line.startswith(headline) for line in section),
+                "no token finding block headline {!r} in the Guards "
+                "section:\n{}".format(headline, result.output),
+            )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "doctor must still exit 0 with token finding blocks",
+        )
+
+
 class TestVerifyGuards(CliCase):
     """``verify-guards`` reports through the single check_all seam."""
 
@@ -2788,19 +3038,546 @@ class TestVerifyGuards(CliCase):
                     rule, result.output
                 ),
             )
-        # The report always prints one line per finding, via render_report.
+        # The report prints one block per check_all finding, via
+        # render_finding_block. The block's headline (status prefix + label)
+        # is the stable anchor: the detail and remedy lines are wrapped at
+        # 80 columns and may span multiple lines, so only the headline is
+        # searched. Counted per finding rather than as a report total:
+        # behaviour 15 adds the token findings to the same report, so a
+        # total would be invalidated by the wiring it was meant to guard.
         report_lines = result.output.splitlines()
-        self.assertEqual(
-            len(findings),
-            sum(
-                1
-                for candidate in report_lines
-                if candidate.startswith(("ok:", "warn:", "skipped:", "fail:"))
-            ),
-            "the report must print one line per check_all finding",
-        )
+        for finding in findings:
+            headline = _finding_headline(finding)
+            self.assertEqual(
+                1,
+                sum(1 for candidate in report_lines
+                    if candidate.startswith(headline)),
+                "the report must print exactly one block for the finding "
+                "{!r} (headline {!r}):\n{}".format(
+                    finding, headline, result.output
+                ),
+            )
         # No fail finding among the five passed rules: exit status unchanged.
         self.assertEqual(0, result.exit_code)
+
+
+class TestVerifyGuardsTokenFindings(CliCase):
+    """``verify-guards`` gains ``--other-repo`` and the token findings.
+
+    Behaviour 15 of plans/verify-guards-token.md: the branch-rule findings
+    report first, then the token findings through the single
+    ``check_token_all`` seam, and the exit status is the ``summarize`` of
+    all of them - the first live path for a non-zero verify-guards.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    TOKEN = "ghp_test_token"
+
+    def run_verify_guards_with_token_findings(
+        self, token_findings, other_repo=None, token=TOKEN
+    ):
+        """verify-guards with the piguard seams and the .env token replaced,
+        so the whole flow runs offline. ``other_repo=None`` invokes without
+        the flag. Returns ``(result, token_all_mock, env_get_mock)``.
+        """
+        resolve = mock.patch.object(
+            cli.piguard,
+            "resolve_repository",
+            return_value=(self.OWNER, self.REPO),
+        )
+        fetch = mock.patch.object(
+            cli.piguard,
+            "fetch_branch_rules",
+            return_value=(five_rule_branch_rules(), None),
+        )
+        token_all = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=token_findings
+        )
+        env_get = mock.patch.object(cli.env, "get", return_value=token)
+        resolve.start()
+        fetch.start()
+        token_all_mock = token_all.start()
+        env_get_mock = env_get.start()
+        try:
+            argv = ["verify-guards", str(self.project), "--branch", "main"]
+            if other_repo is not None:
+                argv.extend(["--other-repo", other_repo])
+            result = self.invoke_allowing_exception(argv)
+        finally:
+            for patcher in (resolve, fetch, token_all, env_get):
+                patcher.stop()
+        return result, token_all_mock, env_get_mock
+
+    @staticmethod
+    def call_arg(mocked, name, index):
+        """One call argument by name, falling back to its positional slot, so
+        the pin holds whether the CLI passes it by keyword or position."""
+        args, kwargs = mocked.call_args
+        if name in kwargs:
+            return kwargs[name]
+        if len(args) > index:
+            return args[index]
+        return mock.DEFAULT
+
+    def branch_findings(self):
+        from anvilkit.pi import piguard
+
+        return piguard.check_all(five_rule_branch_rules())
+
+    def test_other_repo_option_is_accepted(self):
+        # A missing option is a click usage error (exit 2, "No such option");
+        # the flag must be accepted and reach check_token_all instead.
+        result, token_all, _ = self.run_verify_guards_with_token_findings(
+            [
+                token_finding(
+                    "named_repo", "skipped",
+                    reason="the named repository was not reached",
+                )
+            ],
+            other_repo="someorg/other",
+        )
+        self.assertNotIn("No such option", result.output)
+        self.assertNotEqual(2, result.exit_code)
+        self.assertTrue(
+            token_all.called,
+            "verify-guards never reached check_token_all, so --other-repo "
+            "cannot reach the named-repo probe",
+        )
+
+    def test_reports_branch_findings_then_token_findings_and_exits_summarize_all(self):
+        from anvilkit.pi import piguard
+
+        branch = self.branch_findings()
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+            token_finding(
+                "administration",
+                "warn",
+                danger="the repository could be deleted or reconfigured",
+                remedy="doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+            ),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        result, token_all, _ = self.run_verify_guards_with_token_findings(token)
+        self.assertTrue(
+            token_all.called, "verify-guards never reached check_token_all"
+        )
+        self.assertEqual(
+            piguard.summarize(branch + token),
+            result.exit_code,
+            "the exit status must be the summarize of all findings, branch "
+            "and token:\n{}".format(result.output),
+        )
+        assert_findings_reported_branch_then_token(
+            result.output.splitlines(), branch, token, result.output
+        )
+
+    def test_check_token_all_receives_resolved_repo_token_and_raw_other_repo(self):
+        result, token_all, env_get = self.run_verify_guards_with_token_findings(
+            [
+                token_finding(
+                    "named_repo", "skipped",
+                    reason="the named repository was not reached",
+                )
+            ],
+            other_repo="someorg/other",
+        )
+        self.assertTrue(
+            token_all.called, "verify-guards never reached check_token_all"
+        )
+        self.assertEqual(self.OWNER, self.call_arg(token_all, "owner", 0))
+        self.assertEqual(self.REPO, self.call_arg(token_all, "repo", 1))
+        self.assertEqual(self.TOKEN, self.call_arg(token_all, "token", 2))
+        self.assertEqual(
+            "someorg/other",
+            self.call_arg(token_all, "other_repo", 3),
+            "the raw --other-repo value reaches check_token_all unchanged",
+        )
+        self.assertEqual(1, env_get.call_count)
+
+    def test_other_repo_absent_passes_none_to_check_token_all(self):
+        result, token_all, _ = self.run_verify_guards_with_token_findings(
+            [
+                token_finding(
+                    "named_repo", "skipped", reason="no --other-repo was supplied"
+                )
+            ]
+        )
+        self.assertTrue(
+            token_all.called, "verify-guards never reached check_token_all"
+        )
+        self.assertIsNone(
+            self.call_arg(token_all, "other_repo", 3),
+            "an absent --other-repo must reach check_token_all as None, so "
+            "the named-repo probe emits behaviour 6's skip rather than "
+            "guessing",
+        )
+
+    def test_malformed_other_repo_is_a_skipped_finding_not_a_crash(self):
+        # The probe owns the format check; at the CLI level a malformed
+        # value must run to completion, report the skipped named-repo
+        # finding and exit per summarize - the CLI does not re-validate it.
+        from anvilkit.pi import piguard
+
+        branch = self.branch_findings()
+        token = [
+            token_finding(
+                check, "skipped", reason="no GITHUB_TOKEN in .env"
+            )
+            for check in ("target_access", "administration", "classic_token")
+        ] + [
+            token_finding(
+                "workflows_withheld", "skipped",
+                reason="the workflows permission has no read level",
+            ),
+            token_finding(
+                "named_repo", "skipped", reason="not-a-path is not OWNER/REPO"
+            ),
+        ]
+        result, token_all, _ = self.run_verify_guards_with_token_findings(
+            token, other_repo="not-a-path"
+        )
+        self.assertTrue(
+            token_all.called, "verify-guards never reached check_token_all"
+        )
+        self.assertEqual(
+            "not-a-path",
+            self.call_arg(token_all, "other_repo", 3),
+            "the raw --other-repo value reaches the probe; the CLI does not "
+            "re-validate the format",
+        )
+        self.assertEqual(
+            piguard.summarize(branch + token),
+            result.exit_code,
+            "a malformed --other-repo must exit per summarize, not crash",
+        )
+        self.assertIn("named_repo", result.output)
+
+    def test_missing_token_still_runs_and_reaches_check_token_all(self):
+        # behaviour 7 at the CLI level: no token in .env still runs, the
+        # probes skip inside check_token_all, and the exit is summarize's.
+        skips = [
+            token_finding(
+                check, "skipped", reason="no GITHUB_TOKEN in .env"
+            )
+            for check in (
+                "target_access",
+                "administration",
+                "classic_token",
+                "workflows_withheld",
+                "named_repo",
+            )
+        ]
+        result, token_all, _ = self.run_verify_guards_with_token_findings(
+            skips, token=None
+        )
+        self.assertTrue(
+            token_all.called, "verify-guards never reached check_token_all"
+        )
+        self.assertIsNone(
+            self.call_arg(token_all, "token", 2),
+            "a missing .env token reaches check_token_all as None, so the "
+            "probes skip instead of issuing an unauthenticated request",
+        )
+        self.assertEqual(0, result.exit_code)
+
+    def test_fail_token_finding_makes_verify_guards_exit_nonzero(self):
+        # The first live path for a non-zero verify-guards: a fail finding
+        # from the token probes exits 1 through summarize.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+            token_finding(
+                "administration",
+                "fail",
+                danger="the repository could be deleted or reconfigured",
+                remedy="doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+            ),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        result, token_all, _ = self.run_verify_guards_with_token_findings(token)
+        self.assertTrue(
+            token_all.called, "verify-guards never reached check_token_all"
+        )
+        self.assertEqual(1, result.exit_code)
+        self.assertIn("fail:", result.output)
+
+    def test_report_has_branch_rules_header_before_first_branch_finding(self):
+        # Behaviour 19: the report has a "Branch rules" section header
+        # before the first branch finding block.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _, _ = self.run_verify_guards_with_token_findings(token)
+        lines = result.output.splitlines()
+        header_index = next(
+            (index for index, line in enumerate(lines)
+             if line == "Branch rules"),
+            None,
+        )
+        self.assertIsNotNone(
+            header_index,
+            "no 'Branch rules' header in the report:\n{}".format(result.output),
+        )
+        branch = self.branch_findings()
+        first_headline = _finding_headline(branch[0])
+        first_index = next(
+            (index for index, line in enumerate(lines)
+             if line.startswith(first_headline)),
+            None,
+        )
+        self.assertIsNotNone(
+            first_index,
+            "no branch finding block in the report:\n{}".format(result.output),
+        )
+        self.assertGreater(
+            first_index,
+            header_index,
+            "'Branch rules' header must precede the first branch finding "
+            "block:\n{}".format(result.output),
+        )
+
+    def test_report_has_token_scope_header_before_first_token_finding(self):
+        # Behaviour 19: the report has a "Token scope" section header
+        # before the first token finding block.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _, _ = self.run_verify_guards_with_token_findings(token)
+        lines = result.output.splitlines()
+        header_index = next(
+            (index for index, line in enumerate(lines)
+             if line == "Token scope"),
+            None,
+        )
+        self.assertIsNotNone(
+            header_index,
+            "no 'Token scope' header in the report:\n{}".format(result.output),
+        )
+        first_headline = _finding_headline(token[0])
+        first_index = next(
+            (index for index, line in enumerate(lines)
+             if line.startswith(first_headline)),
+            None,
+        )
+        self.assertIsNotNone(
+            first_index,
+            "no token finding block in the report:\n{}".format(result.output),
+        )
+        self.assertGreater(
+            first_index,
+            header_index,
+            "'Token scope' header must precede the first token finding "
+            "block:\n{}".format(result.output),
+        )
+
+    def test_no_report_line_exceeds_80_characters(self):
+        # Behaviour 19: the report is 80 columns wide. The harness's
+        # target path is a short TemporaryDirectory path, so the metadata
+        # lines (target/branch/repository) are well under 80; the
+        # _SEPARATOR is 60 dashes. Every line must be at most 80.
+        token = [
+            token_finding(
+                "target_access", "skipped", reason="no GITHUB_TOKEN in .env"
+            ),
+        ]
+        result, _, _ = self.run_verify_guards_with_token_findings(token)
+        for line in result.output.splitlines():
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a report line exceeds 80 characters ({} chars): {!r}"
+                "\n---\n{}".format(len(line), line, result.output),
+            )
+
+    def test_fail_token_finding_remedy_on_fix_line(self):
+        # Behaviour 19: a fail finding's remedy rides on an indented line
+        # beginning "fix:" (the pinned convention: fix: for warn/fail/
+        # skipped, see: for passed).
+        remedy_text = "recreate the token"
+        token = [
+            token_finding(
+                "administration",
+                "fail",
+                danger="the repository could be deleted or reconfigured",
+                remedy="{}; see "
+                "doc/external/github/rest-api-endpoints-for-actions-permissions.md".format(
+                    remedy_text
+                ),
+            ),
+        ]
+        result, _, _ = self.run_verify_guards_with_token_findings(token)
+        lines = result.output.splitlines()
+        fix_lines = [
+            line for line in lines if line.lstrip().startswith("fix:")
+        ]
+        self.assertTrue(
+            fix_lines,
+            "no 'fix:' line in the report:\n{}".format(result.output),
+        )
+        self.assertIn(
+            remedy_text,
+            "\n".join(fix_lines),
+            "the remedy must appear on the fix: line(s):\n"
+            "fix lines: {!r}\n{}".format(fix_lines, result.output),
+        )
+
+
+class TestVerifyGuardsDocstringCorrection(CliCase):
+    """Behaviour 16: the verify-guards help text is corrected now that
+    ``fail`` findings are emittable - it names which probes emit ``fail``
+    and cites the host-driver token location the probes protect."""
+
+    def help_text(self):
+        result = self.invoke(["verify-guards", "--help"])
+        self.assertEqual(0, result.exit_code)
+        return result.output
+
+    def test_help_no_longer_claims_the_command_emits_no_fail(self):
+        self.assertNotIn(
+            "emits none of",
+            self.help_text(),
+            "the help text still claims verify-guards emits no fail finding",
+        )
+
+    def test_help_names_the_probes_that_can_emit_fail(self):
+        text = self.help_text().lower()
+        self.assertIn(
+            "administration",
+            text,
+            "the help text must name the administration probe as a "
+            "fail emitter",
+        )
+        self.assertIn(
+            "classic",
+            text,
+            "the help text must name the classic-token probe as a "
+            "fail emitter",
+        )
+
+    def test_help_cites_the_host_driver_token_location(self):
+        text = self.help_text().lower()
+        self.assertIn(
+            "host driver",
+            text,
+            "the help text must cite where the protected token lives",
+        )
+        self.assertIn(
+            "agent cannot read",
+            text,
+            "the help text must say the agent cannot read the token",
+        )
+
+
+class TestTokenRecipe(CliCase):
+    """``token-recipe`` prints the creation URL and the steps (behaviour 15).
+
+    It reads no token, makes no network call and writes no file: the token
+    text is shown once by GitHub's UI and never passes through Anvil.
+    """
+
+    OWNER = "octodemo"
+    REPO = "my-repo"
+
+    def run_token_recipe(self, resolve_value):
+        """token-recipe against the project with the token seams booby-trapped:
+        the .env token seam, the branch-rule fetch and the token probes must
+        all stay untouched. Returns
+        ``(result, resolve, env_get, fetch, token_all)``."""
+        resolve = mock.patch.object(
+            cli.piguard, "resolve_repository", return_value=resolve_value
+        )
+        env_get = mock.patch.object(cli.env, "get")
+        fetch = mock.patch.object(cli.piguard, "fetch_branch_rules")
+        token_all = mock.patch.object(cli.piguard, "check_token_all")
+        resolve_mock = resolve.start()
+        env_get_mock = env_get.start()
+        fetch_mock = fetch.start()
+        token_all_mock = token_all.start()
+        try:
+            result = self.invoke(["token-recipe", str(self.project)])
+        finally:
+            for patcher in (resolve, env_get, fetch, token_all):
+                patcher.stop()
+        return result, resolve_mock, env_get_mock, fetch_mock, token_all_mock
+
+    def test_prints_the_recipe_url_and_the_documented_steps(self):
+        from anvilkit.pi import pitokenrecipe
+
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        result, resolve_mock, _, _, _ = self.run_token_recipe(
+            (self.OWNER, self.REPO)
+        )
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(1, resolve_mock.call_count)
+        # The exact pre-filled URL, with its query intact.
+        self.assertIn(url, result.output)
+        for parameter in (
+            "target_name={}".format(self.OWNER),
+            "contents=write",
+            "pull_requests=write",
+            "issues=write",
+            "actions=read",
+        ):
+            self.assertIn(parameter, result.output)
+        # The steps name the owner, the repository, the single-repository
+        # choice, the four grants, the Actions read-only grant and the three
+        # recorded caveats.
+        for text in (
+            self.OWNER,
+            self.REPO,
+            "Only select repositories",
+            "Contents to Read and write",
+            "Pull requests to Read and write",
+            "Issues to Read and write",
+            "Actions to Read only",
+            "cannot call the Checks API",
+            "read-only access to all public repositories",
+            "host driver outside the container",
+        ):
+            self.assertIn(text, result.output)
+
+    def test_reads_no_token_and_makes_no_network_call(self):
+        result, _, env_get_mock, fetch_mock, token_all_mock = (
+            self.run_token_recipe((self.OWNER, self.REPO))
+        )
+        env_get_mock.assert_not_called()
+        fetch_mock.assert_not_called()
+        token_all_mock.assert_not_called()
+
+    def test_writes_no_file_in_the_target(self):
+        before = self.snapshot()
+        result, _, _, _, _ = self.run_token_recipe((self.OWNER, self.REPO))
+        self.assertEqual(0, result.exit_code)
+        self.assertEqual(
+            before,
+            self.snapshot(),
+            "token-recipe must write nothing to the target",
+        )
+
+    def test_target_without_a_github_origin_exits_nonzero_and_never_guesses(self):
+        result, resolve_mock, _, _, _ = self.run_token_recipe(None)
+        self.assertEqual(1, resolve_mock.call_count)
+        self.assertNotEqual(0, result.exit_code)
+        self.assertIn(
+            "never guessed",
+            result.output,
+            "the refusal must name that the owner is never guessed:\n{}".format(
+                result.output
+            ),
+        )
 
 
 class TestBanner(CliCase):

@@ -32,7 +32,7 @@ from . import compose, config, env, health, prompts, provision, render, smoke
 from .compose import Compose, ComposeError
 from .pi import pibakeoff
 from .config import ConfigError
-from .pi import piguard, piruleset
+from .pi import piguard, pitokenrecipe, piruleset
 from .pi.piruleset import RulesetError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
@@ -1482,8 +1482,10 @@ def _report_guards(shared: Context) -> None:
     """The Guards section: the piguard findings for the project's own repository.
 
     Runs the same guard flow verify-guards uses, but always against this
-    project's directory, and reports rather than exits: doctor's exit status
-    is unchanged by any finding, and it still writes nothing.
+    project's directory, and reports rather than exits: the branch-rule
+    findings print first, then the token-scope findings from the same
+    ``check_token_all`` seam, doctor's exit status is unchanged by any
+    finding, and it still writes nothing.
     """
     shared.echo("")
     shared.echo("Guards")
@@ -1492,6 +1494,7 @@ def _report_guards(shared: Context) -> None:
     token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
 
     findings: List[Dict[str, Any]]
+    token_findings: List[Dict[str, Any]] = []
     if repository is None:
         reason = (
             "owner/repo could not be resolved from the origin remote of "
@@ -1508,20 +1511,30 @@ def _report_guards(shared: Context) -> None:
             findings = piguard.skipped_findings(fetch_reason)
         else:
             findings = piguard.check_all(rules)
-
-    for finding in findings:
-        label = finding.get("rule")
-        if not label:
-            label = "skipped: {}".format(finding.get("check"))
-        shared.echo(
-            _report_line(
-                label,
-                "{} {}".format(
-                    _mark(finding.get("status") == "passed"),
-                    piguard.render_finding(finding),
-                ),
-            )
+        # The same single seam verify-guards reports through: a probe added
+        # there reaches doctor with no edit at this call site.
+        token_findings = piguard.check_token_all(
+            owner, repo, token=token, other_repo=None
         )
+
+    # Behaviour 19: the findings print as wrapped blocks - a status-prefixed
+    # headline, the finding's substance at 80 columns, and an indented fix:/
+    # see: line - under a section header per source, so branch and token
+    # findings no longer run together as unbroken lines.
+    shared.echo("Branch rules")
+    for index, finding in enumerate(findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
+
+    shared.echo("")
+    shared.echo("Token scope")
+    for index, finding in enumerate(token_findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
 
 
 def _report_config_health(shared: Context) -> None:
@@ -1579,23 +1592,40 @@ def verify_guards(
     branch: str = typer.Option(
         "main", "--branch", help="The branch whose rules are checked."
     ),
+    other_repo: Optional[str] = typer.Option(
+        None,
+        "--other-repo",
+        help=(
+            "OWNER/REPO: probe whether the token reaches a named other "
+            "repository; the value is the raw OWNER/REPO and is never "
+            "guessed, so a malformed value surfaces as a skipped finding."
+        ),
+    ),
 ) -> None:
     """Check the GitHub branch rules of the target repository and report the guards.
 
-    The target's owner/repo is resolved from its origin remote, and the rules
-    for ``--branch`` are fetched read-only from the GitHub API - a token is
-    used from .env when present, and a missing token is an unauthenticated
-    attempt, not a skip: the endpoint allows that on public repositories.
-    Anything that could not run is reported as a skipped finding, never a
-    pass. The report always prints, including on failure; the exit status is
-    the ``summarize`` of the findings, so only a ``fail`` finding - which this
-    slice emits none of - exits non-zero.
+    The agent cannot read it: the token lives on the host driver, outside the
+    container. The target's owner/repo is resolved from its origin remote,
+    and the rules for ``--branch`` are fetched read-only from the GitHub API
+    - a token is used from .env when present, and a missing token is an
+    unauthenticated attempt, not a skip: the endpoint allows that on public
+    repositories. Anything that could not run is reported as a skipped
+    finding, never a pass. After the branch-rule findings, the token-scope
+    findings from ``check_token_all`` print, and the exit status is the
+    ``summarize`` of all of them, so a ``fail`` exits non-zero. The token is
+    read once from .env and passed to the probes; it is never printed. The
+    administration probe emits ``fail`` when the repository's
+    actions-permissions endpoint is readable - the grant that could delete
+    the repository - and the classic-token probe emits ``fail`` when a
+    classic OAuth scope is returned, which reaches every repository the
+    owner can see.
     """
     shared = _context(ctx)
 
     repository = piguard.resolve_repository(target)
     token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
 
+    token_findings: List[Dict[str, Any]] = []
     if repository is None:
         reason = (
             "owner/repo could not be resolved from the origin remote of "
@@ -1612,6 +1642,9 @@ def verify_guards(
             findings = piguard.skipped_findings(fetch_reason)
         else:
             findings = piguard.check_all(rules)
+        token_findings = piguard.check_token_all(
+            owner, repo, token=token, other_repo=other_repo
+        )
 
     shared.echo("Guards report")
     shared.echo(_SEPARATOR)
@@ -1623,12 +1656,29 @@ def verify_guards(
         )
     else:
         shared.echo(_report_line("repository", "not resolvable from origin"))
+    # Behaviour 19: the findings print as wrapped blocks - a status-
+    # prefixed headline, the finding's substance at 80 columns, and an
+    # indented fix:/see: line - under a section header per source, so
+    # branch and token findings no longer run together as unbroken
+    # lines and no report line exceeds 80 characters.
     shared.echo("")
-    for line in piguard.render_report(findings):
-        shared.echo(line)
+    shared.echo("Branch rules")
+    for index, finding in enumerate(findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
+
+    shared.echo("")
+    shared.echo("Token scope")
+    for index, finding in enumerate(token_findings):
+        if index:
+            shared.echo("")
+        for line in piguard.render_finding_block(finding):
+            shared.echo(line)
     shared.echo(_SEPARATOR)
 
-    raise typer.Exit(piguard.summarize(findings))
+    raise typer.Exit(piguard.summarize(findings + token_findings))
 # ruleset-write
 # ---------------------------------------------------------------------------
 
@@ -1797,6 +1847,47 @@ def smoke_test(
 
     typer.echo(report, nl=False)
     raise typer.Exit(exit_code)
+
+
+# ---------------------------------------------------------------------------
+# token-recipe
+# ---------------------------------------------------------------------------
+
+
+@app.command(name="token-recipe")
+def token_recipe(
+    ctx: typer.Context,
+    target: Path = typer.Argument(
+        Path("."),
+        metavar="TARGET",
+        help="Target repository directory; defaults to the current directory.",
+    ),
+) -> None:
+    """Print the pre-filled token creation URL and the steps to create it.
+
+    The target's owner/repo is resolved from its origin remote; the owner is
+    never guessed, so a target with no resolvable GitHub origin exits
+    non-zero. Reads no token, makes no network call and writes no file: the
+    token text is shown by GitHub's UI once and never passes through Anvil -
+    the same separation ``ruleset-write`` has.
+    """
+    shared = _context(ctx)
+
+    repository = piguard.resolve_repository(target)
+    if repository is None:
+        shared.echo(
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the target has no origin, or its remote is not a GitHub "
+            "repository, and the owner is never guessed".format(target)
+        )
+        raise typer.Exit(EXIT_ERROR)
+
+    owner, repo = repository
+    url = pitokenrecipe.build_recipe_url(owner, repo)
+    shared.echo(url)
+    for step in pitokenrecipe.recipe_steps(owner, repo, url):
+        shared.echo(step)
+    raise typer.Exit(EXIT_OK)
 
 
 # ---------------------------------------------------------------------------
