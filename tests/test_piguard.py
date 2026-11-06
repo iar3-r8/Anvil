@@ -3132,6 +3132,272 @@ class GateRemediationTests(unittest.TestCase):
                 )
 
 
+class GateInvariantSweep(unittest.TestCase):
+    """Behaviour 14 of plans/setup-repo-guards.md - the gate invariants,
+    one sweep over EVERY status the probes can emit.
+
+    Not a repeat of the per-status tests in :class:`GateVerdictTests` and
+    :class:`GateRemediationTests` (which pin the cells one by one, mixed
+    with real probe fixtures); this is the MATRIX in one place: every
+    single-status set, alone, for both functions, plus the mixed clean
+    case and the unknown-status behaviour. Its value is completeness:
+    :attr:`STATUSES` names every status a probe can emit, so a future
+    probe that invents a new status must be deliberately classified here
+    - it cannot silently un-pin the gate. The "clean gate writes no file
+    and prints no recipe" half of behaviour 14 is pinned by
+    ``test_clean_gate_provisions_as_today`` in tests/test_cli.py, which
+    this sweep reuses rather than duplicates.
+    """
+
+    # The exact status vocabulary of anvilkit/pi/piguard.py, derived from
+    # every "status": literal the probes emit: the branch checks
+    # (check_history_rewrite / check_review / check_update_restriction /
+    # check_file_paths) emit passed / warn / skipped via skipped_findings,
+    # and the token probes (probe_target_access / probe_administration /
+    # probe_classic_token / workflows_withheld_finding / probe_named_repo)
+    # add fail. There is no "ok" status: "ok" appears in the module only
+    # as a render prefix for a passed block (_BLOCK_PREFIXES), so the
+    # plan's "passed" resolves to the real spelling "passed".
+    STATUSES = ("passed", "warn", "fail", "skipped")
+
+    # The check name carried by a finding of each status, in the shape the
+    # probes really emit it. fail never comes from a branch check - only
+    # from the token probes (administration 200, classic_token scopes) -
+    # but the gate must still block on a lone fail finding wherever it sits
+    # in the concatenated list, which is what the branch-side sweep pins.
+    _BRANCH_CHECK_BY_STATUS = {
+        "passed": "history_rewrite",   # rule present
+        "warn": "history_rewrite",      # rule absent
+        "fail": "administration",       # token probe's fail; verdict blocks anyway
+        "skipped": "history_rewrite",   # skipped_findings over a branch check
+    }
+    _TOKEN_CHECK_BY_STATUS = {
+        "passed": "administration",     # probe_administration 403
+        "warn": "named_repo",           # probe_named_repo 200
+        "fail": "administration",       # probe_administration 200
+        "skipped": "workflows_withheld",  # the constant skipped finding
+    }
+
+    # The pinned matrix, one column per status in STATUSES.
+    _VERDICT_BY_STATUS = {
+        "passed": "clean",
+        "warn": "blocked",
+        "fail": "blocked",
+        "skipped": "clean",
+    }
+    # (needs_ruleset, needs_token_recipe) for a LONE branch finding.
+    _REMED_BRANCH_BY_STATUS = {
+        "passed": (False, False),
+        "warn": (True, False),   # warn asymmetry: the ruleset IS the fix
+        "fail": (True, False),
+        "skipped": (False, False),
+    }
+    # (needs_ruleset, needs_token_recipe) for a LONE token finding.
+    _REMED_TOKEN_BY_STATUS = {
+        "passed": (False, False),
+        "warn": (False, False),   # warn asymmetry: a scope judgement, no recipe
+        "fail": (False, True),    # only a bad token gets the recipe
+        "skipped": (False, False),
+    }
+
+    def _finding(self, status: str, check: str) -> Dict[str, Any]:
+        """One finding in the module's own shape, carrying ``status``/``check``."""
+        return {
+            "status": status,
+            "check": check,
+            "rule": None,
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+
+    def test_status_set_is_exactly_the_probe_vocabulary(self):
+        """STATUSES is not vacuous: every entry is emitted by a real probe,
+        and the probes exercised cover exactly that set."""
+        produced = {
+            _field(f, "status")
+            for f in (
+                piguard.check_history_rewrite(
+                    [
+                        rule("non_fast_forward", "main-guard"),
+                        rule("deletion", "main-guard"),
+                    ]
+                )
+                + piguard.check_history_rewrite(
+                    [rule("non_fast_forward", "main-guard")]
+                )
+                + piguard.skipped_findings("no origin remote")
+                + piguard.probe_administration(
+                    "owner",
+                    "repo",
+                    token="token-xyz",
+                    opener=_opener(_FakeResponse(b"{}", 200)),
+                )
+                + piguard.probe_administration(
+                    "owner",
+                    "repo",
+                    token="token-xyz",
+                    opener=_opener(_FakeResponse(b"{}", 403)),
+                )
+                + piguard.probe_named_repo(
+                    "owner/other",
+                    token="token-xyz",
+                    opener=_opener(_FakeResponse(b'{"full_name": "owner/other"}', 200)),
+                )
+                + piguard.workflows_withheld_finding()
+            )
+        }
+
+        self.assertEqual(
+            produced,
+            set(self.STATUSES),
+            "the sweep's status list must match the statuses the probes "
+            "actually emit - a new status here means a new row in the "
+            "matrix, not a silently un-pinned gate",
+        )
+
+    def test_verdict_for_each_status_alone_in_the_branch_list(self):
+        verdict = getattr(piguard, "gate_verdict", None)
+        self.assertTrue(callable(verdict), "gate_verdict seam missing")
+        self.assertEqual(
+            set(self._VERDICT_BY_STATUS),
+            set(self.STATUSES),
+            "the verdict matrix must name every status in STATUSES",
+        )
+
+        for status in self.STATUSES:
+            with self.subTest(status=status):
+                finding = self._finding(
+                    status, self._BRANCH_CHECK_BY_STATUS[status]
+                )
+                self.assertEqual(
+                    verdict([finding]),
+                    self._VERDICT_BY_STATUS[status],
+                    "a lone {} finding in the branch list must yield "
+                    "{}".format(status, self._VERDICT_BY_STATUS[status]),
+                )
+
+    def test_verdict_for_each_status_alone_in_the_token_list(self):
+        """gate_verdict sees one concatenated list, so a lone token finding
+        of each status must yield the same verdict as its branch
+        counterpart: the warn asymmetry is about remediation, not the
+        verdict - a lone token warn still BLOCKS."""
+        verdict = getattr(piguard, "gate_verdict", None)
+        self.assertTrue(callable(verdict), "gate_verdict seam missing")
+
+        for status in self.STATUSES:
+            with self.subTest(status=status):
+                finding = self._finding(
+                    status, self._TOKEN_CHECK_BY_STATUS[status]
+                )
+                self.assertEqual(
+                    verdict([finding]),
+                    self._VERDICT_BY_STATUS[status],
+                    "a lone {} token finding must yield the same verdict "
+                    "as a branch finding: {}".format(
+                        status, self._VERDICT_BY_STATUS[status]
+                    ),
+                )
+
+    def test_remediation_for_each_branch_status_alone(self):
+        remediation = getattr(piguard, "gate_remediation", None)
+        self.assertTrue(callable(remediation), "gate_remediation seam missing")
+        self.assertEqual(
+            set(self._REMED_BRANCH_BY_STATUS),
+            set(self.STATUSES),
+            "the branch remediation matrix must name every status in STATUSES",
+        )
+
+        for status in self.STATUSES:
+            with self.subTest(status=status):
+                finding = self._finding(
+                    status, self._BRANCH_CHECK_BY_STATUS[status]
+                )
+                needs_ruleset, needs_recipe = self._REMED_BRANCH_BY_STATUS[status]
+                self.assertEqual(
+                    remediation([finding], []),
+                    {"needs_ruleset": needs_ruleset, "needs_token_recipe": needs_recipe},
+                    "a lone branch {} finding must set exactly "
+                    "needs_ruleset={} and needs_token_recipe={}".format(
+                        status, needs_ruleset, needs_recipe
+                    ),
+                )
+
+    def test_remediation_for_each_token_status_alone(self):
+        remediation = getattr(piguard, "gate_remediation", None)
+        self.assertTrue(callable(remediation), "gate_remediation seam missing")
+        self.assertEqual(
+            set(self._REMED_TOKEN_BY_STATUS),
+            set(self.STATUSES),
+            "the token remediation matrix must name every status in STATUSES",
+        )
+
+        for status in self.STATUSES:
+            with self.subTest(status=status):
+                finding = self._finding(
+                    status, self._TOKEN_CHECK_BY_STATUS[status]
+                )
+                needs_ruleset, needs_recipe = self._REMED_TOKEN_BY_STATUS[status]
+                self.assertEqual(
+                    remediation([], [finding]),
+                    {"needs_ruleset": needs_ruleset, "needs_token_recipe": needs_recipe},
+                    "a lone token {} finding must set exactly "
+                    "needs_ruleset={} and needs_token_recipe={}".format(
+                        status, needs_ruleset, needs_recipe
+                    ),
+                )
+
+    def test_mixed_passed_and_skipped_in_both_lists_is_clean(self):
+        """The caller concatenates the two lists for the verdict; a
+        passed+skipped set on both sides must be clean and need no fix."""
+        verdict = piguard.gate_verdict
+        remediation = piguard.gate_remediation
+
+        branch = [
+            self._finding("passed", "history_rewrite"),
+            self._finding("skipped", "history_rewrite"),
+        ]
+        token = [
+            self._finding("passed", "administration"),
+            self._finding("skipped", "workflows_withheld"),
+        ]
+
+        self.assertEqual(
+            verdict(branch + token),
+            "clean",
+            "passed and skipped in both lists, concatenated as the caller "
+            "does, must be clean",
+        )
+        self.assertEqual(
+            remediation(branch, token),
+            {"needs_ruleset": False, "needs_token_recipe": False},
+            "passed and skipped trigger neither prepared fix",
+        )
+
+    def test_unknown_status_pins_nothing(self):
+        """A status string the probes never emit must be deliberately
+        classified, not silently absorbed: today it neither blocks nor
+        triggers a fix, and this sweep keeps that pin explicit."""
+        verdict = piguard.gate_verdict
+        remediation = piguard.gate_remediation
+
+        bogus = self._finding("bogus", "history_rewrite")
+
+        self.assertEqual(
+            verdict([bogus]),
+            "clean",
+            "an unknown status must not block the gate today; if the gate "
+            "starts blocking on unknown statuses, this pin must be changed "
+            "deliberately",
+        )
+        self.assertEqual(
+            remediation([bogus], [bogus]),
+            {"needs_ruleset": False, "needs_token_recipe": False},
+            "an unknown status must not trigger either prepared fix today",
+        )
+
+
 class RenderReportTests(unittest.TestCase):
     """Behaviour 7: the report seam - ``render_report(findings)``.
 
