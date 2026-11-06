@@ -3206,6 +3206,127 @@ class TestSetupRepoGuardGate(CliCase):
             "written:\n{}".format(result.output),
         )
 
+    # -- behaviour 8: a blocked gate prints the token recipe (RED) ---------
+    # needs_token_recipe is true for the class's default token fixtures (the
+    # administration fail), and the class's blocked seams resolve the
+    # repository to (OWNER, REPO), so the blocked runs below are runs that
+    # must print the pre-filled creation URL and the ordered UI steps - the
+    # same substance the outgoing token-recipe command prints.
+
+    def test_blocked_gate_prints_the_recipe_when_a_token_finding_fails(self):
+        """Blocked run with a token ``fail``: the gate prints the exact
+        pre-filled creation URL for the resolved owner/repo and every line
+        of ``recipe_steps`` in order, and still exits blocked (RED - the
+        blocked path prints no recipe yet, so the URL and steps are
+        absent)."""
+        from anvilkit.pi import pitokenrecipe
+
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        steps = pitokenrecipe.recipe_steps(self.OWNER, self.REPO, url)
+        result = self._run_blocked_report(self._blocked_token_findings())
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate that printed the recipe still exits "
+            "blocked: exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        lines = result.output.splitlines()
+        url_index = None
+        for index, line in enumerate(lines):
+            if line.lstrip() == url:
+                url_index = index
+                break
+        self.assertIsNotNone(
+            url_index,
+            "the blocked report has no line carrying the pre-filled "
+            "creation URL {!r}:\n{}".format(url, result.output),
+        )
+        # The same lstrip-both-sides cursor the behaviour-6 block test
+        # uses: every step line appears after the URL line, in order.
+        cursor = url_index
+        for step in steps:
+            for index in range(cursor, len(lines)):
+                if lines[index].lstrip() == step.lstrip():
+                    cursor = index + 1
+                    break
+            else:
+                self.fail(
+                    "a recipe step line is missing or out of order: "
+                    "{!r}\n{}".format(step, result.output)
+                )
+
+    def test_no_recipe_when_no_token_finding_fails(self):
+        """Blocked run whose token findings are ``skipped`` only (the
+        constant workflows-withheld finding): the branch warns still block,
+        but with no token ``fail`` the gate prints no recipe at all -
+        neither the pre-filled URL nor any step line (pass-now guard)."""
+        from anvilkit.pi import pitokenrecipe
+
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        steps = pitokenrecipe.recipe_steps(self.OWNER, self.REPO, url)
+        result = self._run_blocked_report(
+            [cli.piguard.workflows_withheld_finding()[0]]
+        )
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "skipped-only token findings still block via the branch "
+            "warns: exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertNotIn(
+            url,
+            result.output,
+            "no token fail means no recipe: the pre-filled URL {!r} must "
+            "not be printed:\n{}".format(url, result.output),
+        )
+        for step in steps:
+            self.assertNotIn(
+                step,
+                result.output,
+                "no token fail means no recipe: the step line {!r} must "
+                "not be printed:\n{}".format(step, result.output),
+            )
+
+    def test_recipe_error_is_reported_and_still_blocked(self):
+        """Blocked run where ``build_recipe_url`` raises
+        ``TokenRecipeError``: the failure is reported in the blocked output
+        and the run still exits blocked - the recipe error never masks the
+        block (red now, for the wrong reason: the blocked path attempts no
+        recipe, so the 'could not build' line is absent; the exit-9 half
+        already holds)."""
+        from anvilkit.pi import pitokenrecipe
+
+        patcher = mock.patch.object(
+            cli.pitokenrecipe,
+            "build_recipe_url",
+            side_effect=pitokenrecipe.TokenRecipeError(
+                "refusing to build a recipe URL without an owner: "
+                "target_name is the resource owner and is never guessed"
+            ),
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        result = self._run_blocked_report(self._blocked_token_findings())
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a recipe build failure must never be masked into "
+            "success: exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        # The same could-not phrasing the behaviour-7 ruleset error pins
+        # ("could not write"): a clear what-happened line, not the raw
+        # exception text.
+        self.assertIn(
+            "could not build the token recipe",
+            result.output.lower(),
+            "the blocked report must say the token recipe could not be "
+            "built:\n{}".format(result.output),
+        )
+
 
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
