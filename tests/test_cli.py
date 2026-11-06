@@ -50,6 +50,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from anvilkit import cli  # noqa: E402
 from anvilkit import smoke  # noqa: E402
+from anvilkit.pi import piruleset  # noqa: E402
 # The six layer names in layer order, pinned by tests/test_smoke.py and
 # imported (never re-spelled) so the two suites cannot drift.
 from tests.test_smoke import LAYER_NAMES  # noqa: E402
@@ -2573,10 +2574,10 @@ class TestSetupRepoGuardGate(CliCase):
 
     Behaviour 4 (red): with the guard seams patched to a blocked result,
     the run must never reach ``provision.setup_repo`` and must leave the
-    target byte-for-byte unchanged. While behaviour 7 (ruleset writing) is
-    not yet built, a blocked run may create NO file in the target at all;
-    when behaviour 7 lands, the strict before/after snapshot assertions
-    must be relaxed to allow exactly ``.github-ruleset.json``.
+    target unchanged except for behaviour 7's one allowed file,
+    ``.github-ruleset.json``. The before/after snapshot is the same
+    recursive walk, minus that one allowed path - no .roo, no settings
+    file, no .env write into it.
 
     Behaviour 5 (pin): a plain temp target has no git origin, so the real
     ``resolve_repository`` returns None, the branch findings are all
@@ -2695,14 +2696,25 @@ class TestSetupRepoGuardGate(CliCase):
             ),
         )
         after = self._target_snapshot()
-        self.assertEqual(
-            before,
-            after,
-            "a blocked run must leave the target byte-for-byte unchanged; "
-            "files that appeared: {}".format(
-                sorted(set(after) - set(before))
-            ),
+        # Behaviour 7's relaxation: the one file the blocked run may
+        # create in the target is the ruleset it prepares; nothing else
+        # may appear, and the allowed file's content, if present, must be
+        # the rendered ruleset itself.
+        allowed = ".github-ruleset.json"
+        unexpected = sorted(
+            (set(after) - set(before)) - {allowed}
         )
+        self.assertEqual(
+            [],
+            unexpected,
+            "a blocked run must leave the target unchanged apart from "
+            "{}; files that appeared: {}".format(allowed, unexpected),
+        )
+        if allowed in after:
+            self.assertEqual(
+                piruleset.render_ruleset_json(piruleset.build_ruleset()),
+                after[allowed].decode("utf-8"),
+            )
 
     def test_blocked_gate_exit_is_not_a_usage_or_config_error(self):
         """A blocked gate is a new failure class: whatever its code, it is
@@ -3007,6 +3019,192 @@ class TestSetupRepoGuardGate(CliCase):
         blocked report (behaviour 6)."""
         result = self._run_blocked_report(self._blocked_token_findings())
         self.assertNotIn(self.GATE_TOKEN, result.output)
+
+    # -- behaviour 7: a blocked gate prepares the ruleset (RED) ------------
+    # needs_ruleset is true for the class's default blocked seams (five
+    # branch warns, no token findings), so every blocked run below is a
+    # run that must prepare TARGET/.github-ruleset.json.
+
+    RULESET_NAME = ".github-ruleset.json"
+
+    def _blocked_run_wiring(self, write_spy=None):
+        """The blocked-run seams plus, optionally, a spy over
+        ``piruleset.write_ruleset`` (recording ``force`` and returning the
+        path, or raising the given exception)."""
+        patchers = self._blocked_seams()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        if write_spy is not None:
+            spy_patcher = mock.patch.object(
+                cli.piruleset, "write_ruleset", write_spy
+            )
+            spy_patcher.start()
+            self.addCleanup(spy_patcher.stop)
+
+    def _ruleset_path(self):
+        return Path(self.target) / self.RULESET_NAME
+
+    def test_blocked_gate_writes_the_ruleset_when_absent(self):
+        """Blocked run, ruleset absent: the gate writes
+        TARGET/.github-ruleset.json with the rendered five-rule ruleset
+        byte-for-byte, prints the written path and the manual import
+        steps, and still exits blocked (RED - the blocked path writes no
+        file yet)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        self.assertFalse(self._ruleset_path().exists())
+        self._spy_provision(invoke_real=True)
+        self._blocked_run_wiring()
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            0, len(self._provision_calls), result.output
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate that prepared the ruleset still exits "
+            "blocked, not success: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        ruleset_path = self._ruleset_path()
+        self.assertTrue(
+            ruleset_path.is_file(),
+            "the blocked gate must write the ruleset to {}:\n{}".format(
+                ruleset_path, result.output
+            ),
+        )
+        self.assertEqual(
+            piruleset.render_ruleset_json(piruleset.build_ruleset()),
+            ruleset_path.read_text(encoding="utf-8"),
+            "the written ruleset is not the rendered five-rule ruleset",
+        )
+        # The existing ruleset-write command's print pattern, pinned: the
+        # written path is named, and at least one import step (the
+        # "Import a ruleset" line from piruleset.import_steps) is printed.
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the written ruleset path "
+            "{}:\n{}".format(ruleset_path, result.output),
+        )
+        self.assertIn(
+            "Import a",
+            result.output,
+            "the blocked report must carry the import steps for the "
+            "prepared ruleset (import_steps):\n{}".format(result.output),
+        )
+
+    def test_blocked_gate_never_overwrites_an_existing_ruleset(self):
+        """Blocked run with TARGET/.github-ruleset.json pre-existing:
+        force is never passed true, the file's bytes stay untouched, the
+        report names the file as already prepared, and the run still
+        exits blocked (RED - the gate never names the file yet)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        sentinel = "sentinel-do-not-touch"
+        self._ruleset_path().write_text(sentinel, encoding="utf-8")
+        self._spy_provision(invoke_real=True)
+        force_kwargs = []
+
+        def write_spy(path, text, force=False):
+            # Mirrors the real write_ruleset over an existing file, so a
+            # gate that checks existence itself and a gate that calls
+            # write_ruleset and catches the RulesetError both run; force
+            # is recorded either way.
+            force_kwargs.append(force)
+            raise piruleset.RulesetError(
+                "refusing to overwrite {path}: an existing file is "
+                "present; pass --force to overwrite it".format(path=path)
+            )
+
+        self._blocked_run_wiring(write_spy=write_spy)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            0, len(self._provision_calls), result.output
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "an already-prepared ruleset never masks the block: "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertEqual(
+            sentinel,
+            self._ruleset_path().read_text(encoding="utf-8"),
+            "the existing ruleset file must be left untouched",
+        )
+        self.assertEqual([], force_kwargs)
+        # The report names the file as already prepared: the path appears
+        # alongside an 'already' phrasing (the existing command has no
+        # equivalent - a write always claimed success - so the gate's
+        # own line is pinned here).
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the existing ruleset path:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            "already",
+            result.output.lower(),
+            "the blocked report must say the ruleset is already "
+            "prepared (not claim to have written it):\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_blocked_gate_ruleset_error_is_reported_and_still_blocked(self):
+        """Blocked run where the ruleset write fails: the failure is
+        named in the report and the run still exits blocked - a
+        RulesetError is never masked into success (pass-now guard:
+        nothing is written yet, so no error occurs yet)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        self._spy_provision(invoke_real=True)
+
+        def write_spy(path, text, force=False):
+            raise piruleset.RulesetError(
+                "cannot write ruleset to {}: its parent directory "
+                "does not exist".format(path)
+            )
+
+        self._blocked_run_wiring(write_spy=write_spy)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            0, len(self._provision_calls), result.output
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a ruleset write failure must never be masked into "
+            "success: exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        # The failure is reported, not swallowed: the report names the
+        # ruleset path and carries a clear could-not-write phrasing.
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the ruleset path the write "
+            "failed on:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "could not write",
+            result.output.lower(),
+            "the blocked report must say the ruleset could not be "
+            "written:\n{}".format(result.output),
+        )
 
 
 class TestDoctor(CliCase):
