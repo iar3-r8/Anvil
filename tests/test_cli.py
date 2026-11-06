@@ -6950,16 +6950,16 @@ class TestCollectGuardFindings(CliCase):
         # The flow drives the seams with the resolved identity:
         # fetch_branch_rules(owner, repo, branch, token).
         self.assertEqual(
-            self.OWNER, self._call_arg(seams["fetch"], "owner", 0)
+            self.OWNER, _call_arg(seams["fetch"], "owner", 0)
         )
         self.assertEqual(
-            self.REPO, self._call_arg(seams["fetch"], "repo", 1)
+            self.REPO, _call_arg(seams["fetch"], "repo", 1)
         )
         self.assertEqual(
-            "main", self._call_arg(seams["fetch"], "branch", 2)
+            "main", _call_arg(seams["fetch"], "branch", 2)
         )
         self.assertEqual(
-            self.TOKEN, self._call_arg(seams["fetch"], "token", 3)
+            self.TOKEN, _call_arg(seams["fetch"], "token", 3)
         )
         # check_all is the single seam for the branch rules.
         self.assertEqual(
@@ -6971,16 +6971,16 @@ class TestCollectGuardFindings(CliCase):
         # check_token_all receives the resolved identity, the token, and
         # other_repo=None by default (matching doctor's call site).
         self.assertEqual(
-            self.OWNER, self._call_arg(seams["token_all"], "owner", 0)
+            self.OWNER, _call_arg(seams["token_all"], "owner", 0)
         )
         self.assertEqual(
-            self.REPO, self._call_arg(seams["token_all"], "repo", 1)
+            self.REPO, _call_arg(seams["token_all"], "repo", 1)
         )
         self.assertEqual(
-            self.TOKEN, self._call_arg(seams["token_all"], "token", 2)
+            self.TOKEN, _call_arg(seams["token_all"], "token", 2)
         )
         self.assertIsNone(
-            self._call_arg(seams["token_all"], "other_repo", 3),
+            _call_arg(seams["token_all"], "other_repo", 3),
             "other_repo must default to None, so the named-repo probe emits "
             "its skip rather than guessing (the call sites' default)",
         )
@@ -7009,7 +7009,7 @@ class TestCollectGuardFindings(CliCase):
         )
         self.assertEqual(
             "someorg/other",
-            self._call_arg(seams["token_all"], "other_repo", 3),
+            _call_arg(seams["token_all"], "other_repo", 3),
             "the raw other_repo value must reach check_token_all unchanged",
         )
 

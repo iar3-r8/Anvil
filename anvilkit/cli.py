@@ -1490,32 +1490,13 @@ def _report_guards(shared: Context) -> None:
     shared.echo("")
     shared.echo("Guards")
 
-    repository = piguard.resolve_repository(shared.root)
     token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
 
-    findings: List[Dict[str, Any]]
-    token_findings: List[Dict[str, Any]] = []
-    if repository is None:
-        reason = (
-            "owner/repo could not be resolved from the origin remote of "
-            "{}: the project has no origin, or its remote is not a GitHub "
-            "repository, and the identity is never guessed".format(shared.root)
-        )
-        findings = piguard.skipped_findings(reason)
-    else:
-        owner, repo = repository
-        rules, fetch_reason = piguard.fetch_branch_rules(
-            owner, repo, "main", token
-        )
-        if rules is None:
-            findings = piguard.skipped_findings(fetch_reason)
-        else:
-            findings = piguard.check_all(rules)
-        # The same single seam verify-guards reports through: a probe added
-        # there reaches doctor with no edit at this call site.
-        token_findings = piguard.check_token_all(
-            owner, repo, token=token, other_repo=None
-        )
+    # The same single flow verify-guards runs, with doctor's noun; a probe
+    # added to _collect_guard_findings reaches doctor with no edit here.
+    findings, token_findings, _repository = _collect_guard_findings(
+        shared.root, token, "main", noun="project"
+    )
 
     # Behaviour 19: the findings print as wrapped blocks - a status-prefixed
     # headline, the finding's substance at 80 columns, and an indented fix:/
@@ -1576,6 +1557,50 @@ def _report_config_health(shared: Context) -> None:
             )
 
 
+def _collect_guard_findings(
+    target: Path,
+    token: str,
+    branch: str,
+    other_repo: Optional[str] = None,
+    noun: str = "target",
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Optional[Tuple[str, str]]]:
+    """The shared guard flow: resolve -> fetch -> check_all -> check_token_all.
+
+    verify-guards and doctor's Guards section each ran this flow inline; this
+    is the single implementation. Returns ``(branch_findings, token_findings,
+    repository)``: the branch findings are ``check_all`` of the fetched rules,
+    or ``skipped_findings`` of the reason the repository could not be resolved
+    or the fetch failed, and the token findings are ``check_token_all``
+    whenever the repository resolves - even when the fetch failed. ``noun`` is
+    the word the unresolvable reason uses: "target" (verify-guards) or
+    "project" (doctor).
+    """
+    repository = piguard.resolve_repository(target)
+    if repository is None:
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the {} has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(target, noun)
+        )
+        branch_findings: List[Dict[str, Any]] = piguard.skipped_findings(reason)
+        token_findings: List[Dict[str, Any]] = []
+    else:
+        owner, repo = repository
+        rules, fetch_reason = piguard.fetch_branch_rules(
+            owner, repo, branch, token
+        )
+        if rules is None:
+            branch_findings = piguard.skipped_findings(fetch_reason)
+        else:
+            branch_findings = piguard.check_all(rules)
+        # The token probes run whenever the repository resolves, even when the
+        # branch-rules fetch failed.
+        token_findings = piguard.check_token_all(
+            owner, repo, token=token, other_repo=other_repo
+        )
+    return branch_findings, token_findings, repository
+
+
 # ---------------------------------------------------------------------------
 # verify-guards
 # ---------------------------------------------------------------------------
@@ -1622,29 +1647,11 @@ def verify_guards(
     """
     shared = _context(ctx)
 
-    repository = piguard.resolve_repository(target)
     token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
 
-    token_findings: List[Dict[str, Any]] = []
-    if repository is None:
-        reason = (
-            "owner/repo could not be resolved from the origin remote of "
-            "{}: the target has no origin, or its remote is not a GitHub "
-            "repository, and the identity is never guessed".format(target)
-        )
-        findings = piguard.skipped_findings(reason)
-    else:
-        owner, repo = repository
-        rules, fetch_reason = piguard.fetch_branch_rules(
-            owner, repo, branch, token
-        )
-        if rules is None:
-            findings = piguard.skipped_findings(fetch_reason)
-        else:
-            findings = piguard.check_all(rules)
-        token_findings = piguard.check_token_all(
-            owner, repo, token=token, other_repo=other_repo
-        )
+    findings, token_findings, repository = _collect_guard_findings(
+        target, token, branch, other_repo=other_repo
+    )
 
     shared.echo("Guards report")
     shared.echo(_SEPARATOR)
