@@ -1361,6 +1361,15 @@ def setup_repo(
                 # carry no token value, so nothing secret is echoed.
                 _echo_guard_report(shared, branch_findings, token_findings)
                 shared.echo("")
+                # Behaviour 7: the gate prepares the fix a junior can
+                # follow - the importable ruleset - after the report and
+                # before the final exit. The run still ends blocked; the
+                # prepared fix never masks the block.
+                if piguard.gate_remediation(
+                    branch_findings, token_findings
+                )["needs_ruleset"]:
+                    _prepare_gate_ruleset(shared, Path(path))
+                    shared.echo("")
                 shared.echo(
                     "⛔ Fix the branch rules and token scope above, then "
                     "re-run setup-repo."
@@ -1597,6 +1606,45 @@ def _echo_guard_report(
             shared.echo("")
         for line in piguard.render_finding_block(finding):
             shared.echo(line)
+
+
+def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
+    """Prepare the importable ruleset a blocked gate reports on.
+
+    Writes ``target/.github-ruleset.json`` through the same
+    ``piruleset.write_ruleset`` seam the ``ruleset-write`` command uses
+    (the five-rule ruleset, rendered, ``force=False``), then prints the
+    written path and the manual import steps - the same substance
+    ``ruleset_write`` prints, so a junior sees the same steps that
+    command would have shown.
+
+    An existing file is never overwritten: it is named as already
+    prepared and left untouched (``force`` is never passed true). A
+    ``RulesetError`` is reported, naming the path, and never raised -
+    the run still ends blocked, never masked into success. This
+    function raises no other exception type.
+    """
+    path = piruleset.default_output_path(target)
+    if path.exists():
+        shared.echo(
+            "the ruleset is already prepared at {} - import it as "
+            "below".format(path)
+        )
+        return
+    try:
+        written = piruleset.write_ruleset(
+            path,
+            piruleset.render_ruleset_json(piruleset.build_ruleset()),
+            force=False,
+        )
+    except RulesetError as exc:
+        shared.echo(
+            "could not write the ruleset to {}: {}".format(path, exc)
+        )
+        return
+    shared.echo("Wrote the ruleset to {}:".format(written))
+    for line in piruleset.import_steps(None, written):
+        shared.echo("  - {}".format(line))
 
 
 def _collect_guard_findings(
