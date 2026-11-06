@@ -369,9 +369,7 @@ class TestSubcommandsExist(CliCase):
         "doctor",
         "stress",
         "verify-guards",
-        "ruleset-write",
         "smoke-test",
-        "token-recipe",
     )
 
     def registered_names(self):
@@ -3083,9 +3081,10 @@ class TestSetupRepoGuardGate(CliCase):
             ruleset_path.read_text(encoding="utf-8"),
             "the written ruleset is not the rendered five-rule ruleset",
         )
-        # The existing ruleset-write command's print pattern, pinned: the
-        # written path is named, and at least one import step (the
-        # "Import a ruleset" line from piruleset.import_steps) is printed.
+        # The ruleset print pattern, pinned (moved in from the outgoing
+        # ruleset-write command in the behaviour-13 cycle): the written path
+        # is named, and at least one import step (the "Import a ruleset" line
+        # from piruleset.import_steps) is printed.
         self.assertIn(
             self.RULESET_NAME,
             result.output,
@@ -3211,7 +3210,8 @@ class TestSetupRepoGuardGate(CliCase):
     # administration fail), and the class's blocked seams resolve the
     # repository to (OWNER, REPO), so the blocked runs below are runs that
     # must print the pre-filled creation URL and the ordered UI steps - the
-    # same substance the outgoing token-recipe command prints.
+    # same substance the outgoing token-recipe command prints (moved in here
+    # in the behaviour-13 cycle).
 
     def test_blocked_gate_prints_the_recipe_when_a_token_finding_fails(self):
         """Blocked run with a token ``fail``: the gate prints the exact
@@ -4769,105 +4769,6 @@ class TestVerifyGuardsDocstringCorrection(CliCase):
             "agent cannot read",
             text,
             "the help text must say the agent cannot read the token",
-        )
-
-
-class TestTokenRecipe(CliCase):
-    """``token-recipe`` prints the creation URL and the steps (behaviour 15).
-
-    It reads no token, makes no network call and writes no file: the token
-    text is shown once by GitHub's UI and never passes through Anvil.
-    """
-
-    OWNER = "octodemo"
-    REPO = "my-repo"
-
-    def run_token_recipe(self, resolve_value):
-        """token-recipe against the project with the token seams booby-trapped:
-        the .env token seam, the branch-rule fetch and the token probes must
-        all stay untouched. Returns
-        ``(result, resolve, env_get, fetch, token_all)``."""
-        resolve = mock.patch.object(
-            cli.piguard, "resolve_repository", return_value=resolve_value
-        )
-        env_get = mock.patch.object(cli.env, "get")
-        fetch = mock.patch.object(cli.piguard, "fetch_branch_rules")
-        token_all = mock.patch.object(cli.piguard, "check_token_all")
-        resolve_mock = resolve.start()
-        env_get_mock = env_get.start()
-        fetch_mock = fetch.start()
-        token_all_mock = token_all.start()
-        try:
-            result = self.invoke(["token-recipe", str(self.project)])
-        finally:
-            for patcher in (resolve, env_get, fetch, token_all):
-                patcher.stop()
-        return result, resolve_mock, env_get_mock, fetch_mock, token_all_mock
-
-    def test_prints_the_recipe_url_and_the_documented_steps(self):
-        from anvilkit.pi import pitokenrecipe
-
-        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
-        result, resolve_mock, _, _, _ = self.run_token_recipe(
-            (self.OWNER, self.REPO)
-        )
-        self.assertEqual(0, result.exit_code)
-        self.assertEqual(1, resolve_mock.call_count)
-        # The exact pre-filled URL, with its query intact.
-        self.assertIn(url, result.output)
-        for parameter in (
-            "target_name={}".format(self.OWNER),
-            "contents=write",
-            "pull_requests=write",
-            "issues=write",
-            "actions=read",
-        ):
-            self.assertIn(parameter, result.output)
-        # The steps name the owner, the repository, the single-repository
-        # choice, the four grants, the Actions read-only grant and the three
-        # recorded caveats.
-        for text in (
-            self.OWNER,
-            self.REPO,
-            "Only select repositories",
-            "Contents to Read and write",
-            "Pull requests to Read and write",
-            "Issues to Read and write",
-            "Actions to Read only",
-            "cannot call the Checks API",
-            "read-only access to all public repositories",
-            "host driver outside the container",
-        ):
-            self.assertIn(text, result.output)
-
-    def test_reads_no_token_and_makes_no_network_call(self):
-        result, _, env_get_mock, fetch_mock, token_all_mock = (
-            self.run_token_recipe((self.OWNER, self.REPO))
-        )
-        env_get_mock.assert_not_called()
-        fetch_mock.assert_not_called()
-        token_all_mock.assert_not_called()
-
-    def test_writes_no_file_in_the_target(self):
-        before = self.snapshot()
-        result, _, _, _, _ = self.run_token_recipe((self.OWNER, self.REPO))
-        self.assertEqual(0, result.exit_code)
-        self.assertEqual(
-            before,
-            self.snapshot(),
-            "token-recipe must write nothing to the target",
-        )
-
-    def test_target_without_a_github_origin_exits_nonzero_and_never_guesses(self):
-        result, resolve_mock, _, _, _ = self.run_token_recipe(None)
-        self.assertEqual(1, resolve_mock.call_count)
-        self.assertNotEqual(0, result.exit_code)
-        self.assertIn(
-            "never guessed",
-            result.output,
-            "the refusal must name that the owner is never guessed:\n{}".format(
-                result.output
-            ),
         )
 
 
@@ -6841,100 +6742,6 @@ class TestNoGithubRunNeverBlanksStoredRepoToken(CliCase):
                 "GITHUB_PERSONAL_ACCESS_TOKEN"
             ],
         )
-
-
-# ---------------------------------------------------------------------------
-# ruleset-write  (plans/ruleset-write.md behaviour 7 — the command and its
-# registration)
-# ---------------------------------------------------------------------------
-
-
-class TestRulesetWrite(CliCase):
-    """``ruleset-write`` builds and writes the importable GitHub ruleset.
-
-    The target is a plain temporary directory: no git repository, no
-    ``GITHUB_TOKEN`` in the environment, and both the subprocess and the
-    network seams are booby-trapped, so a run that tried to read git or
-    reach the network would fail — success proves the command needs
-    neither.
-    """
-
-    SENTINEL = b"\x00 not ruleset JSON \xff\n"
-    RULE_TYPES = (
-        "non_fast_forward",
-        "deletion",
-        "update",
-        "pull_request",
-        "file_path_restriction",
-    )
-
-    def setUp(self):
-        super().setUp()
-        self._target = tempfile.TemporaryDirectory()
-        self.target = Path(self._target.name)
-        self.addCleanup(self._target.cleanup)
-
-        env = dict(os.environ)
-        env.pop("GITHUB_TOKEN", None)
-        self._env_patcher = mock.patch.dict(os.environ, env)
-        self._env_patcher.start()
-        self.addCleanup(self._env_patcher.stop)
-        self._subprocess_patcher = mock.patch(
-            "subprocess.run",
-            side_effect=AssertionError("ruleset-write must not run subprocesses"),
-        )
-        self._subprocess_patcher.start()
-        self.addCleanup(self._subprocess_patcher.stop)
-        self._urllib_patcher = mock.patch(
-            "urllib.request.urlopen",
-            side_effect=AssertionError("ruleset-write must not use the network"),
-        )
-        self._urllib_patcher.start()
-        self.addCleanup(self._urllib_patcher.stop)
-
-    def default_output(self):
-        return self.target / ".github-ruleset.json"
-
-    def test_ruleset_write_creates_the_default_file(self):
-        result = self.invoke(["ruleset-write", str(self.target)])
-        self.assertEqual(0, result.exit_code, result.output)
-        self.assertTrue(self.default_output().is_file())
-
-    def test_ruleset_write_output_names_file_and_import_steps_without_github_url(self):
-        result = self.invoke(["ruleset-write", str(self.target)])
-        self.assertEqual(0, result.exit_code, result.output)
-        self.assertIn(".github-ruleset.json", result.output)
-        self.assertIn("import a ruleset", result.output.lower())
-        # No GitHub origin, so no guessed URL.
-        self.assertNotIn("github.com", result.output)
-
-    def test_ruleset_write_output_flag_honours_a_custom_path(self):
-        custom = self.target / "my-ruleset.json"
-        result = self.invoke(
-            ["ruleset-write", str(self.target), "--output", str(custom)]
-        )
-        self.assertEqual(0, result.exit_code, result.output)
-        self.assertTrue(custom.is_file())
-        self.assertFalse(self.default_output().exists())
-
-    def test_ruleset_write_refuses_to_overwrite_without_force(self):
-        existing = self.default_output()
-        existing.write_bytes(self.SENTINEL)
-        result = self.invoke_allowing_exception(
-            ["ruleset-write", str(self.target)]
-        )
-        self.assertEqual(cli.EXIT_CONFIG, result.exit_code, result.output)
-        self.assertIn(str(existing), result.output)
-        self.assertIn("--force", result.output)
-        self.assertEqual(self.SENTINEL, existing.read_bytes())
-
-    def test_ruleset_write_force_overwrites_with_the_generated_ruleset(self):
-        existing = self.default_output()
-        existing.write_bytes(self.SENTINEL)
-        result = self.invoke(["ruleset-write", str(self.target), "--force"])
-        self.assertEqual(0, result.exit_code, result.output)
-        data = json.loads(existing.read_text(encoding="utf-8"))
-        self.assertEqual(list(self.RULE_TYPES), [rule["type"] for rule in data["rules"]])
 
 
 # ---------------------------------------------------------------------------
