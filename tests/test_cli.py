@@ -6788,3 +6788,389 @@ class TestSmokeTestDumpEvents(CliCase):
             % result.output,
         )
         self.assertNotIn(_DUMPER_STREAM_LINE, result.output)
+
+
+# ---------------------------------------------------------------------------
+# _collect_guard_findings  (behaviour 3 of plans/setup-repo-guards.md — the
+# resolve → fetch → check_all → check_token_all flow verify-guards and
+# doctor's Guards section each duplicate today, extracted once)
+# ---------------------------------------------------------------------------
+
+
+def _require_collect_guard_findings():
+    """Return the behaviour-3 helper, or fail naming what is missing."""
+    helper = getattr(cli, "_collect_guard_findings", None)
+    if not callable(helper):
+        raise AssertionError(
+            "anvilkit.cli does not define a callable "
+            "_collect_guard_findings(target, token, branch, other_repo=None, "
+            'noun="target") '
+            "yet (behaviour 3 of plans/setup-repo-guards.md)"
+        )
+    return helper
+
+
+def _call_arg(mocked, name, index):
+    """One call argument by name, falling back to its positional slot, so
+    the pin holds whether the helper passes it by keyword or position."""
+    args, kwargs = mocked.call_args
+    if name in kwargs:
+        return kwargs[name]
+    if len(args) > index:
+        return args[index]
+    return mock.DEFAULT
+
+
+class TestCollectGuardFindings(CliCase):
+    """The shared guard flow: resolve → fetch → check_all → check_token_all.
+
+    Behaviour 3 of plans/setup-repo-guards.md: verify-guards and doctor's
+    Guards section each duplicate this flow today; the helper must return
+    ``(branch_findings, token_findings, repository)`` reproducing, for every
+    input, exactly what both call sites do now, so the green step can rewire
+    them with byte-for-byte unchanged output.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    TOKEN = "ghp_collect_token"
+
+    def run_collect(
+        self,
+        target,
+        token,
+        branch,
+        other_repo=None,
+        noun="target",
+        repository=None,
+        rules=None,
+        fetch_reason=None,
+        branch_findings=None,
+        token_findings=None,
+    ):
+        """``_collect_guard_findings`` with the four piguard seams replaced,
+        so the flow runs offline. Returns ``result`` plus a dict of the seam
+        mocks (``resolve``, ``fetch``, ``check_all``, ``token_all``) for
+        call-argument assertions.
+        """
+        collect = _require_collect_guard_findings()
+        resolve_patcher = mock.patch.object(
+            cli.piguard, "resolve_repository", return_value=repository
+        )
+        fetch_patcher = mock.patch.object(
+            cli.piguard,
+            "fetch_branch_rules",
+            return_value=(rules, fetch_reason),
+        )
+        check_all_patcher = mock.patch.object(
+            cli.piguard, "check_all", return_value=branch_findings
+        )
+        token_all_patcher = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=token_findings
+        )
+        resolve = resolve_patcher.start()
+        fetch = fetch_patcher.start()
+        check_all = check_all_patcher.start()
+        token_all = token_all_patcher.start()
+        try:
+            result = collect(
+                target,
+                token,
+                branch,
+                other_repo=other_repo,
+                noun=noun,
+            )
+        finally:
+            for patcher in (
+                resolve_patcher,
+                fetch_patcher,
+                check_all_patcher,
+                token_all_patcher,
+            ):
+                patcher.stop()
+        return result, {
+            "resolve": resolve,
+            "fetch": fetch,
+            "check_all": check_all,
+            "token_all": token_all,
+        }
+
+    def test_resolvable_target_collects_branch_and_token_findings(self):
+        # The full flow: resolve → fetch → check_all → check_token_all,
+        # returning the exact objects the seams produced, not copies.
+        from anvilkit.pi import piguard
+
+        branch = piguard.check_all(five_rule_branch_rules())
+        token = [
+            token_finding("target_access", "passed"),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        target = self.project
+        rules = five_rule_branch_rules()
+        (branch_out, token_out, repository), seams = self.run_collect(
+            target,
+            self.TOKEN,
+            "main",
+            repository=(self.OWNER, self.REPO),
+            rules=rules,
+            branch_findings=branch,
+            token_findings=token,
+        )
+        # check_all receives exactly the rules fetch returned: the flow is
+        # resolve -> fetch -> check_all(fetched rules), not a re-fetch or a
+        # guess.
+        check_all_args, check_all_kwargs = seams["check_all"].call_args
+        self.assertIs(
+            rules,
+            check_all_kwargs.get("rules", check_all_args[0]),
+            "check_all must run on the exact rules fetch_branch_rules "
+            "returned",
+        )
+        self.assertIs(
+            branch,
+            branch_out,
+            "the branch findings must be the exact objects check_all "
+            "returned, so the call sites' summarize and rendering are "
+            "unchanged",
+        )
+        self.assertIs(
+            token,
+            token_out,
+            "the token findings must be the exact objects check_token_all "
+            "returned",
+        )
+        self.assertEqual(
+            (self.OWNER, self.REPO),
+            repository,
+            "the third return element must be the repository resolve "
+            "returned",
+        )
+        # The flow drives the seams with the resolved identity:
+        # fetch_branch_rules(owner, repo, branch, token).
+        self.assertEqual(
+            self.OWNER, self._call_arg(seams["fetch"], "owner", 0)
+        )
+        self.assertEqual(
+            self.REPO, self._call_arg(seams["fetch"], "repo", 1)
+        )
+        self.assertEqual(
+            "main", self._call_arg(seams["fetch"], "branch", 2)
+        )
+        self.assertEqual(
+            self.TOKEN, self._call_arg(seams["fetch"], "token", 3)
+        )
+        # check_all is the single seam for the branch rules.
+        self.assertEqual(
+            1,
+            seams["check_all"].call_count,
+            "the branch rules must be reported through the single check_all "
+            "seam",
+        )
+        # check_token_all receives the resolved identity, the token, and
+        # other_repo=None by default (matching doctor's call site).
+        self.assertEqual(
+            self.OWNER, self._call_arg(seams["token_all"], "owner", 0)
+        )
+        self.assertEqual(
+            self.REPO, self._call_arg(seams["token_all"], "repo", 1)
+        )
+        self.assertEqual(
+            self.TOKEN, self._call_arg(seams["token_all"], "token", 2)
+        )
+        self.assertIsNone(
+            self._call_arg(seams["token_all"], "other_repo", 3),
+            "other_repo must default to None, so the named-repo probe emits "
+            "its skip rather than guessing (the call sites' default)",
+        )
+
+    def test_other_repo_is_forwarded_to_check_token_all(self):
+        # --other-repo's raw value reaches check_token_all unchanged, as it
+        # does at verify-guards today: the CLI never re-validates it.
+        from anvilkit.pi import piguard
+
+        branch = piguard.check_all(five_rule_branch_rules())
+        token = [
+            token_finding(
+                "named_repo", "skipped",
+                reason="the named repository was not reached",
+            )
+        ]
+        (_branch_out, _token_out, _repository), seams = self.run_collect(
+            self.project,
+            self.TOKEN,
+            "main",
+            other_repo="someorg/other",
+            repository=(self.OWNER, self.REPO),
+            rules=five_rule_branch_rules(),
+            branch_findings=branch,
+            token_findings=token,
+        )
+        self.assertEqual(
+            "someorg/other",
+            self._call_arg(seams["token_all"], "other_repo", 3),
+            "the raw other_repo value must reach check_token_all unchanged",
+        )
+
+    def test_unresolvable_target_yields_four_skips_and_no_token_findings(
+        self,
+    ):
+        # No resolvable repository: four skipped branch findings carrying
+        # the same reason verify_guards builds today (it names the target
+        # path), no token findings at all, and none of fetch/check_all/
+        # check_token_all is called — a probe without an identity would be
+        # a guess.
+        from anvilkit.pi import piguard
+
+        target = self.project
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the target has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(target)
+        )
+        (branch_out, token_out, repository), seams = self.run_collect(
+            target, self.TOKEN, "main", repository=None
+        )
+        self.assertEqual(
+            piguard.skipped_findings(reason),
+            branch_out,
+            "the branch findings must be skipped_findings of the exact "
+            "reason verify_guards builds (it names the target path)",
+        )
+        self.assertEqual(
+            4,
+            len(branch_out),
+            "one skipped finding per defined branch check is expected",
+        )
+        for finding in branch_out:
+            self.assertEqual("skipped", finding["status"])
+        self.assertIn(str(target), branch_out[0]["reason"])
+        self.assertEqual(
+            [],
+            token_out,
+            "no token findings without a resolvable repository - the token "
+            "probes never run",
+        )
+        self.assertIsNone(repository)
+        self.assertFalse(
+            seams["fetch"].called,
+            "fetch_branch_rules must not run without a resolvable "
+            "repository",
+        )
+        self.assertFalse(
+            seams["check_all"].called,
+            "check_all must not run without a resolvable repository",
+        )
+        self.assertFalse(
+            seams["token_all"].called,
+            "check_token_all must not run without a resolvable repository",
+        )
+
+    def test_doctor_noun_keeps_the_project_wording(self):
+        # doctor's _report_guards builds the same unresolvable-target reason
+        # but says "the project" where verify_guards says "the target". With
+        # noun="project" the helper must reproduce doctor's exact reason, so
+        # the extraction leaves doctor's output byte-for-byte unchanged.
+        from anvilkit.pi import piguard
+
+        target = self.project
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "{}: the project has no origin, or its remote is not a GitHub "
+            "repository, and the identity is never guessed".format(target)
+        )
+        (branch_out, token_out, repository), seams = self.run_collect(
+            target, self.TOKEN, "main", noun="project", repository=None
+        )
+        self.assertEqual(
+            piguard.skipped_findings(reason),
+            branch_out,
+            "the branch findings must be skipped_findings of the exact "
+            'reason doctor builds (the noun "project" replaces "target")',
+        )
+        self.assertIn("the project has no origin", branch_out[0]["reason"])
+        self.assertNotIn(
+            "the target has no origin",
+            branch_out[0]["reason"],
+            'with noun="project" the "target" wording must be gone, not '
+            "appended",
+        )
+        self.assertEqual(
+            [],
+            token_out,
+            "no token findings without a resolvable repository - the token "
+            "probes never run",
+        )
+        self.assertIsNone(repository)
+        self.assertFalse(
+            seams["fetch"].called,
+            "fetch_branch_rules must not run without a resolvable "
+            "repository",
+        )
+        self.assertFalse(
+            seams["check_all"].called,
+            "check_all must not run without a resolvable repository",
+        )
+        self.assertFalse(
+            seams["token_all"].called,
+            "check_token_all must not run without a resolvable repository",
+        )
+
+    def test_fetch_failure_yields_skipped_findings(self):
+        # The repository resolves but the fetch fails: four skipped branch
+        # findings carrying the fetch reason, and check_all never runs. The
+        # token probes DO still run - verified against today's code: both
+        # call sites assign token_findings outside the rules if/else (the
+        # verify_guards and _report_guards ``else`` branches both reach
+        # check_token_all), so the helper must do the same.
+        from anvilkit.pi import piguard
+
+        fetch_reason = "the fetch reason"
+        token = [
+            token_finding("target_access", "passed"),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        (branch_out, token_out, repository), seams = self.run_collect(
+            self.project,
+            self.TOKEN,
+            "main",
+            repository=(self.OWNER, self.REPO),
+            rules=None,
+            fetch_reason=fetch_reason,
+            token_findings=token,
+        )
+        self.assertEqual(
+            piguard.skipped_findings(fetch_reason),
+            branch_out,
+            "a failed fetch must yield skipped_findings of the fetch reason",
+        )
+        self.assertEqual(
+            4,
+            len(branch_out),
+            "one skipped finding per defined branch check is expected",
+        )
+        for finding in branch_out:
+            self.assertEqual("skipped", finding["status"])
+        self.assertFalse(
+            seams["check_all"].called,
+            "a failed fetch must not reach check_all",
+        )
+        self.assertIs(
+            token,
+            token_out,
+            "the token findings must still come from check_token_all when "
+            "the fetch fails, as both call sites do today",
+        )
+        self.assertTrue(
+            seams["token_all"].called,
+            "the token probes run whenever the repository resolves, even "
+            "when the branch-rules fetch fails",
+        )
+        self.assertEqual(
+            (self.OWNER, self.REPO),
+            repository,
+            "the repository is returned even when the fetch fails",
+        )
