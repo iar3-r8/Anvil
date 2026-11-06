@@ -1351,7 +1351,7 @@ def setup_repo(
         # then discard. --no-github skips it entirely: with no GitHub there is
         # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
         if not no_github:
-            branch_findings, token_findings, _repository = _collect_guard_findings(
+            branch_findings, token_findings, repository = _collect_guard_findings(
                 Path(path), token, "main"
             )
             if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
@@ -1361,14 +1361,28 @@ def setup_repo(
                 # carry no token value, so nothing secret is echoed.
                 _echo_guard_report(shared, branch_findings, token_findings)
                 shared.echo("")
+                remediation = piguard.gate_remediation(
+                    branch_findings, token_findings
+                )
                 # Behaviour 7: the gate prepares the fix a junior can
                 # follow - the importable ruleset - after the report and
                 # before the final exit. The run still ends blocked; the
                 # prepared fix never masks the block.
-                if piguard.gate_remediation(
-                    branch_findings, token_findings
-                )["needs_ruleset"]:
+                if remediation["needs_ruleset"]:
                     _prepare_gate_ruleset(shared, Path(path))
+                    shared.echo("")
+                # Behaviour 8: the gate prints the token fix a junior
+                # can follow - the pre-filled creation URL and the
+                # ordered steps - after the ruleset preparation (branch
+                # rules first, then the token fix) and before the final
+                # exit. Only a bad token (a token finding with status
+                # fail) earns the recipe (the warn asymmetry). The URL
+                # carries no token value, so nothing secret is echoed.
+                # ``repository`` is only None when no repository could be
+                # resolved, in which case the token probes never ran, so
+                # the guard is defensive and unreachable.
+                if remediation["needs_token_recipe"] and repository is not None:
+                    _prepare_gate_token_recipe(shared, repository)
                     shared.echo("")
                 shared.echo(
                     "⛔ Fix the branch rules and token scope above, then "
@@ -1645,6 +1659,33 @@ def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
     shared.echo("Wrote the ruleset to {}:".format(written))
     for line in piruleset.import_steps(None, written):
         shared.echo("  - {}".format(line))
+
+
+def _prepare_gate_token_recipe(
+    shared: Context, repository: Tuple[str, str]
+) -> None:
+    """Print the token fix a blocked gate reports on.
+
+    The pre-filled fine-grained creation URL as its own line, then the
+    ordered UI steps from ``pitokenrecipe.recipe_steps`` - the same
+    substance the outgoing ``token-recipe`` command prints, reused, never
+    re-derived. The URL carries no token value (the token text is shown
+    by GitHub's UI once and never passes through Anvil), so nothing
+    secret is echoed.
+
+    A ``TokenRecipeError`` is reported, naming the failure, and never
+    raised - the run still ends blocked, never masked into success. This
+    function raises no other exception type.
+    """
+    owner, repo = repository
+    try:
+        url = pitokenrecipe.build_recipe_url(owner, repo)
+    except pitokenrecipe.TokenRecipeError as exc:
+        shared.echo("could not build the token recipe: {}".format(exc))
+        return
+    shared.echo(url)
+    for step in pitokenrecipe.recipe_steps(owner, repo, url):
+        shared.echo(step)
 
 
 def _collect_guard_findings(
