@@ -2561,6 +2561,240 @@ class TestSetupRepo(CliCase):
         self.assertIn("does not exist", result.output)
 
 
+# ---------------------------------------------------------------------------
+# setup-repo guard gate (plans/setup-repo-guards.md): behaviour 4 is the red;
+# behaviours 5 and 10 are boundary pins that pass now and must keep passing
+# once the gate is wired in.
+# ---------------------------------------------------------------------------
+
+
+class TestSetupRepoGuardGate(CliCase):
+    """``setup-repo`` gates on the guards before any provisioning.
+
+    Behaviour 4 (red): with the guard seams patched to a blocked result,
+    the run must never reach ``provision.setup_repo`` and must leave the
+    target byte-for-byte unchanged. While behaviour 7 (ruleset writing) is
+    not yet built, a blocked run may create NO file in the target at all;
+    when behaviour 7 lands, the strict before/after snapshot assertions
+    must be relaxed to allow exactly ``.github-ruleset.json``.
+
+    Behaviour 5 (pin): a plain temp target has no git origin, so the real
+    ``resolve_repository`` returns None, the branch findings are all
+    skipped, the gate is clean, and provisioning proceeds exactly as
+    before the gate existed.
+
+    Behaviour 10 (pin): ``--no-github`` never touches a guard seam - the
+    seams are booby-trapped, so any call fails the test - and
+    provisioning proceeds with an empty token.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+
+    def setUp(self):
+        super().setUp()
+        # The harness's usual default: a port to resolve, nothing else
+        # stored. The blocked-gate tests store a token themselves, since
+        # the gate needs one.
+        self.write_env(LLM_PORT="8000")
+        self._target = tempfile.TemporaryDirectory()
+        self.target = self._target.name
+        self.addCleanup(self._target.cleanup)
+
+    # -- helpers -----------------------------------------------------------
+
+    def _target_snapshot(self):
+        """Every file under the target, mapped to its bytes."""
+        root = Path(self.target)
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    def _blocked_seams(self):
+        """Patcher trio: the guard seams yield a blocked result.
+
+        The repository resolves, the fetched rules are an empty array, so
+        the real ``check_all`` emits five ``warn`` findings (the plan's
+        Interface facts). The token probes return no findings - only the
+        branch warns are needed to block - which also keeps the run
+        offline.
+        """
+        return (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=([], None),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "check_token_all",
+                return_value=[],
+            ),
+        )
+
+    def _spy_provision(self, invoke_real=True):
+        """A recorder over ``provision.setup_repo``.
+
+        With ``invoke_real`` the spy delegates to the real provision, so a
+        run that should not provision actually provisions - the target then
+        gains files and the before/after snapshot proves it.
+        """
+        self._provision_calls = []
+
+        if invoke_real:
+            real = cli.provision.setup_repo
+
+            def spy(target, repo_plan, **kwargs):
+                self._provision_calls.append((str(target), repo_plan, kwargs))
+                return real(target, repo_plan, **kwargs)
+        else:
+            def spy(target, repo_plan, **kwargs):
+                self._provision_calls.append((str(target), repo_plan, kwargs))
+                return str(target)
+
+        patcher = mock.patch.object(cli.provision, "setup_repo", spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    # -- behaviour 4: the gate runs before any provisioning (RED) ----------
+
+    def test_blocked_gate_never_provisions(self):
+        """A blocked gate stops the run: provision is never called and the
+        target is byte-for-byte unchanged - no .roo, no settings file, no
+        .env write into it (the project .env lives outside the target)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        before = self._target_snapshot()
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(
+            0,
+            len(self._provision_calls),
+            "a blocked gate must never reach provision.setup_repo:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotEqual(
+            0,
+            result.exit_code,
+            "a blocked gate must stop the run, exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        after = self._target_snapshot()
+        self.assertEqual(
+            before,
+            after,
+            "a blocked run must leave the target byte-for-byte unchanged; "
+            "files that appeared: {}".format(
+                sorted(set(after) - set(before))
+            ),
+        )
+
+    def test_blocked_gate_exit_is_not_a_usage_or_config_error(self):
+        """A blocked gate is a new failure class: whatever its code, it is
+        not 2 (usage) and not 3 (config) - behaviour 9 pins the exact 9."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        self.assertNotIn(
+            result.exit_code,
+            (cli.EXIT_USAGE, cli.EXIT_CONFIG),
+            "a blocked gate is neither a usage nor a config error, "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+
+    # -- behaviour 5: a clean gate provisions exactly as today (PIN) -------
+
+    def test_clean_gate_provisions_as_today(self):
+        """A plain temp target has no git origin, so the real
+        resolve_repository returns None (unpatched - the genuine
+        all-skipped case), the gate is clean, and provisioning proceeds
+        exactly as before the gate existed: one provision.setup_repo
+        call, exit 0, the usual provisioned artifacts, no
+        .github-ruleset.json, no recipe text."""
+        self._spy_provision(invoke_real=True)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(1, len(self._provision_calls), result.output)
+        provisioned_target, plan, _kwargs = self._provision_calls[0]
+        self.assertEqual(self.target, provisioned_target)
+        # The same RepoPlan fields the existing TestSetupRepo pins.
+        self.assertEqual(8000, plan.port)
+        self.assertEqual("", plan.github_token)
+        self.assertFalse(plan.use_anthropic_for_frontier_modes)
+        # The real provision wrote its usual artifacts into the target.
+        self.assertTrue(
+            (Path(self.target) / "zoo-code-settings.json").is_file()
+        )
+        self.assertTrue((Path(self.target) / ".roo" / "mcp.json").is_file())
+        self.assertTrue(
+            (Path(self.target) / ".vscode" / "extensions.json").is_file()
+        )
+        # A clean gate writes no ruleset and prints no recipe.
+        self.assertFalse((Path(self.target) / ".github-ruleset.json").exists())
+        self.assertNotIn("personal-access-tokens/new", result.output)
+        self.assertNotIn("recipe", result.output.lower())
+
+    # -- behaviour 10: --no-github skips the gate (PIN) ---------------------
+
+    def test_no_github_skips_the_guard_seams(self):
+        """With no GitHub there is nothing to gate: no resolve_repository,
+        no fetch_branch_rules, no check_token_all - the seams are
+        booby-trapped, so any call fails this test - and provisioning
+        proceeds with an empty token."""
+        boom = AssertionError("guard seam invoked under --no-github")
+        self._spy_provision(invoke_real=False)
+        traps = (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", side_effect=boom
+            ),
+            mock.patch.object(
+                cli.piguard, "fetch_branch_rules", side_effect=boom
+            ),
+            mock.patch.object(
+                cli.piguard, "check_token_all", side_effect=boom
+            ),
+        )
+        for patcher in traps:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes", "--no-github"]
+        )
+
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(1, len(self._provision_calls), result.output)
+        _provisioned_target, plan, _kwargs = self._provision_calls[0]
+        self.assertEqual("", plan.github_token)
+
+
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
 
