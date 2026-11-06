@@ -3327,6 +3327,88 @@ class TestSetupRepoGuardGate(CliCase):
             "built:\n{}".format(result.output),
         )
 
+    # -- behaviour 9: a blocked gate exits 9 (PIN) --------------------------
+    # The code was implemented in behaviour 4's green (the blocked path
+    # already raises EXIT_GUARDS_BLOCKED); these boundary pins tighten the
+    # earlier `!= 0` and `not in (2, 3)` pins to the exact code, pin the
+    # re-run-setup-repo message, and pin the non-reuse of 9.
+
+    def test_blocked_gate_exits_exactly_nine(self):
+        """A blocked run exits ``EXIT_GUARDS_BLOCKED`` and that constant
+        is literally 9 - a new failure class: nothing was provisioned and
+        nothing is wrong with Anvil, so neither 5 (provisioning failed
+        part-way) nor 1 (internal) (behaviour 9). Tightens the existing
+        ``!= 0`` / ``not in (2, 3)`` pins to the exact code."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        self._spy_provision(invoke_real=True)
+        for patcher in self._blocked_seams():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        self.assertEqual(0, len(self._provision_calls), result.output)
+        self.assertEqual(
+            9,
+            cli.EXIT_GUARDS_BLOCKED,
+            "EXIT_GUARDS_BLOCKED is literally 9, got {}".format(
+                cli.EXIT_GUARDS_BLOCKED
+            ),
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate exits exactly 9: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+
+    def test_blocked_gate_message_names_re_running_setup_repo(self):
+        """The last line a blocked run prints - the ``⛔`` line after the
+        last prepared fix - tells the junior to fix GitHub and re-run
+        ``setup-repo``: the line carries both (behaviour 9)."""
+        result = self._run_blocked_report(self._blocked_token_findings())
+
+        lines = [line for line in result.output.splitlines() if line.strip()]
+        trailing = lines[-1]
+        self.assertTrue(
+            trailing.lstrip().startswith("⛔"),
+            "the last line of a blocked run is the ⛔ re-run line, "
+            "got {!r}:\n{}".format(trailing, result.output),
+        )
+        message = trailing.lower()
+        self.assertIn(
+            "setup-repo",
+            message,
+            "the blocked report must name setup-repo as the command "
+            "to re-run:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "re-run",
+            message,
+            "the blocked report must tell the junior to re-run after "
+            "fixing GitHub:\n{}".format(result.output),
+        )
+
+    def test_exit_nine_is_not_reused_by_any_other_command(self):
+        """The blocked gate's code is its own failure class: no other
+        ``EXIT_*`` constant in cli carries the value 9 (behaviour 9)."""
+        self.assertEqual(9, cli.EXIT_GUARDS_BLOCKED)
+        colliding = sorted(
+            name
+            for name, value in vars(cli).items()
+            if name.startswith("EXIT_")
+            and name != "EXIT_GUARDS_BLOCKED"
+            and value == 9
+        )
+        self.assertEqual(
+            [],
+            colliding,
+            "exit code 9 is reused by: {}".format(colliding),
+        )
+
 
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
@@ -4076,6 +4158,79 @@ class TestVerifyGuardsTokenFindings(CliCase):
         )
         self.assertEqual(1, result.exit_code)
         self.assertIn("fail:", result.output)
+
+    def test_verify_guards_still_exits_summarize_not_nine(self):
+        # Behaviour 9 of plans/setup-repo-guards.md (pin): the gate is a
+        # SIBLING of summarize, not a change to it - verify-guards exits
+        # 0 on warn/skipped-only findings and 1 on a fail (the 0/1
+        # contract itself is already pinned by
+        # test_reports_all_five_rules_through_check_all and
+        # test_fail_token_finding_makes_verify_guards_exit_nonzero); what
+        # this pin adds is the negative: a blocked verify-guards is 0 or
+        # 1, never the setup-repo gate's code.
+        warn = [
+            token_finding(
+                "administration",
+                "warn",
+                danger="the repository could be deleted or reconfigured",
+                remedy=(
+                    "doc/external/github/rest-api-endpoints-for-actions-"
+                    "permissions.md"
+                ),
+            ),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        result, _token_all, _ = self.run_verify_guards_with_token_findings(
+            warn
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "warn/skipped-only findings exit 0 through summarize:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "verify-guards never exits the setup-repo gate's code: "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+
+        fail = [
+            token_finding(
+                "administration",
+                "fail",
+                danger="the repository could be deleted or reconfigured",
+                remedy=(
+                    "doc/external/github/rest-api-endpoints-for-actions-"
+                    "permissions.md"
+                ),
+            ),
+            token_finding(
+                "named_repo", "skipped", reason="no --other-repo was supplied"
+            ),
+        ]
+        result, _token_all, _ = self.run_verify_guards_with_token_findings(
+            fail
+        )
+        self.assertEqual(
+            1,
+            result.exit_code,
+            "a fail finding exits 1 through summarize:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a failing verify-guards exits 1, never the setup-repo "
+            "gate's code: exit {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
 
     def test_report_has_branch_rules_header_before_first_branch_finding(self):
         # Behaviour 19: the report has a "Branch rules" section header
