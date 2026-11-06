@@ -69,6 +69,10 @@ EXIT_PROMPT = 6
 # code rather than reusing EXIT_ERROR.
 EXIT_STRESS_UNAVAILABLE = 7
 EXIT_STRESS_FAILURES = 8
+# A blocked setup-repo guard gate: nothing was provisioned and nothing is
+# wrong with Anvil - the user's GitHub needs a fix (plans/setup-repo-guards.md
+# behaviour 9 pins the code and the message wording in a later cycle).
+EXIT_GUARDS_BLOCKED = 9
 
 ENV_FILENAME = ".env"
 SETTINGS_FILENAME = "anvil.yaml"
@@ -1342,6 +1346,20 @@ def setup_repo(
     try:
         token = _resolve_github_token(shared, github_token, no_github)
         shared.echo("")
+        # The guard gate: after the token (the gate needs it) and before the
+        # frontier/oxylabs prompts, so a blocked run asks no question it will
+        # then discard. --no-github skips it entirely: with no GitHub there is
+        # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
+        if not no_github:
+            branch_findings, token_findings, _repository = _collect_guard_findings(
+                Path(path), token, "main"
+            )
+            if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
+                shared.echo(
+                    "⛔ The setup-repo guards are not clean: fix the GitHub "
+                    "branch rules and token scope, then re-run setup-repo."
+                )
+                raise typer.Exit(EXIT_GUARDS_BLOCKED)
         frontier = _resolve_frontier(
             shared,
             settings,
