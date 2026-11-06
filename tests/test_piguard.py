@@ -2704,7 +2704,10 @@ class GateVerdictTests(unittest.TestCase):
         unknown = self._finding("weird", "history_rewrite")
         findings = (
             piguard.check_history_rewrite(
-                [rule("non_fast_forward", "main-guard")]
+                [
+                    rule("non_fast_forward", "main-guard"),
+                    rule("deletion", "main-guard"),
+                ]
             )
             + piguard.skipped_findings("GitHub was unreachable")
             + [unknown]

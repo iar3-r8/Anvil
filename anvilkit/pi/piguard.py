@@ -1667,6 +1667,31 @@ def summarize(findings: List[Dict[str, Any]]) -> int:
     return 0
 
 
+def gate_verdict(findings: List[Dict[str, Any]]) -> str:
+    """The gate seam ``setup-repo`` runs before any provisioning:
+    ``"blocked"`` when any finding has status ``fail`` or ``warn``, else
+    ``"clean"``.
+
+    A ``skipped`` never blocks: it is an honest "could not verify" (issue
+    #100, decision 2), and a target with no GitHub origin yields only
+    skipped findings yet must still provision. A ``warn`` blocks, though,
+    because a junior must fix it - or consciously accept it - before the
+    repo is called guarded. An unknown status is neither a fail nor a
+    warn, so it neither blocks nor crashes the gate.
+
+    This is a sibling of :func:`summarize`, not a replacement:
+    ``verify-guards`` keeps its ``1``-iff-any-``fail`` contract, with a
+    ``warn`` still exiting ``0``, while the gate needs a fail OR a warn to
+    block. Pure: one positional findings list, a ``str`` result, no
+    network, no write, never raises (behaviour 1 of
+    plans/setup-repo-guards.md).
+    """
+    for finding in findings:
+        if finding.get("status") in ("fail", "warn"):
+            return "blocked"
+    return "clean"
+
+
 def render_report(findings: List[Dict[str, Any]]) -> List[str]:
     """One line per finding, in order; empty findings yield an empty report.
 
