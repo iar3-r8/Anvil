@@ -8635,5 +8635,1016 @@ class SummarizeTokenFindingsTests(unittest.TestCase):
         )
 
 
+class FindingBriefTests(unittest.TestCase):
+    """Behaviour 1 of plans/guard-finding-compact.md: brief on every finding.
+
+    Every emittable finding - the five branch rules at passed and warn,
+    the four ``skipped_findings`` checks and the five token checks at
+    their statuses - carries a non-empty ``brief`` string of at most 60
+    characters, plain words, no doc path, no API jargon beyond the rule
+    name: the one short clause the compact report's headline carries
+    after the em dash.
+
+    The approved sample report recorded with the plan is the wording
+    authority for the briefs. Exact-word pins: wherever the sample gives
+    a word for a producer path, the tests pin that exact string - the
+    five branch passed briefs, the five branch warn briefs,
+    "no paths recorded" on an empty or unreadable
+    ``restricted_file_paths``, and the token briefs the sample names
+    (the sample's target ``iar3-r8/anvil`` and other repo
+    ``someorg/other`` are the sample run's values, so those briefs pin
+    the sample's form with the recorded value substituted).
+    Shape-only pins: the statuses the sample does not name (a
+    target-access 404 warn, an administration 200 fail or 404 warn, a
+    classic-token fail) and the parentheticals at values the sample
+    does not show (counts other than 2, ``fetch and merge: True``,
+    multiple restricted paths) - there the tests pin non-empty, at most
+    60 characters, no doc path, and the recorded value in parentheses.
+
+    The producers are driven as in production: the branch findings
+    through ``check_all`` over recorded rules-array shapes, the skipped
+    findings through ``skipped_findings`` over the reasons
+    ``fetch_branch_rules`` actually records (and the resolve-failure
+    reason the CLI builds), and the token findings through the five
+    probes over recorded openers - no live network.
+    """
+
+    OWNER = "owner"
+    REPO = "repo"
+    TOKEN = "ghp_recordedtoken"
+    # The sample report's named other repo: its owner differs from the
+    # target's owner, as the sample's does (someorg vs iar3-r8).
+    OTHER_REPO = "someorg/other"
+
+    # The resolve-failure reason the CLI builds when the target has no
+    # GitHub origin (anvilkit/cli.py, _collect_guard_findings) - the
+    # input ``skipped_findings`` actually receives on that path.
+    _NO_ORIGIN_REASON = (
+        "owner/repo could not be resolved from the origin remote of "
+        "{}: the {} has no origin, or its remote is not a GitHub "
+        "repository, and the identity is never guessed"
+    )
+
+    def _assert_brief_shape(self, finding: Any, label: str) -> str:
+        """The shape every finding's brief must carry; returns the brief."""
+        brief = _field(finding, "brief")
+        self.assertIsInstance(
+            brief,
+            str,
+            "{}: the finding must carry a brief string".format(label),
+        )
+        self.assertTrue(
+            brief.strip(),
+            "{}: the brief must be non-empty".format(label),
+        )
+        self.assertLessEqual(
+            len(brief),
+            60,
+            "{}: the brief must be at most 60 characters, got {} "
+            "characters: {!r}".format(label, len(brief), brief),
+        )
+        self.assertNotIn(
+            "doc/external/",
+            brief,
+            "{}: the brief must carry no doc path: {!r}".format(label, brief),
+        )
+        return brief
+
+    def _fetch_reason(self, outcome: Any) -> str:
+        """The reason ``fetch_branch_rules`` records for a recorded failure."""
+        rules, reason = piguard.fetch_branch_rules(
+            self.OWNER, self.REPO, "main", opener=_opener(outcome)
+        )
+        self.assertIsNone(
+            rules,
+            "fixture sanity: a failed fetch must not be reported as rules",
+        )
+        self.assertIsInstance(reason, str, "fixture sanity")
+        self.assertTrue(reason, "fixture sanity: a failed fetch records a reason")
+        return reason
+
+    # ------------------------------------------------------------------
+    # The branch findings, produced by check_all
+    # ------------------------------------------------------------------
+
+    def test_check_all_all_five_rules_passed_briefs_match_sample_words(self):
+        findings = piguard.check_all(
+            [
+                rule("non_fast_forward", "main-protected"),
+                rule("deletion", "main-protected"),
+                pull_request_rule("main-protected", 2),
+                update_rule(
+                    "main-protected",
+                    {"update_allows_fetch_and_merge": False},
+                ),
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                ),
+            ]
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["passed"] * 5,
+            "fixture sanity: all five rules active yield five passed "
+            "findings",
+        )
+        expected = (
+            ("non_fast_forward", "force pushes blocked"),
+            ("deletion", "branch deletion blocked"),
+            ("pull_request", "review required (2 required approvals)"),
+            ("update", "direct pushes restricted (fetch and merge: False)"),
+            (
+                "file_path_restriction",
+                "listed paths protected (.github/workflows/**)",
+            ),
+        )
+        for finding, (rule_type, brief) in zip(findings, expected):
+            with self.subTest(rule=rule_type):
+                self.assertEqual(
+                    _field(finding, "rule"),
+                    rule_type,
+                    "fixture sanity: the finding names its rule",
+                )
+                self.assertEqual(
+                    _field(finding, "brief"),
+                    brief,
+                    "the passed {} brief must be the sample's "
+                    "clause".format(rule_type),
+                )
+
+    def test_check_all_empty_rules_warn_briefs_match_sample_words(self):
+        findings = piguard.check_all([])
+
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["warn"] * 5,
+            "fixture sanity: an empty rules array warns on all five rules",
+        )
+        expected = (
+            (
+                "non_fast_forward",
+                "history can be rewritten or erased by a force push",
+            ),
+            ("deletion", "the branch can be deleted, with all its history"),
+            ("pull_request", "changes can land on main with no review"),
+            ("update", "anyone with push access can push straight to main"),
+            (
+                "file_path_restriction",
+                "a push can change .github/workflows/**, what CI runs",
+            ),
+        )
+        for finding, (rule_type, brief) in zip(findings, expected):
+            with self.subTest(rule=rule_type):
+                self.assertEqual(
+                    _field(finding, "rule"),
+                    rule_type,
+                    "fixture sanity: the finding names its rule",
+                )
+                self.assertEqual(
+                    _field(finding, "brief"),
+                    brief,
+                    "the warn {} brief must be the sample's "
+                    "clause".format(rule_type),
+                )
+
+    def test_review_passed_brief_ends_with_recorded_count_in_parentheses(self):
+        for count in (0, 1, 3):
+            with self.subTest(count=count):
+                findings = piguard.check_all(
+                    [pull_request_rule("main-protected", count)]
+                )
+                passed = [
+                    f
+                    for f in findings
+                    if _field(f, "rule") == "pull_request"
+                    and _field(f, "status") == "passed"
+                ]
+                self.assertEqual(
+                    len(passed),
+                    1,
+                    "fixture sanity: one passed review finding",
+                )
+                brief = self._assert_brief_shape(
+                    passed[0],
+                    "pull_request passed (count={})".format(count),
+                )
+                self.assertTrue(
+                    brief.endswith("({} required approvals)".format(count)),
+                    "the passed review brief must end with the recorded "
+                    "count in parentheses, got: {!r}".format(brief),
+                )
+
+    def test_update_passed_brief_ends_with_recorded_value_in_parentheses(self):
+        for value in (False, True):
+            with self.subTest(value=value):
+                findings = piguard.check_all(
+                    [
+                        update_rule(
+                            "main-protected",
+                            {"update_allows_fetch_and_merge": value},
+                        )
+                    ]
+                )
+                matching = [
+                    f
+                    for f in findings
+                    if _field(f, "rule") == "update"
+                    and _field(f, "status") == "passed"
+                ]
+                self.assertEqual(
+                    len(matching), 1, "fixture sanity: one passed update finding"
+                )
+                brief = self._assert_brief_shape(
+                    matching[0],
+                    "update passed (value={})".format(value),
+                )
+                self.assertTrue(
+                    brief.endswith("(fetch and merge: {})".format(value)),
+                    "the passed update brief must end with the recorded "
+                    "value in parentheses, got: {!r}".format(brief),
+                )
+
+    def test_file_paths_passed_brief_ends_with_recorded_paths_in_parentheses(self):
+        paths = [".github/workflows/**", "config.yaml"]
+        findings = piguard.check_all(
+            [
+                file_path_rule(
+                    "main-protected", {"restricted_file_paths": paths}
+                )
+            ]
+        )
+        matching = [
+            f
+            for f in findings
+            if _field(f, "rule") == "file_path_restriction"
+            and _field(f, "status") == "passed"
+        ]
+        self.assertEqual(
+            len(matching), 1, "fixture sanity: one passed file-path finding"
+        )
+        brief = self._assert_brief_shape(
+            matching[0],
+            "file_path_restriction passed ({} paths)".format(len(paths)),
+        )
+        self.assertTrue(
+            brief.endswith("(") and brief.endswith(")"),
+            "the passed file-path brief must end with the recorded paths "
+            "in parentheses, got: {!r}".format(brief),
+        )
+        for path in paths:
+            self.assertIn(
+                path,
+                brief,
+                "the passed file-path brief must carry the recorded path "
+                "{!r}, got: {!r}".format(path, brief),
+            )
+
+    def test_file_paths_passed_brief_says_no_paths_recorded_when_empty(self):
+        findings = piguard.check_all(
+            [
+                file_path_rule(
+                    "main-protected", {"restricted_file_paths": []}
+                )
+            ]
+        )
+        finding = [
+            f
+            for f in findings
+            if _field(f, "rule") == "file_path_restriction"
+        ][0]
+        self.assertEqual(
+            _field(finding, "restricted_file_paths"),
+            [],
+            "fixture sanity: an explicit empty list is recorded",
+        )
+        brief = self._assert_brief_shape(
+            finding,
+            "file_path_restriction passed (restricted_file_paths=[])",
+        )
+        self.assertIn(
+            "no paths recorded",
+            brief,
+            "an empty restricted_file_paths must render 'no paths "
+            "recorded', got: {!r}".format(brief),
+        )
+
+    def test_file_paths_passed_brief_says_no_paths_recorded_when_parameters_unreadable(self):
+        cases = (
+            ("parameters key absent", file_path_rule("main-protected")),
+            (
+                "parameters is not a dict",
+                dict(file_path_rule("main-protected"), parameters="not a dict"),
+            ),
+            (
+                "restricted_file_paths is not a list",
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": "config.yaml"},
+                ),
+            ),
+        )
+        for label, element in cases:
+            with self.subTest(parameters=label):
+                findings = piguard.check_all([element])
+                finding = [
+                    f
+                    for f in findings
+                    if _field(f, "rule") == "file_path_restriction"
+                ][0]
+                self.assertEqual(
+                    _field(finding, "restricted_file_paths"),
+                    [],
+                    "fixture sanity: unreadable parameters record an empty "
+                    "list",
+                )
+                brief = self._assert_brief_shape(
+                    finding,
+                    "file_path_restriction passed (unreadable: {})".format(
+                        label
+                    ),
+                )
+                self.assertIn(
+                    "no paths recorded",
+                    brief,
+                    "an unreadable restricted_file_paths must render 'no "
+                    "paths recorded', got: {!r}".format(brief),
+                )
+
+    # ------------------------------------------------------------------
+    # The skipped findings, produced by skipped_findings
+    # ------------------------------------------------------------------
+
+    def test_skipped_findings_no_origin_reason_brief_matches_sample(self):
+        reason = self._NO_ORIGIN_REASON.format("/tmp/target", "target")
+        findings = piguard.skipped_findings(reason)
+        self.assertEqual(
+            len(findings), 4, "fixture sanity: one skipped finding per check"
+        )
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                brief = self._assert_brief_shape(
+                    finding, "skipped ({})".format(_field(finding, "check"))
+                )
+                self.assertEqual(
+                    brief,
+                    "no GitHub origin remote",
+                    "the no-origin skip brief must be the sample's clause",
+                )
+
+    def test_skipped_findings_404_reason_brief_matches_sample(self):
+        reason = self._fetch_reason(
+            urllib.error.HTTPError(
+                "https://api.github.com/repos/owner/repo/rules/branches/main",
+                404,
+                "Not Found",
+                None,
+                None,
+            )
+        )
+        findings = piguard.skipped_findings(reason)
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                brief = self._assert_brief_shape(
+                    finding, "skipped ({})".format(_field(finding, "check"))
+                )
+                self.assertEqual(
+                    brief,
+                    "GitHub returned 404 for the branch rules",
+                    "the 404 skip brief must be the sample's clause",
+                )
+
+    def test_skipped_findings_unreachable_reason_brief_matches_sample(self):
+        reason = self._fetch_reason(
+            urllib.error.URLError("Name or service not known")
+        )
+        findings = piguard.skipped_findings(reason)
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                brief = self._assert_brief_shape(
+                    finding, "skipped ({})".format(_field(finding, "check"))
+                )
+                self.assertEqual(
+                    brief,
+                    "api.github.com was unreachable",
+                    "the unreachable skip brief must be the sample's clause",
+                )
+
+    # ------------------------------------------------------------------
+    # The token findings, produced by the five probes
+    # ------------------------------------------------------------------
+
+    def test_target_access_passed_brief_names_the_target(self):
+        findings = piguard.probe_target_access(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(_FakeResponse(b'{"full_name": "owner/repo"}', 200)),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "passed",
+            "fixture sanity: a 200 on the target passes",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "target_access passed (200)"
+        )
+        self.assertEqual(
+            brief,
+            "the token reaches {}/{}".format(self.OWNER, self.REPO),
+            "the passed target-access brief must be the sample's clause "
+            "with the recorded target",
+        )
+
+    def test_target_access_no_token_brief_matches_sample(self):
+        findings = piguard.probe_target_access(self.OWNER, self.REPO, None)
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: no token skips the probe",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "target_access no-token skip"
+        )
+        self.assertEqual(
+            brief,
+            "no token in .env",
+            "the no-token skip brief must be the sample's clause",
+        )
+
+    def test_target_access_404_brief_shape(self):
+        findings = piguard.probe_target_access(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo",
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "warn",
+            "fixture sanity: a 404 on the target warns",
+        )
+        self._assert_brief_shape(findings[0], "target_access 404 warn")
+
+    def test_target_access_401_brief_matches_sample(self):
+        findings = piguard.probe_target_access(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo",
+                    401,
+                    "Unauthorized",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: a 401 is not a scope answer",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "target_access 401 skip"
+        )
+        self.assertEqual(
+            brief,
+            "GitHub returned HTTP 401",
+            "the 401 skip brief must be the sample's clause",
+        )
+
+    def test_administration_passed_brief_matches_sample(self):
+        findings = piguard.probe_administration(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo/actions/permissions",
+                    403,
+                    "Forbidden",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "passed",
+            "fixture sanity: a 403 is the compliant answer",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "administration passed (403)"
+        )
+        self.assertEqual(
+            brief,
+            "Administration withheld (403)",
+            "the passed administration brief must be the sample's clause",
+        )
+
+    def test_administration_fail_brief_shape(self):
+        findings = piguard.probe_administration(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(_FakeResponse(b"{}", 200)),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "fail",
+            "fixture sanity: a 200 on the permissions endpoint fails",
+        )
+        self._assert_brief_shape(findings[0], "administration fail (200)")
+
+    def test_administration_warn_brief_shape(self):
+        findings = piguard.probe_administration(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo/actions/permissions",
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "warn",
+            "fixture sanity: a 404 is ambiguous, so it warns",
+        )
+        self._assert_brief_shape(findings[0], "administration warn (404)")
+
+    def test_classic_token_passed_brief_matches_sample(self):
+        findings = piguard.probe_classic_token(
+            self.TOKEN,
+            _opener(_FakeResponse(b'{"login": "owner"}', 200)),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "passed",
+            "fixture sanity: no scope header passes",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "classic_token passed (no scopes)"
+        )
+        self.assertEqual(
+            brief,
+            "no classic OAuth scopes returned",
+            "the passed classic-token brief must be the sample's clause",
+        )
+
+    def test_classic_token_fail_brief_shape(self):
+        findings = piguard.probe_classic_token(
+            self.TOKEN,
+            _opener(
+                _FakeResponse(
+                    b'{"login": "owner"}',
+                    200,
+                    headers={"X-OAuth-Scopes": "repo, user"},
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "fail",
+            "fixture sanity: a non-empty scope header fails",
+        )
+        self._assert_brief_shape(
+            findings[0], "classic_token fail (scopes recorded)"
+        )
+
+    def test_workflows_withheld_brief_matches_sample(self):
+        findings = piguard.workflows_withheld_finding()
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: the withholding is unprovable, so it skips",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "workflows_withheld constant"
+        )
+        self.assertEqual(
+            brief,
+            "no read-only call can prove this",
+            "the workflows-withheld brief must be the sample's clause",
+        )
+
+    def test_named_repo_no_other_repo_brief_matches_sample(self):
+        findings = piguard.probe_named_repo(None, self.TOKEN)
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: nothing to probe skips",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "named_repo no-other-repo skip"
+        )
+        self.assertEqual(
+            brief,
+            "no other repo named",
+            "the no-other-repo brief must be the sample's clause",
+        )
+
+    def test_named_repo_malformed_brief_matches_sample(self):
+        findings = piguard.probe_named_repo("oops", self.TOKEN)
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: malformed input skips, opener never called",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "named_repo malformed skip"
+        )
+        self.assertEqual(
+            brief,
+            "--other-repo 'oops' is not OWNER/REPO",
+            "the malformed-input brief must be the sample's clause",
+        )
+
+    def test_named_repo_passed_brief_names_the_other_repo(self):
+        findings = piguard.probe_named_repo(
+            self.OTHER_REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/someorg/other",
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "passed",
+            "fixture sanity: a 404 on the other repo passes",
+        )
+        brief = self._assert_brief_shape(findings[0], "named_repo passed (404)")
+        self.assertEqual(
+            brief,
+            "does not reach {} (404)".format(self.OTHER_REPO),
+            "the passed named-repo brief must be the sample's clause "
+            "with the recorded other repo",
+        )
+
+    def test_named_repo_warn_brief_names_the_other_repo(self):
+        findings = piguard.probe_named_repo(
+            self.OTHER_REPO,
+            self.TOKEN,
+            _opener(_FakeResponse(b'{"full_name": "someorg/other"}', 200)),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "warn",
+            "fixture sanity: a 200 on the other repo warns",
+        )
+        brief = self._assert_brief_shape(findings[0], "named_repo warn (200)")
+        self.assertEqual(
+            brief,
+            "also reaches {}, so a leak is not confined here".format(
+                self.OTHER_REPO
+            ),
+            "the warn named-repo brief must be the sample's clause with "
+            "the recorded other repo",
+        )
+
+    def test_named_repo_403_brief_matches_sample(self):
+        findings = piguard.probe_named_repo(
+            self.OTHER_REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/someorg/other",
+                    403,
+                    "Forbidden",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: a 403 is not a scope answer",
+        )
+        brief = self._assert_brief_shape(findings[0], "named_repo 403 skip")
+        self.assertEqual(
+            brief,
+            "GitHub returned 403, not a scope answer",
+            "the 403 named-repo brief must be the sample's clause",
+        )
+
+    # ------------------------------------------------------------------
+    # The sweep: every producer path
+    # ------------------------------------------------------------------
+
+    def _every_brief_finding(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Every finding the producers can emit as of today, with a label.
+
+        The same producer paths the per-finding tests above cover:
+        ``check_all`` over recorded rules-array shapes,
+        ``skipped_findings`` over the recorded fetch reasons and the
+        resolve-failure reason, every token probe over its recorded
+        outcomes, and the ``check_token_all`` concatenation over a
+        recorded 200 opener. A producer added to the module that is
+        absent from this sweep silently un-pins the invariant, so keep
+        the sweep in sync with the producers.
+        """
+        findings: List[Tuple[str, Dict[str, Any]]] = []
+        rules_arrays = (
+            ("empty array", []),
+            (
+                "all five rules",
+                [
+                    rule("non_fast_forward", "main-protected"),
+                    rule("deletion", "main-protected"),
+                    pull_request_rule("main-protected", 2),
+                    update_rule(
+                        "main-protected",
+                        {"update_allows_fetch_and_merge": False},
+                    ),
+                    file_path_rule(
+                        "main-protected",
+                        {"restricted_file_paths": [".github/workflows/**"]},
+                    ),
+                ],
+            ),
+            (
+                "all five rules, weak parameters",
+                [
+                    rule("non_fast_forward", "main-protected"),
+                    rule("deletion", "main-protected"),
+                    pull_request_rule("main-protected", 0),
+                    update_rule(
+                        "main-protected",
+                        {"update_allows_fetch_and_merge": True},
+                    ),
+                    file_path_rule(
+                        "main-protected",
+                        {"restricted_file_paths": []},
+                    ),
+                ],
+            ),
+        )
+        for label, rules in rules_arrays:
+            for finding in piguard.check_all(rules):
+                findings.append(
+                    (
+                        "check_all/{}: {} on rule {!r}".format(
+                            label,
+                            _field(finding, "status"),
+                            _field(finding, "rule"),
+                        ),
+                        finding,
+                    )
+                )
+        url = "https://api.github.com/repos/owner/repo/rules/branches/main"
+        skip_reasons = (
+            (
+                "no origin",
+                self._NO_ORIGIN_REASON.format("/tmp/target", "target"),
+            ),
+            (
+                "http 404",
+                self._fetch_reason(
+                    urllib.error.HTTPError(url, 404, "Not Found", None, None)
+                ),
+            ),
+            (
+                "unreachable",
+                self._fetch_reason(
+                    urllib.error.URLError("Name or service not known")
+                ),
+            ),
+            (
+                "http 401",
+                self._fetch_reason(
+                    urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
+                ),
+            ),
+        )
+        for label, reason in skip_reasons:
+            for finding in piguard.skipped_findings(reason):
+                findings.append(
+                    (
+                        "skipped_findings/{}: {} on check {!r}".format(
+                            label,
+                            _field(finding, "status"),
+                            _field(finding, "check"),
+                        ),
+                        finding,
+                    )
+                )
+        target_url = "https://api.github.com/repos/owner/repo"
+        admin_url = (
+            "https://api.github.com/repos/owner/repo/actions/permissions"
+        )
+        other_url = "https://api.github.com/repos/someorg/other"
+        probe_calls = (
+            (
+                "target_access no-token",
+                lambda: piguard.probe_target_access(
+                    self.OWNER, self.REPO, None
+                ),
+            ),
+            (
+                "target_access 200",
+                lambda: piguard.probe_target_access(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(_FakeResponse(b'{"full_name": "owner/repo"}', 200)),
+                ),
+            ),
+            (
+                "target_access 404",
+                lambda: piguard.probe_target_access(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            target_url, 404, "Not Found", None, None
+                        )
+                    ),
+                ),
+            ),
+            (
+                "administration 403",
+                lambda: piguard.probe_administration(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            admin_url, 403, "Forbidden", None, None
+                        )
+                    ),
+                ),
+            ),
+            (
+                "administration 200",
+                lambda: piguard.probe_administration(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(_FakeResponse(b"{}", 200)),
+                ),
+            ),
+            (
+                "administration 404",
+                lambda: piguard.probe_administration(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            admin_url, 404, "Not Found", None, None
+                        )
+                    ),
+                ),
+            ),
+            (
+                "classic_token no-token",
+                lambda: piguard.probe_classic_token(None),
+            ),
+            (
+                "classic_token 200 no scopes",
+                lambda: piguard.probe_classic_token(
+                    self.TOKEN,
+                    _opener(_FakeResponse(b'{"login": "owner"}', 200)),
+                ),
+            ),
+            (
+                "classic_token 200 scopes",
+                lambda: piguard.probe_classic_token(
+                    self.TOKEN,
+                    _opener(
+                        _FakeResponse(
+                            b'{"login": "owner"}',
+                            200,
+                            headers={"X-OAuth-Scopes": "repo, user"},
+                        )
+                    ),
+                ),
+            ),
+            (
+                "workflows_withheld constant",
+                lambda: piguard.workflows_withheld_finding(),
+            ),
+            (
+                "named_repo none",
+                lambda: piguard.probe_named_repo(None, self.TOKEN),
+            ),
+            (
+                "named_repo malformed",
+                lambda: piguard.probe_named_repo("oops", self.TOKEN),
+            ),
+            (
+                "named_repo 404",
+                lambda: piguard.probe_named_repo(
+                    self.OTHER_REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            other_url, 404, "Not Found", None, None
+                        )
+                    ),
+                ),
+            ),
+            (
+                "named_repo 200",
+                lambda: piguard.probe_named_repo(
+                    self.OTHER_REPO,
+                    self.TOKEN,
+                    _opener(_FakeResponse(b'{"full_name": "someorg/other"}', 200)),
+                ),
+            ),
+            (
+                "named_repo 403",
+                lambda: piguard.probe_named_repo(
+                    self.OTHER_REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            other_url, 403, "Forbidden", None, None
+                        )
+                    ),
+                ),
+            ),
+        )
+        for label, call in probe_calls:
+            for finding in call():
+                findings.append(
+                    (
+                        "{}: {} on check {!r}".format(
+                            label,
+                            _field(finding, "status"),
+                            _field(finding, "check"),
+                        ),
+                        finding,
+                    )
+                )
+        for finding in piguard.check_token_all(
+            self.OWNER,
+            self.REPO,
+            token=self.TOKEN,
+            other_repo=self.OTHER_REPO,
+            opener=_opener(_FakeResponse(b'{"ok": true}', 200)),
+        ):
+            findings.append(
+                (
+                    "check_token_all: {} on check {!r}".format(
+                        _field(finding, "status"), _field(finding, "check")
+                    ),
+                    finding,
+                )
+            )
+        return findings
+
+    def test_every_emittable_finding_carries_a_brief(self):
+        findings = self._every_brief_finding()
+
+        self.assertGreaterEqual(
+            len(findings),
+            20,
+            "fixture sanity: the sweep must cover the twenty emittable "
+            "findings, got {}".format(len(findings)),
+        )
+        self.assertEqual(
+            {_field(f, "check") for _label, f in findings},
+            {
+                "history_rewrite",
+                "review",
+                "update_restriction",
+                "file_paths",
+                "target_access",
+                "administration",
+                "classic_token",
+                "workflows_withheld",
+                "named_repo",
+            },
+            "fixture sanity: the sweep must cover every emitting check",
+        )
+        for label, finding in findings:
+            with self.subTest(finding=label):
+                self._assert_brief_shape(finding, label)
+
+
 if __name__ == "__main__":
     unittest.main()
