@@ -5538,11 +5538,12 @@ class WorkflowsWithheldFindingTests(unittest.TestCase):
             "withholding is a write, which the probes must not perform",
         )
 
-    def test_remedy_cites_a_saved_page_and_points_to_a_manual_check(self):
+    def test_remedy_points_to_the_manual_check_in_github_settings(self):
         # The probe cannot verify the withholding, so the remedy must tell a
-        # human how to verify it by hand: a saved page under
-        # doc/external/github/ (the workflows page or the fine-grained-PAT
-        # page, both cited in the plan) and a manual check.
+        # human how to verify it by hand - a manual check in GitHub settings
+        # where the Workflows permission is visible by absence. Behaviour 2
+        # words this as a single short sentence with no doc path (the saved
+        # page is no longer named; the remedy points at the manual check).
         produce = self._producer()
 
         findings = produce()
@@ -5565,20 +5566,25 @@ class WorkflowsWithheldFindingTests(unittest.TestCase):
             "cannot say what the user can do to verify the withholding is "
             "a programming error",
         )
-        self.assertTrue(
-            self._WORKFLOWS_DOC in remedy
-            or self._FINE_GRAINED_DOC in remedy,
-            "the remedy must name a saved page under doc/external/github/ "
-            "- the workflows endpoint page or the fine-grained-PAT page - "
-            "so a reviewer can check the claim against the saved "
-            "documentation",
+        self.assertIn(
+            "in GitHub settings",
+            remedy,
+            "the remedy must point at the manual check's place - the "
+            "GitHub settings, where the Workflows permission is visible "
+            "by absence",
+        )
+        self.assertIn(
+            "Workflows permission",
+            remedy,
+            "the remedy must name what the human checks for - the absence "
+            "of the Workflows permission - the substance of the withholding",
         )
         remedy_lower = remedy.lower()
         self.assertIn(
-            "manual",
+            "check the token",
             remedy_lower,
-            "the remedy must tell a human how to verify the withholding by "
-            "hand - the probe cannot do it",
+            "the remedy must tell a human to perform the check by hand - "
+            "the probe cannot do it",
         )
         self.assertTrue(
             "ui" in remedy_lower
@@ -5862,11 +5868,12 @@ class ProbeNamedRepoTests(unittest.TestCase):
             "token's full repository list",
         )
         self.assertIn(
-            "doc/external/github/",
+            "cannot enumerate the full repository list",
             remedy,
-            "the passed remedy must name a saved page under "
-            "doc/external/github/, consistent with the other probes' "
-            "passed findings",
+            "the passed remedy must carry the scope-limit non-claim as a "
+            "single clause - the probe proves only that this one repo is "
+            "out of reach, never a full-list clearance (behaviour 2 "
+            "drops the doc path)",
         )
 
     def test_recorded_200_yields_exactly_one_warn_finding_reaching_more_than_the_target(self):
@@ -5916,11 +5923,17 @@ class ProbeNamedRepoTests(unittest.TestCase):
             "every finding carries a non-empty remedy",
         )
         self.assertIn(
-            "doc/external/github/",
+            "recreate the token",
             remedy,
-            "the warn remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "the warn remedy must tell the user the fix - recreate the "
+            "token - now worded as a short sentence, not a doc path "
+            "(behaviour 2)",
+        )
+        self.assertIn(
+            "target",
+            remedy,
+            "the warn remedy must name the target the token should be "
+            "scoped to only - the substance of the 200 finding",
         )
 
     def test_no_other_repo_supplied_yields_skipped_naming_the_flag_without_request(self):
@@ -7897,11 +7910,12 @@ class RenderFindingBlockTests(unittest.TestCase):
                     "the block:\nblock: {!r}".format(block),
                 )
                 self.assertIn(
-                    "doc/external/github/fine-grained-personal-access-"
-                    "tokens.md",
+                    self._compact("so later denials are interpretable"),
                     block_compact,
-                    "the remedy's doc path must survive somewhere in "
-                    "the block:\nblock: {!r}".format(block),
+                    "the passed see: line (the short passed remedy) must "
+                    "still state that later denials are interpretable, so "
+                    "de-duplicating cannot delete the fact:\n"
+                    "block: {!r}".format(block),
                 )
 
     def test_narrower_width_wraps_to_strictly_more_lines(self):
@@ -9763,21 +9777,36 @@ class FindingBriefTests(unittest.TestCase):
     # and remedy
     # ------------------------------------------------------------------
 
-    def _assert_short_field_shape(self, value: Any, label: str) -> None:
-        """The shape a non-empty danger/reason/remedy must carry."""
+    def _assert_short_field_shape(
+        self, value: Any, label: str, allow_long: bool = False
+    ) -> None:
+        """The shape a non-empty danger/reason/remedy must carry.
+
+        ``allow_long`` lifts only the 100-character length bound; every
+        other assertion (single sentence, no doc path, no 'see:' clause)
+        still applies. It exists for the one reason this module passes
+        through but does not own: the no-origin reason is built in
+        anvilkit.cli._collect_guard_findings (not here), pinned word-for-word
+        in tests/test_cli.py - including the noun invariant "the project has
+        no origin" - and it is ~173 chars because it names the target path
+        and the full resolution failure. It is never printed inside a finding
+        block (the headline carries the brief), so the 100-char bound - which
+        exists to keep a block line short - does not apply to it.
+        """
         self.assertIsInstance(
             value,
             str,
             "{}: the field must be a string, got {!r}".format(label, value),
         )
-        self.assertLessEqual(
-            len(value),
-            100,
-            "{}: the field must be a single sentence of at most 100 "
-            "characters, got {} characters: {!r}".format(
-                label, len(value), value
-            ),
-        )
+        if not allow_long:
+            self.assertLessEqual(
+                len(value),
+                100,
+                "{}: the field must be a single sentence of at most 100 "
+                "characters, got {} characters: {!r}".format(
+                    label, len(value), value
+                ),
+            )
         self.assertNotIn(
             ". ",
             value,
@@ -9797,6 +9826,20 @@ class FindingBriefTests(unittest.TestCase):
         )
 
     def test_every_emittable_finding_danger_reason_and_remedy_are_short(self):
+        """Behaviour 2: every emittable danger/reason/remedy is one short
+        sentence with no doc path and no 'see:' clause.
+
+        One documented exemption: the no-origin *reason* is exempt from the
+        100-char length bound only (see _assert_short_field_shape). It is
+        built and pinned verbatim in
+        anvilkit.cli._collect_guard_findings / tests/test_cli.py - including
+        the noun invariant "the project has no origin" - and is passed through
+        skipped_findings untouched. It is never printed inside a finding block
+        (the headline carries the brief), so the bound that exists to keep a
+        block line short does not apply to it. Every other assertion on that
+        subtest (no doc path, no 'see:' clause, single sentence) still
+        applies, and the remedy is still pinned.
+        """
         findings = self._every_brief_finding()
         for label, finding in findings:
             with self.subTest(finding=label):
@@ -9829,8 +9872,14 @@ class FindingBriefTests(unittest.TestCase):
                         "{}: a reason is only carried by a skipped "
                         "finding".format(label),
                     )
+                    # The no-origin reason is CLI-owned and pinned verbatim
+                    # in tests/test_cli.py (the noun invariant "the project
+                    # has no origin"), so it is exempt from the 100-char
+                    # length bound only - see the helper's docstring.
                     self._assert_short_field_shape(
-                        reason, "{}: reason".format(label)
+                        reason,
+                        "{}: reason".format(label),
+                        allow_long=("has no origin" in reason),
                     )
 
                 # remedy: a single short sentence with no doc path and no
