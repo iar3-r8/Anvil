@@ -8158,7 +8158,7 @@ class RenderFindingBlockTests(unittest.TestCase):
             "block: {!r}".format(block),
         )
         self.assertIn(
-            _field(finding, "brief"),
+            self._compact(_field(finding, "brief")),
             self._compact("\n".join(block)),
             "the warn block must carry the finding's own brief (the "
             "danger words) word-for-word:\nblock: {!r}".format(block),

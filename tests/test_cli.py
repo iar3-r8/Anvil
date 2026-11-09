@@ -2886,7 +2886,7 @@ class TestSetupRepoGuardGate(CliCase):
         def first_headline_index(finding):
             headline = _finding_headline(finding)
             for index, line in enumerate(lines):
-                if line.lstrip() == headline:
+                if line.lstrip().startswith(headline):
                     return index
             self.fail(
                 "the blocked report has no block for the finding with "
