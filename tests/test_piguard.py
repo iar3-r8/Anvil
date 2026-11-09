@@ -7682,11 +7682,14 @@ class RenderFindingBlockTests(unittest.TestCase):
       wraps within ``width`` with no elision, and there is no detail line
       and no ``fix:`` line, which now lives in the report's "To fix"
       section (behaviour 7);
-    - for skipped, detail lines carrying the finding's substance (the
-      reason) wrapped so every line is at most ``width`` characters, with
-      the substance surviving word-for-word across the wrap, plus a remedy
-      line, indented and beginning ``fix:`` (the pinned convention - the
-      remedy text, wrapped at the same width).
+    - for skipped, a headline plus one ``how:`` line (behaviour 6 of
+      plans/guard-finding-compact.md): the marked headline carrying the
+      finding's brief after an em dash, followed by one indented
+      ``  how: {remedy}`` line saying how the check can be run - no
+      detail line (the old ``_block_substance`` detail drops), no
+      ``fix:`` line; a missing ``brief`` falls back to the ``reason``, a
+      missing ``remedy`` emits no ``how:`` line, and a long brief or
+      remedy wraps within ``width`` with no elision.
 
     The existing single-line ``render_finding`` is untouched; its
     byte-for-byte pins (behaviours 9/17) keep passing, and this class pins
@@ -7723,17 +7726,6 @@ class RenderFindingBlockTests(unittest.TestCase):
             )
         return block
 
-    def _remedy_lines(self, block, allowed=("fix:", "see:")):
-        """The block's remedy lines: indented, beginning one of ``allowed``.
-
-        The pinned convention: ``fix:`` for warn/fail/skipped, ``see:`` for
-        passed - the remedy text, wrapped at the same width, carried on a
-        line of that convention.
-        """
-        return [
-            line for line in block if line.lstrip().startswith(allowed)
-        ]
-
     @staticmethod
     def _compact(text):
         """The text with every whitespace character removed.
@@ -7743,15 +7735,6 @@ class RenderFindingBlockTests(unittest.TestCase):
         the whitespace-free forms - without pinning the wrap points.
         """
         return "".join(text.split())
-
-    def _assert_substance_survives(self, substance, block):
-        """The substance recovers from the block word-for-word, in order."""
-        self.assertIn(
-            self._compact(substance),
-            self._compact("\n".join(block)),
-            "the substance must survive the wrap word-for-word; missing: "
-            "{!r}\nblock: {!r}".format(substance, block),
-        )
 
     def _passed_block(self, finding, width=80):
         """Render a passed finding as a block and pin its one-line shape.
@@ -7876,6 +7859,75 @@ class RenderFindingBlockTests(unittest.TestCase):
             ),
             "the block's first line must be the marked headline: "
             "{!r}".format(block[0]),
+        )
+        return block
+
+    def _skipped_block(self, finding, width=80):
+        """Render a skipped finding as a block and pin its two-line shape.
+
+        Behaviour 6 of plans/guard-finding-compact.md: a skipped block is
+        the marked em-dash headline plus one indented ``how:`` line -
+        ``["{mark} skipped: {label} — {brief}", "  how: {remedy}"]`` -
+        exactly two lines, one if the remedy is missing. The headline
+        carries the finding's brief after an em dash, like the
+        passed/warn/fail lines (behaviours 4-5); the ``how:`` line says
+        how the check can be run - the user's "quickly tell how they can
+        be checked". A missing ``brief`` falls back to the ``reason``; a
+        missing ``remedy`` emits no ``how:`` line rather than an empty
+        one. There is no detail line (the old ``_block_substance``
+        detail drops) and no ``fix:`` line (the prefix word changes for
+        skipped only - ``how:`` is the fixed furniture, behaviour 12).
+        A long brief or remedy wraps within ``width`` with no elision.
+        The shared shape pins live here so each skipped test pins
+        content, not shape.
+        """
+        renderer = getattr(piguard, "render_finding_block", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.pi.piguard.render_finding_block is not callable; the "
+            "behaviour-19 block renderer has not been implemented yet",
+        )
+        block = renderer(finding, width=width)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        for line in block:
+            self.assertIsInstance(line, str)
+            self.assertLessEqual(
+                len(line),
+                width,
+                "a block line exceeds the requested width {!r}: {!r}".format(
+                    width, line
+                ),
+            )
+        label = _field(finding, "rule") or _field(finding, "check")
+        brief = _field(finding, "brief")
+        headline_text = _field(finding, "reason")
+        if isinstance(brief, str) and brief:
+            headline_text = brief
+        headline = "⏭️ skipped: {} — {}".format(label, headline_text)
+        self.assertTrue(
+            block[0].startswith("⏭️ skipped: {}".format(label)),
+            "the block's first line must be the marked skipped headline: "
+            "{!r}".format(block[0]),
+        )
+        self.assertNotIn(
+            "fix:",
+            "\n".join(block),
+            "a skipped block carries no 'fix:' line - the remedy rides on "
+            "the indented 'how:' line instead (behaviour 6 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
+        )
+        expected = self._compact(headline)
+        remedy = _field(finding, "remedy")
+        if isinstance(remedy, str) and remedy:
+            expected += self._compact("  how: " + remedy)
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            expected,
+            "the skipped block is the em-dash headline plus the one "
+            "'how:' line - nothing added (no detail line), nothing "
+            "elided:\nexpected text: {!r}\nblock: {!r}".format(headline, block),
         )
         return block
 
@@ -8367,60 +8419,269 @@ class RenderFindingBlockTests(unittest.TestCase):
             "block: {!r}".format(block),
         )
 
-    def test_skipped_finding_block_wraps_the_long_reason(self):
-        # The real behaviour-5 finding: the workflows-withheld reason is the
-        # longest substance in the module, so it is the ideal wrap fixture -
-        # at width 80 it cannot fit on one line.
+    # ------------------------------------------------------------------
+    # Behaviour 6 of plans/guard-finding-compact.md: a skipped block is
+    # a headline plus one how line -
+    # ["{mark} skipped: {label} — {brief}", "  how: {remedy}"].
+    # ------------------------------------------------------------------
+
+    def test_workflows_withheld_skipped_block_is_headline_plus_how_line(self):
+        # The constant workflows_withheld skip: the approved sample report's
+        # exact words - the em-dash brief on the headline, the remedy on
+        # the one indented "how:" line. (Re-pointed from the detail +
+        # "fix:" pins of the old block shape: the detail line drops, the
+        # "fix:" line becomes the "how:" line, the headline gains the
+        # em-dash brief.)
         finding = piguard.workflows_withheld_finding()[0]
         self.assertEqual(
             "skipped", _field(finding, "status"), "fixture sanity"
         )
+        self.assertEqual(
+            "workflows_withheld", _field(finding, "check"), "fixture sanity"
+        )
 
-        block = self._block(finding)
-        headline = block[0]
+        block = self._skipped_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "⏭️ skipped: workflows_withheld — no read-only call can prove this",
+                "  how: in GitHub settings, check the token has no Workflows permission",
+            ],
+            "the skipped workflows_withheld block is exactly the marked "
+            "em-dash headline plus the one indented 'how:' line with the "
+            "sample's exact words:\nblock: {!r}".format(block),
+        )
+
+    def test_skipped_block_is_headline_plus_one_how_line(self):
+        # The skipped_findings producer over the recorded 404 fetch
+        # reason: every skipped finding is the marked em-dash headline
+        # (the short brief after the em dash) plus one indented "how:"
+        # line carrying the "then re-run" remedy - no "fix:" anywhere,
+        # no detail line.
+        url = "https://api.github.com/repos/owner/repo/rules/branches/main"
+        rules, reason = piguard.fetch_branch_rules(
+            "owner",
+            "repo",
+            "main",
+            opener=_opener(
+                urllib.error.HTTPError(url, 404, "Not Found", None, None)
+            ),
+        )
+        self.assertIsNone(rules, "fixture sanity: the 404 records a reason")
         self.assertTrue(
-            headline.startswith("⏭️ skipped:"),
-            "the block headline must carry the marked status prefix: {!r}".format(headline),
+            reason, "fixture sanity: the fetch failure records a reason"
         )
-        self.assertIn(
-            piguard.CHECK_WORKFLOWS_WITHHELD,
-            headline,
-            "the skipped headline must name the check: {!r}".format(headline),
+        findings = piguard.skipped_findings(reason)
+        self.assertEqual(
+            4, len(findings), "fixture sanity: one skipped finding per check"
         )
-        # The brief is the one vocabulary (behaviour 3 of
-        # plans/guard-finding-compact.md): the block's detail derives from
-        # render_finding's line, so the brief - not the reason - rides in
-        # the detail, as must the remedy. Neither carries a doc path any
-        # more (behaviour 2).
-        self._assert_substance_survives(_field(finding, "brief"), block)
-        self._assert_substance_survives(_field(finding, "remedy"), block)
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                self.assertEqual(
+                    "skipped", _field(finding, "status"), "fixture sanity"
+                )
+                brief = _field(finding, "brief")
+                remedy = _field(finding, "remedy")
+                label = _field(finding, "check")
+                block = self._skipped_block(finding)
+                self.assertEqual(
+                    block,
+                    [
+                        "⏭️ skipped: {} — {}".format(label, brief),
+                        "  how: {}".format(remedy),
+                    ],
+                    "a skipped finding is exactly the marked em-dash "
+                    "headline plus one indented 'how:' line with the "
+                    "remedy:\nblock: {!r}".format(block),
+                )
+                self.assertNotIn(
+                    "fix:",
+                    "\n".join(block),
+                    "the skipped block carries no 'fix:' line:\n"
+                    "block: {!r}".format(block),
+                )
+                self.assertNotIn(
+                    "doc/external/",
+                    self._compact("\n".join(block)),
+                    "the skipped block must carry no doc path (behaviour "
+                    "2 of plans/guard-finding-compact.md):\n"
+                    "block: {!r}".format(block),
+                )
+
+    def test_skipped_no_origin_block_headline_carries_brief_not_long_reason(self):
+        # The no-origin skip: the long CLI-owned reason (pinned verbatim
+        # in tests/test_cli.py for the noun invariant) is never printed
+        # in the block - the headline carries the short brief "no GitHub
+        # origin remote", and the "how:" line carries the remedy.
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "/tmp/target: the target has no origin, or its remote is not "
+            "a GitHub repository, and the identity is never guessed"
+        )
+        findings = piguard.skipped_findings(reason)
+        self.assertEqual(
+            4, len(findings), "fixture sanity: one skipped finding per check"
+        )
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                self.assertEqual(
+                    "no GitHub origin remote",
+                    _field(finding, "brief"),
+                    "fixture sanity: the no-origin skip brief is the "
+                    "sample's clause",
+                )
+                block = self._skipped_block(finding)
+                self.assertEqual(
+                    len(block),
+                    2,
+                    "the skipped no-origin block is the headline plus "
+                    "the one 'how:' line:\nblock: {!r}".format(block),
+                )
+                self.assertTrue(
+                    block[0].endswith(
+                        " — no GitHub origin remote"
+                    ),
+                    "the no-origin headline carries the brief after the "
+                    "em dash:\nblock: {!r}".format(block),
+                )
+                long_reason_in_block = self._compact(reason)
+                self.assertNotIn(
+                    long_reason_in_block,
+                    self._compact("\n".join(block)),
+                    "the long CLI-owned no-origin reason must not be "
+                    "printed in the block - the headline carries the "
+                    "brief:\nreason: {!r}\nblock: {!r}".format(reason, block),
+                )
+                self.assertEqual(
+                    block[1],
+                    "  how: run this in a clone whose origin is a GitHub repo",
+                    "the 'how:' line carries the no-origin remedy:\n"
+                    "block: {!r}".format(block),
+                )
+
+    def test_skipped_block_missing_brief_falls_back_to_reason(self):
+        # Behaviour 6's error clause: a skipped finding with no brief
+        # renders the reason after the em dash - no "None", no crash.
+        finding = {
+            "status": "skipped",
+            "check": "history_rewrite",
+            "rule": None,
+            "reason": "the branch rules could not be fetched",
+            "remedy": "re-run once the branch rules can be fetched",
+        }
+        self.assertNotIn("brief", finding, "fixture sanity: no brief key")
+
+        block = self._skipped_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "⏭️ skipped: history_rewrite — "
+                "the branch rules could not be fetched",
+                "  how: re-run once the branch rules can be fetched",
+            ],
+            "a skipped finding with no brief falls back to the reason "
+            "after the em dash - no 'None', no crash:\n"
+            "block: {!r}".format(block),
+        )
         self.assertNotIn(
-            "doc/external/",
-            self._compact("\n".join(block)),
-            "the skipped block must carry no doc path (behaviour 2 of "
-            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
+            "None",
+            "\n".join(block),
+            "the block must never print a literal 'None': "
+            "block: {!r}".format(block),
+        )
+
+    def test_skipped_block_missing_remedy_emits_no_how_line(self):
+        # Behaviour 6's error clause: a skipped finding with no remedy
+        # (or an empty one) is exactly ONE line - the em-dash headline -
+        # no "how:" line at all, let alone an empty one.
+        for remedy in (None, ""):
+            with self.subTest(remedy=remedy):
+                finding = {
+                    "status": "skipped",
+                    "check": "history_rewrite",
+                    "rule": None,
+                    "brief": "api.github.com was unreachable",
+                    "remedy": remedy,
+                }
+                block = self._skipped_block(finding)
+                self.assertEqual(
+                    block,
+                    [
+                        "⏭️ skipped: history_rewrite — "
+                        "api.github.com was unreachable"
+                    ],
+                    "a skipped finding with no remedy is exactly one "
+                    "line - the em-dash headline - no 'how:' line, no "
+                    "empty 'how:' line:\nblock: {!r}".format(block),
+                )
+                self.assertNotIn(
+                    "how:",
+                    "\n".join(block),
+                    "no 'how:' line of any kind when the remedy is "
+                    "missing:\nblock: {!r}".format(block),
+                )
+
+    def test_skipped_block_wraps_long_brief_or_remedy_with_no_elision(self):
+        # Behaviour 6's error clause: a skipped finding whose brief or
+        # remedy is long enough for the block to exceed 80 wraps every
+        # line within the width, with nothing elided - the block is the
+        # wrapped headline plus the wrapped "how:" line and nothing
+        # else, and line 0 is the marked headline.
+        long_brief = (
+            "the branch rules endpoint returned an answer that names a "
+            "situation the user has to read to understand"
+        )
+        long_remedy = (
+            "check the network access to api.github.com and the "
+            "repository plan that gates the branch rules, then re-run "
+            "this command once the fetch can succeed"
+        )
+        finding = {
+            "status": "skipped",
+            "check": "history_rewrite",
+            "rule": None,
+            "brief": long_brief,
+            "reason": long_brief,
+            "remedy": long_remedy,
+        }
+
+        block = piguard.render_finding_block(finding, width=80)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
         )
         self.assertGreater(
             len(block),
             2,
-            "the skipped block has a headline, the reason detail and a "
-            "remedy line:\nblock: {!r}".format(block),
+            "a skipped block with a long brief and remedy must wrap to "
+            "more than two lines:\nblock: {!r}".format(block),
         )
-        # Pinned convention: a skipped remedy (how to un-skip) rides on a
-        # ``fix:`` line.
-        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
-        self.assertGreaterEqual(
-            len(remedy_lines),
-            1,
-            "the block must carry an indented 'fix:' line saying how to "
-            "un-skip:\nblock: {!r}".format(block),
+        for line in block:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped skipped line exceeds width 80: {!r}".format(line),
+            )
+        self.assertTrue(
+            block[0].startswith("⏭️ skipped: history_rewrite"),
+            "line 0 must be the marked skipped headline: {!r}".format(block[0]),
         )
-        self.assertIn(
-            "in GitHub settings",
-            remedy_lines[0],
-            "the fix line must carry the start of the short remedy "
-            "(behaviour 2 of plans/guard-finding-compact.md):\n"
-            "block: {!r}".format(block),
+        self.assertTrue(
+            block[1].startswith("  how:"),
+            "line 1 must be the indented 'how:' line: {!r}".format(block[1]),
+        )
+        # No elision and no extra content: with every whitespace
+        # character removed, the block IS the headline plus the one
+        # "how:" line.
+        expected = self._compact(
+            "⏭️ skipped: history_rewrite — {}".format(long_brief)
+        ) + self._compact("  how: " + long_remedy)
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            expected,
+            "the wrapped skipped block must carry the headline and the "
+            "'how:' line - brief and remedy included - with nothing "
+            "added and nothing elided:\nexpected text: {!r}\n"
+            "block: {!r}".format(expected, block),
         )
 
     def test_branch_rule_passed_block_carries_brief_on_the_headline(self):
@@ -8574,14 +8835,18 @@ class FindingBlockHeadlineMarkTests(unittest.TestCase):
     with one space, so doctor's Guards section and the other report sites
     read at a glance:
 
-    - ``passed``  -> ``✅ ok: {label}``
-    - ``warn``    -> ``⚠️ warn: {label}``
-    - ``fail``    -> ``❌ fail: {label}``
-    - ``skipped`` -> ``⏭️ skipped: {label}``
+    - ``passed``  -> ``✅ ok: {label} — {brief}``
+    - ``warn``    -> ``⚠️ warn: {label} — {brief}``
+    - ``fail``    -> ``❌ fail: {label} — {brief}``
+    - ``skipped`` -> ``⏭️ skipped: {label} — {brief}``
     - anything else -> unchanged: ``unknown: {label}`` (no mark)
 
-    The mark is part of the wrapped headline (the wrap budget includes it),
-    and the detail and ``fix:``/``see:`` lines are unchanged.
+    Since behaviours 4-6 of plans/guard-finding-compact.md, every marked
+    headline carries the finding's brief after an em dash (for a skipped
+    finding, a missing ``brief`` falls back to its ``reason``); the mark
+    is part of the wrapped headline (the wrap budget includes it), and the
+    passed/warn/fail blocks are one line while a skipped block is the
+    headline plus one indented ``how:`` line.
     """
 
     # The four marks, pinned as literal strings - the set is exactly these.
@@ -8656,12 +8921,18 @@ class FindingBlockHeadlineMarkTests(unittest.TestCase):
         )
 
     def test_skipped_headline_starts_with_skipped_mark(self):
+        # Behaviour 6 of plans/guard-finding-compact.md: the skipped
+        # headline carries the finding's brief after an em dash, like
+        # the other statuses - line 0 is the marked em-dash form.
+        # (Re-pointed from the un-briefed headline pin.)
         finding = self._finding("skipped", "workflows_withheld")
         self.assertEqual(
             self._first_line(finding),
-            "{} skipped: workflows_withheld".format(self.SKIPPED_MARK),
+            "{} skipped: workflows_withheld — the guard detail".format(
+                self.SKIPPED_MARK
+            ),
             "a skipped headline must be the mark, one space, the plain "
-            "headline: {!r}",
+            "headline and the em-dash brief: {!r}",
         )
 
     def test_unknown_status_headline_carries_no_mark(self):
