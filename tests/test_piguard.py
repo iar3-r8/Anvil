@@ -7673,12 +7673,16 @@ class RenderFindingBlockTests(unittest.TestCase):
       ``rule`` when the finding carries one, otherwise the ``check`` name,
       never a literal ``None``;
     - detail lines carrying the finding's substance (the danger for
-      warn/fail, the reason for skipped, the caveat + recorded values for
-      passed) wrapped so every line is at most ``width`` characters, with the
-      substance surviving word-for-word across the wrap;
-    - a remedy line, indented and beginning ``fix:`` for warn/fail/skipped
-      and ``see:`` for passed (the pinned convention - both prefixes are
-      accepted, one carries the full remedy text wrapped at the same width).
+      warn/fail, the reason for skipped) wrapped so every line is at most
+      ``width`` characters, with the substance surviving word-for-word
+      across the wrap;
+    - for warn/fail/skipped, a remedy line, indented and beginning
+      ``fix:`` (the pinned convention - the remedy text, wrapped at the
+      same width);
+    - for passed, ONE line (behaviour 4 of
+      plans/guard-finding-compact.md): the marked headline carrying the
+      finding's brief after an em dash - no detail line, no ``see:``
+      line, no bypass caveat.
 
     The existing single-line ``render_finding`` is untouched; its
     byte-for-byte pins (behaviours 9/17) keep passing, and this class pins
@@ -7744,6 +7748,243 @@ class RenderFindingBlockTests(unittest.TestCase):
             "the substance must survive the wrap word-for-word; missing: "
             "{!r}\nblock: {!r}".format(substance, block),
         )
+
+    def _passed_block(self, finding, width=80):
+        """Render a passed finding as a block and pin its one-line shape.
+
+        Behaviour 4 of plans/guard-finding-compact.md: a passed block is
+        exactly one line - the marked headline with the finding's own
+        brief after an em dash. No detail line, no ``see:`` line, no
+        bypass caveat: the remedy no longer prints per finding. The
+        shared shape pins live here so each passed test pins content,
+        not shape.
+        """
+        renderer = getattr(piguard, "render_finding_block", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.pi.piguard.render_finding_block is not callable; the "
+            "behaviour-19 block renderer has not been implemented yet",
+        )
+        block = renderer(finding, width=width)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        for line in block:
+            self.assertIsInstance(line, str)
+            self.assertLessEqual(
+                len(line),
+                width,
+                "a block line exceeds the requested width {!r}: {!r}".format(
+                    width, line
+                ),
+            )
+        self.assertEqual(
+            len(block),
+            1,
+            "a passed block is ONE line - the marked headline with the "
+            "brief after an em dash:\nblock: {!r}".format(block),
+        )
+        label = _field(finding, "rule") or _field(finding, "check")
+        expected = "✅ ok: {} — {}".format(label, _field(finding, "brief"))
+        self.assertEqual(
+            block[0],
+            expected,
+            "the passed line must be exactly the marked headline with the "
+            "em-dash brief: expected {!r}, got {!r}".format(expected, block[0]),
+        )
+        text = "\n".join(block)
+        self.assertNotIn(
+            "see:",
+            text,
+            "a passed block carries no 'see:' line - the remedy no longer "
+            "prints per finding:\nblock: {!r}".format(block),
+        )
+        self.assertNotIn(
+            "bypass",
+            text,
+            "a passed block carries no bypass caveat - it is printed once "
+            "as the trailing note:\nblock: {!r}".format(block),
+        )
+        return block
+
+    # ------------------------------------------------------------------
+    # Behaviour 4 of plans/guard-finding-compact.md: a passed block is
+    # ONE line - "{mark} ok: {label} — {brief}".
+    # ------------------------------------------------------------------
+
+    def test_passed_branch_finding_block_is_one_em_dash_line(self):
+        # The real check_all producer: a non_fast_forward rule present in
+        # the rules array yields a passed branch finding (rule set). The
+        # block is exactly one line - the marked headline with the
+        # finding's own brief after an em dash.
+        finding = piguard.check_all([rule("non_fast_forward", "main-guard")])[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            "non_fast_forward", _field(finding, "rule"), "fixture sanity"
+        )
+
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            ["✅ ok: non_fast_forward — {}".format(_field(finding, "brief"))],
+            "a passed branch block is exactly the marked headline with "
+            "the em-dash brief:\nblock: {!r}".format(block),
+        )
+
+    def test_passed_pull_request_block_carries_recorded_count_in_the_line(self):
+        # The recorded-value pass: the required-approvals count lives in
+        # the finding's own brief, on the one line - sample words, from
+        # the real check_review producer.
+        finding = piguard.check_review(
+            [pull_request_rule("main-guard", 2)]
+        )[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            2,
+            _field(finding, "required_approving_review_count"),
+            "fixture sanity: the recorded count must be 2",
+        )
+
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: pull_request — review required "
+                "(2 required approvals)"
+            ],
+            "the passed pull_request block is one line carrying the "
+            "recorded count from the brief:\nblock: {!r}".format(block),
+        )
+
+    def test_passed_update_block_carries_recorded_value_in_the_line(self):
+        # The recorded-value pass: update_allows_fetch_and_merge=False
+        # lives in the finding's own brief, on the one line - from the
+        # real check_update producer.
+        finding = piguard.check_update(
+            [
+                update_rule(
+                    "main-guard", {"update_allows_fetch_and_merge": False}
+                )
+            ]
+        )[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            False,
+            _field(finding, "update_allows_fetch_and_merge"),
+            "fixture sanity: the recorded value must be False",
+        )
+
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: update — direct pushes restricted "
+                "(fetch and merge: False)"
+            ],
+            "the passed update block is one line carrying the recorded "
+            "value from the brief:\nblock: {!r}".format(block),
+        )
+
+    def test_passed_file_path_block_carries_recorded_path_in_the_line(self):
+        # The recorded-value pass: the restricted paths live in the
+        # finding's own brief, on the one line - from the real
+        # check_file_paths producer.
+        finding = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-guard",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                )
+            ]
+        )[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            [".github/workflows/**"],
+            _field(finding, "restricted_file_paths"),
+            "fixture sanity: the recorded path must be recorded",
+        )
+
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: file_path_restriction — listed paths "
+                "protected (.github/workflows/**)"
+            ],
+            "the passed file_path_restriction block is one line carrying "
+            "the recorded path from the brief:\nblock: {!r}".format(block),
+        )
+
+    def test_passed_file_path_block_wraps_long_brief_with_no_elision(self):
+        # The many-restricted-paths case: headline + brief exceeds 80, so
+        # the block wraps to more than one line - every line within
+        # width, with no elision (the wrapped text is the headline and
+        # nothing else), and line 0 is the marked headline.
+        long_paths = [
+            ".github/workflows/nightly-integration-suite.yml",
+            "infrastructure/terraform/modules/production-network/**",
+            "deployment/k8s/base/production-cluster-manifests/**",
+        ]
+        finding = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-guard",
+                    {"restricted_file_paths": long_paths},
+                )
+            ]
+        )[0]
+        brief = _field(finding, "brief")
+        headline = "✅ ok: file_path_restriction — {}".format(brief)
+        self.assertGreater(
+            len(headline),
+            80,
+            "fixture sanity: the headline plus the brief must exceed 80 "
+            "to force a wrap: {!r}".format(headline),
+        )
+
+        block = piguard.render_finding_block(finding, width=80)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        self.assertGreater(
+            len(block),
+            1,
+            "an over-width passed block must wrap to more than one "
+            "line:\nblock: {!r}".format(block),
+        )
+        for line in block:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped passed line exceeds width 80: {!r}".format(line),
+            )
+        self.assertTrue(
+            block[0].startswith("✅ ok: file_path_restriction"),
+            "line 0 must be the marked headline: {!r}".format(block[0]),
+        )
+        # No elision and no extra content: with every whitespace
+        # character removed, the block IS the one-line headline.
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            self._compact(headline),
+            "the wrapped passed block must carry the headline - brief "
+            "included - with nothing added and nothing elided:\n"
+            "expected text: {!r}\nblock: {!r}".format(headline, block),
+        )
+        for path in long_paths:
+            self.assertIn(
+                path,
+                "".join("".join(block).split()),
+                "a recorded path was elided by the wrap: {!r}".format(path),
+            )
 
     def test_fail_finding_block_names_check_wraps_danger_and_carries_fix(self):
         # The real behaviour-3 finding: a 200 on the actions-permissions
@@ -7917,10 +8158,14 @@ class RenderFindingBlockTests(unittest.TestCase):
             "block: {!r}".format(block),
         )
 
-    def test_branch_rule_passed_block_keeps_caveat_and_recorded_count(self):
-        # A rule-based passed finding (rule set) keeps its substance: the
-        # rule name on the headline, the bypass-actors caveat, and the
-        # recorded approval count - all still present, wrapped.
+    def test_branch_rule_passed_block_carries_brief_on_the_headline(self):
+        # Behaviour 4 of plans/guard-finding-compact.md: a rule-based
+        # passed finding (rule set) is ONE line - the rule name on the
+        # marked headline, the recorded approval count inside the
+        # finding's own brief, after an em dash. The bypass caveat (a
+        # non-finding field) and the indented ``see:`` line both leave
+        # the block. (Re-pointed from the caveat + detail + see: pins:
+        # the substance now lives on line 0.)
         findings = piguard.check_review([pull_request_rule("main-guard", 1)])
         finding = findings[0]
         self.assertEqual(
@@ -7935,61 +8180,25 @@ class RenderFindingBlockTests(unittest.TestCase):
             "fixture sanity: the recorded count must be 1",
         )
 
-        block = self._block(finding)
-        headline = block[0]
-        self.assertTrue(
-            headline.startswith("✅ ok:"),
-            "the block headline must carry the marked status prefix: {!r}".format(headline),
-        )
-        self.assertIn(
-            "pull_request",
-            headline,
-            "a rule-based passed headline must name the rule: {!r}".format(
-                headline
-            ),
-        )
-        self.assertNotIn("None", headline)
-        # The substance is the finding's own brief - the one vocabulary
-        # (behaviour 3 of plans/guard-finding-compact.md): the block's
-        # detail derives from render_finding's line, so the brief carries
-        # the recorded count. A wrap may only change whitespace, so the
-        # check runs on the whitespace-free form: the brief and the
-        # "(1 required approvals)" parenthetical recover word-for-word
-        # without pinning the wrap points. The bypass caveat is not a
-        # finding field, so it must not appear in the block.
-        compact = self._compact("\n".join(block))
-        self.assertIn(
-            self._compact(_field(finding, "brief")),
-            compact,
-            "the finding's brief must survive the wrap word-for-word:"
-            "\nblock: {!r}".format(block),
-        )
-        self.assertNotIn(
-            "bypass",
-            compact,
-            "the bypass caveat is not a finding field, so the block "
-            "must not carry it: {!r}".format(block),
-        )
-        self.assertIn(
-            "1requiredapprovals",
-            compact,
-            "the recorded approval count must survive the wrap intact:\n"
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: pull_request — review required "
+                "(1 required approvals)"
+            ],
+            "the passed block is one line: the marked headline with the "
+            "brief (recorded count included) after an em dash:\n"
             "block: {!r}".format(block),
         )
-        # Pinned convention: a passed finding's remedy (the doc path) rides
-        # on a ``see:`` line.
-        self.assertGreaterEqual(
-            len(self._remedy_lines(block, allowed=("see:",))),
-            1,
-            "a passed block must carry an indented 'see:' line with the "
-            "doc path:\nblock: {!r}".format(block),
-        )
 
-    def test_token_passed_block_never_prints_none_or_a_rule_claim(self):
-        # The "ok: the None rule is present" bug: a token passed finding
-        # (rule=None) must render a headline naming the check, must not
-        # contain the substring "None", and must not claim a "rule is
-        # present" - the passed-branch text is written for branch rules.
+    def test_token_passed_block_names_check_and_never_prints_none(self):
+        # Behaviour 4 of plans/guard-finding-compact.md: a token passed
+        # finding (rule=None) is ONE line naming its ``check`` - never a
+        # literal "None" - with the brief after an em dash. (Re-pointed
+        # from the headline + see: line pins: the block carries no
+        # ``see:`` line and no detail any more; the check name and the
+        # no-None invariant move onto the one line.)
         findings = piguard.probe_target_access(
             "owner",
             "repo",
@@ -8005,67 +8214,28 @@ class RenderFindingBlockTests(unittest.TestCase):
             "fixture sanity: a token passed finding carries rule=None",
         )
 
-        block = self._block(finding)
-        headline = block[0]
-        self.assertTrue(
-            headline.startswith("✅ ok:"),
-            "the block headline must carry the marked status prefix: {!r}".format(headline),
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: {} — {}".format(
+                    piguard.CHECK_TARGET_ACCESS, _field(finding, "brief")
+                )
+            ],
+            "a token passed block is one line naming the check with the "
+            "brief after an em dash:\nblock: {!r}".format(block),
         )
-        self.assertIn(
-            piguard.CHECK_TARGET_ACCESS,
-            headline,
-            "a token passed headline must name the check: {!r}".format(headline),
-        )
-        self.assertNotIn(
-            "None",
-            "\n".join(block),
-            "a token passed block must never print a literal None:\n"
-            "block: {!r}".format(block),
-        )
-        self.assertNotIn(
-            "rule is present",
-            "\n".join(block),
-            "a token passed block must not claim a 'rule is present' - "
-            "that text is written for branch rules:\nblock: {!r}".format(block),
-        )
-        # Pinned convention: a passed finding's remedy (the doc path) rides
-        # on a ``see:`` line.
-        self.assertGreaterEqual(
-            len(self._remedy_lines(block, allowed=("see:",))),
-            1,
-            "the block must carry an indented 'see:' line with the "
-            "doc path:\nblock: {!r}".format(block),
-        )
-        # The passed substance is the finding's own brief (behaviour 3 of
-        # plans/guard-finding-compact.md) + the recorded fact that the
-        # target is reachable; a wrap may only change whitespace.
-        compact = self._compact("\n".join(block))
-        self.assertIn(
-            self._compact(_field(finding, "brief")),
-            compact,
-            "the passed brief must still state that the target is "
-            "reachable:\nblock: {!r}".format(block),
-        )
-        self.assertNotIn(
-            "bypass",
-            compact,
-            "the bypass caveat is not a finding field, so the block "
-            "must not carry it: {!r}".format(block),
-        )
-        self._assert_substance_survives(_field(finding, "remedy"), block)
 
     def test_passed_finding_block_does_not_repeat_the_see_line(self):
-        # Behaviour 19a: a passed finding's substance (its brief,
-        # behaviour 3 of plans/guard-finding-compact.md) and its remedy
-        # must not be restated twice - the detail lines must not repeat a
-        # 6-word-or-longer phrase from the see: line. The detail may be
-        # EMPTY (a headline plus remedy lines is a legal block), but the
-        # finding's own substance must survive somewhere in the block, so
-        # the fix cannot delete the fact to dodge the duplication.
-        # warn/fail/skipped are out of scope: their remedy (a fix) is
-        # genuinely different from their brief.
+        # Behaviour 4 of plans/guard-finding-compact.md: a passed block
+        # is ONE line - the marked headline with the brief after an em
+        # dash. There is no ``see:`` line any more and no detail to
+        # restate one: the line carries the brief, and neither "see:"
+        # nor a bypass caveat appears anywhere in the block.
+        # (Re-pointed from the 6-word-phrase dedup pin over the old
+        # detail + see: lines.)
         def passed_finding_fixture():
-            # The same fixtures the two existing passed pins use.
+            # The same fixtures the other passed pins use.
             branch = piguard.check_review(
                 [pull_request_rule("main-guard", 1)]
             )[0]
@@ -8084,67 +8254,27 @@ class RenderFindingBlockTests(unittest.TestCase):
             ][0]
             return [
                 ("branch_rule", branch, _field(branch, "brief")),
-                ("token", token, None),
+                ("token", token, _field(token, "brief")),
             ]
 
-        for name, finding, must_survive in passed_finding_fixture():
+        for name, finding, brief in passed_finding_fixture():
             self.assertEqual(
                 "passed", _field(finding, "status"), "fixture sanity ({})".format(name)
             )
-            block = self._block(finding, width=80)
-            # detail = every line after the headline that is not a remedy
-            # line; remedy_text = the remedy lines with the indented
-            # fix:/see: prefix stripped and whitespace compacted.
-            detail_lines = [
-                line
-                for line in block[1:]
-                if not line.lstrip().startswith(("fix:", "see:"))
-            ]
-            remedy_text = " ".join(
-                " ".join(line.lstrip()[4:].split())
-                for line in self._remedy_lines(block)
+            block = self._passed_block(finding, width=80)
+            text = "\n".join(block)
+            self.assertIn(
+                brief,
+                text,
+                "the one line must carry the finding's own brief: "
+                "expected {!r} in the block:\nblock: {!r}".format(brief, block),
             )
-            detail_compact = self._compact(" ".join(detail_lines)).lower()
-            words = remedy_text.split()
-            duplicated = [
-                " ".join(words[start:start + 6])
-                for start in range(len(words) - 5)
-                if self._compact(" ".join(words[start:start + 6])).lower()
-                in detail_compact
-            ]
-            self.assertEqual(
-                duplicated,
-                [],
-                "the {!r} block's detail lines restate the see: line "
-                "({} 6-word phrase(s) shared between them): {}\n"
-                "block: {!r}".format(name, len(duplicated), duplicated, block),
+            self.assertNotIn(
+                "see:",
+                text,
+                "a passed block has no 'see:' line any more:\n"
+                "block: {!r}".format(block),
             )
-            # The finding's own substance must still appear somewhere in
-            # the block (detail or remedy), so de-duplicating cannot
-            # delete the fact.
-            block_compact = self._compact("\n".join(block))
-            if must_survive is not None:
-                self.assertIn(
-                    self._compact(must_survive),
-                    block_compact,
-                    "the finding's brief must survive somewhere in the "
-                    "block:\nblock: {!r}".format(name, block),
-                )
-            else:
-                self.assertIn(
-                    piguard.CHECK_TARGET_ACCESS,
-                    block_compact,
-                    "the token check name must survive somewhere in "
-                    "the block:\nblock: {!r}".format(block),
-                )
-                self.assertIn(
-                    self._compact("so later denials are interpretable"),
-                    block_compact,
-                    "the passed see: line (the short passed remedy) must "
-                    "still state that later denials are interpretable, so "
-                    "de-duplicating cannot delete the fact:\n"
-                    "block: {!r}".format(block),
-                )
 
     def test_narrower_width_wraps_to_strictly_more_lines(self):
         # Width is a real parameter: the long skipped reason wraps to
@@ -8220,12 +8350,18 @@ class FindingBlockHeadlineMarkTests(unittest.TestCase):
         return block[0]
 
     def test_passed_headline_starts_with_check_mark(self):
+        # Behaviour 4 of plans/guard-finding-compact.md: the passed
+        # headline carries the finding's brief after an em dash - line 0
+        # is the whole block. (Re-pointed from the bare-mark + headline
+        # pin: the em-dash brief is part of the headline now.)
         finding = self._finding("passed", "non_fast_forward")
         self.assertEqual(
             self._first_line(finding),
-            "{} ok: non_fast_forward".format(self.PASSED_MARK),
+            "{} ok: non_fast_forward — the guard detail".format(
+                self.PASSED_MARK
+            ),
             "a passed headline must be the mark, one space, the plain "
-            "headline: {!r}",
+            "headline and the em-dash brief: {!r}",
         )
 
     def test_warn_headline_starts_with_warning_mark(self):
