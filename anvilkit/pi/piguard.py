@@ -1527,6 +1527,19 @@ def render_finding_block(finding: Dict[str, Any], width: int = 80) -> List[str]:
         # part of the wrapped headline, so the wrap budget includes it.
         headline = "{} {}".format(mark, headline)
 
+    if status == "passed":
+        # Behaviour 4 of plans/guard-finding-compact.md: a passed block is
+        # ONE line - the marked headline with the finding's own brief after
+        # an em dash. No detail line (the old ``_block_substance`` detail is
+        # dropped) and no ``see:`` line (the passed remedy no longer prints
+        # per finding). The wrapped headline carries the whole block; a long
+        # brief wraps to more lines, every one within ``width``, with no
+        # elision.
+        brief = finding.get("brief")
+        if isinstance(brief, str) and brief:
+            headline = "{} \u2014 {}".format(headline, brief)
+        return textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
+
     detail = _block_substance(finding)
     block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
     if detail:
