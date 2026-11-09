@@ -774,19 +774,23 @@ class CheckFilePathsTests(unittest.TestCase):
 
 
 class RenderFindingTests(unittest.TestCase):
-    """Behaviour 3: a rendered finding states the bypass-visibility caveat.
+    """Behaviour 3 of plans/guard-finding-compact.md: render_finding is the one vocabulary.
 
-    GitHub returns ``bypass_actors`` only to users with write access to the
-    ruleset (doc/external/github/rest-api-endpoints-for-rules.md), so a
-    passed rule finding rendered on a read-only token must never claim the
-    branch is simply "protected": it must say the rule is present and that
-    the bypass list is not visible. An unseen ``bypass_actors`` entry is an
-    unmeasured hole.
+    ``render_finding(finding)`` takes one finding dict (the shape the check
+    functions return) and returns the human-readable line for it; no network
+    is involved. The line is ``{prefix}: {label} - {substance}``: the
+    existing ``ok:``/``warn:``/``fail:``/``skipped:`` prefix, the label
+    (the rule, or the check on a token finding), and the finding's own
+    short substance - its ``brief`` on a pass. Every word of the line comes
+    from the finding's own fields: the hard-coded bypass caveat is not a
+    finding field, so it leaves the per-finding line and returns once as
+    the module's trailing note (behaviour 8 of
+    plans/guard-finding-compact.md, doc/external/github/
+    rest-api-endpoints-for-rules.md).
 
-    ``render_finding(finding)`` is expected to take one finding dict (the
-    shape the check functions return) and return the human-readable line
-    for it; no network is involved. Skipped-finding rendering is deferred to
-    behaviour 4's tests, since the module emits no ``skipped`` status yet.
+    Re-pointed in the red for behaviour 3: the old pins asserted the
+    hard-coded caveat on every passed line and the ``fix:`` tail on the
+    warn line; the new pins assert the compact composition.
     """
 
     def _render_finding(self):
@@ -799,7 +803,7 @@ class RenderFindingTests(unittest.TestCase):
         )
         return renderer
 
-    def test_passed_history_rewrite_findings_state_rule_type_and_bypass_invisibility(self):
+    def test_passed_history_rewrite_findings_render_label_and_brief_without_caveat(self):
         render = self._render_finding()
         findings = piguard.check_history_rewrite(
             [
@@ -817,26 +821,34 @@ class RenderFindingTests(unittest.TestCase):
             with self.subTest(rule=_field(finding, "rule")):
                 line = render(finding)
                 self.assertIsInstance(line, str)
-                self.assertIn(
-                    _field(finding, "rule"),
-                    line,
-                    "the rendered line must name the rule's API type",
+                self.assertTrue(
+                    line.startswith(
+                        "ok: {}".format(_field(finding, "rule"))
+                    ),
+                    "the passed line must keep the 'ok:' prefix and its "
+                    "label: {!r}".format(line),
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "a passed finding must say the bypass list is not visible "
-                    "on a read-only token",
+                    _field(finding, "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "a passed finding on a read-only token must never claim "
-                    "the branch is simply 'protected' - an unseen "
-                    "bypass_actors entry is an unmeasured hole",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word; it returns "
+                    "once as the trailing note: {!r}".format(line),
                 )
 
-    def test_passed_review_finding_states_caveat_and_keeps_review_count_visible(self):
+    def test_passed_review_finding_renders_label_brief_and_count(self):
         render = self._render_finding()
         for count in (0, 2):
             with self.subTest(count=count):
@@ -849,25 +861,39 @@ class RenderFindingTests(unittest.TestCase):
                     "fixture sanity: pull_request active means one passed finding",
                 )
                 line = render(findings[0])
+                self.assertTrue(
+                    line.startswith("ok: pull_request"),
+                    "the passed line must keep its 'ok:' prefix and label: "
+                    "{!r}".format(line),
+                )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive on a passed review finding",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 self.assertRegex(
                     line,
                     r"\b{}\b".format(count),
                     "the recorded required-approving-review count of {} must "
                     "stay visible in the rendered line - a zero count must "
-                    "not be hidden by the caveat".format(count),
+                    "not be hidden".format(count),
                 )
 
-    def test_passed_update_finding_states_caveat_and_keeps_allows_fetch_and_merge_visible(self):
+    def test_passed_update_finding_renders_label_brief_and_value(self):
         render = self._render_finding()
         for value in (True, False):
             with self.subTest(value=value):
@@ -901,24 +927,30 @@ class RenderFindingTests(unittest.TestCase):
                     "the rendered line must name the update rule's API type",
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive on a passed update finding - "
-                    "bypass_actors is only returned to users with write "
-                    "access, so the line must never claim the branch is "
-                    "simply 'protected'",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 self.assertIn(
                     "True" if value else "False",
                     line,
                     "the recorded update_allows_fetch_and_merge value of {} "
                     "must stay visible in the rendered line - a weak value "
-                    "must not be hidden by the caveat".format(value),
+                    "must not be hidden".format(value),
                 )
 
     def test_passed_update_finding_with_unreadable_parameters_renders_without_claiming_a_value(self):
@@ -965,14 +997,23 @@ class RenderFindingTests(unittest.TestCase):
                     "API type",
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive when no value was returned",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 self.assertNotIn(
                     "True",
@@ -985,7 +1026,7 @@ class RenderFindingTests(unittest.TestCase):
                     "no value was returned, so the line must not claim False",
                 )
 
-    def test_passed_file_path_finding_states_caveat_and_keeps_restricted_paths_visible(self):
+    def test_passed_file_path_finding_renders_label_brief_and_paths(self):
         render = self._render_finding()
         for paths in (
             [".github/workflows/**"],
@@ -1024,17 +1065,23 @@ class RenderFindingTests(unittest.TestCase):
                     "the rendered line must name the rule's API type",
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive on a passed file-path finding - "
-                    "bypass_actors is only returned to users with write "
-                    "access, so the line must never claim the branch is "
-                    "simply 'protected'",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 for path in paths:
                     self.assertIn(
@@ -1074,21 +1121,28 @@ class RenderFindingTests(unittest.TestCase):
             "the rendered line must name the rule's API type",
         )
         self.assertIn(
-            "bypass",
-            line.lower(),
-            "the caveat must survive on a passed file-path finding",
+            _field(findings[0], "brief"),
+            line,
+            "the passed line must carry the finding's own brief - every "
+            "word from the finding's fields: {!r}".format(line),
+        )
+        self.assertLessEqual(
+            len(line),
+            160,
+            "the rendered line must be at most 160 characters, got {}: "
+            "{!r}".format(len(line), line),
         )
         self.assertNotIn(
-            "protected",
+            "bypass",
             line.lower(),
-            "an empty restriction list must render an explicit 'no restricted "
-            "paths recorded' rather than a bare 'protected'",
+            "the bypass caveat is not a finding field, so a per-finding "
+            "line carrying it invents a word: {!r}".format(line),
         )
         self.assertIn(
-            "no restricted paths recorded",
+            "no paths recorded",
             line,
-            "an empty restriction list must render the explicit phrase 'no "
-            "restricted paths recorded' (case-sensitive) - a weak value is "
+            "an empty restriction list must render the explicit phrase "
+            "'no paths recorded' (case-sensitive) - a weak value is "
             "recorded, not hidden (zero-approvals precedent)",
         )
 
@@ -1143,24 +1197,33 @@ class RenderFindingTests(unittest.TestCase):
                     "the rendered line must still name the rule's API type",
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive when no paths were returned",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 self.assertIn(
-                    "no restricted paths recorded",
+                    "no paths recorded",
                     line,
                     "no paths were returned, so the line must read 'no "
-                    "restricted paths recorded' - it must not claim a path "
-                    "that was not returned",
+                    "paths recorded' - it must not claim a path that was "
+                    "not returned",
                 )
 
-    def test_warn_finding_lines_name_danger_and_remedy(self):
+    def test_warn_finding_lines_render_label_and_brief_without_inline_fix(self):
         render = self._render_finding()
         for label, findings in (
             (
@@ -1185,19 +1248,168 @@ class RenderFindingTests(unittest.TestCase):
                 )
                 warn = warns[0]
                 line = render(warn)
-                self.assertIn(
-                    _field(warn, "danger"),
-                    line,
-                    "the rendered warn line must name the danger",
+                self.assertTrue(
+                    line.startswith(
+                        "warn: {}".format(_field(warn, "rule"))
+                    ),
+                    "the rendered warn line must keep its 'warn:' prefix "
+                    "and its label: {!r}".format(line),
                 )
                 self.assertIn(
-                    _field(warn, "remedy"),
+                    _field(warn, "brief"),
                     line,
-                    "the rendered warn line must name the remedy the "
-                    "finding carries - the fix is the finding's own "
-                    "wording, and (behaviour 2 of "
-                    "plans/guard-finding-compact.md) no doc path",
+                    "the rendered warn line must carry the finding's own "
+                    "brief - every word from the finding's fields: "
+                    "{!r}".format(line),
                 )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
+                )
+                self.assertNotIn(
+                    "fix:",
+                    line,
+                    "the remedy no longer rides inline on the per-finding "
+                    "line - the fixes move to the report's 'To fix' "
+                    "section (behaviour 7 of plans/guard-finding-compact."
+                    "md): {!r}".format(line),
+                )
+
+
+class RenderFindingCompositionTests(unittest.TestCase):
+    """Behaviour 3 of plans/guard-finding-compact.md: the one vocabulary.
+
+    For each of the twenty emittable findings - five branch rules at
+    passed and warn, the four ``skipped_findings`` checks and the five
+    token checks at their statuses - ``render_finding(finding)`` returns
+    a line that is ``{prefix}: {label} - {substance}``:
+
+    - the existing prefix convention: ``ok:`` for passed, ``warn:``,
+      ``fail:`` and ``skipped:``;
+    - the label: the finding's ``rule`` when it carries one, else its
+      ``check``;
+    - the substance: the finding's own short ``brief`` - the approved
+      sample report's clause after the em dash. Every word of the line
+      comes from the finding's own fields, so the hard-coded bypass
+      caveat (which is not a finding field) must not appear: it returns
+      once as the module's trailing note (behaviour 8,
+      doc/external/github/rest-api-endpoints-for-rules.md).
+
+    The line is at most 160 characters. A finding with an unknown status
+    still returns the ``unknown:`` fallthrough unchanged;
+    ``render_report`` is unchanged and still delegates (pinned in
+    ``RenderReportTests``).
+
+    The producer matrix is cycle 1's ``FindingBriefTests`` sweep, driven
+    as in production over recorded openers - no live network. The sweep
+    covers the twenty findings and their parameter variants; the same
+    four assertions hold for every one of them.
+    """
+
+    _PREFIXES = {
+        "passed": "ok",
+        "warn": "warn",
+        "fail": "fail",
+        "skipped": "skipped",
+    }
+
+    def _every_finding(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Cycle 1's producer matrix: every finding the producers can emit."""
+        matrix = FindingBriefTests(
+            "test_every_emittable_finding_carries_a_brief"
+        )
+        findings = matrix._every_brief_finding()
+        self.assertGreaterEqual(
+            len(findings),
+            20,
+            "fixture sanity: the sweep must cover the twenty emittable "
+            "findings, got {}".format(len(findings)),
+        )
+        return findings
+
+    def test_twenty_findings_render_prefix_label_brief_in_at_most_160_chars(self):
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                status = _field(finding, "status")
+                self.assertIn(
+                    status,
+                    self._PREFIXES,
+                    "fixture sanity: a producer emitted an unknown status "
+                    "{!r}".format(status),
+                )
+                prefix = self._PREFIXES[status]
+                rule = _field(finding, "rule")
+                label_ = rule if rule is not None else _field(finding, "check")
+
+                line = piguard.render_finding(finding)
+
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "render_finding must produce a non-empty line",
+                )
+                self.assertTrue(
+                    line.startswith("{}: {}".format(prefix, label_)),
+                    "the line must keep its {!r} prefix and its label "
+                    "{!r}: {!r}".format(prefix, label_, line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the line must be at most 160 characters, got {}: "
+                    "{!r}".format(len(line), line),
+                )
+                self.assertIn(
+                    _field(finding, "brief"),
+                    line,
+                    "the line must carry the finding's own brief - every "
+                    "word from the finding's fields: {!r}".format(line),
+                )
+
+    def test_no_finding_line_carries_the_bypass_caveat(self):
+        # The bypass caveat is not a finding field; a per-finding line
+        # carrying it would be inventing a word. It returns once as the
+        # module's trailing note (behaviour 8 of
+        # plans/guard-finding-compact.md), never on a finding's line.
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                line = piguard.render_finding(finding)
+                self.assertNotIn(
+                    "bypass",
+                    line.lower(),
+                    "the line must not carry the bypass caveat - it is "
+                    "not a finding field: {!r}".format(line),
+                )
+                self.assertNotIn(
+                    "bypass_actors",
+                    line,
+                    "the line must not name bypass_actors - it is not a "
+                    "finding field: {!r}".format(line),
+                )
+
+    def test_unknown_status_finding_renders_unknown_prefix_without_crashing(self):
+        # A status that is not passed, warn, skipped or fail still falls
+        # through to the ``unknown:`` line, unchanged (behaviour 3's
+        # error clause): the report must mark it, not crash on it.
+        finding = {
+            "status": "mystery",
+            "check": "history_rewrite",
+            "rule": "deletion",
+            "danger": "",
+            "source": None,
+            "remedy": "",
+        }
+
+        line = piguard.render_finding(finding)
+
+        self.assertIsInstance(line, str)
+        self.assertTrue(
+            line.startswith("unknown:"),
+            "the fallthrough for truly-unknown statuses must be "
+            "preserved: {!r}".format(line),
+        )
 
 
 class _FakeResponse:
@@ -1871,22 +2083,21 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
         for finding in findings:
             with self.subTest(check=_field(finding, "check")):
                 line = piguard.render_finding(finding)
-                self.assertIn(
-                    "skipped",
-                    line.lower(),
-                    "the rendered skipped line must say the check was skipped",
+                self.assertTrue(
+                    line.startswith(
+                        "skipped: {}".format(_field(finding, "check"))
+                    ),
+                    "the rendered skipped line must keep its 'skipped: "
+                    "{check}' prefix and its label: {line!r}".format(
+                        check=_field(finding, "check"), line=line
+                    ),
                 )
-                carried = (
-                    _field(finding, "reason")
-                    or _field(finding, "danger")
-                    or ""
-                )
                 self.assertIn(
-                    carried,
+                    _field(finding, "brief"),
                     line,
                     "the rendered skipped line must carry the finding's "
-                    "own reason, so the report shows why the check did "
-                    "not run",
+                    "own brief - every word from the finding's fields: "
+                    "{!r}".format(line),
                 )
                 self.assertNotIn(
                     "ok:",
@@ -5715,14 +5926,19 @@ class WorkflowsWithheldFindingTests(unittest.TestCase):
             "through to 'unknown:' - a shape mismatch would hide the "
             "unprovable-withholding case in the report",
         )
-        reason = _field(finding, "reason")
-        if reason:
-            self.assertIn(
-                reason,
-                line,
-                "the rendered skipped line must carry the reason, so the "
-                "report shows why the check did not run",
-            )
+        self.assertTrue(
+            line.startswith("skipped: {}".format(_field(finding, "check"))),
+            "the rendered skipped line must keep its 'skipped: "
+            "{check}' prefix and its label: {line!r}".format(
+                check=_field(finding, "check"), line=line
+            ),
+        )
+        self.assertIn(
+            _field(finding, "brief"),
+            line,
+            "the rendered skipped line must carry the finding's own brief "
+            "- every word from the finding's fields: {!r}".format(line),
+        )
 
 
 class ProbeNamedRepoTests(unittest.TestCase):
@@ -7049,9 +7265,14 @@ class RenderFindingFailBranchTests(unittest.TestCase):
     asserted here: behaviour 10's sweep owns it.
     """
 
-    def _assert_fail_line(
-        self, line: str, danger: str, remedy: str
-    ) -> None:
+    def _assert_fail_line(self, finding: Dict[str, Any], line: str) -> None:
+        # Behaviour 3 of plans/guard-finding-compact.md: the fail line is
+        # the one vocabulary - "fail: {label} - {brief}" - where the label
+        # is the finding's rule (or its check on a token finding) and the
+        # brief is the finding's own short substance. Every word of the
+        # line comes from the finding's own fields; the remedy no longer
+        # rides inline (it moves to the report's "To fix" section,
+        # behaviour 7), so the old "fix: {remedy}" tail is re-pointed here.
         self.assertIsInstance(line, str)
         self.assertTrue(
             line,
@@ -7064,34 +7285,33 @@ class RenderFindingFailBranchTests(unittest.TestCase):
             "fallthrough - that line would hide the first real failure "
             "the family can emit: {!r}".format(line),
         )
+        rule = _field(finding, "rule")
+        label = rule if rule is not None else _field(finding, "check")
         self.assertTrue(
-            line.startswith("fail:"),
-            "the fail line must be marked as a failure with a 'fail:' "
-            "prefix, consistent with the ok:/warn:/skipped: prefix "
-            "convention the other branches use: {!r}".format(line),
+            line.startswith("fail: {}".format(label)),
+            "the fail line must keep its 'fail:' prefix and its label "
+            "{!r}, consistent with the ok:/warn:/skipped: prefix "
+            "convention: {!r}".format(label, line),
         )
         self.assertIn(
-            danger,
+            _field(finding, "brief"),
             line,
-            "the rendered fail line must name the danger",
+            "the rendered fail line must carry the finding's own brief - "
+            "every word from the finding's fields: {!r}".format(line),
         )
-        self.assertIn(
-            "fix:",
-            line,
-            "the rendered fail line must carry the remedy in a 'fix:' "
-            "position, consistent with the warn branch: {!r}".format(line),
-        )
-        self.assertIn(
-            remedy,
-            line,
-            "the rendered fail line must name the remedy",
+        self.assertLessEqual(
+            len(line),
+            160,
+            "the rendered line must be at most 160 characters, got {}: "
+            "{!r}".format(len(line), line),
         )
 
-    def test_wellformed_fail_finding_renders_failure_line_naming_danger_and_remedy(self):
+    def test_wellformed_fail_finding_renders_failure_line_with_label_and_brief(self):
         finding = {
             "status": "fail",
             "check": "administration",
             "rule": None,
+            "brief": "the token can delete or reconfigure owner/repo",
             "danger": (
                 "the token holds Administration (read) on owner/repo: "
                 "the repository can be deleted or reconfigured, and the "
@@ -7108,7 +7328,7 @@ class RenderFindingFailBranchTests(unittest.TestCase):
 
         line = piguard.render_finding(finding)
 
-        self._assert_fail_line(line, finding["danger"], finding["remedy"])
+        self._assert_fail_line(finding, line)
 
     def test_probe_fail_findings_with_rule_none_do_not_render_rule_none(self):
         # The real fail findings behaviours 3 and 4 emit: both carry
@@ -7151,9 +7371,7 @@ class RenderFindingFailBranchTests(unittest.TestCase):
 
                 line = piguard.render_finding(finding)
 
-                self._assert_fail_line(
-                    line, _field(finding, "danger"), _field(finding, "remedy")
-                )
+                self._assert_fail_line(finding, line)
                 self.assertNotIn(
                     "rule None",
                     line,
@@ -7178,6 +7396,7 @@ class RenderFindingFailBranchTests(unittest.TestCase):
             "status": "fail",
             "check": "administration",
             "rule": None,
+            "brief": "the token can delete or reconfigure owner/repo",
             "danger": "the repository can be deleted",
             "remedy": "recreate the token without Administration",
         }
@@ -7196,16 +7415,22 @@ class RenderFindingFailBranchTests(unittest.TestCase):
                 "a fail finding must not carry a {!r} marker: "
                 "{!r}".format(prefix, line),
             )
-        self.assertIn("the repository can be deleted", line)
-        self.assertIn("recreate the token without Administration", line)
+        self.assertIn("the token can delete or reconfigure owner/repo", line)
 
-    def test_existing_branches_render_unchanged(self):
-        # Behaviour 9 adds a fail branch without rewriting the existing
-        # ones: a known passed, warn and skipped finding must render
-        # exactly as today.
+    def test_existing_branches_render_the_one_vocabulary(self):
+        # Behaviour 3 of plans/guard-finding-compact.md: every branch of
+        # render_finding renders the one vocabulary - "{prefix}: {label}
+        # - {the finding's own brief}" - built from the finding's own
+        # fields. Re-pointed from the old verbose pins: the passed line
+        # drops the hard-coded caveat (it returns once as the trailing
+        # note, behaviour 8), the warn line drops the inline "fix:" tail
+        # (the fixes move to the report's "To fix" section, behaviour 7),
+        # and the skipped line drops the "check could not run:" phrasing
+        # (the brief is the finding's own word for it).
         render = piguard.render_finding
 
-        # passed: the fixed caveat line, verbatim.
+        # passed: the rule's API type on the line, and the finding's own
+        # brief - the sample's clause - as the substance.
         passed = piguard.check_history_rewrite(
             [rule("non_fast_forward", "main-guard")]
         )[0]
@@ -7216,13 +7441,19 @@ class RenderFindingFailBranchTests(unittest.TestCase):
         )
         self.assertEqual(
             render(passed),
-            "ok: the non_fast_forward rule is present - but the bypass "
-            "list is not visible on a read-only token (bypass_actors is "
-            "only returned to users with write access to the ruleset)",
+            "ok: {} - {}".format(
+                _field(passed, "rule"), _field(passed, "brief")
+            ),
+        )
+        self.assertNotIn(
+            "bypass",
+            render(passed).lower(),
+            "the hard-coded caveat leaves the per-finding line; it is "
+            "not a finding field",
         )
 
-        # warn: the "warn: {rule} - {danger}; fix: {remedy}" format,
-        # built from the finding's own fields.
+        # warn: the "warn: {label} - {brief}" composition, built from the
+        # finding's own fields - no inline fix.
         warn = [
             f
             for f in piguard.check_history_rewrite(
@@ -7232,22 +7463,21 @@ class RenderFindingFailBranchTests(unittest.TestCase):
         ][0]
         self.assertEqual(
             render(warn),
-            "warn: {} - {}; fix: {}".format(
-                _field(warn, "rule"),
-                _field(warn, "danger"),
-                _field(warn, "remedy"),
+            "warn: {} - {}".format(
+                _field(warn, "rule"), _field(warn, "brief")
             ),
         )
 
-        # skipped: the "skipped: {check} check could not run: {reason}"
-        # format, verbatim.
+        # skipped: the "skipped: {check} - {brief}" composition - the
+        # brief is the finding's own word for why the check did not run.
         skipped = piguard.skipped_findings(
             "GitHub was unreachable: connection refused"
         )[0]
         self.assertEqual(
             render(skipped),
-            "skipped: history_rewrite check could not run: GitHub was "
-            "unreachable: connection refused",
+            "skipped: {} - {}".format(
+                _field(skipped, "check"), _field(skipped, "brief")
+            ),
         )
 
     def test_genuinely_unknown_status_still_falls_through_to_unknown_line(self):
@@ -7277,27 +7507,24 @@ class RenderFindingFailBranchTests(unittest.TestCase):
 
 
 class RenderFindingWarnTokenTests(unittest.TestCase):
-    """Behaviour 17: the warn branch names the check on token findings.
+    """Behaviour 17 plus behaviour 3 of plans/guard-finding-compact.md.
 
     The token-scope probes (behaviours 2, 3 and 6 of
     plans/verify-guards-token.md) emit ``warn`` findings carrying
-    ``rule=None`` and a ``check`` name. The ``warn`` branch of
-    ``render_finding`` formats ``rule`` directly, so today those lines
-    render as ``warn: None - ...`` - a literal ``None`` where the report
-    should name the check.
+    ``rule=None`` and a ``check`` name. A ``warn`` finding renders a line
+    that names what is being warned about - for a token finding
+    (``rule=None``) that is the ``check`` name, never a literal ``None``.
 
-    The contract under test: a ``warn`` finding renders a line that
-    names what is being warned about - for a token finding (``rule=None``)
-    that is the ``check`` name, never a literal ``None`` - in the same
-    shape the ``fail`` branch (behaviour 9) already uses:
-    ``warn: {check} - {danger}; fix: {remedy}``. The rule-based warn
-    lines (non-None ``rule``) render byte-for-byte as they do today, and
-    a pin below keeps it that way.
+    The one vocabulary (behaviour 3 of
+    plans/guard-finding-compact.md): the warn line is
+    ``warn: {label} - {brief}`` - the label the rule (non-None) or the
+    check (token findings), the substance the finding's own short
+    ``brief``. The old ``; fix: {remedy}`` tail is re-pointed: the fixes
+    move to the report's "To fix" section (behaviour 7), so the per-
+    finding line no longer carries the remedy.
     """
 
-    def _assert_token_warn_line(
-        self, line: str, check: str, danger: str, remedy: str
-    ) -> None:
+    def _assert_token_warn_line(self, finding: Dict[str, Any], line: str) -> None:
         self.assertIsInstance(line, str)
         self.assertTrue(
             line,
@@ -7317,26 +7544,21 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
             "rendering is the defect: {!r}".format(line),
         )
         self.assertTrue(
-            line.startswith("warn: {} - ".format(check)),
+            line.startswith("warn: {} - ".format(_field(finding, "check"))),
             "the warn line must name the check first, mirroring the "
             "fail branch's 'fail: {{check}} - ...' shape: {!r}".format(line),
         )
         self.assertIn(
-            danger,
+            _field(finding, "brief"),
             line,
-            "the rendered warn line must name the danger",
+            "the rendered warn line must carry the finding's own brief - "
+            "every word from the finding's fields: {!r}".format(line),
         )
-        self.assertIn(
-            "fix:",
-            line,
-            "the rendered warn line must carry the remedy in a 'fix:' "
-            "position, consistent with the rule-based warn shape: "
-            "{!r}".format(line),
-        )
-        self.assertIn(
-            remedy,
-            line,
-            "the rendered warn line must name the remedy",
+        self.assertLessEqual(
+            len(line),
+            160,
+            "the rendered line must be at most 160 characters, got {}: "
+            "{!r}".format(len(line), line),
         )
 
     def test_probe_warn_findings_with_rule_none_render_check_not_literal_none(self):
@@ -7398,12 +7620,7 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
 
                 line = piguard.render_finding(finding)
 
-                self._assert_token_warn_line(
-                    line,
-                    _field(finding, "check"),
-                    _field(finding, "danger"),
-                    _field(finding, "remedy"),
-                )
+                self._assert_token_warn_line(finding, line)
 
     def test_minimal_token_warn_finding_renders_check_not_literal_none(self):
         # Only the fields a token warn finding carries - no reason, no
@@ -7413,20 +7630,24 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
             "status": "warn",
             "check": "administration",
             "rule": None,
+            "brief": "cannot tell whether administration is withheld",
             "danger": "d",
             "remedy": "r",
         }
 
         line = piguard.render_finding(finding)
 
-        self._assert_token_warn_line(line, "administration", "d", "r")
+        self._assert_token_warn_line(finding, line)
 
-    def test_rule_based_warn_finding_renders_byte_for_byte_unchanged(self):
+    def test_rule_based_warn_finding_renders_the_one_vocabulary(self):
         # The rule-based warns (check_history_rewrite, check_review, ...)
-        # carry a non-None rule and must keep rendering exactly as
-        # "warn: {rule} - {danger}; fix: {remedy}": the fix for the
-        # token warn path must not touch this one. This assertion passes
-        # today and pins that boundary.
+        # carry a non-None rule and render the one vocabulary
+        # (behaviour 3 of plans/guard-finding-compact.md):
+        # "warn: {rule} - {brief}" - the label the rule, the substance the
+        # finding's own brief. Re-pointed from the old "warn: {rule} -
+        # {danger}; fix: {remedy}" pin: the fix moves to the report's
+        # "To fix" section (behaviour 7), so the per-finding line no
+        # longer carries the remedy.
         warn = [
             f
             for f in piguard.check_history_rewrite(
@@ -7446,10 +7667,9 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
 
         self.assertEqual(
             piguard.render_finding(warn),
-            "warn: {} - {}; fix: {}".format(
+            "warn: {} - {}".format(
                 _field(warn, "rule"),
-                _field(warn, "danger"),
-                _field(warn, "remedy"),
+                _field(warn, "brief"),
             ),
         )
 
@@ -7571,10 +7791,13 @@ class RenderFindingBlockTests(unittest.TestCase):
         )
         self.assertNotIn("None", headline)
         # The substance survives the wrap word-for-word (whitespace is the
-        # only thing a wrap may change), so the whole danger and the whole
-        # remedy recover from the block. The remedy is the short fix
-        # (behaviour 2 of plans/guard-finding-compact.md): no doc path.
-        self._assert_substance_survives(_field(finding, "danger"), block)
+        # only thing a wrap may change), so the whole brief and the whole
+        # remedy recover from the block. The brief is the one vocabulary
+        # (behaviour 3 of plans/guard-finding-compact.md): the block's
+        # detail derives from render_finding's line, so the danger no
+        # longer rides in the detail. The remedy is the short fix
+        # (behaviour 2): no doc path.
+        self._assert_substance_survives(_field(finding, "brief"), block)
         self._assert_substance_survives(_field(finding, "remedy"), block)
         self.assertNotIn(
             "doc/external/",
@@ -7626,7 +7849,7 @@ class RenderFindingBlockTests(unittest.TestCase):
             "the warn headline must name the check: {!r}".format(headline),
         )
         self.assertNotIn("None", headline)
-        self._assert_substance_survives(_field(finding, "danger"), block)
+        self._assert_substance_survives(_field(finding, "brief"), block)
         self._assert_substance_survives(_field(finding, "remedy"), block)
         self.assertNotIn(
             "doc/external/",
@@ -7670,12 +7893,12 @@ class RenderFindingBlockTests(unittest.TestCase):
             headline,
             "the skipped headline must name the check: {!r}".format(headline),
         )
-        # The reason is the longest substance in the module: it must
-        # recover word-for-word across the wrap, as must the remedy - and
-        # (behaviour 2 of plans/guard-finding-compact.md) neither carries
-        # a doc path any more: the short reason stays in the detail, the
-        # short remedy stays on the indented fix: line.
-        self._assert_substance_survives(_field(finding, "reason"), block)
+        # The brief is the one vocabulary (behaviour 3 of
+        # plans/guard-finding-compact.md): the block's detail derives from
+        # render_finding's line, so the brief - not the reason - rides in
+        # the detail, as must the remedy. Neither carries a doc path any
+        # more (behaviour 2).
+        self._assert_substance_survives(_field(finding, "brief"), block)
         self._assert_substance_survives(_field(finding, "remedy"), block)
         self.assertNotIn(
             "doc/external/",
@@ -7738,17 +7961,26 @@ class RenderFindingBlockTests(unittest.TestCase):
             ),
         )
         self.assertNotIn("None", headline)
-        # The substance is the caveat (bypass_actors visible only to write
-        # access) plus the recorded count; a wrap may only change whitespace,
-        # so the check runs on the whitespace-free form: the caveat phrase
-        # and the "(1 required approvals)" parenthetical recover
-        # word-for-word without pinning the wrap points.
+        # The substance is the finding's own brief - the one vocabulary
+        # (behaviour 3 of plans/guard-finding-compact.md): the block's
+        # detail derives from render_finding's line, so the brief carries
+        # the recorded count. A wrap may only change whitespace, so the
+        # check runs on the whitespace-free form: the brief and the
+        # "(1 required approvals)" parenthetical recover word-for-word
+        # without pinning the wrap points. The bypass caveat is not a
+        # finding field, so it must not appear in the block.
         compact = self._compact("\n".join(block))
         self.assertIn(
-            self._compact("bypass_actors is only returned"),
+            self._compact(_field(finding, "brief")),
             compact,
-            "the bypass-visibility caveat must survive the wrap word-for-word:"
+            "the finding's brief must survive the wrap word-for-word:"
             "\nblock: {!r}".format(block),
+        )
+        self.assertNotIn(
+            "bypass",
+            compact,
+            "the bypass caveat is not a finding field, so the block "
+            "must not carry it: {!r}".format(block),
         )
         self.assertIn(
             "1requiredapprovals",
@@ -7816,26 +8048,34 @@ class RenderFindingBlockTests(unittest.TestCase):
             "the block must carry an indented 'see:' line with the "
             "doc path:\nblock: {!r}".format(block),
         )
-        # The passed substance is the caveat + the recorded fact that the
+        # The passed substance is the finding's own brief (behaviour 3 of
+        # plans/guard-finding-compact.md) + the recorded fact that the
         # target is reachable; a wrap may only change whitespace.
         compact = self._compact("\n".join(block))
         self.assertIn(
-            "reaches",
+            self._compact(_field(finding, "brief")),
             compact,
-            "the passed substance must still state that the target is "
+            "the passed brief must still state that the target is "
             "reachable:\nblock: {!r}".format(block),
+        )
+        self.assertNotIn(
+            "bypass",
+            compact,
+            "the bypass caveat is not a finding field, so the block "
+            "must not carry it: {!r}".format(block),
         )
         self._assert_substance_survives(_field(finding, "remedy"), block)
 
     def test_passed_finding_block_does_not_repeat_the_see_line(self):
-        # Behaviour 19a: a passed finding carries its substance in the
-        # remedy field, so the block must not restate it twice - the
-        # detail lines must not repeat a 6-word-or-longer phrase from the
-        # see: line. The detail may be EMPTY (a headline plus remedy
-        # lines is a legal block), but the caveat substance must survive
-        # somewhere in the block, so the fix cannot delete the fact to
-        # dodge the duplication. warn/fail/skipped are out of scope: their
-        # remedy (a fix) is genuinely different from their danger.
+        # Behaviour 19a: a passed finding's substance (its brief,
+        # behaviour 3 of plans/guard-finding-compact.md) and its remedy
+        # must not be restated twice - the detail lines must not repeat a
+        # 6-word-or-longer phrase from the see: line. The detail may be
+        # EMPTY (a headline plus remedy lines is a legal block), but the
+        # finding's own substance must survive somewhere in the block, so
+        # the fix cannot delete the fact to dodge the duplication.
+        # warn/fail/skipped are out of scope: their remedy (a fix) is
+        # genuinely different from their brief.
         def passed_finding_fixture():
             # The same fixtures the two existing passed pins use.
             branch = piguard.check_review(
@@ -7855,11 +8095,11 @@ class RenderFindingBlockTests(unittest.TestCase):
                 if _field(f, "status") == "passed"
             ][0]
             return [
-                ("branch_rule", branch, "bypass_actors"),
+                ("branch_rule", branch, _field(branch, "brief")),
                 ("token", token, None),
             ]
 
-        for name, finding, caveat_phrase in passed_finding_fixture():
+        for name, finding, must_survive in passed_finding_fixture():
             self.assertEqual(
                 "passed", _field(finding, "status"), "fixture sanity ({})".format(name)
             )
@@ -7891,15 +8131,15 @@ class RenderFindingBlockTests(unittest.TestCase):
                 "({} 6-word phrase(s) shared between them): {}\n"
                 "block: {!r}".format(name, len(duplicated), duplicated, block),
             )
-            # The caveat substance must still appear somewhere in the
-            # block (detail or remedy), so de-duplicating cannot delete
-            # the fact.
+            # The finding's own substance must still appear somewhere in
+            # the block (detail or remedy), so de-duplicating cannot
+            # delete the fact.
             block_compact = self._compact("\n".join(block))
-            if caveat_phrase is not None:
+            if must_survive is not None:
                 self.assertIn(
-                    self._compact(caveat_phrase),
+                    self._compact(must_survive),
                     block_compact,
-                    "the {} caveat must survive somewhere in the "
+                    "the finding's brief must survive somewhere in the "
                     "block:\nblock: {!r}".format(name, block),
                 )
             else:
@@ -7969,11 +8209,18 @@ class FindingBlockHeadlineMarkTests(unittest.TestCase):
 
     @staticmethod
     def _finding(status, label, detail="the guard detail", remedy="fix the guard"):
-        """One finding carrying ``status`` and a headline ``label`` (rule)."""
+        """One finding carrying ``status`` and a headline ``label`` (rule).
+
+        The finding also carries the short ``brief`` the one-vocabulary
+        line (behaviour 3 of plans/guard-finding-compact.md) renders as
+        its substance; the old renderer ignores the key, so adding it
+        leaves every existing pin unchanged.
+        """
         return {
             "status": status,
             "check": "history_rewrite",
             "rule": label,
+            "brief": detail,
             "danger": detail,
             "remedy": remedy,
         }
@@ -8062,14 +8309,15 @@ class FindingBlockHeadlineMarkTests(unittest.TestCase):
         # the detail and fix:/see: lines are pinned byte-for-byte. The
         # fixture carries the short words (behaviour 2 of
         # plans/guard-finding-compact.md): the detail line holds the short
-        # danger, the indented fix: line the short remedy - the layout is
-        # unchanged this cycle, only the text those lines carry shortens.
+        # brief (the one vocabulary, behaviour 3 - re-pointed from the old
+        # "; fix:" tail, which no longer rides in the detail), the indented
+        # fix: line the short remedy - the layout is unchanged this cycle.
         finding = self._finding("warn", "file_path_restriction")
         block = piguard.render_finding_block(finding)
         self.assertEqual(
             block[1:],
             [
-                "file_path_restriction - the guard detail;",
+                "file_path_restriction - the guard detail",
                 "  fix: fix the guard",
             ],
             "the detail and remedy lines must be unchanged by the "
