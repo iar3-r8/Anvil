@@ -1387,72 +1387,29 @@ def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def render_finding(finding: Dict[str, Any]) -> str:
     """One human-readable line per finding; no network, no exit.
 
-    A ``passed`` line names the rule's API type and states that the rule
-    is present - plus the caveat that ``bypass_actors`` is only returned
-    to users with write access to the ruleset, so on a read-only token the
-    branch must never be called simply "protected": an unseen bypass entry
-    is an unmeasured hole. A passed review finding also keeps its recorded
-    ``required_approving_review_count`` visible, and a passed update
-    finding keeps its recorded ``update_allows_fetch_and_merge`` visible -
-    a weak value stays on the line (the zero-approvals precedent) - while
-    a finding whose parameters were unreadable claims no value at all. A
-    passed file-path finding keeps its recorded ``restricted_file_paths``
-    visible, listing every recorded path verbatim with no elision; an
-    empty recorded list - explicit ``[]`` or an unreadable parameter -
-    renders the explicit "no restricted paths recorded" rather than a
-    bare "protected". A ``warn`` line names the danger and the remedy. A
-    ``skipped`` line carries the reason the check could not run. A
-    ``fail`` line names the danger and the remedy in the same shape as
-    ``warn``, but keyed on ``check`` rather than ``rule``: a token finding
-    carries ``rule=None``, and rendering it would print a literal "None".
+    The one vocabulary (behaviour 3 of
+    plans/guard-finding-compact.md): every status renders
+    ``{prefix}: {label} - {brief}`` - the existing ``ok:``/``warn:``/
+    ``fail:``/``skipped:`` prefix, the label (the finding's ``rule`` when
+    it carries one, else its ``check`` - a token finding carries
+    ``rule=None``, and rendering it would print a literal "None"), and
+    the finding's own short ``brief``: the one-liner a passed finding
+    records (its recorded value in parentheses), the danger words a
+    warn/fail finding records, the short reason a skipped finding
+    records. Every word of the line comes from the finding's own fields,
+    so the hard-coded bypass caveat - which is not a finding field -
+    does not appear here: it returns once as the module's trailing note
+    (behaviour 8 of plans/guard-finding-compact.md). A finding with an
+    unknown status still falls through to the ``unknown:`` line, which
+    marks it without crashing (the ``unknown:`` fallthrough is unchanged).
     """
-    rule = finding.get("rule")
     status = finding.get("status")
-    if status == "passed":
-        line = (
-            "ok: the {} rule is present - but the bypass list is not "
-            "visible on a read-only token (bypass_actors is only returned "
-            "to users with write access to the ruleset)".format(rule)
-        )
-        count = finding.get("required_approving_review_count")
-        if count is not None:
-            line += " ({} required approvals)".format(count)
-        allows = finding.get("update_allows_fetch_and_merge")
-        if allows is not None:
-            line += " (update_allows_fetch_and_merge: {})".format(allows)
-        paths = finding.get("restricted_file_paths")
-        if paths is not None:
-            if paths:
-                line += " (restricted_file_paths: {})".format(
-                    ", ".join(str(path) for path in paths)
-                )
-            else:
-                line += " (no restricted paths recorded)"
-        return line
-    if status == "warn":
-        # Keyed on ``check`` when ``rule`` is None: a token finding carries
-        # rule=None, and rendering it would print a literal "None" - the
-        # same shape the ``fail`` branch (behaviour 9) uses. A non-None
-        # rule renders byte-for-byte as before.
-        return "warn: {} - {}; fix: {}".format(
-            rule if rule is not None else finding.get("check"),
-            finding.get("danger"),
-            finding.get("remedy"),
-        )
-    if status == "skipped":
-        reason = (
-            finding.get("reason")
-            or finding.get("danger")
-            or "no reason recorded"
-        )
-        return "skipped: {} check could not run: {}".format(
-            finding.get("check"), reason
-        )
-    if status == "fail":
-        # Keyed on ``check`` rather than ``rule``: a token finding carries
-        # ``rule=None``, and rendering it would print a literal "None".
-        return "fail: {} - {}; fix: {}".format(
-            finding.get("check"), finding.get("danger"), finding.get("remedy")
+    rule = finding.get("rule")
+    if status in ("passed", "warn", "fail", "skipped"):
+        prefix = _BLOCK_PREFIXES[status]
+        label = rule if rule is not None else finding.get("check")
+        return "{}: {} - {}".format(
+            prefix, label, finding.get("brief", "")
         )
     return "unknown: {} finding for rule {}".format(status, rule)
 

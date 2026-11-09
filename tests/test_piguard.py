@@ -4274,14 +4274,10 @@ class ProbeTargetAccessTests(unittest.TestCase):
                 )
                 if _field(finding, "status") == "warn":
                     self.assertIn(
-                        _field(finding, "danger"),
+                        _field(finding, "brief"),
                         line,
-                        "the rendered warn line must name the danger",
-                    )
-                    self.assertIn(
-                        _field(finding, "remedy"),
-                        line,
-                        "the rendered warn line must name the remedy",
+                        "the rendered warn line must carry the finding's "
+                        "brief - the danger words the probe records",
                     )
                 if _field(finding, "status") == "passed":
                     self.assertNotIn(
@@ -4842,14 +4838,10 @@ class ProbeAdministrationTests(unittest.TestCase):
                 )
                 if _field(finding, "status") == "warn":
                     self.assertIn(
-                        _field(finding, "danger"),
+                        _field(finding, "brief"),
                         line,
-                        "the rendered warn line must name the danger",
-                    )
-                    self.assertIn(
-                        _field(finding, "remedy"),
-                        line,
-                        "the rendered warn line must name the remedy",
+                        "the rendered warn line must carry the finding's "
+                        "brief - the danger words the probe records",
                     )
                 if _field(finding, "status") == "skipped":
                     reason = (
@@ -6506,14 +6498,10 @@ class ProbeNamedRepoTests(unittest.TestCase):
                 )
                 if _field(finding, "status") == "warn":
                     self.assertIn(
-                        _field(finding, "danger"),
+                        _field(finding, "brief"),
                         line,
-                        "the rendered warn line must name the danger",
-                    )
-                    self.assertIn(
-                        _field(finding, "remedy"),
-                        line,
-                        "the rendered warn line must name the remedy",
+                        "the rendered warn line must carry the finding's "
+                        "brief - the danger words the probe records",
                     )
                 if _field(finding, "status") == "passed":
                     self.assertNotIn(
