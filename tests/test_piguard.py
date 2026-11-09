@@ -83,10 +83,14 @@ class CheckHistoryRewriteTests(unittest.TestCase):
                 "main-protected",
                 "finding must name the rule's ruleset_source",
             )
-            self.assertTrue(
+            self.assertIsInstance(
                 _field(finding, "remedy"),
-                "every finding carries a non-empty remedy",
+                str,
+                "remedy must be a string on a passed finding",
             )
+            # A passed rule has nothing to fix; its remedy may now be
+            # empty (behaviour 2 of plans/guard-finding-compact.md) -
+            # nothing prints it any more.
 
     def test_one_rule_absent_yields_passed_for_the_other_and_warn_for_the_missing(self):
         findings = piguard.check_history_rewrite(
@@ -109,9 +113,18 @@ class CheckHistoryRewriteTests(unittest.TestCase):
             _field(warn, "danger"),
             "warn finding must name the danger (history rewritten unrecoverably)",
         )
-        self.assertTrue(
-            "doc/external/github" in (_field(warn, "remedy") or ""),
-            "warn finding must name a fix, e.g. a doc path under doc/external/github/",
+        self.assertIn(
+            "Restrict deletions",
+            _field(warn, "remedy") or "",
+            "the deletion warn's remedy must name the GitHub UI label the "
+            "missing rule turns on - 'Restrict deletions' - per "
+            "doc/external/github/available-rules-for-rulesets.md",
+        )
+        self.assertNotIn(
+            "doc/external/",
+            _field(warn, "remedy") or "",
+            "the warn remedy must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md)",
         )
 
     def test_empty_rules_array_warns_on_both_rule_types_without_raising(self):
@@ -178,9 +191,10 @@ class CheckReviewGuardTests(unittest.TestCase):
             1,
             "finding must record the required approving review count",
         )
-        self.assertTrue(
+        self.assertIsInstance(
             _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
+            str,
+            "remedy must be a string on a passed finding",
         )
 
     def test_pull_request_absent_warns_naming_danger_and_remedy(self):
@@ -210,10 +224,19 @@ class CheckReviewGuardTests(unittest.TestCase):
                     _field(warn, "danger"),
                     "warn finding must name the danger (change lands unreviewed)",
                 )
-                self.assertTrue(
-                    "doc/external/github" in (_field(warn, "remedy") or ""),
-                    "warn finding must name a concrete fix, e.g. a doc path "
-                    "under doc/external/github/",
+                self.assertIn(
+                    "Require a pull request before merging",
+                    _field(warn, "remedy") or "",
+                    "the review warn's remedy must name the GitHub UI "
+                    "label the missing rule turns on - 'Require a pull "
+                    "request before merging' - per "
+                    "doc/external/github/available-rules-for-rulesets.md",
+                )
+                self.assertNotIn(
+                    "doc/external/",
+                    _field(warn, "remedy") or "",
+                    "the warn remedy must carry no doc path (behaviour 2 "
+                    "of plans/guard-finding-compact.md)",
                 )
                 self.assertEqual(
                     [
@@ -245,9 +268,10 @@ class CheckReviewGuardTests(unittest.TestCase):
             "zero approvals is a weaker guard than the name suggests; "
             "the count must be visible on the finding",
         )
-        self.assertTrue(
+        self.assertIsInstance(
             _field(passed[0], "remedy"),
-            "every finding carries a non-empty remedy",
+            str,
+            "remedy must be a string on a passed finding",
         )
 
 
@@ -277,9 +301,9 @@ class CheckUpdateTests(unittest.TestCase):
     ``parameters.update_allows_fetch_and_merge`` on the finding (a weak value
     passes but stays visible, the zero-approvals precedent); a rule absent
     yields a ``warn`` finding naming the danger (anyone with push access can
-    push straight to the branch, with no gate) and a remedy citing both saved
-    docs (doc/external/github/rest-api-endpoints-for-rules.md:134,
-    doc/external/github/available-rules-for-rulesets.md:32).
+    push straight to the branch, with no gate) and a remedy naming the
+    GitHub UI label the missing rule turns on - "Restrict updates" - per
+    doc/external/github/available-rules-for-rulesets.md.
     """
 
     def test_update_rule_present_yields_one_passed_finding_recording_parameter(self):
@@ -317,9 +341,10 @@ class CheckUpdateTests(unittest.TestCase):
             True,
             "finding must record parameters.update_allows_fetch_and_merge",
         )
-        self.assertTrue(
+        self.assertIsInstance(
             _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
+            str,
+            "remedy must be a string on a passed finding",
         )
 
     def test_update_absent_warns_naming_danger_and_both_saved_docs(self):
@@ -353,18 +378,19 @@ class CheckUpdateTests(unittest.TestCase):
                     "warn finding must name the danger: anyone with push "
                     "access can push straight to the branch, with no gate",
                 )
-                remedy = _field(warn, "remedy") or ""
                 self.assertIn(
-                    "doc/external/github/available-rules-for-rulesets.md",
-                    remedy,
-                    "the warn remedy must cite the saved rules doc, so a "
-                    "reviewer can check the claim",
+                    "Restrict updates",
+                    _field(warn, "remedy") or "",
+                    "the update warn's remedy must name the GitHub UI "
+                    "label the missing rule turns on - 'Restrict updates' "
+                    "- per doc/external/github/available-rules-for-"
+                    "rulesets.md",
                 )
-                self.assertIn(
-                    "doc/external/github/rest-api-endpoints-for-rules.md",
-                    remedy,
-                    "the warn remedy must cite the saved endpoint doc, so a "
-                    "reviewer can check the claim",
+                self.assertNotIn(
+                    "doc/external/",
+                    _field(warn, "remedy") or "",
+                    "the warn remedy must carry no doc path (behaviour 2 "
+                    "of plans/guard-finding-compact.md)",
                 )
                 self.assertEqual(
                     [
@@ -413,9 +439,10 @@ class CheckUpdateTests(unittest.TestCase):
                     "an unreadable parameters object must record None, not "
                     "raise or guess a value",
                 )
-                self.assertTrue(
+                self.assertIsInstance(
                     _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
+                    str,
+                    "remedy must be a string on a passed finding",
                 )
 
     def test_false_allows_fetch_and_merge_passes_but_records_false(self):
@@ -441,10 +468,6 @@ class CheckUpdateTests(unittest.TestCase):
             False,
             "a False value must stay visible on the finding - it means "
             "fetches and merges are the only allowed updates",
-        )
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
         )
 
     def test_source_is_unknown_when_ruleset_source_absent_or_blank(self):
@@ -506,9 +529,9 @@ class CheckFilePathsTests(unittest.TestCase):
     list passes but stays visible, the zero-approvals precedent); a rule
     absent yields a ``warn`` finding naming the danger (a push can change
     ``.github/workflows/**`` - the paths the rule restricts, e.g. what CI
-    runs - with no gate) and a remedy citing both saved docs
-    (doc/external/github/available-rules-for-rulesets.md,
-    doc/external/github/rest-api-endpoints-for-rules.md:137).
+    runs - with no gate) and a remedy naming the GitHub UI label the
+    missing rule turns on - "Restrict file paths" - per
+    doc/external/github/available-rules-for-rulesets.md.
     """
 
     def test_file_path_rule_present_yields_one_passed_finding_recording_paths(self):
@@ -551,9 +574,10 @@ class CheckFilePathsTests(unittest.TestCase):
             "finding must record the exact restricted_file_paths list the "
             "rule carries - the value build_ruleset writes",
         )
-        self.assertTrue(
+        self.assertIsInstance(
             _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
+            str,
+            "remedy must be a string on a passed finding",
         )
 
     def test_file_path_absent_warns_naming_danger_and_both_saved_docs(self):
@@ -587,18 +611,19 @@ class CheckFilePathsTests(unittest.TestCase):
                     "warn finding must name the danger: a push can change "
                     ".github/workflows/** - what CI runs - with no gate",
                 )
-                remedy = _field(warn, "remedy") or ""
                 self.assertIn(
-                    "doc/external/github/available-rules-for-rulesets.md",
-                    remedy,
-                    "the warn remedy must cite the saved rules doc, so a "
-                    "reviewer can check the claim",
+                    "Restrict file paths",
+                    _field(warn, "remedy") or "",
+                    "the file-path warn's remedy must name the GitHub UI "
+                    "label the missing rule turns on - 'Restrict file "
+                    "paths' - per doc/external/github/available-rules-"
+                    "for-rulesets.md",
                 )
-                self.assertIn(
-                    "doc/external/github/rest-api-endpoints-for-rules.md",
-                    remedy,
-                    "the warn remedy must cite the saved endpoint doc, so a "
-                    "reviewer can check the claim",
+                self.assertNotIn(
+                    "doc/external/",
+                    _field(warn, "remedy") or "",
+                    "the warn remedy must carry no doc path (behaviour 2 "
+                    "of plans/guard-finding-compact.md)",
                 )
                 self.assertEqual(
                     [
@@ -656,9 +681,10 @@ class CheckFilePathsTests(unittest.TestCase):
                     "list, not None - an empty restriction set is the "
                     "only honest value",
                 )
-                self.assertTrue(
+                self.assertIsInstance(
                     _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
+                    str,
+                    "remedy must be a string on a passed finding",
                 )
 
     def test_empty_restricted_file_paths_passes_but_records_empty_list(self):
@@ -680,10 +706,6 @@ class CheckFilePathsTests(unittest.TestCase):
             [],
             "an empty restriction list must stay visible on the finding - "
             "it means the rule restricts nothing",
-        )
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
         )
 
     def test_duplicated_file_path_rule_elements_first_wins(self):
@@ -1169,10 +1191,12 @@ class RenderFindingTests(unittest.TestCase):
                     "the rendered warn line must name the danger",
                 )
                 self.assertIn(
-                    "doc/external/github",
+                    _field(warn, "remedy"),
                     line,
-                    "the rendered warn line must name the concrete fix, e.g. "
-                    "a doc path under doc/external/github/",
+                    "the rendered warn line must name the remedy the "
+                    "finding carries - the fix is the finding's own "
+                    "wording, and (behaviour 2 of "
+                    "plans/guard-finding-compact.md) no doc path",
                 )
 
 
@@ -1311,15 +1335,42 @@ class _SkippedAssertions:
         for finding in findings:
             with self.subTest(check=_field(finding, "check")):
                 carried = _field(finding, "reason") or _field(finding, "danger")
+                self.assertIsInstance(
+                    carried,
+                    str,
+                    "each skipped finding carries a reason string",
+                )
                 self.assertTrue(
                     carried,
                     "each skipped finding carries a non-empty reason",
                 )
-                self.assertIn(
-                    reason,
+                # Behaviour 2 of plans/guard-finding-compact.md: the
+                # reason the fetch failed is shortened at the source -
+                # a single sentence of at most 100 characters, no doc
+                # path, no "see:" clause - not the raw fetch error.
+                self.assertLessEqual(
+                    len(carried),
+                    100,
+                    "the skipped reason must be at most 100 characters, "
+                    "got {}: {!r}".format(len(carried), carried),
+                )
+                self.assertNotIn(
+                    ". ",
                     carried,
-                    "the reason the fetch failed must reach the finding, so "
-                    "the user sees why the check did not run",
+                    "the skipped reason must be a single sentence: "
+                    "{!r}".format(carried),
+                )
+                self.assertNotIn(
+                    "doc/external/",
+                    carried,
+                    "the skipped reason must carry no doc path: "
+                    "{!r}".format(carried),
+                )
+                self.assertNotIn(
+                    "see:",
+                    carried,
+                    "the skipped reason must carry no 'see:' clause: "
+                    "{!r}".format(carried),
                 )
                 self.assertTrue(
                     _field(finding, "remedy"),
@@ -1825,10 +1876,17 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
                     line.lower(),
                     "the rendered skipped line must say the check was skipped",
                 )
+                carried = (
+                    _field(finding, "reason")
+                    or _field(finding, "danger")
+                    or ""
+                )
                 self.assertIn(
-                    reason,
+                    carried,
                     line,
-                    "the rendered skipped line must carry the reason",
+                    "the rendered skipped line must carry the finding's "
+                    "own reason, so the report shows why the check did "
+                    "not run",
                 )
                 self.assertNotIn(
                     "ok:",
@@ -2088,11 +2146,19 @@ class FindingInvariantsTests(unittest.TestCase):
                         type(remedy).__name__
                     ),
                 )
-                self.assertTrue(
-                    remedy,
-                    "a finding with an empty remedy is a programming error: "
-                    "it cannot name the concrete fix",
-                )
+                if status != "passed":
+                    # The module invariant (behaviour 5, kept by behaviour
+                    # 2 of plans/guard-finding-compact.md): every
+                    # warn/fail/skipped finding still names what to do.
+                    self.assertTrue(
+                        remedy,
+                        "a non-passing finding ({}) with an empty remedy "
+                        "is a programming error: it cannot name the "
+                        "concrete fix".format(status),
+                    )
+                # A passed finding's remedy may be empty now that nothing
+                # prints it (behaviour 2 of plans/guard-finding-
+                # compact.md).
                 if status != "passed":
                     danger = _field(finding, "danger")
                     self.assertIsInstance(
@@ -2114,7 +2180,7 @@ class FindingInvariantsTests(unittest.TestCase):
                     "render_finding must produce a non-empty line",
                 )
 
-    def test_non_passing_findings_name_a_doc_path_under_doc_external_github(self):
+    def test_non_passing_findings_remedy_is_short_and_carries_no_doc_path(self):
         checked = 0
         for label, finding in self._every_finding():
             status = _field(finding, "status")
@@ -2123,13 +2189,35 @@ class FindingInvariantsTests(unittest.TestCase):
             checked += 1
             with self.subTest(finding=label):
                 remedy = _field(finding, "remedy") or ""
-                self.assertIn(
-                    "doc/external/github/",
+                self.assertLessEqual(
+                    len(remedy),
+                    100,
+                    "the {} finding on rule {!r} remedy must be a single "
+                    "sentence of at most 100 characters, got {}: "
+                    "{!r}".format(status, _field(finding, "rule"), len(remedy), remedy),
+                )
+                self.assertNotIn(
+                    ". ",
                     remedy,
-                    "the {} finding on rule {!r} must name a doc path under "
-                    "doc/external/github/ in its remedy, so a reviewer can "
-                    "check the claim against the saved documentation".format(
-                        status, _field(finding, "rule")
+                    "the {} finding on rule {!r} remedy must be a single "
+                    "sentence: {!r}".format(status, _field(finding, "rule"), remedy),
+                )
+                self.assertNotIn(
+                    "doc/external/",
+                    remedy,
+                    "the {} finding on rule {!r} must carry no doc path in "
+                    "its remedy (behaviour 2 of "
+                    "plans/guard-finding-compact.md): {!r}".format(
+                        status, _field(finding, "rule"), remedy
+                    ),
+                )
+                self.assertNotIn(
+                    "see:",
+                    remedy,
+                    "the {} finding on rule {!r} must carry no 'see:' "
+                    "clause in its remedy (behaviour 2 of "
+                    "plans/guard-finding-compact.md): {!r}".format(
+                        status, _field(finding, "rule"), remedy
                     ),
                 )
         self.assertGreater(
@@ -3615,8 +3703,8 @@ class ProbeTargetAccessTests(unittest.TestCase):
       later probes' denials are interpretable as withholdings.
     - ``404``  -> one ``warn`` finding: the token cannot reach the target
       repo at all, so no other probe's denial can be read as a withholding.
-      The warn remedy must name a saved page under ``doc/external/github/``
-      (behaviour 10's invariant: a doc path in every non-passing remedy).
+      The warn remedy states the fix in short words, no doc path
+      (behaviour 2 of plans/guard-finding-compact.md).
     - ``401`` or any other status -> one ``skipped`` finding whose reason
       carries the status.
     - transport failure -> one ``skipped`` finding whose reason is non-empty.
@@ -3666,13 +3754,11 @@ class ProbeTargetAccessTests(unittest.TestCase):
             "a 200 means the target is reachable, so the later probes' "
             "denials are interpretable: the probe passes",
         )
+        # A passed probe has nothing to fix; its remedy may now be empty
+        # (behaviour 2 of plans/guard-finding-compact.md).
         self.assertIsInstance(_field(finding, "remedy"), str)
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
-        )
 
-    def test_recorded_404_yields_warn_naming_no_access_and_doc_path(self):
+    def test_recorded_404_yields_warn_naming_no_access_and_recreating_the_token(self):
         # The 404 is the louder, different finding: the token cannot reach
         # the target repo at all, so no other probe's denial can be read as
         # a withholding. It is an HTTPError played back through the opener,
@@ -3710,13 +3796,14 @@ class ProbeTargetAccessTests(unittest.TestCase):
             "the warn must name the danger: the token reaches no target, so "
             "the other probes' denials are unreadable",
         )
-        remedy = _field(finding, "remedy") or ""
+        # The approved sample's "To fix" entry for this finding, with the
+        # recorded target substituted for the sample's:
+        # "recreate the token with access to {target} only".
         self.assertIn(
-            "doc/external/github/",
-            remedy,
-            "the warn remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "recreate the token with access to owner/repo only",
+            _field(finding, "remedy") or "",
+            "the warn remedy must be the sample's short fix naming the "
+            "recorded target - no doc path",
         )
 
     def test_recorded_401_yields_skipped_with_status_in_reason(self):
@@ -3741,12 +3828,13 @@ class ProbeTargetAccessTests(unittest.TestCase):
             "a 401 on the target repo is not a scope answer the probe can "
             "interpret: it skips",
         )
-        reason = _field(finding, "reason") or _field(finding, "danger") or ""
-        self.assertIn(
-            "401",
-            reason,
-            "the skipped finding's reason must carry the status 401, so "
-            "the report shows why the probe did not run",
+        # The sample's skip-variant word for a 401, exactly: the short
+        # reason carries the status and nothing else - the URL is dropped.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "GitHub returned HTTP 401",
+            "the skipped finding's reason must be the sample's short 401 "
+            "reason, so the report shows why the probe did not run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -3871,16 +3959,13 @@ class ProbeTargetAccessTests(unittest.TestCase):
             "skipped",
             "no token means the probe skips - never a pass or a warn",
         )
-        reason = (
-            _field(finding, "reason")
-            or _field(finding, "danger")
-            or ""
-        )
-        self.assertTrue(
-            reason,
-            "the skipped finding must carry a non-empty reason stating "
-            "that a token-scope probe with no token establishes no fact "
-            "about any token",
+        # The sample's skip-variant word for a missing token, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "no token in .env",
+            "the skipped finding's reason must be the sample's short "
+            "no-token reason, so the report shows why the probe did not "
+            "run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -3955,10 +4040,13 @@ class ProbeTargetAccessTests(unittest.TestCase):
                     "every finding carries a non-empty check name",
                 )
                 self.assertIsInstance(_field(finding, "remedy"), str)
-                self.assertTrue(
-                    _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
-                )
+                if _field(finding, "status") != "passed":
+                    self.assertTrue(
+                        _field(finding, "remedy"),
+                        "a non-passing finding carries a non-empty remedy",
+                    )
+                # A passed probe has nothing to fix; its remedy may now be
+                # empty (behaviour 2 of plans/guard-finding-compact.md).
                 line = piguard.render_finding(finding)
                 self.assertIsInstance(line, str)
                 self.assertTrue(
@@ -4148,11 +4236,9 @@ class ProbeAdministrationTests(unittest.TestCase):
             "a 403 means administration is withheld - the compliant "
             "answer: the probe passes",
         )
+        # A passed probe has nothing to fix; its remedy may now be empty
+        # (behaviour 2 of plans/guard-finding-compact.md).
         self.assertIsInstance(_field(finding, "remedy"), str)
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
-        )
 
     def test_recorded_200_yields_exactly_one_fail_finding_with_danger_and_remedy(self):
         # The first emittable fail in the module. A 200 means the token
@@ -4193,23 +4279,16 @@ class ProbeAdministrationTests(unittest.TestCase):
             "consequence - a fail that cannot say what the token can do "
             "is a programming error (behaviour 10)",
         )
-        self.assertIn(
-            "deleted",
+        # The sample's fail danger, exactly (behaviour 2 of
+        # plans/guard-finding-compact.md, approved sample):
+        # "the token can delete or reconfigure iar3-r8/anvil" - the
+        # GITHUB_TOKEN clause is dropped with the doc path.
+        self.assertEqual(
             danger,
-            "the fail danger must state that the repository can be "
-            "deleted or reconfigured",
-        )
-        self.assertIn(
-            "reconfigured",
-            danger,
-            "the fail danger must state that the repository can be "
-            "deleted or reconfigured",
-        )
-        self.assertIn(
-            "GITHUB_TOKEN",
-            danger,
-            "the fail danger must state that the default GITHUB_TOKEN can "
-            "be raised to write",
+            "the token can delete or reconfigure owner/repo",
+            "the fail danger must be the sample's short danger naming "
+            "the recorded target - the GITHUB_TOKEN clause is dropped "
+            "along with the doc path",
         )
         remedy = _field(finding, "remedy")
         self.assertIsInstance(remedy, str)
@@ -4218,12 +4297,19 @@ class ProbeAdministrationTests(unittest.TestCase):
             "the fail finding must carry a non-empty remedy - every "
             "finding must say how to fix the danger",
         )
+        # The sample's "To fix" entry for this finding, with the recorded
+        # target substituted for the sample's.
         self.assertIn(
-            "doc/external/github/",
+            "recreate the token without the Administration permission",
             remedy,
-            "the fail remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "the fail remedy must be the sample's short fix - no doc "
+            "path",
+        )
+        self.assertNotIn(
+            "doc/external/",
+            remedy,
+            "the fail remedy must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md)",
         )
 
     def test_recorded_404_yields_warn_naming_disambiguator_and_undocumented_deny(self):
@@ -4268,40 +4354,22 @@ class ProbeAdministrationTests(unittest.TestCase):
             "that the token holds Administration, only that the denial "
             "is unreadable",
         )
-        text = " ".join(
-            part
-            for part in (
-                _field(finding, "danger") or "",
-                _field(finding, "reason") or "",
-                _field(finding, "remedy") or "",
-            )
-            if part
-        )
-        self.assertTrue(
-            piguard.CHECK_TARGET_ACCESS in text
-            or "target access" in text,
-            "the 404 warn must name behaviour 2's target-access finding "
-            "as the disambiguator between 'administration withheld' and "
-            "'no access at all'",
-        )
+        # The approved sample's "To fix" entry for this 404 warn:
+        # "recreate the token with access to {target} only" - the
+        # disambiguation against target_access lives in the remedy's
+        # "only", not in the danger.
         self.assertIn(
-            "200",
-            text,
-            "the 404 warn must note that only 200 is documented for the "
-            "endpoint, so the denial code is undocumented",
-        )
-        self.assertIn(
-            "documented",
-            text,
-            "the 404 warn must state that the endpoint's denial code is "
-            "not documented",
-        )
-        self.assertIn(
-            "doc/external/github/",
+            "recreate the token with access to owner/repo only",
             _field(finding, "remedy") or "",
-            "the warn remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "the 404 warn's remedy must be the sample's short fix naming "
+            "the recorded target with 'only' - the disambiguation against "
+            "target_access",
+        )
+        self.assertNotIn(
+            "doc/external/",
+            _field(finding, "remedy") or "",
+            "the 404 warn's remedy must carry no doc path (behaviour 2 "
+            "of plans/guard-finding-compact.md)",
         )
 
     def test_recorded_401_yields_skipped_with_status_in_reason(self):
@@ -4326,12 +4394,12 @@ class ProbeAdministrationTests(unittest.TestCase):
             "a 401 on the permissions endpoint is not a scope answer the "
             "probe can interpret: it skips",
         )
-        reason = _field(finding, "reason") or _field(finding, "danger") or ""
-        self.assertIn(
-            "401",
-            reason,
-            "the skipped finding's reason must carry the status 401, so "
-            "the report shows why the probe did not run",
+        # The sample's skip-variant word for a 401, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "GitHub returned HTTP 401",
+            "the skipped finding's reason must be the sample's short 401 "
+            "reason, so the report shows why the probe did not run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -4455,16 +4523,13 @@ class ProbeAdministrationTests(unittest.TestCase):
             "no token means the probe skips - never a pass, a warn or a "
             "fail",
         )
-        reason = (
-            _field(finding, "reason")
-            or _field(finding, "danger")
-            or ""
-        )
-        self.assertTrue(
-            reason,
-            "the skipped finding must carry a non-empty reason stating "
-            "that a token-scope probe with no token establishes no fact "
-            "about any token",
+        # The sample's skip-variant word for a missing token, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "no token in .env",
+            "the skipped finding's reason must be the sample's short "
+            "no-token reason, so the report shows why the probe did not "
+            "run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -4543,10 +4608,13 @@ class ProbeAdministrationTests(unittest.TestCase):
                     "every finding carries a non-empty check name",
                 )
                 self.assertIsInstance(_field(finding, "remedy"), str)
-                self.assertTrue(
-                    _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
-                )
+                if _field(finding, "status") != "passed":
+                    self.assertTrue(
+                        _field(finding, "remedy"),
+                        "a non-passing finding carries a non-empty remedy",
+                    )
+                # A passed probe has nothing to fix; its remedy may now be
+                # empty (behaviour 2 of plans/guard-finding-compact.md).
                 line = piguard.render_finding(finding)
                 self.assertIsInstance(line, str)
                 self.assertTrue(
@@ -4813,12 +4881,19 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "the fail finding must carry a non-empty remedy - every "
             "finding must say how to fix the danger",
         )
+        # The sample's "To fix" entry for this finding, with the recorded
+        # target substituted for the sample's.
         self.assertIn(
-            "doc/external/github/",
+            "recreate it as a fine-grained token, owner/repo only",
             remedy,
-            "the fail remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "the fail remedy must be the sample's short fix - no doc "
+            "path",
+        )
+        self.assertNotIn(
+            "doc/external/",
+            remedy,
+            "the fail remedy must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md)",
         )
 
     def test_recorded_200_with_empty_scopes_header_yields_exactly_one_passed_finding(self):
@@ -4845,11 +4920,9 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "an empty X-OAuth-Scopes header carries no scopes: the "
             "probe passes",
         )
+        # A passed probe has nothing to fix; its remedy may now be empty
+        # (behaviour 2 of plans/guard-finding-compact.md).
         self.assertIsInstance(_field(finding, "remedy"), str)
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
-        )
 
     def test_recorded_200_with_scopes_header_absent_yields_exactly_one_passed_finding(self):
         probe = self._prober()
@@ -4870,11 +4943,9 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "a missing X-OAuth-Scopes header means no classic OAuth "
             "scope header was returned: the probe passes",
         )
+        # A passed probe has nothing to fix; its remedy may now be empty
+        # (behaviour 2 of plans/guard-finding-compact.md).
         self.assertIsInstance(_field(finding, "remedy"), str)
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
-        )
 
     def test_passed_finding_never_claims_the_token_is_fine_grained(self):
         # The docs do not license "this is a fine-grained token": GitHub
@@ -4905,6 +4976,7 @@ class ProbeClassicTokenTests(unittest.TestCase):
                 text = " ".join(
                     part
                     for part in (
+                        _field(finding, "brief") or "",
                         _field(finding, "danger") or "",
                         _field(finding, "reason") or "",
                         _field(finding, "remedy") or "",
@@ -4913,17 +4985,11 @@ class ProbeClassicTokenTests(unittest.TestCase):
                     if part
                 ).lower()
                 self.assertIn(
-                    "x-oauth-scopes",
+                    "no classic",
                     text,
-                    "the pass must name the header it observed (or did "
-                    "not), so the finding says what the response did not "
-                    "carry",
-                )
-                self.assertIn(
-                    "header",
-                    text,
-                    "the pass wording is about the header - 'no classic "
-                    "OAuth scope header was returned'",
+                    "the pass must state that no classic OAuth scopes "
+                    "were returned - a statement about what the response "
+                    "did not carry, not a classification of the token",
                 )
                 self.assertNotIn(
                     "fine-grained token",
@@ -5022,12 +5088,12 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "a 401 on GET /user is not a scope answer the probe can "
             "interpret: it skips",
         )
-        reason = _field(finding, "reason") or _field(finding, "danger") or ""
-        self.assertIn(
-            "401",
-            reason,
-            "the skipped finding's reason must carry the status 401, so "
-            "the report shows why the probe did not run",
+        # The sample's skip-variant word for a 401, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "GitHub returned HTTP 401",
+            "the skipped finding's reason must be the sample's short 401 "
+            "reason, so the report shows why the probe did not run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -5100,16 +5166,13 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "skipped",
             "no token means the probe skips - never a pass or a fail",
         )
-        reason = (
-            _field(finding, "reason")
-            or _field(finding, "danger")
-            or ""
-        )
-        self.assertTrue(
-            reason,
-            "the skipped finding must carry a non-empty reason stating "
-            "that a token-scope probe with no token establishes no fact "
-            "about any token",
+        # The sample's skip-variant word for a missing token, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "no token in .env",
+            "the skipped finding's reason must be the sample's short "
+            "no-token reason, so the report shows why the probe did not "
+            "run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -5177,10 +5240,13 @@ class ProbeClassicTokenTests(unittest.TestCase):
                     "every finding carries a non-empty check name",
                 )
                 self.assertIsInstance(_field(finding, "remedy"), str)
-                self.assertTrue(
-                    _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
-                )
+                if _field(finding, "status") != "passed":
+                    self.assertTrue(
+                        _field(finding, "remedy"),
+                        "a non-passing finding carries a non-empty remedy",
+                    )
+                # A passed probe has nothing to fix; its remedy may now be
+                # empty (behaviour 2 of plans/guard-finding-compact.md).
                 line = piguard.render_finding(finding)
                 self.assertIsInstance(line, str)
                 self.assertTrue(
@@ -6188,10 +6254,13 @@ class ProbeNamedRepoTests(unittest.TestCase):
                     "every finding carries a non-empty check name",
                 )
                 self.assertIsInstance(_field(finding, "remedy"), str)
-                self.assertTrue(
-                    _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
-                )
+                if _field(finding, "status") != "passed":
+                    self.assertTrue(
+                        _field(finding, "remedy"),
+                        "a non-passing finding carries a non-empty remedy",
+                    )
+                # A passed probe has nothing to fix; its remedy may now be
+                # empty (behaviour 2 of plans/guard-finding-compact.md).
                 line = piguard.render_finding(finding)
                 self.assertIsInstance(line, str)
                 self.assertTrue(
@@ -7490,14 +7559,15 @@ class RenderFindingBlockTests(unittest.TestCase):
         self.assertNotIn("None", headline)
         # The substance survives the wrap word-for-word (whitespace is the
         # only thing a wrap may change), so the whole danger and the whole
-        # remedy recover from the block.
+        # remedy recover from the block. The remedy is the short fix
+        # (behaviour 2 of plans/guard-finding-compact.md): no doc path.
         self._assert_substance_survives(_field(finding, "danger"), block)
         self._assert_substance_survives(_field(finding, "remedy"), block)
-        self.assertIn(
-            "doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+        self.assertNotIn(
+            "doc/external/",
             self._compact("\n".join(block)),
-            "the remedy's doc path must survive the wrap intact:\n"
-            "block: {!r}".format(block),
+            "the fail block must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
         )
         # Pinned convention: a warn/fail remedy rides on a ``fix:`` line.
         remedy_lines = self._remedy_lines(block, allowed=("fix:",))
@@ -7510,7 +7580,8 @@ class RenderFindingBlockTests(unittest.TestCase):
         self.assertIn(
             "recreate the token",
             remedy_lines[0],
-            "the fix line must carry the start of the remedy:\n"
+            "the fix line must carry the start of the short remedy "
+            "(behaviour 2 of plans/guard-finding-compact.md):\n"
             "block: {!r}".format(block),
         )
 
@@ -7544,11 +7615,11 @@ class RenderFindingBlockTests(unittest.TestCase):
         self.assertNotIn("None", headline)
         self._assert_substance_survives(_field(finding, "danger"), block)
         self._assert_substance_survives(_field(finding, "remedy"), block)
-        self.assertIn(
-            "doc/external/github/fine-grained-personal-access-tokens.md",
+        self.assertNotIn(
+            "doc/external/",
             self._compact("\n".join(block)),
-            "the remedy's doc path must survive the wrap intact:\n"
-            "block: {!r}".format(block),
+            "the warn block must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
         )
         # Pinned convention: a warn remedy rides on a ``fix:`` line.
         remedy_lines = self._remedy_lines(block, allowed=("fix:",))
@@ -7561,7 +7632,8 @@ class RenderFindingBlockTests(unittest.TestCase):
         self.assertIn(
             "recreate the token",
             remedy_lines[0],
-            "the fix line must carry the start of the remedy:\n"
+            "the fix line must carry the start of the short remedy "
+            "(behaviour 2 of plans/guard-finding-compact.md):\n"
             "block: {!r}".format(block),
         )
 
@@ -7585,20 +7657,23 @@ class RenderFindingBlockTests(unittest.TestCase):
             headline,
             "the skipped headline must name the check: {!r}".format(headline),
         )
-        # The reason is the longest substance in the module: it must recover
-        # word-for-word across the wrap, as must the remedy.
+        # The reason is the longest substance in the module: it must
+        # recover word-for-word across the wrap, as must the remedy - and
+        # (behaviour 2 of plans/guard-finding-compact.md) neither carries
+        # a doc path any more: the short reason stays in the detail, the
+        # short remedy stays on the indented fix: line.
         self._assert_substance_survives(_field(finding, "reason"), block)
         self._assert_substance_survives(_field(finding, "remedy"), block)
-        self.assertIn(
-            "doc/external/github/rest-api-endpoints-for-workflows.md",
+        self.assertNotIn(
+            "doc/external/",
             self._compact("\n".join(block)),
-            "the reason's doc path must survive the wrap intact:\n"
-            "block: {!r}".format(block),
+            "the skipped block must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
         )
         self.assertGreater(
             len(block),
             2,
-            "the long reason must wrap to more than the headline and the "
+            "the skipped block has a headline, the reason detail and a "
             "remedy line:\nblock: {!r}".format(block),
         )
         # Pinned convention: a skipped remedy (how to un-skip) rides on a
@@ -7611,9 +7686,10 @@ class RenderFindingBlockTests(unittest.TestCase):
             "un-skip:\nblock: {!r}".format(block),
         )
         self.assertIn(
-            "manual check",
+            "in GitHub settings",
             remedy_lines[0],
-            "the fix line must carry the start of the remedy:\n"
+            "the fix line must carry the start of the short remedy "
+            "(behaviour 2 of plans/guard-finding-compact.md):\n"
             "block: {!r}".format(block),
         )
 
@@ -7969,7 +8045,11 @@ class FindingBlockHeadlineMarkTests(unittest.TestCase):
     def test_detail_and_remedy_lines_unchanged_by_the_mark(self):
         # Only the headline moved: for one finding, the non-headline lines
         # equal what today's renderer produces past its own headline, so
-        # the detail and fix:/see: lines are pinned byte-for-byte.
+        # the detail and fix:/see: lines are pinned byte-for-byte. The
+        # fixture carries the short words (behaviour 2 of
+        # plans/guard-finding-compact.md): the detail line holds the short
+        # danger, the indented fix: line the short remedy - the layout is
+        # unchanged this cycle, only the text those lines carry shortens.
         finding = self._finding("warn", "file_path_restriction")
         block = piguard.render_finding_block(finding)
         self.assertEqual(
@@ -8295,11 +8375,18 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
             str,
             "remedy must be a string, not {!r}".format(type(remedy).__name__),
         )
-        self.assertTrue(
-            remedy,
-            "a token finding with an empty remedy is a programming error: "
-            "it cannot name the concrete fix",
-        )
+        if status != "passed":
+            # A non-passing token finding must still name the fix
+            # (behaviour 10, kept by behaviour 2 of
+            # plans/guard-finding-compact.md).
+            self.assertTrue(
+                remedy,
+                "a non-passing token finding ({}) with an empty remedy "
+                "is a programming error: it cannot name the concrete "
+                "fix".format(status),
+            )
+        # A passed token finding's remedy may be empty now that nothing
+        # prints it (behaviour 2 of plans/guard-finding-compact.md).
         if status != "passed":
             danger = _field(finding, "danger")
             self.assertIsInstance(
@@ -8313,13 +8400,39 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
                 "could do while the fact is unmeasured or violated; its "
                 "danger is empty".format(status),
             )
-            self.assertIn(
-                "doc/external/github/",
+            self.assertLessEqual(
+                len(remedy),
+                100,
+                "the {} token finding for check {!r} remedy must be a "
+                "single sentence of at most 100 characters, got {}: "
+                "{!r}".format(
+                    status, _field(finding, "check"), len(remedy), remedy
+                ),
+            )
+            self.assertNotIn(
+                ". ",
                 remedy,
-                "the {} token finding for check {!r} must name a doc path "
-                "under doc/external/github/ in its remedy, so a reviewer "
-                "can check the claim against the saved documentation".format(
-                    status, _field(finding, "check")
+                "the {} token finding for check {!r} remedy must be a "
+                "single sentence: {!r}".format(
+                    status, _field(finding, "check"), remedy
+                ),
+            )
+            self.assertNotIn(
+                "doc/external/",
+                remedy,
+                "the {} token finding for check {!r} must carry no doc "
+                "path in its remedy (behaviour 2 of "
+                "plans/guard-finding-compact.md): {!r}".format(
+                    status, _field(finding, "check"), remedy
+                ),
+            )
+            self.assertNotIn(
+                "see:",
+                remedy,
+                "the {} token finding for check {!r} must carry no "
+                "'see:' clause in its remedy (behaviour 2 of "
+                "plans/guard-finding-compact.md): {!r}".format(
+                    status, _field(finding, "check"), remedy
                 ),
             )
         line = piguard.render_finding(finding)
@@ -9644,6 +9757,98 @@ class FindingBriefTests(unittest.TestCase):
         for label, finding in findings:
             with self.subTest(finding=label):
                 self._assert_brief_shape(finding, label)
+
+    # ------------------------------------------------------------------
+    # Behaviour 2 of plans/guard-finding-compact.md: short danger, reason
+    # and remedy
+    # ------------------------------------------------------------------
+
+    def _assert_short_field_shape(self, value: Any, label: str) -> None:
+        """The shape a non-empty danger/reason/remedy must carry."""
+        self.assertIsInstance(
+            value,
+            str,
+            "{}: the field must be a string, got {!r}".format(label, value),
+        )
+        self.assertLessEqual(
+            len(value),
+            100,
+            "{}: the field must be a single sentence of at most 100 "
+            "characters, got {} characters: {!r}".format(
+                label, len(value), value
+            ),
+        )
+        self.assertNotIn(
+            ". ",
+            value,
+            "{}: the field must be a single sentence - a sentence break "
+            "inside it: {!r}".format(label, value),
+        )
+        self.assertNotIn(
+            "doc/external/",
+            value,
+            "{}: the field must carry no doc path: {!r}".format(label, value),
+        )
+        self.assertNotIn(
+            "see:",
+            value,
+            "{}: the field must carry no 'see:' clause: "
+            "{!r}".format(label, value),
+        )
+
+    def test_every_emittable_finding_danger_reason_and_remedy_are_short(self):
+        findings = self._every_brief_finding()
+        for label, finding in findings:
+            with self.subTest(finding=label):
+                status = _field(finding, "status")
+                danger = _field(finding, "danger")
+                reason = _field(finding, "reason")
+                remedy = _field(finding, "remedy")
+
+                # danger: a single short sentence, no doc path, and never
+                # the bypass caveat - the caveat is printed once as the
+                # trailing note, not repeated per finding.
+                if isinstance(danger, str) and danger:
+                    self._assert_short_field_shape(
+                        danger, "{}: danger".format(label)
+                    )
+                    self.assertNotIn(
+                        "bypass",
+                        danger,
+                        "{}: the danger must not carry the bypass caveat "
+                        "- it is printed once as the trailing note: "
+                        "{!r}".format(label, danger),
+                    )
+
+                # reason: present only on a skipped finding, and then a
+                # single short sentence with no doc path.
+                if isinstance(reason, str) and reason:
+                    self.assertEqual(
+                        status,
+                        "skipped",
+                        "{}: a reason is only carried by a skipped "
+                        "finding".format(label),
+                    )
+                    self._assert_short_field_shape(
+                        reason, "{}: reason".format(label)
+                    )
+
+                # remedy: a single short sentence with no doc path and no
+                # 'see:' clause; non-empty on every non-passing finding,
+                # and may be empty on a passed one now that nothing prints
+                # it.
+                if isinstance(remedy, str) and remedy:
+                    self._assert_short_field_shape(
+                        remedy, "{}: remedy".format(label)
+                    )
+                if status != "passed":
+                    self.assertTrue(
+                        remedy,
+                        "{}: a non-passing finding ({}) must still carry a "
+                        "non-empty remedy (the module invariant)".format(
+                            label, status
+                        ),
+                    )
 
 
 if __name__ == "__main__":
