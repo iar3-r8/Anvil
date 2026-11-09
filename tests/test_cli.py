@@ -4693,10 +4693,12 @@ class TestVerifyGuardsTokenFindings(CliCase):
                 "\n---\n{}".format(len(line), line, result.output),
             )
 
-    def test_fail_token_finding_remedy_on_fix_line(self):
-        # Behaviour 19: a fail finding's remedy rides on an indented line
-        # beginning "fix:" (the pinned convention: fix: for warn/fail/
-        # skipped, see: for passed).
+    def test_fail_token_finding_has_no_per_finding_fix_line(self):
+        # Behaviour 19: the per-finding "fix:" line convention is removed -
+        # the report carries no line beginning "fix:" anywhere. This used
+        # to pin "the remedy rides on a fix: line" (the old convention);
+        # it now pins the removal of that convention - the remedy is
+        # collected in the report's "To fix" section instead (behaviour 7).
         remedy_text = "recreate the token"
         token = [
             token_finding(
@@ -4714,14 +4716,10 @@ class TestVerifyGuardsTokenFindings(CliCase):
         fix_lines = [
             line for line in lines if line.lstrip().startswith("fix:")
         ]
-        self.assertTrue(
+        self.assertEqual(
+            [],
             fix_lines,
-            "no 'fix:' line in the report:\n{}".format(result.output),
-        )
-        self.assertIn(
-            remedy_text,
-            "\n".join(fix_lines),
-            "the remedy must appear on the fix: line(s):\n"
+            "the report must carry no per-finding 'fix:' line:\n"
             "fix lines: {!r}\n{}".format(fix_lines, result.output),
         )
 

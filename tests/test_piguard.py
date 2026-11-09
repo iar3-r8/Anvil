@@ -7672,17 +7672,21 @@ class RenderFindingBlockTests(unittest.TestCase):
       ``ok:``/``warn:``/``fail:``/``skipped:`` convention, then a label: the
       ``rule`` when the finding carries one, otherwise the ``check`` name,
       never a literal ``None``;
-    - detail lines carrying the finding's substance (the danger for
-      warn/fail, the reason for skipped) wrapped so every line is at most
-      ``width`` characters, with the substance surviving word-for-word
-      across the wrap;
-    - for warn/fail/skipped, a remedy line, indented and beginning
-      ``fix:`` (the pinned convention - the remedy text, wrapped at the
-      same width);
     - for passed, ONE line (behaviour 4 of
       plans/guard-finding-compact.md): the marked headline carrying the
       finding's brief after an em dash - no detail line, no ``see:``
-      line, no bypass caveat.
+      line, no bypass caveat;
+    - for warn/fail, ONE line (behaviour 5 of
+      plans/guard-finding-compact.md): the marked headline carrying the
+      finding's brief - the danger words - after an em dash; a long brief
+      wraps within ``width`` with no elision, and there is no detail line
+      and no ``fix:`` line, which now lives in the report's "To fix"
+      section (behaviour 7);
+    - for skipped, detail lines carrying the finding's substance (the
+      reason) wrapped so every line is at most ``width`` characters, with
+      the substance surviving word-for-word across the wrap, plus a remedy
+      line, indented and beginning ``fix:`` (the pinned convention - the
+      remedy text, wrapped at the same width).
 
     The existing single-line ``render_finding`` is untouched; its
     byte-for-byte pins (behaviours 9/17) keep passing, and this class pins
@@ -7804,6 +7808,74 @@ class RenderFindingBlockTests(unittest.TestCase):
             text,
             "a passed block carries no bypass caveat - it is printed once "
             "as the trailing note:\nblock: {!r}".format(block),
+        )
+        return block
+
+    def _warn_fail_block(self, finding, width=80):
+        """Render a warn or fail finding as a block and pin its one-line shape.
+
+        Behaviour 5 of plans/guard-finding-compact.md: a warn or fail
+        block is the marked headline carrying the finding's own brief
+        after an em dash - ``"{mark} warn: {label} — {brief}"`` for a
+        warn, ``"{mark} fail: {label} — {brief}"`` for a fail - exactly
+        like the passed line (behaviour 4); the warn/fail brief just
+        happens to be the danger words (the cycle-1/2 pins established
+        brief == the danger clause). No detail line and no ``fix:`` line:
+        the remedy no longer prints per finding - it moves to the
+        report's "To fix" section (behaviour 7). A long brief wraps to
+        more lines, every one within ``width``, with no elision. The
+        shared shape pins live here so each warn/fail test pins content,
+        not shape.
+        """
+        renderer = getattr(piguard, "render_finding_block", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.pi.piguard.render_finding_block is not callable; the "
+            "behaviour-19 block renderer has not been implemented yet",
+        )
+        status = _field(finding, "status")
+        self.assertIn(
+            status,
+            ("warn", "fail"),
+            "this helper pins only warn and fail blocks, got status "
+            "{!r}".format(status),
+        )
+        block = renderer(finding, width=width)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        for line in block:
+            self.assertIsInstance(line, str)
+            self.assertLessEqual(
+                len(line),
+                width,
+                "a block line exceeds the requested width {!r}: {!r}".format(
+                    width, line
+                ),
+            )
+        prefix = "⚠️ warn" if status == "warn" else "❌ fail"
+        label = _field(finding, "rule") or _field(finding, "check")
+        headline = "{}: {} — {}".format(prefix, label, _field(finding, "brief"))
+        self.assertNotIn(
+            "fix:",
+            "\n".join(block),
+            "a warn/fail block carries no 'fix:' line - the remedy moves "
+            "to the report's 'To fix' section (behaviour 7 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
+        )
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            self._compact(headline),
+            "the warn/fail block is the marked em-dash headline, wrapped - "
+            "nothing added (no detail line), nothing elided:\n"
+            "expected text: {!r}\nblock: {!r}".format(headline, block),
+        )
+        self.assertTrue(
+            block[0].startswith(
+                "{}: {}".format(prefix, label)
+            ),
+            "the block's first line must be the marked headline: "
+            "{!r}".format(block[0]),
         )
         return block
 
@@ -7986,10 +8058,21 @@ class RenderFindingBlockTests(unittest.TestCase):
                 "a recorded path was elided by the wrap: {!r}".format(path),
             )
 
-    def test_fail_finding_block_names_check_wraps_danger_and_carries_fix(self):
+    # ------------------------------------------------------------------
+    # Behaviour 5 of plans/guard-finding-compact.md: a warn or fail block
+    # is ONE line - "{mark} warn|fail: {label} — {brief}"; the warn/fail
+    # brief is the danger words (the cycle-1/2 pins established brief ==
+    # the danger clause). No detail line, no ``fix:`` line - the remedy
+    # moves to the report's "To fix" section (behaviour 7).
+    # ------------------------------------------------------------------
+
+    def test_fail_finding_block_is_one_em_dash_line(self):
         # The real behaviour-3 finding: a 200 on the actions-permissions
         # endpoint is the first emittable fail, and it carries rule=None, so
-        # the headline must name the check, never the rule.
+        # the headline must name the check, never the rule. (Re-pointed
+        # from the detail + "fix:" pins: the block is the marked em-dash
+        # headline only - the brief, which is the danger words for a fail
+        # finding, after the em dash.)
         findings = piguard.probe_administration(
             "owner",
             "repo",
@@ -8007,53 +8090,45 @@ class RenderFindingBlockTests(unittest.TestCase):
             "fixture sanity: the administration fail carries rule=None",
         )
 
-        block = self._block(finding)
-        headline = block[0]
-        self.assertTrue(
-            headline.startswith("❌ fail:"),
-            "the block headline must carry the marked status prefix: {!r}".format(headline),
+        block = self._warn_fail_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "❌ fail: {} — {}".format(
+                    piguard.CHECK_ADMINISTRATION, _field(finding, "brief")
+                )
+            ],
+            "the fail block is exactly the marked em-dash headline - the "
+            "brief is the danger words for a fail finding:\n"
+            "block: {!r}".format(block),
         )
         self.assertIn(
             piguard.CHECK_ADMINISTRATION,
-            headline,
-            "the fail headline must name the check: {!r}".format(headline),
+            block[0],
+            "the fail headline must name the check: {!r}".format(block[0]),
         )
-        self.assertNotIn("None", headline)
-        # The substance survives the wrap word-for-word (whitespace is the
-        # only thing a wrap may change), so the whole brief and the whole
-        # remedy recover from the block. The brief is the one vocabulary
-        # (behaviour 3 of plans/guard-finding-compact.md): the block's
-        # detail derives from render_finding's line, so the danger no
-        # longer rides in the detail. The remedy is the short fix
-        # (behaviour 2): no doc path.
-        self._assert_substance_survives(_field(finding, "brief"), block)
-        self._assert_substance_survives(_field(finding, "remedy"), block)
+        self.assertNotIn(
+            "None",
+            block[0],
+            "the fail headline must never print a literal 'None': "
+            "{!r}".format(block[0]),
+        )
         self.assertNotIn(
             "doc/external/",
             self._compact("\n".join(block)),
             "the fail block must carry no doc path (behaviour 2 of "
             "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
         )
-        # Pinned convention: a warn/fail remedy rides on a ``fix:`` line.
-        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
-        self.assertGreaterEqual(
-            len(remedy_lines),
-            1,
-            "the block must carry an indented 'fix:' line with the "
-            "remedy:\nblock: {!r}".format(block),
-        )
-        self.assertIn(
-            "recreate the token",
-            remedy_lines[0],
-            "the fix line must carry the start of the short remedy "
-            "(behaviour 2 of plans/guard-finding-compact.md):\n"
-            "block: {!r}".format(block),
-        )
 
-    def test_warn_finding_block_names_check_carries_danger_and_fix(self):
-        # The real behaviour-6 warn: a 200 on the named other repo means the
-        # token reaches more than the target - rule=None, so the headline
-        # keys on the check.
+    def test_warn_finding_block_is_one_em_dash_line(self):
+        # The real behaviour-6 warn: a 200 on the named other repo means
+        # the token reaches more than the target - rule=None, so the
+        # headline keys on the check. (Re-pointed from the detail +
+        # "fix:" pins: the block is the marked em-dash headline only -
+        # the brief, which is the danger words for a warn finding, after
+        # the em dash. This fixture's headline exceeds 80, so the block
+        # wraps - the substance is pinned word-for-word, not the wrap
+        # points.)
         findings = piguard.probe_named_repo(
             "someorg/other-repo",
             "ghp_blocktest",
@@ -8065,40 +8140,230 @@ class RenderFindingBlockTests(unittest.TestCase):
         finding = [
             f for f in findings if _field(f, "status") == "warn"
         ][0]
-
-        block = self._block(finding)
-        headline = block[0]
-        self.assertTrue(
-            headline.startswith("⚠️ warn:"),
-            "the block headline must carry the marked status prefix: {!r}".format(headline),
+        self.assertIsNone(
+            _field(finding, "rule"),
+            "fixture sanity: the named_repo warn carries rule=None",
         )
+
+        block = self._warn_fail_block(finding)
         self.assertIn(
             piguard.CHECK_NAMED_REPO,
-            headline,
-            "the warn headline must name the check: {!r}".format(headline),
+            block[0],
+            "the warn headline must name the check: {!r}".format(block[0]),
         )
-        self.assertNotIn("None", headline)
-        self._assert_substance_survives(_field(finding, "brief"), block)
-        self._assert_substance_survives(_field(finding, "remedy"), block)
+        self.assertNotIn(
+            "None",
+            "".join(block),
+            "the warn block must never print a literal 'None': "
+            "block: {!r}".format(block),
+        )
+        self.assertIn(
+            _field(finding, "brief"),
+            self._compact("\n".join(block)),
+            "the warn block must carry the finding's own brief (the "
+            "danger words) word-for-word:\nblock: {!r}".format(block),
+        )
         self.assertNotIn(
             "doc/external/",
             self._compact("\n".join(block)),
             "the warn block must carry no doc path (behaviour 2 of "
             "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
         )
-        # Pinned convention: a warn remedy rides on a ``fix:`` line.
-        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
-        self.assertGreaterEqual(
-            len(remedy_lines),
-            1,
-            "the block must carry an indented 'fix:' line with the "
-            "remedy:\nblock: {!r}".format(block),
+
+    def test_warn_branch_finding_block_is_one_em_dash_line(self):
+        # The real check_all producer: a rules array with deletion active
+        # and non_fast_forward absent yields a warn branch finding (rule
+        # set) - the approved sample report's first line. The block is
+        # exactly one line - the marked headline with the finding's own
+        # brief (the danger words) after an em dash; no detail line, no
+        # "fix:" anywhere.
+        findings = piguard.check_all([rule("deletion", "main-guard")])
+        warn = [
+            f
+            for f in findings
+            if _field(f, "status") == "warn"
+            and _field(f, "rule") == "non_fast_forward"
+        ][0]
+        self.assertEqual(
+            "history can be rewritten or erased by a force push",
+            _field(warn, "brief"),
+            "fixture sanity: the recorded warn brief",
+        )
+
+        block = self._warn_fail_block(warn)
+        self.assertEqual(
+            block,
+            ["⚠️ warn: non_fast_forward — {}".format(_field(warn, "brief"))],
+            "a warn branch block is exactly the marked headline with the "
+            "em-dash brief:\nblock: {!r}".format(block),
+        )
+
+    def test_fail_token_finding_block_is_one_em_dash_line(self):
+        # The real token probe: a non-empty X-OAuth-Scopes header is the
+        # second emittable fail, and it carries rule=None, so the headline
+        # must name the check, never the rule.
+        findings = piguard.probe_classic_token(
+            "ghp_blocktest",
+            opener=_opener(
+                _FakeResponse(
+                    b'{"login": "owner"}',
+                    200,
+                    headers={"X-OAuth-Scopes": "repo, user"},
+                )
+            ),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "fail"
+        ][0]
+        self.assertIsNone(
+            _field(finding, "rule"),
+            "fixture sanity: the classic_token fail carries rule=None",
+        )
+
+        block = self._warn_fail_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "❌ fail: {} — {}".format(
+                    piguard.CHECK_CLASSIC_TOKEN, _field(finding, "brief")
+                )
+            ],
+            "the classic_token fail block is exactly the marked em-dash "
+            "headline:\nblock: {!r}".format(block),
         )
         self.assertIn(
-            "recreate the token",
-            remedy_lines[0],
-            "the fix line must carry the start of the short remedy "
-            "(behaviour 2 of plans/guard-finding-compact.md):\n"
+            piguard.CHECK_CLASSIC_TOKEN,
+            block[0],
+            "the fail headline must name the check: {!r}".format(block[0]),
+        )
+        self.assertNotIn(
+            "None",
+            block[0],
+            "the fail headline must never print a literal 'None': "
+            "{!r}".format(block[0]),
+        )
+
+    def test_warn_token_finding_block_names_check_and_never_prints_none(self):
+        # Behaviour 5's error clause: a token warn finding (rule=None)
+        # names its ``check`` - never a literal "None" - and is ONE line
+        # with the brief (the danger words) after an em dash. The
+        # recorded 404 is the warn case of the target-access probe.
+        findings = piguard.probe_target_access(
+            "owner",
+            "repo",
+            "ghp_blocktest",
+            opener=_opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo",
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "warn"
+        ][0]
+        self.assertIsNone(
+            _field(finding, "rule"),
+            "fixture sanity: a token warn finding carries rule=None",
+        )
+
+        block = self._warn_fail_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "⚠️ warn: {} — {}".format(
+                    piguard.CHECK_TARGET_ACCESS, _field(finding, "brief")
+                )
+            ],
+            "a token warn block is one line naming the check with the "
+            "brief after an em dash:\nblock: {!r}".format(block),
+        )
+        self.assertIn(
+            piguard.CHECK_TARGET_ACCESS,
+            block[0],
+            "the warn headline must name the check: {!r}".format(block[0]),
+        )
+        self.assertNotIn(
+            "None",
+            block[0],
+            "the warn headline must never print a literal 'None': "
+            "{!r}".format(block[0]),
+        )
+
+    def test_warn_finding_block_wraps_long_brief_with_no_elision(self):
+        # Behaviour 5's error clause: a warn finding whose brief is long
+        # enough for the headline to exceed 80 wraps to more than one
+        # line - every line within the width, with no elision (the
+        # wrapped text is the headline and nothing else), and line 0 is
+        # the marked headline. The fixture is a recorded 404 on a target
+        # repo whose name is long enough to push the brief past the
+        # width.
+        long_repo = "an-extremely-long-repository-name-for-the-wrap-case"
+        findings = piguard.probe_target_access(
+            "someorg",
+            long_repo,
+            "ghp_blocktest",
+            opener=_opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/someorg/" + long_repo,
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "warn"
+        ][0]
+        brief = _field(finding, "brief")
+        headline = "⚠️ warn: target_access — {}".format(brief)
+        self.assertGreater(
+            len(headline),
+            80,
+            "fixture sanity: the headline plus the brief must exceed 80 "
+            "to force a wrap: {!r}".format(headline),
+        )
+
+        block = piguard.render_finding_block(finding, width=80)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        self.assertGreater(
+            len(block),
+            1,
+            "an over-width warn block must wrap to more than one "
+            "line:\nblock: {!r}".format(block),
+        )
+        for line in block:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped warn line exceeds width 80: {!r}".format(line),
+            )
+        self.assertTrue(
+            block[0].startswith("⚠️ warn: target_access"),
+            "line 0 must be the marked headline: {!r}".format(block[0]),
+        )
+        # No elision and no extra content: with every whitespace
+        # character removed, the block IS the one-line headline.
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            self._compact(headline),
+            "the wrapped warn block must carry the headline - brief "
+            "included - with nothing added and nothing elided:\n"
+            "expected text: {!r}\nblock: {!r}".format(headline, block),
+        )
+        self.assertNotIn(
+            "fix:",
+            "\n".join(block),
+            "a wrapped warn block carries no 'fix:' line:\n"
             "block: {!r}".format(block),
         )
 
@@ -8365,21 +8630,29 @@ class FindingBlockHeadlineMarkTests(unittest.TestCase):
         )
 
     def test_warn_headline_starts_with_warning_mark(self):
+        # Behaviour 5 of plans/guard-finding-compact.md: the warn headline
+        # carries the finding's brief (the danger words) after an em dash
+        # - line 0 is the marked em-dash form. (Re-pointed from the
+        # un-briefed headline pin.)
         finding = self._finding("warn", "deletion")
         self.assertEqual(
             self._first_line(finding),
-            "{} warn: deletion".format(self.WARN_MARK),
+            "{} warn: deletion — the guard detail".format(self.WARN_MARK),
             "a warn headline must be the mark, one space, the plain "
-            "headline: {!r}",
+            "headline and the em-dash brief: {!r}",
         )
 
     def test_fail_headline_starts_with_cross_mark(self):
+        # Behaviour 5 of plans/guard-finding-compact.md: the fail headline
+        # carries the finding's brief (the danger words) after an em dash
+        # - line 0 is the marked em-dash form. (Re-pointed from the
+        # un-briefed headline pin.)
         finding = self._finding("fail", "pull_request")
         self.assertEqual(
             self._first_line(finding),
-            "{} fail: pull_request".format(self.FAIL_MARK),
+            "{} fail: pull_request — the guard detail".format(self.FAIL_MARK),
             "a fail headline must be the mark, one space, the plain "
-            "headline: {!r}",
+            "headline and the em-dash brief: {!r}",
         )
 
     def test_skipped_headline_starts_with_skipped_mark(self):
@@ -8427,25 +8700,26 @@ class FindingBlockHeadlineMarkTests(unittest.TestCase):
             ),
         )
 
-    def test_detail_and_remedy_lines_unchanged_by_the_mark(self):
-        # Only the headline moved: for one finding, the non-headline lines
-        # equal what today's renderer produces past its own headline, so
-        # the detail and fix:/see: lines are pinned byte-for-byte. The
-        # fixture carries the short words (behaviour 2 of
-        # plans/guard-finding-compact.md): the detail line holds the short
-        # brief (the one vocabulary, behaviour 3 - re-pointed from the old
-        # "; fix:" tail, which no longer rides in the detail), the indented
-        # fix: line the short remedy - the layout is unchanged this cycle.
+    def test_warn_block_is_one_marked_em_dash_line(self):
+        # Behaviour 5 of plans/guard-finding-compact.md: the warn block
+        # is ONE line - the marked em-dash headline with the brief. The
+        # old detail line and the indented "fix:" line this test used to
+        # pin byte-for-byte are gone: the remedy moves to the report's
+        # "To fix" section (behaviour 7). (Re-pointed and renamed from
+        # the old warn-layout pin; the mark assertion is kept.)
         finding = self._finding("warn", "file_path_restriction")
         block = piguard.render_finding_block(finding)
         self.assertEqual(
-            block[1:],
-            [
-                "file_path_restriction - the guard detail",
-                "  fix: fix the guard",
-            ],
-            "the detail and remedy lines must be unchanged by the "
-            "headline mark:\nblock: {!r}".format(block),
+            block,
+            ["⚠️ warn: file_path_restriction — the guard detail"],
+            "the warn block is one line: the marked headline with the "
+            "brief after an em dash - no detail line, no 'fix:' "
+            "line:\nblock: {!r}".format(block),
+        )
+        self.assertTrue(
+            block[0].startswith(self.WARN_MARK),
+            "the warn headline must start with the warning mark: "
+            "{!r}".format(block[0]),
         )
 
 
