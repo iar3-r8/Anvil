@@ -51,6 +51,9 @@ CHECK_WORKFLOWS_WITHHELD = "workflows_withheld"
 # as the sibling probes' check names.
 CHECK_NAMED_REPO = "named_repo"
 
+# Single source of the bypass-list caveat (behaviour 8; per-finding caveat left in behaviour 3).
+BYPASS_NOTE = "Note: bypass lists are not visible to a read-only token."
+
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
 _RULES_API_BASE = "https://api.github.com"
