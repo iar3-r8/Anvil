@@ -11276,5 +11276,305 @@ class BypassNoteTests(unittest.TestCase):
             )
 
 
+class NoInventedWordTests(unittest.TestCase):
+    """Behaviour 12 of plans/guard-finding-compact.md: no renderer invents a word.
+
+    The drift guard that replaces the old pin "the block strips
+    render_finding's line" (the ``_block_substance``-derived detail pins,
+    retired in cycles 4-6 of this plan). Cycles 3-6 rebuilt the block and
+    the fixes directly from the finding's fields plus fixed furniture, so
+    the property that pins them is the vocabulary of the rendered text
+    itself: a word the renderer adds on its own - the bypass caveat, a
+    doc path, a reworded phrase - would fail the check even when it is
+    plausible-sounding.
+
+    GIVEN each of the twenty emittable findings, driven as in production
+    by the same matrix ``FindingBriefTests._every_brief_finding`` drives
+    its sweep (``check_all`` over recorded rules arrays,
+    ``skipped_findings`` over the recorded fetch reasons including the
+    CLI-built no-origin reason, every token probe over recorded openers,
+    ``check_token_all`` over a recorded 200) - no live network;
+    WHEN its block, its single line, or the fixes list is rendered;
+    THEN every token of the rendered text comes from the finding's own
+    content fields (``check``, ``rule``, ``brief``, ``reason``,
+    ``remedy``) or from the fixed furniture - never from the renderer.
+
+    TOKENIZER (stated once here; a green, if one is ever needed, matches
+    it): a token is a run of non-whitespace characters (the text split on
+    whitespace) with the edge punctuation ``" ' ( ) . , : ;`` stripped
+    from both ends; a token left empty after stripping is dropped.
+
+    FURNITURE (stated once here, per renderer):
+
+    - ``render_finding_block``: the status prefix words ``ok``, ``warn``,
+      ``fail``, ``skipped``; the four headline marks ✅ ⚠️ ❌ ⏭️; the em
+      dash ``—``; the skipped prefix word ``how``.
+    - ``render_finding``: the same four prefix words plus the
+      single-line renderer's hyphen ``-``.
+    - ``render_fixes``: the header words ``To`` and ``fix``; the entry
+      numbering, checked as a bare digit token (the ``1.``-style number,
+      its trailing dot stripped by the tokenizer).
+
+    Any other token is an INVENTED WORD: the failure names the token, the
+    finding (its sweep label, status and rule/check) and the offending
+    line, so a future drift is actionable.
+
+    Scope note: the twenty emittable findings carry no field word long
+    enough for ``break_long_words`` to split it across lines at
+    width=80, so no wrap fragment can read as an invented word here. The
+    long-brief fixtures that do force mid-word splits (the cycle-4
+    many-restricted-paths finding, the cycle-6 long skip) are pinned by
+    the no-elision substance pins of those cycles - the
+    whitespace-compacted block equals the field+furniture composition -
+    which is the same guarantee at the word level, and this guard keeps
+    the tokenizer strict rather than treating a fragment as vocabulary.
+
+    Pinned alongside the vocabulary: the block is deterministic (same
+    finding, same width -> equal lines, rendered twice) and ``width``
+    stays a real parameter on the block - the many-restricted-paths
+    finding wraps to strictly more lines at ``width=40`` than at
+    ``width=80``, every line within its width.
+    """
+
+    # The edge punctuation the tokenizer strips from both ends of a token.
+    _TOKEN_EDGE = "\"'(),:;."
+
+    # The block renderer's fixed furniture: the four status prefix words,
+    # the four headline marks, the em dash, the skipped prefix word.
+    _BLOCK_FURNITURE = frozenset(
+        (
+            "ok",
+            "warn",
+            "fail",
+            "skipped",
+            "how",
+            "\u2705",
+            "\u26a0\ufe0f",
+            "\u274c",
+            "\u23ed\ufe0f",
+            "\u2014",
+        )
+    )
+
+    # The single-line renderer's fixed furniture: the same four prefix
+    # words plus its hyphen.
+    _LINE_FURNITURE = frozenset(("ok", "warn", "fail", "skipped", "-"))
+
+    # The fixes renderer's fixed furniture: the header's two words. The
+    # entry numbering is checked as bare digit tokens, separately.
+    _FIXES_FURNITURE = frozenset(("To", "fix"))
+
+    # The finding's content fields the vocabulary may come from: the
+    # label (rule else check), the brief, the skip reason, the remedy.
+    _CONTENT_FIELDS = ("check", "rule", "brief", "reason", "remedy")
+
+    def _tokens(self, text):
+        """The tokenizer stated in the class docstring."""
+        return [
+            chunk.strip(self._TOKEN_EDGE)
+            for chunk in text.split()
+            if chunk.strip(self._TOKEN_EDGE)
+        ]
+
+    def _field_tokens(self, finding, fields=None):
+        """The tokens of the finding's own content field values."""
+        names = self._CONTENT_FIELDS if fields is None else fields
+        tokens = set()
+        for name in names:
+            value = _field(finding, name)
+            if isinstance(value, str) and value:
+                tokens.update(self._tokens(value))
+        return tokens
+
+    def _every_finding(self):
+        """The matrix over the twenty emittable findings (and their
+        parameter variants), driven through the real producers exactly as
+        ``FindingBriefTests``'s sweep drives them."""
+        return FindingBriefTests(
+            "test_every_emittable_finding_carries_a_brief"
+        )._every_brief_finding()
+
+    def _describe(self, label, finding):
+        """The finding, named for a failure message: sweep label, status,
+        the rule it names, else its check."""
+        return "{} ({} on {!r})".format(
+            label,
+            _field(finding, "status"),
+            _field(finding, "rule") or _field(finding, "check"),
+        )
+
+    def _assert_vocabulary(
+        self, lines, finding, label, kind, furniture, fields=None
+    ):
+        """Every token of ``lines`` is a token of one of the finding's
+        own content fields or of ``furniture``; a failure names the
+        token, the finding and the offending line."""
+        allowed = self._field_tokens(finding, fields) | set(furniture)
+        for line in lines:
+            for token in self._tokens(line):
+                if token not in allowed:
+                    self.fail(
+                        "an invented word in the {} rendering of {} - "
+                        "every word must come from the finding's own "
+                        "fields or the fixed furniture: token {!r} on "
+                        "line {!r}".format(
+                            kind,
+                            self._describe(label, finding),
+                            token,
+                            line,
+                        )
+                    )
+
+    # ------------------------------------------------------------------
+    # The vocabulary guard, per renderer
+    # ------------------------------------------------------------------
+
+    def test_block_carries_only_finding_fields_and_furniture(self):
+        # The contract, over every emittable finding: the block's every
+        # token is the finding's own word or the block furniture. The
+        # long CLI-owned no-origin reason rides in the field but never in
+        # the block - the headline carries the brief - so it can only
+        # widen, never narrow, the allowed vocabulary.
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                block = piguard.render_finding_block(finding, width=80)
+                self._assert_vocabulary(
+                    block, finding, label, "block", self._BLOCK_FURNITURE
+                )
+
+    def test_fixes_carry_only_finding_fields_and_furniture(self):
+        # The fixes list over the full matrix: every token is a token of
+        # a numbered finding's own check/rule/remedy, the header words
+        # or an entry number. The expected vocabulary is the label and
+        # remedy of exactly the findings that get numbered - passed and
+        # skipped findings never render here, so their words are not
+        # part of the allowed set.
+        findings = self._every_finding()
+        numbered = [
+            f
+            for _label, f in findings
+            if _field(f, "status") in ("warn", "fail")
+        ]
+        self.assertTrue(
+            numbered,
+            "fixture sanity: the matrix yields numbered warn/fail findings",
+        )
+        allowed = set(self._FIXES_FURNITURE)
+        for finding in numbered:
+            allowed |= self._field_tokens(finding, ("check", "rule", "remedy"))
+        lines = piguard.render_fixes([f for _label, f in findings], width=80)
+        self.assertTrue(
+            lines,
+            "fixture sanity: numbered findings yield a fixes list with "
+            "its header: {!r}".format(lines),
+        )
+        for line in lines:
+            for token in self._tokens(line):
+                if token in allowed:
+                    continue
+                if token.isascii() and token.isdigit():
+                    # The entry numbering: the 1.-style number, its dot
+                    # stripped by the tokenizer.
+                    continue
+                self.fail(
+                    "an invented word in the fixes rendering - every "
+                    "word must come from a numbered finding's own "
+                    "check/rule/remedy, the header or the numbering: "
+                    "token {!r} on line {!r}".format(token, line)
+                )
+
+    def test_single_line_carries_only_finding_fields_and_furniture(self):
+        # The one-vocabulary line is the same guarantee the block no
+        # longer strips: every token of render_finding's line is the
+        # finding's own word or the prefix plus the hyphen.
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                line = piguard.render_finding(finding)
+                self._assert_vocabulary(
+                    [line], finding, label, "single-line", self._LINE_FURNITURE
+                )
+
+    # ------------------------------------------------------------------
+    # The error clause: deterministic, and width a real parameter
+    # ------------------------------------------------------------------
+
+    def test_block_and_single_line_are_deterministic_at_the_same_width(self):
+        # Same finding, same width -> equal lines, rendered twice: the
+        # report is diffable across runs, and no hidden state (counters,
+        # caches, randomness) enters the renderers.
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                first_block = piguard.render_finding_block(finding, width=80)
+                second_block = piguard.render_finding_block(finding, width=80)
+                self.assertEqual(
+                    first_block,
+                    second_block,
+                    "the block must be deterministic - the same finding "
+                    "at the same width renders equal lines:\n"
+                    "first:  {!r}\nsecond: {!r}".format(
+                        first_block, second_block
+                    ),
+                )
+                first_line = piguard.render_finding(finding)
+                second_line = piguard.render_finding(finding)
+                self.assertEqual(
+                    first_line,
+                    second_line,
+                    "the single line must be deterministic for {}:\n"
+                    "first:  {!r}\nsecond: {!r}".format(
+                        self._describe(label, finding),
+                        first_line,
+                        second_line,
+                    ),
+                )
+
+    def test_width_is_a_real_parameter_on_the_block(self):
+        # The cycle-4 many-restricted-paths finding: headline plus brief
+        # exceeds 80, so the block wraps at width 80 and wraps to
+        # strictly more lines at width 40 - the width is not a
+        # decoration, and no line ever exceeds the width it was asked
+        # to fit.
+        long_paths = [
+            ".github/workflows/nightly-integration-suite.yml",
+            "infrastructure/terraform/modules/production-network/**",
+            "deployment/k8s/base/production-cluster-manifests/**",
+        ]
+        finding = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-guard",
+                    {"restricted_file_paths": long_paths},
+                )
+            ]
+        )[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+
+        wide = piguard.render_finding_block(finding, width=80)
+        narrow = piguard.render_finding_block(finding, width=40)
+        for line in wide:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a block line exceeds width 80: {!r}".format(line),
+            )
+        for line in narrow:
+            self.assertLessEqual(
+                len(line),
+                40,
+                "a block line exceeds width 40: {!r}".format(line),
+            )
+        self.assertGreater(
+            len(narrow),
+            len(wide),
+            "width=40 must wrap the long finding to strictly more lines "
+            "than width=80:\nwidth=80 ({!r} lines): {!r}\nwidth=40 "
+            "({!r} lines): {!r}".format(
+                len(wide), wide, len(narrow), narrow
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
