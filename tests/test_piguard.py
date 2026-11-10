@@ -20,6 +20,7 @@ import json
 import socket
 import sys
 import tempfile
+import textwrap
 import unittest
 import urllib.error
 import urllib.parse
@@ -11155,6 +11156,124 @@ class RenderFixesTests(unittest.TestCase):
             "exactly as the approved sample report prints it:\n"
             "lines: {!r}".format(lines),
         )
+
+
+class BypassNoteTests(unittest.TestCase):
+    """Behaviour 8 of plans/guard-finding-compact.md: BYPASS_NOTE.
+
+    The bypass caveat - hard-coded per-finding in the old report shape -
+    survives exactly once, as the report's trailing note, from one
+    module constant. doc/external/github/rest-api-endpoints-for-rules.md
+    is the source fact: ``bypass_actors`` is only returned to users with
+    write access to the ruleset, so a read-only token never sees it.
+    """
+
+    # The finding-field statuses a rendered note line must never carry.
+    _STATUS_PREFIXES = ("ok:", "warn:", "fail:", "skipped:")
+
+    # The approved sample report's trailing line (user-confirmed
+    # wording, plans/guard-finding-compact.md).
+    _SAMPLE_NOTE = "Note: bypass lists are not visible to a read-only token."
+
+    def test_bypass_note_exists_and_is_a_non_empty_string(self):
+        note = piguard.BYPASS_NOTE
+        self.assertIsInstance(
+            note,
+            str,
+            "BYPASS_NOTE must be a plain str, not a format string or other "
+            "type: {!r}".format(type(note).__name__),
+        )
+        self.assertTrue(
+            note.strip(),
+            "BYPASS_NOTE must be a non-empty string: {!r}".format(note),
+        )
+
+    def test_bypass_note_carries_the_bypass_caveat(self):
+        # Pin the caveat's substance against the approved sample's
+        # wording: it is the bypass-visibility-on-a-read-only-token
+        # caveat, and nothing else. Case-insensitive so the green's
+        # exact casing stays a green choice.
+        note = piguard.BYPASS_NOTE.lower()
+        self.assertIn(
+            "bypass",
+            note,
+            "BYPASS_NOTE must name the bypass lists - the caveat's "
+            "subject: {!r}".format(piguard.BYPASS_NOTE),
+        )
+        self.assertIn(
+            "read-only token",
+            note,
+            "BYPASS_NOTE must say the caveat is about a read-only "
+            "token's visibility: {!r}".format(piguard.BYPASS_NOTE),
+        )
+
+    def test_bypass_note_is_at_most_160_characters(self):
+        note = piguard.BYPASS_NOTE
+        self.assertLessEqual(
+            len(note),
+            160,
+            "BYPASS_NOTE must be at most 160 characters, got {}:\n"
+            "{!r}".format(len(note), note),
+        )
+
+    def test_bypass_note_wraps_to_fit_width_80(self):
+        # When rendered as the report's trailing note at width=80, every
+        # line stays within the width.
+        note = piguard.BYPASS_NOTE
+        for line in textwrap.wrap(note, width=80):
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped line of BYPASS_NOTE exceeds width=80: "
+                "{!r}".format(line),
+            )
+
+    def test_bypass_note_is_a_stable_module_level_constant(self):
+        # Single source: a plain str bound at module scope, stable across
+        # accesses and across re-imports - not something computed per
+        # call. Pin the contract, not the implementation.
+        first = piguard.BYPASS_NOTE
+        self.assertIsInstance(
+            first,
+            str,
+            "BYPASS_NOTE must be a plain str: {!r}".format(type(first).__name__),
+        )
+        self.assertEqual(
+            piguard.BYPASS_NOTE,
+            first,
+            "BYPASS_NOTE must be stable across accesses: {!r} != "
+            "{!r}".format(piguard.BYPASS_NOTE, first),
+        )
+        # A re-import of the same module object reads the same value:
+        # this is what "one module constant" pins against a per-call
+        # computation hiding behind an attribute.
+        reloaded = __import__(
+            "anvilkit.pi.piguard", fromlist=["BYPASS_NOTE"]
+        )
+        self.assertEqual(
+            getattr(reloaded, "BYPASS_NOTE"),
+            first,
+            "a re-import must read the same BYPASS_NOTE: {!r} != "
+            "{!r}".format(getattr(reloaded, "BYPASS_NOTE"), first),
+        )
+
+    def test_bypass_note_is_not_a_finding_line(self):
+        # It is a note, not a finding line: no status prefix, no
+        # headline mark.
+        note = piguard.BYPASS_NOTE
+        for prefix in self._STATUS_PREFIXES:
+            self.assertFalse(
+                note.startswith(prefix),
+                "BYPASS_NOTE must not start with the finding prefix "
+                "{!r}: {!r}".format(prefix, note),
+            )
+        for mark in ("\u2705", "\u26a0\ufe0f", "\u274c", "\u23ed\ufe0f"):
+            self.assertNotIn(
+                mark,
+                note,
+                "BYPASS_NOTE must not carry a finding mark {!r}: "
+                "{!r}".format(mark, note),
+            )
 
 
 if __name__ == "__main__":
