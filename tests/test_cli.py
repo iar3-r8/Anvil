@@ -4621,6 +4621,222 @@ class TestGuardReportCrossSiteConsistency(CliCase):
         )
 
 
+class TestGuardReportCompactLineCount(CliCase):
+    """A clean report is at most 15 lines (behaviour 11 of
+    plans/guard-finding-compact.md).
+
+    The user's "the report is way too long" made measurable: the whole
+    report - both headers, every block, the note - is counted in NON-BLANK
+    lines. The plan's "Clean run - 14 non-blank lines" sample is the
+    counting authority; the user's original "15" counted a blank line.
+    The seam is the real ``cli._echo_guard_report``
+    driven with a captured ``Context`` (the tightest seam - the line COUNT
+    is a property of the report, so command-level noise is avoided) over
+    the all-passed and all-failing fixtures.
+    """
+
+    # -- the fixtures (the sample's exact findings) ------------------------------
+
+    def _clean_branch_findings(self):
+        """Five branch passes - the real ``check_all`` over the five-rule
+        ruleset (non_fast_forward, deletion, pull_request, update,
+        file_path_restriction)."""
+        return cli.piguard.check_all(five_rule_branch_rules())
+
+    def _clean_token_findings(self):
+        """Four token passes plus the constant workflows_withheld skip -
+        the sample's exact clean findings (the em-dash briefs are the
+        sample's words, set on the finding the way a probe would)."""
+        findings = [
+            token_finding("target_access", "passed"),
+            token_finding("administration", "passed"),
+            token_finding("classic_token", "passed"),
+            cli.piguard.workflows_withheld_finding()[0],
+            token_finding("named_repo", "passed"),
+        ]
+        briefs = {
+            "target_access": "the token reaches iar3-r8/anvil",
+            "administration": "Administration withheld (403)",
+            "classic_token": "no classic OAuth scopes returned",
+            "named_repo": "does not reach someorg/other (404)",
+        }
+        for finding in findings:
+            if finding["check"] in briefs:
+                finding["brief"] = briefs[finding["check"]]
+        return findings
+
+    def _all_failing_branch_findings(self):
+        """Five branch warns - the real ``check_all`` over no rules (the
+        sample's UI-label remedies)."""
+        return cli.piguard.check_all([])
+
+    def _all_failing_token_findings(self):
+        """Four token fails plus the constant workflows_withheld skip -
+        the same fixture as the clean run, every check failing (the
+        em-dash briefs are the sample's blocked words, set the way a
+        probe would)."""
+        findings = [
+            token_finding(
+                "target_access",
+                "fail",
+                danger="cannot see iar3-r8/anvil, so nothing below is proof",
+                remedy="recreate the token with access to iar3-r8/anvil only",
+            ),
+            token_finding(
+                "administration",
+                "fail",
+                danger="the token can delete or reconfigure iar3-r8/anvil",
+                remedy="recreate the token without the Administration permission",
+            ),
+            token_finding(
+                "classic_token",
+                "fail",
+                danger="a classic token reaches every repo the owner can see",
+                remedy="recreate it as a fine-grained token, iar3-r8/anvil only",
+            ),
+            cli.piguard.workflows_withheld_finding()[0],
+            token_finding(
+                "named_repo",
+                "fail",
+                danger="also reaches someorg/other, so a leak is not confined here",
+                remedy="recreate the token with access to iar3-r8/anvil only",
+            ),
+        ]
+        briefs = {
+            "target_access": "cannot see iar3-r8/anvil, so nothing below is proof",
+            "administration": "the token can delete or reconfigure iar3-r8/anvil",
+            "classic_token": "a classic token reaches every repo the owner can see",
+            "named_repo": "also reaches someorg/other, so a leak is not confined here",
+        }
+        for finding in findings:
+            if finding["check"] in briefs:
+                finding["brief"] = briefs[finding["check"]]
+        return findings
+
+    # -- the seam ------------------------------------------------------------------
+
+    def _report_lines(self, branch, token):
+        """Drive the real ``cli._echo_guard_report`` through a captured
+        ``Context`` and return the report's lines - exactly the part the
+        report prints, from 'Branch rules' through the note."""
+        lines = []
+        shared = cli.Context(
+            dry_run=False, verbose=False, no_color=False, assume_yes=True
+        )
+        patcher = mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        cli._echo_guard_report(shared, branch, token)
+        return lines
+
+    @staticmethod
+    def _non_blank(lines):
+        return [line for line in lines if line]
+
+    # -- the clean report ----------------------------------------------------------
+
+    def test_clean_report_is_at_most_15_non_blank_lines(self):
+        """The clean report - both headers, every block, the note - is at
+        most 15 non-blank lines: the user's "way too long" complaint made
+        measurable (behaviour 11's Then clause)."""
+        branch = self._clean_branch_findings()
+        token = self._clean_token_findings()
+        lines = self._report_lines(branch, token)
+        count = len(self._non_blank(lines))
+        self.assertLessEqual(
+            count,
+            15,
+            "the clean report must be at most 15 non-blank lines, got "
+            "{}:\n{}".format(count, "\n".join(lines)),
+        )
+
+    def test_clean_report_is_exactly_14_non_blank_lines_as_documented(self):
+        """The documented fixture (the plan's "Clean run" sample) is
+        exactly 14 non-blank lines - the exact-equality anchor: two
+        headers + nine one-line findings + the skip's headline + the
+        how: line + the note. The user's original "15" counted a blank
+        line; the at-most-15 bound is the contract, this pin documents
+        the measurement (14 <= 15)."""
+        branch = self._clean_branch_findings()
+        token = self._clean_token_findings()
+        lines = self._report_lines(branch, token)
+        count = len(self._non_blank(lines))
+        self.assertEqual(
+            14,
+            count,
+            "the documented clean report must be exactly 14 non-blank "
+            "lines, got {}:\n{}".format(count, "\n".join(lines)),
+        )
+
+    def test_clean_report_prints_no_to_fix_line(self):
+        """A clean report (no warn, no fail) prints no "To fix" line - the
+        property the 15 count relies on (the sample has none)."""
+        branch = self._clean_branch_findings()
+        token = self._clean_token_findings()
+        lines = self._report_lines(branch, token)
+        self.assertNotIn(
+            "To fix",
+            lines,
+            "the clean report must print no 'To fix' line:\n{}".format(
+                "\n".join(lines)
+            ),
+        )
+
+    # -- the all-failing report (behaviour 11's Error clause) ---------------------
+
+    def test_all_failing_report_is_longer_than_15_non_blank_lines(self):
+        """The same fixture with every check failing is LONGER than the
+        clean 15 (behaviour 11's Error clause)."""
+        branch = self._all_failing_branch_findings()
+        token = self._all_failing_token_findings()
+        lines = self._report_lines(branch, token)
+        count = len(self._non_blank(lines))
+        self.assertGreater(
+            count,
+            15,
+            "the all-failing report must be longer than the clean 15, "
+            "got {}:\n{}".format(count, "\n".join(lines)),
+        )
+
+    def test_all_failing_report_decomposes_to_headers_findings_fixes_and_note(self):
+        """The all-failing report is still "one line per finding plus the
+        numbered fixes" (behaviour 11's Error clause), pinned as an exact
+        non-blank decomposition:
+
+          2  section headers            (Branch rules, Token scope)
+        + 10 finding headlines          (5 branch + 5 token, the skip included)
+        +  1 how: line                  (the skip's second line)
+        +  1 "To fix"
+        +  9 numbered entries           (one per warn/fail; the skip is not numbered)
+        +  1 note
+        +  2 within-width wraps          (the file_path_restriction warn headline
+                                          is 85 chars and fix entry 5 is 94 chars;
+                                          both exceed the 80-col bound and wrap to
+                                          2 lines, per behaviours 4/5/7)
+        = 26
+
+        NOTE: the plan's task brief stated "9 finding lines" and a total of 23;
+        that is short by 3 - it omits the skip's own headline (there are 10
+        finding headlines, not 9) and ignores the two within-width wraps.
+        The 26 measured here is the report a correct implementation actually
+        prints, so the pin is set to that reachable value."""
+        branch = self._all_failing_branch_findings()
+        token = self._all_failing_token_findings()
+        lines = self._report_lines(branch, token)
+        count = len(self._non_blank(lines))
+        expected = 2 + 10 + 1 + 1 + 9 + 1 + 2
+        self.assertEqual(
+            expected,
+            count,
+            "the all-failing report must decompose to {} non-blank lines "
+            "(2 headers + 10 finding headlines + 1 how: line + 1 'To fix' + "
+            "9 numbered entries + 1 note + 2 within-width wraps), got "
+            "{}:\n{}".format(expected, count, "\n".join(lines)),
+        )
+
+
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
 
