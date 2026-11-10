@@ -10833,6 +10833,329 @@ class FindingBriefTests(unittest.TestCase):
                         ),
                     )
 
+class RenderFixesTests(unittest.TestCase):
+    """Behaviour 7 of plans/guard-finding-compact.md: ``render_fixes``.
+
+    The numbered mitigation list: the header ``To fix``, then one entry per
+    ``warn``/``fail`` finding in list order - ``{n}. {label}: {remedy}`` -
+    wrapped at ``width`` with continuation lines indented under the text.
+    ``passed`` and ``skipped`` findings are never numbered; no ``warn`` and
+    no ``fail`` yields an empty list (no header). Pure: no network, no
+    write, never raises.
+
+    The findings are synthetic dicts in the module's own shape
+    (``status``/``check``/``rule``/``brief``/``reason``/``remedy``) - the
+    renderer's contract is a pure function of those fields, and the real
+    producers are already pinned by their own classes (``FindingBriefTests``,
+    ``TokenFindingInvariantSweepTests``). One entry's full text is pinned
+    against the approved sample report's wording, which the producers now
+    carry.
+
+    Wrap-indent convention (consistent with ``render_finding_block``'s
+    indented ``how:`` line, anvilkit/pi/piguard.py): the continuation lines
+    of a wrapped entry are indented exactly 2 spaces - more than the entry
+    start (column 0) - so the entry's text reads under its first line.
+    """
+
+    @staticmethod
+    def _fixes_renderer():
+        """The ``render_fixes`` seam: a clean AttributeError per test while
+        red - the attribute access lives inside each test, so a missing
+        attribute fails the individual test, not the collection."""
+        renderer = getattr(piguard, "render_fixes")
+        return renderer
+
+    @staticmethod
+    def _compact(text):
+        """The text with every whitespace character removed - the same
+        elision trick the block pins use: a wrap may only change
+        whitespace, so word-for-word survival is checkable without pinning
+        the wrap points."""
+        return "".join(text.split())
+
+    @staticmethod
+    def _finding(
+        status: str,
+        check: str,
+        rule: Optional[str] = None,
+        brief: str = "brief clause",
+        reason: Optional[str] = None,
+        remedy: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One finding in the module's dict shape, carrying only the
+        keys the status needs - ``reason`` only when given, like a
+        real skipped finding."""
+        finding: Dict[str, Any] = {
+            "status": status,
+            "check": check,
+            "rule": rule,
+            "brief": brief,
+        }
+        if reason is not None:
+            finding["reason"] = reason
+        if remedy is not None:
+            finding["remedy"] = remedy
+        return finding
+
+    def test_mixed_statuses_render_header_then_numbered_warn_and_fail_in_list_order(self):
+        # The contract, end to end: 2 passed, 1 warn, 1 skipped, 1 fail.
+        # The header comes first, then one numbered entry per warn/fail in
+        # LIST ORDER - passed and skipped never numbered, numbering
+        # 1-based in that order.
+        warn_remedy = 'turn on "Restrict deletions" for main'
+        fail_remedy = "recreate the token without the Administration permission"
+        findings = [
+            self._finding("passed", "history_rewrite", "non_fast_forward",
+                          brief="force pushes blocked"),
+            self._finding("warn", "history_rewrite", "deletion",
+                          remedy=warn_remedy),
+            self._finding("passed", "review", "pull_request",
+                          brief="review required (2 required approvals)"),
+            self._finding("skipped", "history_rewrite",
+                          brief="api.github.com was unreachable",
+                          reason="api.github.com was unreachable",
+                          remedy="check network access to api.github.com, then re-run"),
+            self._finding("fail", "administration", None,
+                          remedy=fail_remedy),
+        ]
+
+        lines = self._fixes_renderer()(findings)
+        self.assertEqual(
+            lines,
+            [
+                "To fix",
+                '1. deletion: ' + warn_remedy,
+                "2. administration: " + fail_remedy,
+            ],
+            "the mixed list is the header then one numbered entry per "
+            "warn/fail in list order - passed and skipped never "
+            "numbered:\nlines: {!r}".format(lines),
+        )
+
+    def test_warn_entry_labels_the_rule_and_token_fail_entry_labels_the_check(self):
+        # The label: the finding's ``rule`` when it carries one, else its
+        # ``check`` - never a literal "None". One entry is a branch warn
+        # (rule set), one a token fail (rule None -> check).
+        findings = [
+            self._finding("warn", "history_rewrite", "non_fast_forward",
+                          remedy='turn on "Block force pushes" for main'),
+            self._finding("fail", "classic_token", None,
+                          remedy="recreate it as a fine-grained token, iar3-r8/anvil only"),
+        ]
+
+        lines = self._fixes_renderer()(findings)
+        self.assertEqual(
+            lines[0],
+            "To fix",
+            "the header is 'To fix' even with a mixed warn/fail list:\n"
+            "lines: {!r}".format(lines),
+        )
+        self.assertEqual(
+            lines[1],
+            '1. non_fast_forward: turn on "Block force pushes" for main',
+            "a branch warn entry labels the rule:\nlines: {!r}".format(lines),
+        )
+        self.assertEqual(
+            lines[2],
+            "2. classic_token: recreate it as a fine-grained token, "
+            "iar3-r8/anvil only",
+            "a token fail entry (rule None) labels the check:\n"
+            "lines: {!r}".format(lines),
+        )
+        self.assertNotIn(
+            "None",
+            "\n".join(lines),
+            "no entry may print a literal 'None':\nlines: {!r}".format(lines),
+        )
+
+    def test_no_warn_or_fail_yields_empty_list_without_header(self):
+        # The error clause: no warn and no fail - every passed or skipped -
+        # yields an empty list, no header at all.
+        findings = [
+            self._finding("passed", "history_rewrite", "non_fast_forward",
+                          brief="force pushes blocked"),
+            self._finding("skipped", "history_rewrite",
+                          brief="api.github.com was unreachable",
+                          reason="api.github.com was unreachable",
+                          remedy="check network access to api.github.com, then re-run"),
+        ]
+
+        lines = self._fixes_renderer()(findings)
+        self.assertEqual(
+            lines,
+            [],
+            "no warn and no fail yields an empty list - no header:\n"
+            "lines: {!r}".format(lines),
+        )
+
+    def test_empty_findings_yield_empty_list(self):
+        # The degenerate list: nothing in, nothing out - no header.
+        lines = self._fixes_renderer()([])
+        self.assertEqual(
+            lines,
+            [],
+            "an empty findings list yields an empty list:\n"
+            "lines: {!r}".format(lines),
+        )
+
+    def test_over_width_entry_wraps_within_width_with_two_space_continuation_indent(self):
+        # The wrap: a warn entry whose ``{n}. {label}: {remedy}`` exceeds
+        # 80 wraps to more than one line, every line at most 80, with
+        # continuation lines indented under the text - exactly 2 spaces,
+        # the convention ``render_finding_block``'s indented ``how:``
+        # continuation carries (anvilkit/pi/piguard.py): more than the
+        # entry start (column 0), aligned under the entry's text. No
+        # elision: the compact (whitespace-free) block IS the header plus
+        # the two entries.
+        long_remedy = (
+            "turn on \"Restrict file paths\" for main, listing "
+            ".github/workflows/nightly-integration-suite.yml and "
+            "infrastructure/terraform/modules/production-network/**"
+        )
+        findings = [
+            self._finding("passed", "history_rewrite", "deletion",
+                          brief="branch deletion blocked"),
+            self._finding("warn", "file_paths", "file_path_restriction",
+                          remedy=long_remedy),
+            self._finding("skipped", "history_rewrite",
+                          brief="api.github.com was unreachable",
+                          reason="api.github.com was unreachable",
+                          remedy="check network access to api.github.com, then re-run"),
+        ]
+        entry = "1. file_path_restriction: " + long_remedy
+        self.assertGreater(
+            len(entry),
+            80,
+            "fixture sanity: the warn entry must exceed 80 to force a "
+            "wrap: {!r}".format(entry),
+        )
+
+        lines = self._fixes_renderer()(findings)
+        self.assertIsInstance(
+            lines, list, "render_fixes must return a list of lines"
+        )
+        for line in lines:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped fix line exceeds width 80: {!r}".format(line),
+            )
+        self.assertEqual(
+            lines[0],
+            "To fix",
+            "the header stays line 0 even when an entry wraps:\n"
+            "lines: {!r}".format(lines),
+        )
+        self.assertTrue(
+            lines[1].startswith("1. file_path_restriction:"),
+            "the entry's first line carries the number, the rule label "
+            "and the colon: {!r}".format(lines[1]),
+        )
+        # The passed and skipped findings must not appear anywhere: the
+        # compact block is the header plus the one entry, nothing else.
+        self.assertEqual(
+            self._compact("\n".join(lines)),
+            self._compact("To fix" + entry),
+            "the wrapped fixes are the header plus the warn entry - "
+            "nothing added and nothing elided:\nlines: {!r}".format(lines),
+        )
+        # Continuation lines: every line after the entry's first is
+        # indented exactly 2 spaces - under the entry's text, more than
+        # the entry start (column 0).
+        entry_lines = lines[2:]
+        self.assertGreater(
+            len(entry_lines),
+            0,
+            "an over-width entry must wrap to continuation lines:\n"
+            "lines: {!r}".format(lines),
+        )
+        for line in entry_lines:
+            self.assertTrue(
+                line.startswith("  ") and not line.startswith("   "),
+                "a fix continuation line is indented exactly 2 spaces - "
+                "under the entry's text, more than the entry start:\n"
+                "line: {!r}".format(line),
+            )
+
+    def test_narrower_width_wraps_the_entry_to_strictly_more_lines(self):
+        # Width is a real parameter: the same long entry wraps to strictly
+        # more lines at width=40 than at width=80, every line within its
+        # width.
+        long_remedy = (
+            "turn on \"Restrict file paths\" for main, listing "
+            ".github/workflows/nightly-integration-suite.yml and "
+            "infrastructure/terraform/modules/production-network/**"
+        )
+        findings = [
+            self._finding("warn", "file_paths", "file_path_restriction",
+                          remedy=long_remedy),
+        ]
+
+        lines_40 = self._fixes_renderer()(findings, width=40)
+        lines_80 = self._fixes_renderer()(findings, width=80)
+        for width, lines in ((40, lines_40), (80, lines_80)):
+            for line in lines:
+                self.assertLessEqual(
+                    len(line),
+                    width,
+                    "a fix line exceeds its requested width {!r}: "
+                    "{!r}".format(width, line),
+                )
+        self.assertGreater(
+            len(lines_40),
+            len(lines_80),
+            "width must be a real parameter: the same long entry wraps to "
+            "strictly more lines at width=40 than at width=80:\n"
+            "width=40: {!r}\nwidth=80: {!r}".format(lines_40, lines_80),
+        )
+
+    def test_takes_plain_dicts_and_never_raises(self):
+        # The pure contract, pinned by the fact: the renderer takes a
+        # PLAIN list of plain dicts (no finding needs to be "live") and
+        # never raises - the whole class already calls it with no
+        # fixtures, no opener and no network. The repeated call is the
+        # determinism check.
+        findings = [
+            self._finding("warn", "history_rewrite", "non_fast_forward",
+                          remedy='turn on "Block force pushes" for main'),
+            self._finding("fail", "administration", None,
+                          remedy="recreate the token without the Administration permission"),
+        ]
+        renderer = self._fixes_renderer()
+        first = renderer(findings)
+        second = renderer(findings)
+        self.assertEqual(
+            first,
+            second,
+            "the same plain findings must render equal lists:\n"
+            "first: {!r}\nsecond: {!r}".format(first, second),
+        )
+
+    def test_branch_warn_entry_text_matches_approved_sample_wording(self):
+        # The ``remedy`` is the finding's own remedy field, printed whole:
+        # the branch warn entry's full text, word for word, as in the
+        # approved sample report's "To fix" section.
+        findings = [
+            self._finding(
+                "warn",
+                "history_rewrite",
+                "non_fast_forward",
+                remedy='turn on "Block force pushes" for main',
+            ),
+        ]
+
+        lines = self._fixes_renderer()(findings)
+        self.assertEqual(
+            lines,
+            [
+                "To fix",
+                '1. non_fast_forward: turn on "Block force pushes" for main',
+            ],
+            "the branch warn entry carries the finding's own remedy field "
+            "exactly as the approved sample report prints it:\n"
+            "lines: {!r}".format(lines),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
