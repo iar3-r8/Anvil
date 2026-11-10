@@ -8665,9 +8665,26 @@ class RenderFindingBlockTests(unittest.TestCase):
             block[0].startswith("⏭️ skipped: history_rewrite"),
             "line 0 must be the marked skipped headline: {!r}".format(block[0]),
         )
-        self.assertTrue(
-            block[1].startswith("  how:"),
-            "line 1 must be the indented 'how:' line: {!r}".format(block[1]),
+        # A long brief wraps the headline, so the 'how:' line is not
+        # pinned to a fixed index - it is the only 'how:' line, and it
+        # follows the wrapped headline directly (a long remedy can wrap
+        # after it, so it is not necessarily the last line).
+        how_lines = [
+            line for line in block[1:] if line.lstrip().startswith("how:")
+        ]
+        self.assertEqual(
+            1,
+            len(how_lines),
+            "the wrapped skipped block carries exactly one 'how:' line:\n"
+            "block: {!r}".format(block),
+        )
+        how_index = block.index(how_lines[0])
+        self.assertEqual(
+            self._compact("\n".join(block[:how_index])),
+            self._compact("⏭️ skipped: history_rewrite — {}".format(long_brief)),
+            "the lines before the 'how:' line are exactly the wrapped "
+            "headline - nothing else precedes it:\n"
+            "block: {!r}".format(block),
         )
         # No elision and no extra content: with every whitespace
         # character removed, the block IS the headline plus the one

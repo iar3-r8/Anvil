@@ -3004,11 +3004,12 @@ class TestSetupRepoGuardGate(CliCase):
         headline = _finding_headline(skipped)
         self.assertTrue(
             any(
-                line.lstrip() == headline
+                line.lstrip().startswith(headline)
                 for line in result.output.splitlines()
             ),
             "the skipped finding's block headline {!r} must be "
-            "reported:\n{}".format(headline, result.output),
+            "reported (the em-dash brief follows the mark, prefix and "
+            "label):\n{}".format(headline, result.output),
         )
 
     def test_the_token_value_is_never_echoed(self):

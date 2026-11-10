@@ -1527,20 +1527,38 @@ def render_finding_block(finding: Dict[str, Any], width: int = 80) -> List[str]:
         # part of the wrapped headline, so the wrap budget includes it.
         headline = "{} {}".format(mark, headline)
 
-    if status in ("passed", "warn", "fail"):
-        # Behaviour 4 and 5 of plans/guard-finding-compact.md: a passed,
-        # warn or fail block is ONE line - the marked headline with the
-        # finding's own brief after an em dash. No detail line (the old
-        # ``_block_substance`` detail is dropped), no ``see:`` line (the
-        # passed remedy no longer prints per finding) and no ``fix:`` line
-        # (a warn/fail remedy moves to the report's "To fix" section,
-        # behaviour 7). The wrapped headline carries the whole block; a
-        # long brief wraps to more lines, every one within ``width``, with
-        # no elision.
+    if status in ("passed", "warn", "fail", "skipped"):
+        # Behaviour 4, 5 and 6 of plans/guard-finding-compact.md: a
+        # passed, warn, fail or skipped block starts as ONE line - the
+        # marked headline with the finding's own brief after an em dash
+        # (a skipped finding without a brief falls back to its reason).
+        # No detail line (the old ``_block_substance`` detail is
+        # dropped), no ``see:`` line (the passed remedy no longer prints
+        # per finding) and no ``fix:`` line (a warn/fail remedy moves to
+        # the report's "To fix" section, behaviour 7). The wrapped
+        # headline carries the whole block; a long brief wraps to more
+        # lines, every one within ``width``, with no elision.
         brief = finding.get("brief")
-        if isinstance(brief, str) and brief:
-            headline = "{} \u2014 {}".format(headline, brief)
-        return textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
+        substance = brief if isinstance(brief, str) and brief else (
+            finding.get("reason") if status == "skipped" else None
+        )
+        if isinstance(substance, str) and substance:
+            headline = "{} \u2014 {}".format(headline, substance)
+        block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
+        if status == "skipped":
+            # The skipped block's second line: how the check can be run -
+            # the remedy on one indented ``how:`` line, wrapped at
+            # ``width`` with the indent included in the bound, no
+            # elision. A missing or empty remedy emits no ``how:`` line
+            # at all (behaviour 6 of plans/guard-finding-compact.md).
+            remedy = finding.get("remedy")
+            if isinstance(remedy, str) and remedy:
+                lead = "  how: "
+                remainder = width - len(lead)
+                for index, part in enumerate(textwrap.wrap(remedy, width=remainder)):
+                    line = lead + part if index == 0 else "  " + part
+                    block.append(line)
+        return block
 
     detail = _block_substance(finding)
     block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
