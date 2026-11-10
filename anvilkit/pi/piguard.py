@@ -1575,6 +1575,84 @@ def render_finding_block(finding: Dict[str, Any], width: int = 80) -> List[str]:
     return block
 
 
+def render_fixes(
+    findings: List[Dict[str, Any]], width: int = 80
+) -> List[str]:
+    """The report's "To fix" section: the numbered mitigation list.
+
+    One line per word of the section (behaviour 7 of
+    plans/guard-finding-compact.md): the header line ``To fix`` - emitted
+    only when at least one finding has status ``warn`` or ``fail`` - then
+    one entry per such finding in list order, numbered 1-based, the entry's
+    text ``{n}. {label}: {remedy}`` - the label the finding's ``rule`` when
+    it carries one, else its ``check``, never a literal ``None`` - the
+    remedy the finding's own ``remedy`` field, printed whole with no
+    elision. ``passed`` and ``skipped`` findings are never numbered and
+    never rendered here; no warn and no fail - including an empty findings
+    list - yields ``[]`` with no header at all.
+
+    Each entry wraps at ``width`` the same way :func:`render_finding_block`
+    wraps its indented ``how:`` line: the entry's first line starts at
+    column 0 with ``{n}. {label}:``, and the continuation lines are
+    indented exactly 2 spaces - under the entry's text, more than the entry
+    start - every line at most ``width`` characters. ``width`` is a real
+    parameter: a narrower width wraps the same entry to strictly more
+    lines. Pure: takes a plain list of plain dicts, no network, no write,
+    never raises; the same findings at the same width render equal lists.
+    """
+    width = max(1, width)
+    lines: List[str] = []
+    number = 0
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("status") not in ("warn", "fail"):
+            continue
+        number += 1
+        label = finding.get("rule")
+        if not isinstance(label, str) or not label:
+            label = finding.get("check")
+        if not isinstance(label, str) or not label:
+            label = "unknown"
+        lead = "{}. {}: ".format(number, label)
+        remedy = finding.get("remedy")
+        if not isinstance(remedy, str) or not remedy:
+            # No remedy text: the entry is its lead alone, wrapped so even
+            # a pathologically long label stays within the width.
+            text = lead.rstrip()
+            lines.extend(
+                textwrap.wrap(
+                    text, width=width, break_long_words=True
+                )
+                or [text]
+            )
+            continue
+        if len(lead) >= width:
+            # The lead alone fills the width: its own wrap carries the
+            # first line, and the remedy starts on continuation lines.
+            lead_text = lead.rstrip()
+            for index, part in enumerate(
+                textwrap.wrap(
+                    lead_text, width=width, break_long_words=True
+                )
+                or [lead_text]
+            ):
+                lines.append(part if index == 0 else "  " + part)
+            for part in textwrap.wrap(
+                remedy, width=max(1, width - 2), break_long_words=True
+            ):
+                lines.append("  " + part)
+            continue
+        remainder = width - len(lead)
+        parts = textwrap.wrap(remedy, width=remainder, break_long_words=True)
+        lines.append(lead + parts[0])
+        for part in parts[1:]:
+            lines.append("  " + part)
+    if number == 0:
+        return []
+    return ["To fix"] + lines
+
+
 def summarize(findings: List[Dict[str, Any]]) -> int:
     """The exit-status seam: ``1`` when any finding has status ``fail``, else ``0``.
 
