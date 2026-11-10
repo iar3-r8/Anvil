@@ -4105,6 +4105,522 @@ class TestGuardReportFixesAndNote(CliCase):
         )
 
 
+class TestGuardReportCrossSiteConsistency(CliCase):
+    """All three call sites print the same compact report
+    (behaviour 10 of plans/guard-finding-compact.md).
+
+    Behaviour 9 routed the three sites through the shared
+    ``cli._echo_guard_report``, so the pins here are cross-site
+    consistency: the SAME finding fixture driven through ``doctor``,
+    ``verify-guards`` and a blocked ``setup-repo`` must yield the
+    IDENTICAL block text for every finding, every report line within
+    80 columns, the "To fix" section only when a warn or fail is
+    present, and each command's own invariants (the gate's exit 9 and
+    its prepared ruleset and token recipe AFTER the note,
+    verify-guards' ``summarize`` exit, doctor's unchanged exit)
+    holding through the report's new tail. The renderer itself is not
+    re-pinned here - cycles 4-9 own its substance; these pins assert
+    that the three SITES agree.
+
+    The gate site can only be driven with a fixture that blocks it -
+    a blocked run has a warn or fail by construction - so the
+    all-passed fixture's cross-site pin covers the two sites that also
+    print an all-passed report (doctor and verify-guards); the gate's
+    "To fix" positive is the behaviour-9 gate pin, and its negative is
+    unexpressible (a clean gate prints no report at all).
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    TOKEN = "ghp_crosssite_token"
+
+    # -- the shared fixtures --------------------------------------------------
+
+    def warn_fail_branch_findings(self):
+        """The branch fixture: the real ``check_all`` over no rules -
+        the five warns with the sample's UI-label remedies."""
+        return cli.piguard.check_all([])
+
+    def all_passed_branch_findings(self):
+        return cli.piguard.check_all(five_rule_branch_rules())
+
+    def warn_fail_token_findings(self):
+        """A warn, a fail and the constant workflows-withheld skip, so the
+        shared fixture exercises one-line warn/fail blocks, the
+        two-line skipped block, and a "To fix" sequence that spans both
+        sections."""
+        return [
+            token_finding(
+                "target_access",
+                "warn",
+                danger="cannot see the target repository",
+                remedy="recreate the token with access to iar3-r8/anvil only",
+            ),
+            token_finding(
+                "administration",
+                "fail",
+                danger="the token can delete or reconfigure the repository",
+                remedy="recreate the token without the Administration permission",
+            ),
+            cli.piguard.workflows_withheld_finding()[0],
+            token_finding(
+                "named_repo",
+                "warn",
+                danger="also reaches someorg/other",
+                remedy="recreate the token with access to iar3-r8/anvil only",
+            ),
+        ]
+
+    def all_passed_token_findings(self):
+        return [
+            token_finding("target_access", "passed"),
+            token_finding("administration", "passed"),
+            token_finding("classic_token", "passed"),
+            cli.piguard.workflows_withheld_finding()[0],
+            token_finding("named_repo", "passed"),
+        ]
+
+    # -- seams and command drivers ---------------------------------------------
+
+    def _start_guard_seams(self, branch_findings, token_findings):
+        """The four piguard seams replaced, so every command runs offline
+        on exactly the fixture this test wants reported - the same
+        objects the run reports on, so the expected blocks are never
+        re-derived."""
+        patchers = (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(
+                cli.piguard, "check_all", return_value=branch_findings
+            ),
+            mock.patch.object(
+                cli.piguard, "check_token_all", return_value=token_findings
+            ),
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_gate(self, branch_findings, token_findings):
+        """One blocked ``setup-repo`` run on the shared fixture (the
+        fixture must block: warn or fail by construction)."""
+        self.write_env(GITHUB_TOKEN=self.TOKEN)
+        self._start_guard_seams(branch_findings, token_findings)
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        return self.invoke_allowing_exception(
+            ["setup-repo", target.name, "--yes"]
+        )
+
+    def run_verify(self, branch_findings, token_findings):
+        self.write_env(GITHUB_TOKEN=self.TOKEN)
+        self._start_guard_seams(branch_findings, token_findings)
+        return self.invoke_allowing_exception(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+
+    def run_doctor(self, branch_findings, token_findings):
+        self.write_env(GITHUB_TOKEN=self.TOKEN)
+        self._start_guard_seams(branch_findings, token_findings)
+        # doctor probes the host tooling around the Guards section; patch
+        # the three compose probes so the run stays offline.
+        for patcher in (
+            mock.patch.object(
+                cli.compose, "docker_available", return_value=True
+            ),
+            mock.patch.object(
+                cli.compose, "compose_v2_available", return_value=True
+            ),
+            mock.patch.object(
+                cli.compose, "nvidia_available", return_value=True
+            ),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return self.invoke_allowing_exception(["doctor"])
+
+    # -- extraction --------------------------------------------------------------
+
+    def _extract_block(self, lines, finding, site, output):
+        """The block a site printed for ``finding``: located by its
+        headline, taken in order, and each line verified against the
+        renderer's own output for the same finding (the locator's
+        discipline, as in the existing gate pin) - so a site that
+        reordered, dropped or altered a line fails here rather than
+        comparing garbage to garbage. Returns the site's lines,
+        stripped, for the cross-site comparison."""
+        expected = cli.piguard.render_finding_block(finding)
+        headline = expected[0]
+        for index, line in enumerate(lines):
+            if line.lstrip() != headline.lstrip():
+                continue
+            block = lines[index:index + len(expected)]
+            if len(block) < len(expected):
+                self.fail(
+                    "{} printed fewer lines than the block for {!r}:\n{}".format(
+                        site, _finding_headline(finding), output
+                    )
+                )
+            for got, want in zip(block, expected):
+                self.assertEqual(
+                    got.lstrip(),
+                    want.lstrip(),
+                    "{} printed a different line for the finding "
+                    "{!r}:\n{}".format(site, _finding_headline(finding), output),
+                )
+            return [block_line.lstrip() for block_line in block]
+        self.fail(
+            "{} printed no block for the finding {!r}:\n{}".format(
+                site, _finding_headline(finding), output
+            )
+        )
+
+    def _report_range(self, lines, site, output):
+        """``(start, end)`` of the report in a site's output: the
+        'Branch rules' header through the note line, both inclusive -
+        exactly the part ``_echo_guard_report`` prints, bounded so the
+        gate's prepared fixes and the verify-guards/doctor trailing
+        separators are excluded."""
+        start = None
+        for index, line in enumerate(lines):
+            if line == "Branch rules":
+                start = index
+                break
+        if start is None:
+            self.fail(
+                "{} output has no 'Branch rules' header:\n{}".format(
+                    site, output
+                )
+            )
+        end = None
+        for index in range(len(lines) - 1, start - 1, -1):
+            if lines[index] == cli.piguard.BYPASS_NOTE:
+                end = index
+                break
+        if end is None:
+            self.fail(
+                "{} output has no note line closing the report:\n{}".format(
+                    site, output
+                )
+            )
+        return start, end
+
+    # -- the cross-site consistency (behaviour 10's Then clause) ----------------
+
+    def test_warn_fail_fixture_blocks_identical_in_all_three_sites(self):
+        """The same warn/fail finding - driven through all three
+        commands - yields the identical block text in each: same
+        finding, same bytes, in doctor's Guards section, in
+        verify-guards, and in the blocked gate."""
+        branch = self.warn_fail_branch_findings()
+        token = self.warn_fail_token_findings()
+        gate = self.run_gate(branch, token)
+        verify = self.run_verify(branch, token)
+        doctor = self.run_doctor(branch, token)
+        for finding in branch + token:
+            gate_block = self._extract_block(
+                gate.output.splitlines(), finding, "the blocked gate",
+                gate.output,
+            )
+            verify_block = self._extract_block(
+                verify.output.splitlines(), finding, "verify-guards",
+                verify.output,
+            )
+            doctor_block = self._extract_block(
+                doctor.output.splitlines(), finding, "doctor", doctor.output,
+            )
+            self.assertEqual(
+                doctor_block,
+                verify_block,
+                "doctor and verify-guards printed different block text "
+                "for {!r}\ndoctor: {!r}\nverify-guards: {!r}".format(
+                    _finding_headline(finding), doctor_block, verify_block
+                ),
+            )
+            self.assertEqual(
+                verify_block,
+                gate_block,
+                "verify-guards and the blocked gate printed different "
+                "block text for {!r}\nverify-guards: {!r}\ngate: "
+                "{!r}".format(
+                    _finding_headline(finding), verify_block, gate_block
+                ),
+            )
+
+    def test_all_passed_fixture_blocks_identical_in_doctor_and_verify_guards(
+        self,
+    ):
+        """The same all-passed finding yields the identical block text
+        in doctor's Guards section and in verify-guards. The gate site
+        is unexpressible here: an all-passed fixture is a clean gate,
+        and a clean gate prints no report at all."""
+        branch = self.all_passed_branch_findings()
+        token = self.all_passed_token_findings()
+        verify = self.run_verify(branch, token)
+        doctor = self.run_doctor(branch, token)
+        for finding in branch + token:
+            doctor_block = self._extract_block(
+                doctor.output.splitlines(), finding, "doctor", doctor.output,
+            )
+            verify_block = self._extract_block(
+                verify.output.splitlines(), finding, "verify-guards",
+                verify.output,
+            )
+            self.assertEqual(
+                doctor_block,
+                verify_block,
+                "doctor and verify-guards printed different block text "
+                "for {!r}\ndoctor: {!r}\nverify-guards: {!r}".format(
+                    _finding_headline(finding), doctor_block, verify_block
+                ),
+            )
+
+    # -- 80 columns across all three sites ---------------------------------------
+
+    def test_doctor_guards_report_within_80_columns_with_fixes_and_note(self):
+        """Every line of doctor's Guards report - both headers, every
+        block, the "To fix" section and the note - is at most 80
+        characters. Doctor had no per-site 80-column pin at all."""
+        branch = self.warn_fail_branch_findings()
+        token = self.warn_fail_token_findings()
+        result = self.run_doctor(branch, token)
+        lines = result.output.splitlines()
+        start, end = self._report_range(lines, "doctor", result.output)
+        offenders = [line for line in lines[start:end + 1] if len(line) > 80]
+        self.assertEqual(
+            [],
+            offenders,
+            "doctor's Guards report lines exceed 80 characters:\n{}".format(
+                "\n".join(repr(line) for line in offenders)
+            ),
+        )
+
+    def test_verify_guards_report_within_80_columns_with_fixes_and_note(
+        self,
+    ):
+        """The existing verify-guards 80-column pin runs an all-passed
+        report without a "To fix" tail; this one pins the warn/fail
+        shape, where the numbered fixes and the note join the bound."""
+        branch = self.warn_fail_branch_findings()
+        token = self.warn_fail_token_findings()
+        result = self.run_verify(branch, token)
+        lines = result.output.splitlines()
+        start, end = self._report_range(lines, "verify-guards", result.output)
+        offenders = [line for line in lines[start:end + 1] if len(line) > 80]
+        self.assertEqual(
+            [],
+            offenders,
+            "verify-guards report lines exceed 80 characters:\n{}".format(
+                "\n".join(repr(line) for line in offenders)
+            ),
+        )
+
+    def test_blocked_gate_report_within_80_columns_with_fixes_and_note(
+        self,
+    ):
+        """The existing gate 80-column pin ends at the last token
+        block; this one spans the whole report, so the "To fix"
+        section and the note that join the report's tail are within
+        the bound too."""
+        branch = self.warn_fail_branch_findings()
+        token = self.warn_fail_token_findings()
+        result = self.run_gate(branch, token)
+        lines = result.output.splitlines()
+        start, end = self._report_range(lines, "the blocked gate", result.output)
+        offenders = [line for line in lines[start:end + 1] if len(line) > 80]
+        self.assertEqual(
+            [],
+            offenders,
+            "the blocked gate's report lines exceed 80 characters:\n{}".format(
+                "\n".join(repr(line) for line in offenders)
+            ),
+        )
+
+    # -- "To fix" iff warn/fail, per site ------------------------------------------
+
+    def test_verify_guards_all_passed_prints_no_to_fix_section(self):
+        """An all-passed verify-guards run prints no "To fix" line and
+        no numbered entry anywhere in its report - pinned through the
+        command's real output, not the shared function alone."""
+        branch = self.all_passed_branch_findings()
+        token = self.all_passed_token_findings()
+        result = self.run_verify(branch, token)
+        lines = result.output.splitlines()
+        start, end = self._report_range(lines, "verify-guards", result.output)
+        report = lines[start:end + 1]
+        self.assertNotIn(
+            "To fix",
+            report,
+            "an all-passed verify-guards report must print no 'To fix' "
+            "section:\n{}".format(result.output),
+        )
+        numbered = [line for line in report if line[:1].isdigit()]
+        self.assertEqual(
+            [],
+            numbered,
+            "an all-passed verify-guards report prints no numbered "
+            "entry:\n{}".format(result.output),
+        )
+
+    def test_doctor_all_passed_prints_no_to_fix_section(self):
+        """An all-passed doctor run prints no "To fix" line and no
+        numbered entry in its Guards report."""
+        branch = self.all_passed_branch_findings()
+        token = self.all_passed_token_findings()
+        result = self.run_doctor(branch, token)
+        lines = result.output.splitlines()
+        start, end = self._report_range(lines, "doctor", result.output)
+        report = lines[start:end + 1]
+        self.assertNotIn(
+            "To fix",
+            report,
+            "an all-passed doctor Guards report must print no 'To fix' "
+            "section:\n{}".format(result.output),
+        )
+        numbered = [line for line in report if line[:1].isdigit()]
+        self.assertEqual(
+            [],
+            numbered,
+            "an all-passed doctor Guards report prints no numbered "
+            "entry:\n{}".format(result.output),
+        )
+
+    def test_verify_guards_warn_fail_prints_to_fix_section(self):
+        """A warn/fail verify-guards run prints the "To fix" section -
+        the remedy no longer rides per finding, so the section is how a
+        warn/fail report names its fixes (pinned per site, not through
+        the shared function alone)."""
+        branch = self.warn_fail_branch_findings()
+        token = self.warn_fail_token_findings()
+        result = self.run_verify(branch, token)
+        lines = result.output.splitlines()
+        start, end = self._report_range(lines, "verify-guards", result.output)
+        self.assertIn(
+            "To fix",
+            lines[start:end + 1],
+            "a warn/fail verify-guards report must print the 'To fix' "
+            "section:\n{}".format(result.output),
+        )
+
+    def test_doctor_warn_fail_prints_to_fix_section(self):
+        """A warn/fail doctor run prints the "To fix" section in its
+        Guards report - doctor reports, and the fixes are part of the
+        report (pinned per site)."""
+        branch = self.warn_fail_branch_findings()
+        token = self.warn_fail_token_findings()
+        result = self.run_doctor(branch, token)
+        lines = result.output.splitlines()
+        start, end = self._report_range(lines, "doctor", result.output)
+        self.assertIn(
+            "To fix",
+            lines[start:end + 1],
+            "a warn/fail doctor Guards report must print the 'To fix' "
+            "section:\n{}".format(result.output),
+        )
+
+    # -- the commands' own invariants through the new report tail -----------------
+
+    def test_warn_fail_fixture_gate_nine_verify_summarize_doctor_zero(self):
+        """The Error clause, one sweep on the shared warn/fail fixture:
+        the blocked gate still exits 9, verify-guards still exits
+        ``summarize`` of the findings it reported, and doctor's exit
+        status is unaffected by the report."""
+        branch = self.warn_fail_branch_findings()
+        token = self.warn_fail_token_findings()
+        gate = self.run_gate(branch, token)
+        verify = self.run_verify(branch, token)
+        doctor = self.run_doctor(branch, token)
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            gate.exit_code,
+            "the blocked gate's exit changed with the compact report: "
+            "exit {}\n{}".format(gate.exit_code, gate.output),
+        )
+        self.assertEqual(
+            cli.piguard.summarize(branch + token),
+            verify.exit_code,
+            "verify-guards no longer exits summarize of its findings: "
+            "exit {}\n{}".format(verify.exit_code, verify.output),
+        )
+        self.assertEqual(
+            0,
+            doctor.exit_code,
+            "doctor's exit status changed with the compact report: "
+            "exit {}\n{}".format(doctor.exit_code, doctor.output),
+        )
+
+    def test_blocked_gate_prints_ruleset_and_token_recipe_after_the_note(
+        self,
+    ):
+        """The gate's prepared fixes follow the report's new tail: the
+        prepared ruleset line and the token recipe URL both print
+        AFTER the note (the existing recipe pin orders the steps after
+        the URL but never pinned the URL after the report; the
+        ruleset's import steps after the note are the behaviour-9
+        pin)."""
+        from anvilkit.pi import pitokenrecipe
+
+        branch = self.warn_fail_branch_findings()
+        token = self.warn_fail_token_findings()
+        result = self.run_gate(branch, token)
+        lines = result.output.splitlines()
+
+        note_index = next(
+            (index for index, line in enumerate(lines)
+             if line == cli.piguard.BYPASS_NOTE),
+            None,
+        )
+        self.assertIsNotNone(
+            note_index,
+            "the blocked report has no note line closing the report:\n{}".format(
+                result.output
+            ),
+        )
+        url = pitokenrecipe.build_recipe_url(self.OWNER, self.REPO)
+        url_index = next(
+            (index for index, line in enumerate(lines)
+             if line.lstrip() == url),
+            None,
+        )
+        self.assertIsNotNone(
+            url_index,
+            "the blocked report has no token recipe URL line {!r}:\n{}".format(
+                url, result.output
+            ),
+        )
+        ruleset_index = next(
+            (index for index, line in enumerate(lines)
+             if "Wrote the ruleset to" in line),
+            None,
+        )
+        self.assertIsNotNone(
+            ruleset_index,
+            "the blocked report has no prepared-ruleset line:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertGreater(
+            ruleset_index,
+            note_index,
+            "the prepared ruleset must print AFTER the report (after "
+            "the note), not before it:\n{}".format(result.output),
+        )
+        self.assertGreater(
+            url_index,
+            note_index,
+            "the token recipe must print AFTER the report (after the "
+            "note), not before it:\n{}".format(result.output),
+        )
+
+
 class TestDoctor(CliCase):
     """``doctor`` diagnoses the host without needing a configured install."""
 
