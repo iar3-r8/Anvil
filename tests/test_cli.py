@@ -2950,8 +2950,12 @@ class TestSetupRepoGuardGate(CliCase):
 
     def test_no_report_line_exceeds_80_characters(self):
         """Every line of the sectioned report - from the 'Branch rules'
-        header to the end of the last token block - is at most 80
-        characters (behaviour 6)."""
+        header through the report's tail (the numbered "To fix" section when
+        present, the trailing note) - is at most 80 characters (behaviour 6;
+        re-pointed for behaviour 9 of plans/guard-finding-compact.md, whose
+        new tail joins the report). The end anchor stays the last token
+        block's lines: the 80-column bound self-derives from the blocks, the
+        fix entries and the note render at the same width."""
         token_findings = self._blocked_token_findings()
         result = self._run_blocked_report(token_findings)
         lines = result.output.splitlines()
@@ -3778,6 +3782,327 @@ class TestSetupRepoGuardGate(CliCase):
                     "a recipe step line is missing or out of order under "
                     "--dry-run: {!r}\n{}".format(step, result.output)
                 )
+
+    # -- behaviour 9 of plans/guard-finding-compact.md: the report's new
+    # tail (numbered fixes, then the note) is printed by the shared
+    # _echo_guard_report, so the blocked gate's report carries it too.
+
+    def test_blocked_gate_report_ends_with_fixes_then_note_before_the_prepared_fixes(
+        self,
+    ):
+        """A blocked run's report - the part _echo_guard_report prints -
+        ends with the numbered "To fix" section (the real
+        ``render_fixes`` output for the branch findings plus the token
+        findings, in one sequence) followed by a blank line and
+        ``BYPASS_NOTE``; the gate's own prepared fixes (the ruleset import
+        steps, the re-run line) still come AFTER the report, so the new
+        tail does not swallow them (behaviour 9; behaviour 10's territory
+        re-pinned only where the tail touched it)."""
+        branch_findings = self._blocked_branch_findings()
+        token_findings = self._blocked_token_findings()
+        result = self._run_blocked_report(token_findings)
+        lines = result.output.splitlines()
+
+        fixes = cli.piguard.render_fixes(branch_findings + token_findings)
+        self.assertGreaterEqual(
+            len(fixes),
+            2,
+            "the blocked fixture (five branch warns plus a token fail) "
+            "must earn a numbered section:\n{}".format(result.output),
+        )
+
+        # The tail starts right after the last token finding block: a
+        # blank line, then the "To fix" header, then every entry in order.
+        last_block = cli.piguard.render_finding_block(token_findings[-1])
+        block_end = lines.index(last_block[-1])
+        self.assertEqual(
+            "",
+            lines[block_end + 1],
+            "a blank line must separate the token blocks from the "
+            "'To fix' section:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            "To fix",
+            lines[block_end + 2],
+            "the numbered section's header must follow the last token "
+            "block:\n{}".format(result.output),
+        )
+        cursor = block_end + 3
+        for fix_line in fixes[1:]:
+            for index in range(cursor, len(lines)):
+                if lines[index] == fix_line:
+                    cursor = index + 1
+                    break
+            else:
+                self.fail(
+                    "a numbered fix entry is missing or out of order: "
+                    "{!r}\n{}".format(fix_line, result.output)
+                )
+        # ...then a blank line and the note.
+        self.assertEqual(
+            "",
+            lines[cursor],
+            "a blank line must separate the numbered fixes from the "
+            "note:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            cli.piguard.BYPASS_NOTE,
+            lines[cursor + 1],
+            "the note must follow the numbered fixes:\n{}".format(
+                result.output
+            ),
+        )
+        # The gate's own prepared fixes still follow the report
+        # (behaviour 10): the ruleset import steps and the final re-run
+        # line come after the note, not before it.
+        after_note = lines[cursor + 2:]
+        self.assertTrue(
+            any("Import a" in line for line in after_note),
+            "the prepared ruleset's import steps must still be printed "
+            "after the report:\n{}".format(result.output),
+        )
+        self.assertTrue(
+            any(line.lstrip().startswith("⛔") for line in after_note),
+            "the final re-run line must still be the last thing a "
+            "blocked run prints:\n{}".format(result.output),
+        )
+
+
+class TestGuardReportFixesAndNote(CliCase):
+    """The report prints the numbered fixes last, then the note
+    (behaviour 9 of plans/guard-finding-compact.md).
+
+    The seam is ``cli._echo_guard_report`` itself, driven with a real
+    ``Context`` whose ``echo`` is captured - the same capture the resolver
+    tests use - so the pins assert what the report prints, not what a
+    command happens to add around it. The blocks and the fix entries are
+    computed through the real ``render_finding_block`` / ``render_fixes``
+    (never re-derived); only the approved sample's exact words and the
+    tail shape are pinned verbatim.
+    """
+
+    def _shared_with_captured_echo(self):
+        """A ``Context`` pointing at the test project whose ``echo``
+        collects its lines; returns ``(shared, lines)``."""
+        shared = cli.Context(
+            dry_run=False, verbose=False, no_color=False, assume_yes=True
+        )
+        lines = []
+        patcher = mock.patch.object(
+            cli.typer, "echo", side_effect=lambda msg="": lines.append(str(msg))
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return shared, lines
+
+    def _warn_fail_findings(self):
+        """The warn/fail fixture: the real ``check_all`` over the empty
+        rules (five branch warns with the sample's UI-label remedies) plus
+        a token warn and a token fail with short sample-shaped remedies -
+        enough of both sections that the one fix sequence spans them."""
+        branch = cli.piguard.check_all([])
+        token = [
+            token_finding(
+                "target_access",
+                "warn",
+                danger="cannot see the target repository",
+                remedy="recreate the token with access to iar3-r8/anvil only",
+            ),
+            token_finding(
+                "classic_token",
+                "fail",
+                danger="a classic token reaches every repository",
+                remedy="recreate it as a fine-grained token, iar3-r8/anvil only",
+            ),
+        ]
+        return branch, token
+
+    def test_warn_fail_report_ends_with_the_numbered_fixes_then_the_note(self):
+        """Branch blocks, token blocks, a blank line, the numbered
+        "To fix" section (the real ``render_fixes`` of branch plus token),
+        a blank line, the note - and the note is the LAST line (behaviour
+        9's Then clause)."""
+        branch, token = self._warn_fail_findings()
+        shared, lines = self._shared_with_captured_echo()
+        cli._echo_guard_report(shared, branch, token)
+
+        fixes = cli.piguard.render_fixes(branch + token)
+        self.assertGreaterEqual(
+            len(fixes), 2, "the fixture must earn a numbered section"
+        )
+        # The section follows both sections' blocks: its header comes
+        # after the last token block's headline.
+        last_block = cli.piguard.render_finding_block(token[-1])
+        self.assertIn(
+            "To fix",
+            lines,
+            "the report must print the numbered 'To fix' section when "
+            "findings carry warn or fail:\n{}".format("\n".join(lines)),
+        )
+        self.assertIn(
+            last_block[0],
+            lines,
+            "the last token finding block is missing:\n{}".format(
+                "\n".join(lines)
+            ),
+        )
+        self.assertGreater(
+            lines.index("To fix"),
+            lines.index(last_block[0]),
+            "the 'To fix' section must come after every finding block:\n"
+            "{}".format("\n".join(lines)),
+        )
+        # Its entries appear in order, self-derived from the seam.
+        cursor = lines.index("To fix") + 1
+        for fix_line in fixes[1:]:
+            for index in range(cursor, len(lines)):
+                if lines[index] == fix_line:
+                    cursor = index + 1
+                    break
+            else:
+                self.fail(
+                    "a numbered fix entry is missing or out of order: "
+                    "{!r}\n{}".format(fix_line, "\n".join(lines))
+                )
+        # Then a blank line and the note, which is the last line.
+        self.assertEqual(
+            "",
+            lines[cursor],
+            "a blank line must separate the numbered fixes from the "
+            "note:\n{}".format("\n".join(lines)),
+        )
+        self.assertEqual(
+            cli.piguard.BYPASS_NOTE,
+            lines[-1],
+            "the note must be the report's last line:\n{}".format(
+                "\n".join(lines)
+            ),
+        )
+        self.assertEqual(
+            cursor + 1,
+            len(lines) - 1,
+            "nothing may follow the note:\n{}".format("\n".join(lines)),
+        )
+
+    def test_warn_fail_report_numbers_the_fixes_across_both_sections_in_one_sequence(
+        self,
+    ):
+        """The branch warn and the token warn/fail share one numbered
+        sequence: the branch entries keep the sample's exact words at
+        their combined numbers, and the token entry is numbered after
+        every branch entry - per-section numbering (a token entry
+        restarting at 1) would fail this pin (behaviour 9's 'numbered
+        across both sections in one sequence')."""
+        branch, token = self._warn_fail_findings()
+        shared, lines = self._shared_with_captured_echo()
+        cli._echo_guard_report(shared, branch, token)
+
+        # One exact entry from the branch section, at its combined number.
+        self.assertIn(
+            '1. non_fast_forward: turn on "Block force pushes" for main',
+            lines,
+            "the first branch fix must open the single sequence at 1 "
+            "with the sample's words:\n{}".format("\n".join(lines)),
+        )
+        self.assertIn(
+            '2. deletion: turn on "Restrict deletions" for main',
+            lines,
+            "the branch deletion fix must keep the sample's words at its "
+            "combined number:\n{}".format("\n".join(lines)),
+        )
+        # One exact entry from the token section, numbered AFTER the five
+        # branch warns - the proof the sequence does not restart.
+        self.assertIn(
+            "6. target_access: recreate the token with access to "
+            "iar3-r8/anvil only",
+            lines,
+            "the token fix must be numbered in the one sequence that "
+            "continues the branch numbers (not restarted at 1):\n{}".format(
+                "\n".join(lines)
+            ),
+        )
+
+    def test_all_passed_report_has_no_to_fix_section_but_still_ends_with_the_note(
+        self,
+    ):
+        """An all-passed run (no warn, no fail) prints the headers and
+        every block, NO "To fix" line, NO numbered entry - and STILL
+        ends with the blank line plus the note (behaviour 9's Error
+        clause)."""
+        branch = cli.piguard.check_all(five_rule_branch_rules())
+        token = [
+            token_finding("target_access", "passed"),
+            token_finding("administration", "passed"),
+            token_finding("classic_token", "passed"),
+            cli.piguard.workflows_withheld_finding()[0],
+            token_finding("named_repo", "passed"),
+        ]
+        shared, lines = self._shared_with_captured_echo()
+        cli._echo_guard_report(shared, branch, token)
+
+        self.assertIn("Branch rules", lines)
+        self.assertIn("Token scope", lines)
+        for finding in branch + token:
+            # The headline anchor is a prefix: the compact block's headline
+            # carries the em-dash brief after the label, and only the
+            # mark, prefix and label are stable (the suite's convention).
+            headline = _finding_headline(finding)
+            self.assertTrue(
+                any(line.startswith(headline) for line in lines),
+                "no block headline {!r} in the report:\n{}".format(
+                    headline, "\n".join(lines)
+                ),
+            )
+        self.assertNotIn("To fix", lines)
+        numbered = [line for line in lines if line[:1].isdigit()]
+        self.assertEqual(
+            [],
+            numbered,
+            "an all-passed run prints no numbered entry:\n{}".format(
+                "\n".join(lines)
+            ),
+        )
+        last_block = cli.piguard.render_finding_block(token[-1])
+        self.assertEqual(
+            last_block[-1],
+            lines[-3],
+            "the last token block must end the findings, followed by the "
+            "blank line and the note and nothing else:\n{}".format(
+                "\n".join(lines)
+            ),
+        )
+        self.assertEqual("", lines[-2])
+        self.assertEqual(cli.piguard.BYPASS_NOTE, lines[-1])
+
+    def test_empty_findings_print_the_headers_and_the_note_and_nothing_else(self):
+        """Empty findings lists: the two headers and the note, nothing
+        else - byte-for-byte (behaviour 9's Error clause)."""
+        shared, lines = self._shared_with_captured_echo()
+        cli._echo_guard_report(shared, [], [])
+
+        self.assertEqual(
+            ["Branch rules", "", "Token scope", "", cli.piguard.BYPASS_NOTE],
+            lines,
+            "empty findings must print the headers and the note and "
+            "nothing else:\n{}".format("\n".join(lines)),
+        )
+
+    def test_the_note_appears_exactly_once_in_the_report(self):
+        """The note is the single surviving caveat: with warn/fail
+        findings it appears EXACTLY ONCE in the whole output - the
+        per-finding caveat left in the earlier cycles (behaviour 9's
+        premise over behaviour 8)."""
+        branch, token = self._warn_fail_findings()
+        shared, lines = self._shared_with_captured_echo()
+        cli._echo_guard_report(shared, branch, token)
+
+        self.assertEqual(
+            1,
+            lines.count(cli.piguard.BYPASS_NOTE),
+            "the bypass note must appear exactly once:\n{}".format(
+                "\n".join(lines)
+            ),
+        )
 
 
 class TestDoctor(CliCase):
