@@ -1602,6 +1602,12 @@ def _echo_guard_report(
 
     The blocks come from ``piguard.render_finding_block`` - the behaviour-19
     blocks reused, never re-derived, so no line exceeds 80 characters.
+    The report ends with the numbered "To fix" section - the mitigations of
+    every warn and fail finding across BOTH sections in one sequence, from
+    ``piguard.render_fixes`` - printed only when such a finding exists, and
+    then always with ``piguard.BYPASS_NOTE`` as the final line, so the
+    bypass caveat survives exactly once per report (behaviour 9 of
+    plans/guard-finding-compact.md).
     verify-guards, doctor's Guards section and the blocked setup-repo gate
     all print through this, so the report shape cannot drift between them
     (plans/setup-repo-guards.md behaviour 6).
@@ -1620,6 +1626,14 @@ def _echo_guard_report(
             shared.echo("")
         for line in piguard.render_finding_block(finding):
             shared.echo(line)
+
+    shared.echo("")
+    fixes = piguard.render_fixes(branch_findings + token_findings, width=80)
+    if fixes:
+        for line in fixes:
+            shared.echo(line)
+        shared.echo("")
+    shared.echo(piguard.BYPASS_NOTE)
 
 
 def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
