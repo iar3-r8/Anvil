@@ -86,7 +86,13 @@ def recipe_steps(owner: str, repo: str, url: str) -> List[str]:
     page: a fine-grained PAT cannot call the Checks API; tokens always
     include read-only access to all public repositories; and the token is
     kept on the host driver outside the container, so the agent cannot
-    read it. No step instructs pasting the token anywhere Anvil reads.
+    read it. The final step then tells the user where to supply the token
+    for the next run: store the token GitHub showed once as
+    ``GITHUB_TOKEN`` in the ``.env`` file (the file Anvil reads on the
+    next run) or pass it with ``--github-token`` — the token text itself
+    is copied by the user from GitHub's one-time display; Anvil never
+    receives it. No step instructs pasting the token anywhere Anvil
+    reads.
 
     The raw ``url`` is shown in its own step *after* the permission steps,
     not in the first: its query text contains the literal parameter names
@@ -121,4 +127,8 @@ def recipe_steps(owner: str, repo: str, url: str) -> List[str]:
         "Caveat: the token lives on the host driver outside the container, "
         "so the agent cannot read it; GitHub's UI shows it once and Anvil "
         "never takes it.",
+        "Store the token for the next run: copy it from GitHub's one-time "
+        "display into the .env file as GITHUB_TOKEN (the file Anvil reads "
+        "on the next run), or pass it with --github-token when you run the "
+        "command.",
     ]
