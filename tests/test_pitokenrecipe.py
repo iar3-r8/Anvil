@@ -96,6 +96,17 @@ class TokenRecipeTestCase(unittest.TestCase):
         )
         return token_recipe_error
 
+    def _get_recipe_steps(self):
+        """Fetch ``anvilkit.pi.pitokenrecipe.recipe_steps``, failing clearly if absent."""
+        pitokenrecipe = self._pitokenrecipe()
+        steps = getattr(pitokenrecipe, "recipe_steps", None)
+        self.assertTrue(
+            callable(steps),
+            "anvilkit.pi.pitokenrecipe.recipe_steps is not callable; "
+            "behaviour 14 has not been implemented yet",
+        )
+        return steps
+
     @staticmethod
     def _query(url):
         """The recipe URL's query, parsed to a ``{param: [values]}`` map."""
@@ -303,17 +314,6 @@ class RecipeStepsTests(TokenRecipeTestCase):
     not the full string of every step.
     """
 
-    def _get_recipe_steps(self):
-        """Fetch ``anvilkit.pi.pitokenrecipe.recipe_steps``, failing clearly if absent."""
-        pitokenrecipe = self._pitokenrecipe()
-        steps = getattr(pitokenrecipe, "recipe_steps", None)
-        self.assertTrue(
-            callable(steps),
-            "anvilkit.pi.pitokenrecipe.recipe_steps is not callable; "
-            "behaviour 14 has not been implemented yet",
-        )
-        return steps
-
     def _steps(self, owner="octodemo", repo="my-repo"):
         """The recipe steps for ``owner``/``repo``, with the matching recipe URL."""
         steps = self._get_recipe_steps()
@@ -460,3 +460,133 @@ class RecipeStepsTests(TokenRecipeTestCase):
             "recipe_steps is a pure display-text builder with no hidden "
             "state",
         )
+
+
+# The 12 steps recipe_steps returned before behaviour 1 of
+# plans/recipe-store-token.md. Pinned verbatim so the new final step can be
+# proven additive: nothing existing may be reordered, reworded or dropped.
+def _pre_store_steps(owner, repo, url):
+    return [
+        "Open the pre-filled creation page: use the recipe URL printed "
+        "with these steps; it opens GitHub's 'Generate new token' page "
+        "with the target and the four grants already filled in.",
+        "Under Resource owner, keep the resource owner set to {} "
+        "(the URL pre-fills it as target_name).".format(owner),
+        "Under Repository access, choose Only select repositories.",
+        "Under the Selected repositories dropdown, select {} "
+        "and nothing else.".format(repo),
+        "Under Repository permissions, set Contents to Read and write "
+        "(pre-filled by the URL).",
+        "Set Pull requests to Read and write (pre-filled).",
+        "Set Issues to Read and write (pre-filled).",
+        "Set Actions to Read only (pre-filled); the CI edit path stays "
+        "closed behind the workflows withholding.",
+        "The recipe URL, which pre-fills exactly the grants above and "
+        "nothing else — administration, workflows and metadata are "
+        "withheld and visible by absence in its query: {}".format(url),
+        "Caveat: a fine-grained PAT cannot call the Checks API, so CI is "
+        "read as Actions runs and jobs, not Check Runs.",
+        "Caveat: every fine-grained token keeps read-only access to all "
+        "public repositories on GitHub — only this token's reach beyond "
+        "public repos is scoped to {}.".format(repo),
+        "Caveat: the token lives on the host driver outside the container, "
+        "so the agent cannot read it; GitHub's UI shows it once and Anvil "
+        "never takes it.",
+    ]
+
+
+# Prefixes of real GitHub token values (classic PAT families and the
+# fine-grained PAT family). None may ever appear in a recipe step: the
+# token text is shown by GitHub's UI once and never passes through Anvil.
+_TOKEN_PREFIXES = ("ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_")
+
+
+class StoreTokenForNextRunTests(TokenRecipeTestCase):
+    """Behaviour 1 of plans/recipe-store-token.md: the recipe ends with a
+    final step telling the user where to store the token for the next run.
+
+    The next run reads ``GITHUB_TOKEN`` from ``.env`` or accepts
+    ``--github-token`` (anvilkit/cli.py, ``_resolve_github_token``); the
+    step must name ``.env``, the key ``GITHUB_TOKEN`` and the flag, keep
+    the existing design (Anvil never sees the token text), carry no token
+    material, and not reorder or drop any existing step. The exact wording
+    is not pinned - only these tokens.
+    """
+
+    def _steps_for(self, owner, repo):
+        steps = self._get_recipe_steps()
+        url = self._get_build_recipe_url()(owner, repo)
+        return steps(owner, repo, url)
+
+    def test_recipe_steps_last_step_names_dot_env_github_token_and_the_flag(self):
+        steps = self._steps_for("octodemo", "my-repo")
+        last = steps[-1]
+
+        for needle in (".env", "GITHUB_TOKEN", "--github-token"):
+            self.assertIn(
+                needle,
+                last,
+                "the final step must name {} (where the token goes for the "
+                "next run); got: {}".format(needle, last),
+            )
+
+    def test_recipe_steps_last_step_points_at_the_next_run(self):
+        steps = self._steps_for("octodemo", "my-repo")
+        last = steps[-1]
+
+        self.assertIn(
+            "next",
+            last.lower(),
+            "the final step must say the stored token is for the next "
+            "run; got: " + last,
+        )
+
+    def test_recipe_steps_carry_no_token_material(self):
+        steps = self._steps_for("octodemo", "my-repo")
+
+        for step in steps:
+            for prefix in _TOKEN_PREFIXES:
+                self.assertNotIn(
+                    prefix,
+                    step,
+                    "a recipe step must carry no token material; {!r} "
+                    "found in: {}".format(prefix, step),
+                )
+
+    def test_recipe_steps_append_the_store_step_without_reordering_or_dropping(self):
+        owner, repo = "octodemo", "my-repo"
+        url = self._get_build_recipe_url()(owner, repo)
+        steps = self._steps_for(owner, repo)
+
+        pre_store = _pre_store_steps(owner, repo, url)
+        self.assertEqual(
+            len(steps),
+            13,
+            "the recipe must keep its 12 existing steps and add the store "
+            "step for a total of 13; got {} steps: {!r}".format(
+                len(steps), steps
+            ),
+        )
+        self.assertEqual(
+            steps[:12],
+            pre_store,
+            "the 12 pre-existing steps must be unchanged, in their "
+            "original relative order, with the new step appended last",
+        )
+        self.assertEqual(
+            steps[-2],
+            pre_store[-1],
+            "the host-driver caveat must be the second-to-last step now",
+        )
+
+    def test_recipe_steps_store_step_holds_for_non_default_owner_and_repo(self):
+        steps = self._steps_for("another owner", "other-repo")
+        last = steps[-1]
+
+        for needle in (".env", "GITHUB_TOKEN", "--github-token"):
+            self.assertIn(
+                needle,
+                last,
+                "the final step must name {} for non-default owner/repo "
+                "too; got: {}".format(needle, last),
+            )
