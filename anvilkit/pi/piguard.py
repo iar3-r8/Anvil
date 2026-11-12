@@ -205,7 +205,9 @@ _WARN_REMEDIES = {
     "update": 'turn on "Restrict updates" for main',
     "file_path_restriction": (
         'turn on "Restrict file paths" for main, listing '
-        ".github/workflows/**"
+        ".github/workflows/**. If not shown - it is unavailable "
+        "on your plan - use a CODEOWNERS file and turn on "
+        "require_code_owner_review."
     ),
 }
 
