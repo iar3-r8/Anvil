@@ -636,6 +636,95 @@ class CheckFilePathsTests(unittest.TestCase):
                     "no passed file-path finding when the rule is absent",
                 )
 
+    def test_file_paths_warn_remedy_keeps_first_clause_turning_on_restrict_file_paths(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        remedy = _field(warn, "remedy") or ""
+        self.assertIn(
+            'turn on "Restrict file paths" for main',
+            remedy,
+            "the warn remedy must keep its first clause: the GitHub UI "
+            "label to turn on for main",
+        )
+        self.assertIn(
+            ".github/workflows/**",
+            remedy,
+            "the warn remedy must keep naming the paths to list",
+        )
+
+    def test_file_paths_warn_remedy_names_plan_availability_fallback(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        remedy = _field(warn, "remedy") or ""
+        self.assertIn(
+            "CODEOWNERS",
+            remedy,
+            "the warn remedy must name the CODEOWNERS file fallback for "
+            "the paths",
+        )
+        self.assertIn(
+            "require_code_owner_review",
+            remedy,
+            "the warn remedy must name require_code_owner_review turned "
+            "on for the branch as the fallback",
+        )
+        self.assertIn(
+            "plan",
+            remedy.lower(),
+            "the warn remedy must say the option is not shown when the "
+            "plan does not offer file-path restrictions",
+        )
+
+    def test_file_paths_warn_remedy_stays_plain_words_with_no_doc_path(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        self.assertNotIn(
+            "doc/external/",
+            _field(warn, "remedy") or "",
+            "the warn remedy must stay plain words - no doc path and no "
+            "invented UI step",
+        )
+
+    def test_file_paths_passed_finding_remedy_unchanged_when_rule_present(self):
+        findings = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                )
+            ]
+        )
+
+        finding = findings[0]
+        self.assertEqual(_field(finding, "status"), "passed")
+        self.assertEqual(
+            _field(finding, "remedy"),
+            "nothing to do - the listed paths are protected",
+            "the passed finding's remedy is untouched by the warn remedy "
+            "fallback",
+        )
+
+    def test_file_paths_warn_finding_danger_brief_and_labels_unchanged(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        self.assertEqual(_field(warn, "status"), "warn")
+        self.assertEqual(_field(warn, "check"), "file_paths")
+        self.assertEqual(_field(warn, "rule"), "file_path_restriction")
+        self.assertEqual(
+            _field(warn, "brief"),
+            "a push can change .github/workflows/**, what CI runs",
+            "the warn's brief is untouched by the remedy fallback",
+        )
+        self.assertEqual(
+            _field(warn, "danger"),
+            "a push can change .github/workflows/**, what CI runs",
+            "the warn's danger is untouched by the remedy fallback",
+        )
+
     def test_missing_or_non_dict_parameters_records_empty_list_and_never_raises(self):
         cases = (
             ("parameters key absent", file_path_rule("main-protected")),
