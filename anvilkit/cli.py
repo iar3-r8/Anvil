@@ -1602,6 +1602,12 @@ def _echo_guard_report(
 
     The blocks come from ``piguard.render_finding_block`` - the behaviour-19
     blocks reused, never re-derived, so no line exceeds 80 characters.
+    The report ends with the numbered "To fix" section - the mitigations of
+    every warn and fail finding across BOTH sections in one sequence, from
+    ``piguard.render_fixes`` - printed only when such a finding exists, and
+    then always with ``piguard.BYPASS_NOTE`` as the final line, so the
+    bypass caveat survives exactly once per report (behaviour 9 of
+    plans/guard-finding-compact.md).
     verify-guards, doctor's Guards section and the blocked setup-repo gate
     all print through this, so the report shape cannot drift between them
     (plans/setup-repo-guards.md behaviour 6).
@@ -1621,6 +1627,14 @@ def _echo_guard_report(
         for line in piguard.render_finding_block(finding):
             shared.echo(line)
 
+    shared.echo("")
+    fixes = piguard.render_fixes(branch_findings + token_findings, width=80)
+    if fixes:
+        for line in fixes:
+            shared.echo(line)
+        shared.echo("")
+    shared.echo(piguard.BYPASS_NOTE)
+
 
 def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
     """Prepare the importable ruleset a blocked gate reports on.
@@ -1631,7 +1645,8 @@ def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
     steps, so a junior sees exactly what to import next.
 
     An existing file is never overwritten: it is named as already
-    prepared and left untouched (``force`` is never passed true). A
+    prepared and left untouched (``force`` is never passed true), but
+    the import steps still follow, since printing is not writing. A
     ``RulesetError`` is reported, naming the path, and never raised -
     the run still ends blocked, never masked into success. This
     function raises no other exception type.
@@ -1652,6 +1667,8 @@ def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
             "the ruleset is already prepared at {} - import it as "
             "below".format(path)
         )
+        for line in piruleset.import_steps(None, path):
+            shared.echo("  - {}".format(line))
         return
     try:
         written = piruleset.write_ruleset(

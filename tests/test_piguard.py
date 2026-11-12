@@ -20,6 +20,7 @@ import json
 import socket
 import sys
 import tempfile
+import textwrap
 import unittest
 import urllib.error
 import urllib.parse
@@ -83,10 +84,14 @@ class CheckHistoryRewriteTests(unittest.TestCase):
                 "main-protected",
                 "finding must name the rule's ruleset_source",
             )
-            self.assertTrue(
+            self.assertIsInstance(
                 _field(finding, "remedy"),
-                "every finding carries a non-empty remedy",
+                str,
+                "remedy must be a string on a passed finding",
             )
+            # A passed rule has nothing to fix; its remedy may now be
+            # empty (behaviour 2 of plans/guard-finding-compact.md) -
+            # nothing prints it any more.
 
     def test_one_rule_absent_yields_passed_for_the_other_and_warn_for_the_missing(self):
         findings = piguard.check_history_rewrite(
@@ -109,9 +114,18 @@ class CheckHistoryRewriteTests(unittest.TestCase):
             _field(warn, "danger"),
             "warn finding must name the danger (history rewritten unrecoverably)",
         )
-        self.assertTrue(
-            "doc/external/github" in (_field(warn, "remedy") or ""),
-            "warn finding must name a fix, e.g. a doc path under doc/external/github/",
+        self.assertIn(
+            "Restrict deletions",
+            _field(warn, "remedy") or "",
+            "the deletion warn's remedy must name the GitHub UI label the "
+            "missing rule turns on - 'Restrict deletions' - per "
+            "doc/external/github/available-rules-for-rulesets.md",
+        )
+        self.assertNotIn(
+            "doc/external/",
+            _field(warn, "remedy") or "",
+            "the warn remedy must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md)",
         )
 
     def test_empty_rules_array_warns_on_both_rule_types_without_raising(self):
@@ -178,9 +192,10 @@ class CheckReviewGuardTests(unittest.TestCase):
             1,
             "finding must record the required approving review count",
         )
-        self.assertTrue(
+        self.assertIsInstance(
             _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
+            str,
+            "remedy must be a string on a passed finding",
         )
 
     def test_pull_request_absent_warns_naming_danger_and_remedy(self):
@@ -210,10 +225,19 @@ class CheckReviewGuardTests(unittest.TestCase):
                     _field(warn, "danger"),
                     "warn finding must name the danger (change lands unreviewed)",
                 )
-                self.assertTrue(
-                    "doc/external/github" in (_field(warn, "remedy") or ""),
-                    "warn finding must name a concrete fix, e.g. a doc path "
-                    "under doc/external/github/",
+                self.assertIn(
+                    "Require a pull request before merging",
+                    _field(warn, "remedy") or "",
+                    "the review warn's remedy must name the GitHub UI "
+                    "label the missing rule turns on - 'Require a pull "
+                    "request before merging' - per "
+                    "doc/external/github/available-rules-for-rulesets.md",
+                )
+                self.assertNotIn(
+                    "doc/external/",
+                    _field(warn, "remedy") or "",
+                    "the warn remedy must carry no doc path (behaviour 2 "
+                    "of plans/guard-finding-compact.md)",
                 )
                 self.assertEqual(
                     [
@@ -245,9 +269,10 @@ class CheckReviewGuardTests(unittest.TestCase):
             "zero approvals is a weaker guard than the name suggests; "
             "the count must be visible on the finding",
         )
-        self.assertTrue(
+        self.assertIsInstance(
             _field(passed[0], "remedy"),
-            "every finding carries a non-empty remedy",
+            str,
+            "remedy must be a string on a passed finding",
         )
 
 
@@ -277,9 +302,9 @@ class CheckUpdateTests(unittest.TestCase):
     ``parameters.update_allows_fetch_and_merge`` on the finding (a weak value
     passes but stays visible, the zero-approvals precedent); a rule absent
     yields a ``warn`` finding naming the danger (anyone with push access can
-    push straight to the branch, with no gate) and a remedy citing both saved
-    docs (doc/external/github/rest-api-endpoints-for-rules.md:134,
-    doc/external/github/available-rules-for-rulesets.md:32).
+    push straight to the branch, with no gate) and a remedy naming the
+    GitHub UI label the missing rule turns on - "Restrict updates" - per
+    doc/external/github/available-rules-for-rulesets.md.
     """
 
     def test_update_rule_present_yields_one_passed_finding_recording_parameter(self):
@@ -317,9 +342,10 @@ class CheckUpdateTests(unittest.TestCase):
             True,
             "finding must record parameters.update_allows_fetch_and_merge",
         )
-        self.assertTrue(
+        self.assertIsInstance(
             _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
+            str,
+            "remedy must be a string on a passed finding",
         )
 
     def test_update_absent_warns_naming_danger_and_both_saved_docs(self):
@@ -353,18 +379,19 @@ class CheckUpdateTests(unittest.TestCase):
                     "warn finding must name the danger: anyone with push "
                     "access can push straight to the branch, with no gate",
                 )
-                remedy = _field(warn, "remedy") or ""
                 self.assertIn(
-                    "doc/external/github/available-rules-for-rulesets.md",
-                    remedy,
-                    "the warn remedy must cite the saved rules doc, so a "
-                    "reviewer can check the claim",
+                    "Restrict updates",
+                    _field(warn, "remedy") or "",
+                    "the update warn's remedy must name the GitHub UI "
+                    "label the missing rule turns on - 'Restrict updates' "
+                    "- per doc/external/github/available-rules-for-"
+                    "rulesets.md",
                 )
-                self.assertIn(
-                    "doc/external/github/rest-api-endpoints-for-rules.md",
-                    remedy,
-                    "the warn remedy must cite the saved endpoint doc, so a "
-                    "reviewer can check the claim",
+                self.assertNotIn(
+                    "doc/external/",
+                    _field(warn, "remedy") or "",
+                    "the warn remedy must carry no doc path (behaviour 2 "
+                    "of plans/guard-finding-compact.md)",
                 )
                 self.assertEqual(
                     [
@@ -413,9 +440,10 @@ class CheckUpdateTests(unittest.TestCase):
                     "an unreadable parameters object must record None, not "
                     "raise or guess a value",
                 )
-                self.assertTrue(
+                self.assertIsInstance(
                     _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
+                    str,
+                    "remedy must be a string on a passed finding",
                 )
 
     def test_false_allows_fetch_and_merge_passes_but_records_false(self):
@@ -441,10 +469,6 @@ class CheckUpdateTests(unittest.TestCase):
             False,
             "a False value must stay visible on the finding - it means "
             "fetches and merges are the only allowed updates",
-        )
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
         )
 
     def test_source_is_unknown_when_ruleset_source_absent_or_blank(self):
@@ -506,9 +530,9 @@ class CheckFilePathsTests(unittest.TestCase):
     list passes but stays visible, the zero-approvals precedent); a rule
     absent yields a ``warn`` finding naming the danger (a push can change
     ``.github/workflows/**`` - the paths the rule restricts, e.g. what CI
-    runs - with no gate) and a remedy citing both saved docs
-    (doc/external/github/available-rules-for-rulesets.md,
-    doc/external/github/rest-api-endpoints-for-rules.md:137).
+    runs - with no gate) and a remedy naming the GitHub UI label the
+    missing rule turns on - "Restrict file paths" - per
+    doc/external/github/available-rules-for-rulesets.md.
     """
 
     def test_file_path_rule_present_yields_one_passed_finding_recording_paths(self):
@@ -551,9 +575,10 @@ class CheckFilePathsTests(unittest.TestCase):
             "finding must record the exact restricted_file_paths list the "
             "rule carries - the value build_ruleset writes",
         )
-        self.assertTrue(
+        self.assertIsInstance(
             _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
+            str,
+            "remedy must be a string on a passed finding",
         )
 
     def test_file_path_absent_warns_naming_danger_and_both_saved_docs(self):
@@ -587,18 +612,19 @@ class CheckFilePathsTests(unittest.TestCase):
                     "warn finding must name the danger: a push can change "
                     ".github/workflows/** - what CI runs - with no gate",
                 )
-                remedy = _field(warn, "remedy") or ""
                 self.assertIn(
-                    "doc/external/github/available-rules-for-rulesets.md",
-                    remedy,
-                    "the warn remedy must cite the saved rules doc, so a "
-                    "reviewer can check the claim",
+                    "Restrict file paths",
+                    _field(warn, "remedy") or "",
+                    "the file-path warn's remedy must name the GitHub UI "
+                    "label the missing rule turns on - 'Restrict file "
+                    "paths' - per doc/external/github/available-rules-"
+                    "for-rulesets.md",
                 )
-                self.assertIn(
-                    "doc/external/github/rest-api-endpoints-for-rules.md",
-                    remedy,
-                    "the warn remedy must cite the saved endpoint doc, so a "
-                    "reviewer can check the claim",
+                self.assertNotIn(
+                    "doc/external/",
+                    _field(warn, "remedy") or "",
+                    "the warn remedy must carry no doc path (behaviour 2 "
+                    "of plans/guard-finding-compact.md)",
                 )
                 self.assertEqual(
                     [
@@ -656,9 +682,10 @@ class CheckFilePathsTests(unittest.TestCase):
                     "list, not None - an empty restriction set is the "
                     "only honest value",
                 )
-                self.assertTrue(
+                self.assertIsInstance(
                     _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
+                    str,
+                    "remedy must be a string on a passed finding",
                 )
 
     def test_empty_restricted_file_paths_passes_but_records_empty_list(self):
@@ -680,10 +707,6 @@ class CheckFilePathsTests(unittest.TestCase):
             [],
             "an empty restriction list must stay visible on the finding - "
             "it means the rule restricts nothing",
-        )
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
         )
 
     def test_duplicated_file_path_rule_elements_first_wins(self):
@@ -752,19 +775,23 @@ class CheckFilePathsTests(unittest.TestCase):
 
 
 class RenderFindingTests(unittest.TestCase):
-    """Behaviour 3: a rendered finding states the bypass-visibility caveat.
+    """Behaviour 3 of plans/guard-finding-compact.md: render_finding is the one vocabulary.
 
-    GitHub returns ``bypass_actors`` only to users with write access to the
-    ruleset (doc/external/github/rest-api-endpoints-for-rules.md), so a
-    passed rule finding rendered on a read-only token must never claim the
-    branch is simply "protected": it must say the rule is present and that
-    the bypass list is not visible. An unseen ``bypass_actors`` entry is an
-    unmeasured hole.
+    ``render_finding(finding)`` takes one finding dict (the shape the check
+    functions return) and returns the human-readable line for it; no network
+    is involved. The line is ``{prefix}: {label} - {substance}``: the
+    existing ``ok:``/``warn:``/``fail:``/``skipped:`` prefix, the label
+    (the rule, or the check on a token finding), and the finding's own
+    short substance - its ``brief`` on a pass. Every word of the line comes
+    from the finding's own fields: the hard-coded bypass caveat is not a
+    finding field, so it leaves the per-finding line and returns once as
+    the module's trailing note (behaviour 8 of
+    plans/guard-finding-compact.md, doc/external/github/
+    rest-api-endpoints-for-rules.md).
 
-    ``render_finding(finding)`` is expected to take one finding dict (the
-    shape the check functions return) and return the human-readable line
-    for it; no network is involved. Skipped-finding rendering is deferred to
-    behaviour 4's tests, since the module emits no ``skipped`` status yet.
+    Re-pointed in the red for behaviour 3: the old pins asserted the
+    hard-coded caveat on every passed line and the ``fix:`` tail on the
+    warn line; the new pins assert the compact composition.
     """
 
     def _render_finding(self):
@@ -777,7 +804,7 @@ class RenderFindingTests(unittest.TestCase):
         )
         return renderer
 
-    def test_passed_history_rewrite_findings_state_rule_type_and_bypass_invisibility(self):
+    def test_passed_history_rewrite_findings_render_label_and_brief_without_caveat(self):
         render = self._render_finding()
         findings = piguard.check_history_rewrite(
             [
@@ -795,26 +822,34 @@ class RenderFindingTests(unittest.TestCase):
             with self.subTest(rule=_field(finding, "rule")):
                 line = render(finding)
                 self.assertIsInstance(line, str)
-                self.assertIn(
-                    _field(finding, "rule"),
-                    line,
-                    "the rendered line must name the rule's API type",
+                self.assertTrue(
+                    line.startswith(
+                        "ok: {}".format(_field(finding, "rule"))
+                    ),
+                    "the passed line must keep the 'ok:' prefix and its "
+                    "label: {!r}".format(line),
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "a passed finding must say the bypass list is not visible "
-                    "on a read-only token",
+                    _field(finding, "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "a passed finding on a read-only token must never claim "
-                    "the branch is simply 'protected' - an unseen "
-                    "bypass_actors entry is an unmeasured hole",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word; it returns "
+                    "once as the trailing note: {!r}".format(line),
                 )
 
-    def test_passed_review_finding_states_caveat_and_keeps_review_count_visible(self):
+    def test_passed_review_finding_renders_label_brief_and_count(self):
         render = self._render_finding()
         for count in (0, 2):
             with self.subTest(count=count):
@@ -827,25 +862,39 @@ class RenderFindingTests(unittest.TestCase):
                     "fixture sanity: pull_request active means one passed finding",
                 )
                 line = render(findings[0])
+                self.assertTrue(
+                    line.startswith("ok: pull_request"),
+                    "the passed line must keep its 'ok:' prefix and label: "
+                    "{!r}".format(line),
+                )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive on a passed review finding",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 self.assertRegex(
                     line,
                     r"\b{}\b".format(count),
                     "the recorded required-approving-review count of {} must "
                     "stay visible in the rendered line - a zero count must "
-                    "not be hidden by the caveat".format(count),
+                    "not be hidden".format(count),
                 )
 
-    def test_passed_update_finding_states_caveat_and_keeps_allows_fetch_and_merge_visible(self):
+    def test_passed_update_finding_renders_label_brief_and_value(self):
         render = self._render_finding()
         for value in (True, False):
             with self.subTest(value=value):
@@ -879,24 +928,30 @@ class RenderFindingTests(unittest.TestCase):
                     "the rendered line must name the update rule's API type",
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive on a passed update finding - "
-                    "bypass_actors is only returned to users with write "
-                    "access, so the line must never claim the branch is "
-                    "simply 'protected'",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 self.assertIn(
                     "True" if value else "False",
                     line,
                     "the recorded update_allows_fetch_and_merge value of {} "
                     "must stay visible in the rendered line - a weak value "
-                    "must not be hidden by the caveat".format(value),
+                    "must not be hidden".format(value),
                 )
 
     def test_passed_update_finding_with_unreadable_parameters_renders_without_claiming_a_value(self):
@@ -943,14 +998,23 @@ class RenderFindingTests(unittest.TestCase):
                     "API type",
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive when no value was returned",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 self.assertNotIn(
                     "True",
@@ -963,7 +1027,7 @@ class RenderFindingTests(unittest.TestCase):
                     "no value was returned, so the line must not claim False",
                 )
 
-    def test_passed_file_path_finding_states_caveat_and_keeps_restricted_paths_visible(self):
+    def test_passed_file_path_finding_renders_label_brief_and_paths(self):
         render = self._render_finding()
         for paths in (
             [".github/workflows/**"],
@@ -1002,17 +1066,23 @@ class RenderFindingTests(unittest.TestCase):
                     "the rendered line must name the rule's API type",
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive on a passed file-path finding - "
-                    "bypass_actors is only returned to users with write "
-                    "access, so the line must never claim the branch is "
-                    "simply 'protected'",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 for path in paths:
                     self.assertIn(
@@ -1052,21 +1122,28 @@ class RenderFindingTests(unittest.TestCase):
             "the rendered line must name the rule's API type",
         )
         self.assertIn(
-            "bypass",
-            line.lower(),
-            "the caveat must survive on a passed file-path finding",
+            _field(findings[0], "brief"),
+            line,
+            "the passed line must carry the finding's own brief - every "
+            "word from the finding's fields: {!r}".format(line),
+        )
+        self.assertLessEqual(
+            len(line),
+            160,
+            "the rendered line must be at most 160 characters, got {}: "
+            "{!r}".format(len(line), line),
         )
         self.assertNotIn(
-            "protected",
+            "bypass",
             line.lower(),
-            "an empty restriction list must render an explicit 'no restricted "
-            "paths recorded' rather than a bare 'protected'",
+            "the bypass caveat is not a finding field, so a per-finding "
+            "line carrying it invents a word: {!r}".format(line),
         )
         self.assertIn(
-            "no restricted paths recorded",
+            "no paths recorded",
             line,
-            "an empty restriction list must render the explicit phrase 'no "
-            "restricted paths recorded' (case-sensitive) - a weak value is "
+            "an empty restriction list must render the explicit phrase "
+            "'no paths recorded' (case-sensitive) - a weak value is "
             "recorded, not hidden (zero-approvals precedent)",
         )
 
@@ -1121,24 +1198,33 @@ class RenderFindingTests(unittest.TestCase):
                     "the rendered line must still name the rule's API type",
                 )
                 self.assertIn(
-                    "bypass",
-                    line.lower(),
-                    "the caveat must survive when no paths were returned",
+                    _field(findings[0], "brief"),
+                    line,
+                    "the passed line must carry the finding's own brief - "
+                    "every word from the finding's fields: {!r}".format(line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
                 )
                 self.assertNotIn(
-                    "protected",
+                    "bypass",
                     line.lower(),
-                    "no bare 'protected' claim on a read-only token",
+                    "the bypass caveat is not a finding field, so a per-"
+                    "finding line carrying it invents a word: "
+                    "{!r}".format(line),
                 )
                 self.assertIn(
-                    "no restricted paths recorded",
+                    "no paths recorded",
                     line,
                     "no paths were returned, so the line must read 'no "
-                    "restricted paths recorded' - it must not claim a path "
-                    "that was not returned",
+                    "paths recorded' - it must not claim a path that was "
+                    "not returned",
                 )
 
-    def test_warn_finding_lines_name_danger_and_remedy(self):
+    def test_warn_finding_lines_render_label_and_brief_without_inline_fix(self):
         render = self._render_finding()
         for label, findings in (
             (
@@ -1163,17 +1249,168 @@ class RenderFindingTests(unittest.TestCase):
                 )
                 warn = warns[0]
                 line = render(warn)
-                self.assertIn(
-                    _field(warn, "danger"),
-                    line,
-                    "the rendered warn line must name the danger",
+                self.assertTrue(
+                    line.startswith(
+                        "warn: {}".format(_field(warn, "rule"))
+                    ),
+                    "the rendered warn line must keep its 'warn:' prefix "
+                    "and its label: {!r}".format(line),
                 )
                 self.assertIn(
-                    "doc/external/github",
+                    _field(warn, "brief"),
                     line,
-                    "the rendered warn line must name the concrete fix, e.g. "
-                    "a doc path under doc/external/github/",
+                    "the rendered warn line must carry the finding's own "
+                    "brief - every word from the finding's fields: "
+                    "{!r}".format(line),
                 )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the rendered line must be at most 160 characters, "
+                    "got {}: {!r}".format(len(line), line),
+                )
+                self.assertNotIn(
+                    "fix:",
+                    line,
+                    "the remedy no longer rides inline on the per-finding "
+                    "line - the fixes move to the report's 'To fix' "
+                    "section (behaviour 7 of plans/guard-finding-compact."
+                    "md): {!r}".format(line),
+                )
+
+
+class RenderFindingCompositionTests(unittest.TestCase):
+    """Behaviour 3 of plans/guard-finding-compact.md: the one vocabulary.
+
+    For each of the twenty emittable findings - five branch rules at
+    passed and warn, the four ``skipped_findings`` checks and the five
+    token checks at their statuses - ``render_finding(finding)`` returns
+    a line that is ``{prefix}: {label} - {substance}``:
+
+    - the existing prefix convention: ``ok:`` for passed, ``warn:``,
+      ``fail:`` and ``skipped:``;
+    - the label: the finding's ``rule`` when it carries one, else its
+      ``check``;
+    - the substance: the finding's own short ``brief`` - the approved
+      sample report's clause after the em dash. Every word of the line
+      comes from the finding's own fields, so the hard-coded bypass
+      caveat (which is not a finding field) must not appear: it returns
+      once as the module's trailing note (behaviour 8,
+      doc/external/github/rest-api-endpoints-for-rules.md).
+
+    The line is at most 160 characters. A finding with an unknown status
+    still returns the ``unknown:`` fallthrough unchanged;
+    ``render_report`` is unchanged and still delegates (pinned in
+    ``RenderReportTests``).
+
+    The producer matrix is cycle 1's ``FindingBriefTests`` sweep, driven
+    as in production over recorded openers - no live network. The sweep
+    covers the twenty findings and their parameter variants; the same
+    four assertions hold for every one of them.
+    """
+
+    _PREFIXES = {
+        "passed": "ok",
+        "warn": "warn",
+        "fail": "fail",
+        "skipped": "skipped",
+    }
+
+    def _every_finding(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Cycle 1's producer matrix: every finding the producers can emit."""
+        matrix = FindingBriefTests(
+            "test_every_emittable_finding_carries_a_brief"
+        )
+        findings = matrix._every_brief_finding()
+        self.assertGreaterEqual(
+            len(findings),
+            20,
+            "fixture sanity: the sweep must cover the twenty emittable "
+            "findings, got {}".format(len(findings)),
+        )
+        return findings
+
+    def test_twenty_findings_render_prefix_label_brief_in_at_most_160_chars(self):
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                status = _field(finding, "status")
+                self.assertIn(
+                    status,
+                    self._PREFIXES,
+                    "fixture sanity: a producer emitted an unknown status "
+                    "{!r}".format(status),
+                )
+                prefix = self._PREFIXES[status]
+                rule = _field(finding, "rule")
+                label_ = rule if rule is not None else _field(finding, "check")
+
+                line = piguard.render_finding(finding)
+
+                self.assertIsInstance(line, str)
+                self.assertTrue(
+                    line,
+                    "render_finding must produce a non-empty line",
+                )
+                self.assertTrue(
+                    line.startswith("{}: {}".format(prefix, label_)),
+                    "the line must keep its {!r} prefix and its label "
+                    "{!r}: {!r}".format(prefix, label_, line),
+                )
+                self.assertLessEqual(
+                    len(line),
+                    160,
+                    "the line must be at most 160 characters, got {}: "
+                    "{!r}".format(len(line), line),
+                )
+                self.assertIn(
+                    _field(finding, "brief"),
+                    line,
+                    "the line must carry the finding's own brief - every "
+                    "word from the finding's fields: {!r}".format(line),
+                )
+
+    def test_no_finding_line_carries_the_bypass_caveat(self):
+        # The bypass caveat is not a finding field; a per-finding line
+        # carrying it would be inventing a word. It returns once as the
+        # module's trailing note (behaviour 8 of
+        # plans/guard-finding-compact.md), never on a finding's line.
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                line = piguard.render_finding(finding)
+                self.assertNotIn(
+                    "bypass",
+                    line.lower(),
+                    "the line must not carry the bypass caveat - it is "
+                    "not a finding field: {!r}".format(line),
+                )
+                self.assertNotIn(
+                    "bypass_actors",
+                    line,
+                    "the line must not name bypass_actors - it is not a "
+                    "finding field: {!r}".format(line),
+                )
+
+    def test_unknown_status_finding_renders_unknown_prefix_without_crashing(self):
+        # A status that is not passed, warn, skipped or fail still falls
+        # through to the ``unknown:`` line, unchanged (behaviour 3's
+        # error clause): the report must mark it, not crash on it.
+        finding = {
+            "status": "mystery",
+            "check": "history_rewrite",
+            "rule": "deletion",
+            "danger": "",
+            "source": None,
+            "remedy": "",
+        }
+
+        line = piguard.render_finding(finding)
+
+        self.assertIsInstance(line, str)
+        self.assertTrue(
+            line.startswith("unknown:"),
+            "the fallthrough for truly-unknown statuses must be "
+            "preserved: {!r}".format(line),
+        )
 
 
 class _FakeResponse:
@@ -1311,15 +1548,42 @@ class _SkippedAssertions:
         for finding in findings:
             with self.subTest(check=_field(finding, "check")):
                 carried = _field(finding, "reason") or _field(finding, "danger")
+                self.assertIsInstance(
+                    carried,
+                    str,
+                    "each skipped finding carries a reason string",
+                )
                 self.assertTrue(
                     carried,
                     "each skipped finding carries a non-empty reason",
                 )
-                self.assertIn(
-                    reason,
+                # Behaviour 2 of plans/guard-finding-compact.md: the
+                # reason the fetch failed is shortened at the source -
+                # a single sentence of at most 100 characters, no doc
+                # path, no "see:" clause - not the raw fetch error.
+                self.assertLessEqual(
+                    len(carried),
+                    100,
+                    "the skipped reason must be at most 100 characters, "
+                    "got {}: {!r}".format(len(carried), carried),
+                )
+                self.assertNotIn(
+                    ". ",
                     carried,
-                    "the reason the fetch failed must reach the finding, so "
-                    "the user sees why the check did not run",
+                    "the skipped reason must be a single sentence: "
+                    "{!r}".format(carried),
+                )
+                self.assertNotIn(
+                    "doc/external/",
+                    carried,
+                    "the skipped reason must carry no doc path: "
+                    "{!r}".format(carried),
+                )
+                self.assertNotIn(
+                    "see:",
+                    carried,
+                    "the skipped reason must carry no 'see:' clause: "
+                    "{!r}".format(carried),
                 )
                 self.assertTrue(
                     _field(finding, "remedy"),
@@ -1820,15 +2084,21 @@ class SkippedFindingsTests(unittest.TestCase, _SkippedAssertions):
         for finding in findings:
             with self.subTest(check=_field(finding, "check")):
                 line = piguard.render_finding(finding)
-                self.assertIn(
-                    "skipped",
-                    line.lower(),
-                    "the rendered skipped line must say the check was skipped",
+                self.assertTrue(
+                    line.startswith(
+                        "skipped: {}".format(_field(finding, "check"))
+                    ),
+                    "the rendered skipped line must keep its 'skipped: "
+                    "{check}' prefix and its label: {line!r}".format(
+                        check=_field(finding, "check"), line=line
+                    ),
                 )
                 self.assertIn(
-                    reason,
+                    _field(finding, "brief"),
                     line,
-                    "the rendered skipped line must carry the reason",
+                    "the rendered skipped line must carry the finding's "
+                    "own brief - every word from the finding's fields: "
+                    "{!r}".format(line),
                 )
                 self.assertNotIn(
                     "ok:",
@@ -2088,11 +2358,19 @@ class FindingInvariantsTests(unittest.TestCase):
                         type(remedy).__name__
                     ),
                 )
-                self.assertTrue(
-                    remedy,
-                    "a finding with an empty remedy is a programming error: "
-                    "it cannot name the concrete fix",
-                )
+                if status != "passed":
+                    # The module invariant (behaviour 5, kept by behaviour
+                    # 2 of plans/guard-finding-compact.md): every
+                    # warn/fail/skipped finding still names what to do.
+                    self.assertTrue(
+                        remedy,
+                        "a non-passing finding ({}) with an empty remedy "
+                        "is a programming error: it cannot name the "
+                        "concrete fix".format(status),
+                    )
+                # A passed finding's remedy may be empty now that nothing
+                # prints it (behaviour 2 of plans/guard-finding-
+                # compact.md).
                 if status != "passed":
                     danger = _field(finding, "danger")
                     self.assertIsInstance(
@@ -2114,7 +2392,7 @@ class FindingInvariantsTests(unittest.TestCase):
                     "render_finding must produce a non-empty line",
                 )
 
-    def test_non_passing_findings_name_a_doc_path_under_doc_external_github(self):
+    def test_non_passing_findings_remedy_is_short_and_carries_no_doc_path(self):
         checked = 0
         for label, finding in self._every_finding():
             status = _field(finding, "status")
@@ -2123,13 +2401,35 @@ class FindingInvariantsTests(unittest.TestCase):
             checked += 1
             with self.subTest(finding=label):
                 remedy = _field(finding, "remedy") or ""
-                self.assertIn(
-                    "doc/external/github/",
+                self.assertLessEqual(
+                    len(remedy),
+                    100,
+                    "the {} finding on rule {!r} remedy must be a single "
+                    "sentence of at most 100 characters, got {}: "
+                    "{!r}".format(status, _field(finding, "rule"), len(remedy), remedy),
+                )
+                self.assertNotIn(
+                    ". ",
                     remedy,
-                    "the {} finding on rule {!r} must name a doc path under "
-                    "doc/external/github/ in its remedy, so a reviewer can "
-                    "check the claim against the saved documentation".format(
-                        status, _field(finding, "rule")
+                    "the {} finding on rule {!r} remedy must be a single "
+                    "sentence: {!r}".format(status, _field(finding, "rule"), remedy),
+                )
+                self.assertNotIn(
+                    "doc/external/",
+                    remedy,
+                    "the {} finding on rule {!r} must carry no doc path in "
+                    "its remedy (behaviour 2 of "
+                    "plans/guard-finding-compact.md): {!r}".format(
+                        status, _field(finding, "rule"), remedy
+                    ),
+                )
+                self.assertNotIn(
+                    "see:",
+                    remedy,
+                    "the {} finding on rule {!r} must carry no 'see:' "
+                    "clause in its remedy (behaviour 2 of "
+                    "plans/guard-finding-compact.md): {!r}".format(
+                        status, _field(finding, "rule"), remedy
                     ),
                 )
         self.assertGreater(
@@ -3615,8 +3915,8 @@ class ProbeTargetAccessTests(unittest.TestCase):
       later probes' denials are interpretable as withholdings.
     - ``404``  -> one ``warn`` finding: the token cannot reach the target
       repo at all, so no other probe's denial can be read as a withholding.
-      The warn remedy must name a saved page under ``doc/external/github/``
-      (behaviour 10's invariant: a doc path in every non-passing remedy).
+      The warn remedy states the fix in short words, no doc path
+      (behaviour 2 of plans/guard-finding-compact.md).
     - ``401`` or any other status -> one ``skipped`` finding whose reason
       carries the status.
     - transport failure -> one ``skipped`` finding whose reason is non-empty.
@@ -3666,13 +3966,11 @@ class ProbeTargetAccessTests(unittest.TestCase):
             "a 200 means the target is reachable, so the later probes' "
             "denials are interpretable: the probe passes",
         )
+        # A passed probe has nothing to fix; its remedy may now be empty
+        # (behaviour 2 of plans/guard-finding-compact.md).
         self.assertIsInstance(_field(finding, "remedy"), str)
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
-        )
 
-    def test_recorded_404_yields_warn_naming_no_access_and_doc_path(self):
+    def test_recorded_404_yields_warn_naming_no_access_and_recreating_the_token(self):
         # The 404 is the louder, different finding: the token cannot reach
         # the target repo at all, so no other probe's denial can be read as
         # a withholding. It is an HTTPError played back through the opener,
@@ -3710,13 +4008,14 @@ class ProbeTargetAccessTests(unittest.TestCase):
             "the warn must name the danger: the token reaches no target, so "
             "the other probes' denials are unreadable",
         )
-        remedy = _field(finding, "remedy") or ""
+        # The approved sample's "To fix" entry for this finding, with the
+        # recorded target substituted for the sample's:
+        # "recreate the token with access to {target} only".
         self.assertIn(
-            "doc/external/github/",
-            remedy,
-            "the warn remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "recreate the token with access to owner/repo only",
+            _field(finding, "remedy") or "",
+            "the warn remedy must be the sample's short fix naming the "
+            "recorded target - no doc path",
         )
 
     def test_recorded_401_yields_skipped_with_status_in_reason(self):
@@ -3741,12 +4040,13 @@ class ProbeTargetAccessTests(unittest.TestCase):
             "a 401 on the target repo is not a scope answer the probe can "
             "interpret: it skips",
         )
-        reason = _field(finding, "reason") or _field(finding, "danger") or ""
-        self.assertIn(
-            "401",
-            reason,
-            "the skipped finding's reason must carry the status 401, so "
-            "the report shows why the probe did not run",
+        # The sample's skip-variant word for a 401, exactly: the short
+        # reason carries the status and nothing else - the URL is dropped.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "GitHub returned HTTP 401",
+            "the skipped finding's reason must be the sample's short 401 "
+            "reason, so the report shows why the probe did not run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -3871,16 +4171,13 @@ class ProbeTargetAccessTests(unittest.TestCase):
             "skipped",
             "no token means the probe skips - never a pass or a warn",
         )
-        reason = (
-            _field(finding, "reason")
-            or _field(finding, "danger")
-            or ""
-        )
-        self.assertTrue(
-            reason,
-            "the skipped finding must carry a non-empty reason stating "
-            "that a token-scope probe with no token establishes no fact "
-            "about any token",
+        # The sample's skip-variant word for a missing token, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "no token in .env",
+            "the skipped finding's reason must be the sample's short "
+            "no-token reason, so the report shows why the probe did not "
+            "run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -3955,10 +4252,13 @@ class ProbeTargetAccessTests(unittest.TestCase):
                     "every finding carries a non-empty check name",
                 )
                 self.assertIsInstance(_field(finding, "remedy"), str)
-                self.assertTrue(
-                    _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
-                )
+                if _field(finding, "status") != "passed":
+                    self.assertTrue(
+                        _field(finding, "remedy"),
+                        "a non-passing finding carries a non-empty remedy",
+                    )
+                # A passed probe has nothing to fix; its remedy may now be
+                # empty (behaviour 2 of plans/guard-finding-compact.md).
                 line = piguard.render_finding(finding)
                 self.assertIsInstance(line, str)
                 self.assertTrue(
@@ -3975,14 +4275,10 @@ class ProbeTargetAccessTests(unittest.TestCase):
                 )
                 if _field(finding, "status") == "warn":
                     self.assertIn(
-                        _field(finding, "danger"),
+                        _field(finding, "brief"),
                         line,
-                        "the rendered warn line must name the danger",
-                    )
-                    self.assertIn(
-                        _field(finding, "remedy"),
-                        line,
-                        "the rendered warn line must name the remedy",
+                        "the rendered warn line must carry the finding's "
+                        "brief - the danger words the probe records",
                     )
                 if _field(finding, "status") == "passed":
                     self.assertNotIn(
@@ -4148,11 +4444,9 @@ class ProbeAdministrationTests(unittest.TestCase):
             "a 403 means administration is withheld - the compliant "
             "answer: the probe passes",
         )
+        # A passed probe has nothing to fix; its remedy may now be empty
+        # (behaviour 2 of plans/guard-finding-compact.md).
         self.assertIsInstance(_field(finding, "remedy"), str)
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
-        )
 
     def test_recorded_200_yields_exactly_one_fail_finding_with_danger_and_remedy(self):
         # The first emittable fail in the module. A 200 means the token
@@ -4193,23 +4487,16 @@ class ProbeAdministrationTests(unittest.TestCase):
             "consequence - a fail that cannot say what the token can do "
             "is a programming error (behaviour 10)",
         )
-        self.assertIn(
-            "deleted",
+        # The sample's fail danger, exactly (behaviour 2 of
+        # plans/guard-finding-compact.md, approved sample):
+        # "the token can delete or reconfigure iar3-r8/anvil" - the
+        # GITHUB_TOKEN clause is dropped with the doc path.
+        self.assertEqual(
             danger,
-            "the fail danger must state that the repository can be "
-            "deleted or reconfigured",
-        )
-        self.assertIn(
-            "reconfigured",
-            danger,
-            "the fail danger must state that the repository can be "
-            "deleted or reconfigured",
-        )
-        self.assertIn(
-            "GITHUB_TOKEN",
-            danger,
-            "the fail danger must state that the default GITHUB_TOKEN can "
-            "be raised to write",
+            "the token can delete or reconfigure owner/repo",
+            "the fail danger must be the sample's short danger naming "
+            "the recorded target - the GITHUB_TOKEN clause is dropped "
+            "along with the doc path",
         )
         remedy = _field(finding, "remedy")
         self.assertIsInstance(remedy, str)
@@ -4218,12 +4505,19 @@ class ProbeAdministrationTests(unittest.TestCase):
             "the fail finding must carry a non-empty remedy - every "
             "finding must say how to fix the danger",
         )
+        # The sample's "To fix" entry for this finding, with the recorded
+        # target substituted for the sample's.
         self.assertIn(
-            "doc/external/github/",
+            "recreate the token without the Administration permission",
             remedy,
-            "the fail remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "the fail remedy must be the sample's short fix - no doc "
+            "path",
+        )
+        self.assertNotIn(
+            "doc/external/",
+            remedy,
+            "the fail remedy must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md)",
         )
 
     def test_recorded_404_yields_warn_naming_disambiguator_and_undocumented_deny(self):
@@ -4268,40 +4562,22 @@ class ProbeAdministrationTests(unittest.TestCase):
             "that the token holds Administration, only that the denial "
             "is unreadable",
         )
-        text = " ".join(
-            part
-            for part in (
-                _field(finding, "danger") or "",
-                _field(finding, "reason") or "",
-                _field(finding, "remedy") or "",
-            )
-            if part
-        )
-        self.assertTrue(
-            piguard.CHECK_TARGET_ACCESS in text
-            or "target access" in text,
-            "the 404 warn must name behaviour 2's target-access finding "
-            "as the disambiguator between 'administration withheld' and "
-            "'no access at all'",
-        )
+        # The approved sample's "To fix" entry for this 404 warn:
+        # "recreate the token with access to {target} only" - the
+        # disambiguation against target_access lives in the remedy's
+        # "only", not in the danger.
         self.assertIn(
-            "200",
-            text,
-            "the 404 warn must note that only 200 is documented for the "
-            "endpoint, so the denial code is undocumented",
-        )
-        self.assertIn(
-            "documented",
-            text,
-            "the 404 warn must state that the endpoint's denial code is "
-            "not documented",
-        )
-        self.assertIn(
-            "doc/external/github/",
+            "recreate the token with access to owner/repo only",
             _field(finding, "remedy") or "",
-            "the warn remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "the 404 warn's remedy must be the sample's short fix naming "
+            "the recorded target with 'only' - the disambiguation against "
+            "target_access",
+        )
+        self.assertNotIn(
+            "doc/external/",
+            _field(finding, "remedy") or "",
+            "the 404 warn's remedy must carry no doc path (behaviour 2 "
+            "of plans/guard-finding-compact.md)",
         )
 
     def test_recorded_401_yields_skipped_with_status_in_reason(self):
@@ -4326,12 +4602,12 @@ class ProbeAdministrationTests(unittest.TestCase):
             "a 401 on the permissions endpoint is not a scope answer the "
             "probe can interpret: it skips",
         )
-        reason = _field(finding, "reason") or _field(finding, "danger") or ""
-        self.assertIn(
-            "401",
-            reason,
-            "the skipped finding's reason must carry the status 401, so "
-            "the report shows why the probe did not run",
+        # The sample's skip-variant word for a 401, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "GitHub returned HTTP 401",
+            "the skipped finding's reason must be the sample's short 401 "
+            "reason, so the report shows why the probe did not run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -4455,16 +4731,13 @@ class ProbeAdministrationTests(unittest.TestCase):
             "no token means the probe skips - never a pass, a warn or a "
             "fail",
         )
-        reason = (
-            _field(finding, "reason")
-            or _field(finding, "danger")
-            or ""
-        )
-        self.assertTrue(
-            reason,
-            "the skipped finding must carry a non-empty reason stating "
-            "that a token-scope probe with no token establishes no fact "
-            "about any token",
+        # The sample's skip-variant word for a missing token, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "no token in .env",
+            "the skipped finding's reason must be the sample's short "
+            "no-token reason, so the report shows why the probe did not "
+            "run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -4543,10 +4816,13 @@ class ProbeAdministrationTests(unittest.TestCase):
                     "every finding carries a non-empty check name",
                 )
                 self.assertIsInstance(_field(finding, "remedy"), str)
-                self.assertTrue(
-                    _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
-                )
+                if _field(finding, "status") != "passed":
+                    self.assertTrue(
+                        _field(finding, "remedy"),
+                        "a non-passing finding carries a non-empty remedy",
+                    )
+                # A passed probe has nothing to fix; its remedy may now be
+                # empty (behaviour 2 of plans/guard-finding-compact.md).
                 line = piguard.render_finding(finding)
                 self.assertIsInstance(line, str)
                 self.assertTrue(
@@ -4563,14 +4839,10 @@ class ProbeAdministrationTests(unittest.TestCase):
                 )
                 if _field(finding, "status") == "warn":
                     self.assertIn(
-                        _field(finding, "danger"),
+                        _field(finding, "brief"),
                         line,
-                        "the rendered warn line must name the danger",
-                    )
-                    self.assertIn(
-                        _field(finding, "remedy"),
-                        line,
-                        "the rendered warn line must name the remedy",
+                        "the rendered warn line must carry the finding's "
+                        "brief - the danger words the probe records",
                     )
                 if _field(finding, "status") == "skipped":
                     reason = (
@@ -4813,12 +5085,19 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "the fail finding must carry a non-empty remedy - every "
             "finding must say how to fix the danger",
         )
+        # The sample's "To fix" entry for this finding, with the recorded
+        # target substituted for the sample's.
         self.assertIn(
-            "doc/external/github/",
+            "recreate it as a fine-grained token, owner/repo only",
             remedy,
-            "the fail remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "the fail remedy must be the sample's short fix - no doc "
+            "path",
+        )
+        self.assertNotIn(
+            "doc/external/",
+            remedy,
+            "the fail remedy must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md)",
         )
 
     def test_recorded_200_with_empty_scopes_header_yields_exactly_one_passed_finding(self):
@@ -4845,11 +5124,9 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "an empty X-OAuth-Scopes header carries no scopes: the "
             "probe passes",
         )
+        # A passed probe has nothing to fix; its remedy may now be empty
+        # (behaviour 2 of plans/guard-finding-compact.md).
         self.assertIsInstance(_field(finding, "remedy"), str)
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
-        )
 
     def test_recorded_200_with_scopes_header_absent_yields_exactly_one_passed_finding(self):
         probe = self._prober()
@@ -4870,11 +5147,9 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "a missing X-OAuth-Scopes header means no classic OAuth "
             "scope header was returned: the probe passes",
         )
+        # A passed probe has nothing to fix; its remedy may now be empty
+        # (behaviour 2 of plans/guard-finding-compact.md).
         self.assertIsInstance(_field(finding, "remedy"), str)
-        self.assertTrue(
-            _field(finding, "remedy"),
-            "every finding carries a non-empty remedy",
-        )
 
     def test_passed_finding_never_claims_the_token_is_fine_grained(self):
         # The docs do not license "this is a fine-grained token": GitHub
@@ -4905,6 +5180,7 @@ class ProbeClassicTokenTests(unittest.TestCase):
                 text = " ".join(
                     part
                     for part in (
+                        _field(finding, "brief") or "",
                         _field(finding, "danger") or "",
                         _field(finding, "reason") or "",
                         _field(finding, "remedy") or "",
@@ -4913,17 +5189,11 @@ class ProbeClassicTokenTests(unittest.TestCase):
                     if part
                 ).lower()
                 self.assertIn(
-                    "x-oauth-scopes",
+                    "no classic",
                     text,
-                    "the pass must name the header it observed (or did "
-                    "not), so the finding says what the response did not "
-                    "carry",
-                )
-                self.assertIn(
-                    "header",
-                    text,
-                    "the pass wording is about the header - 'no classic "
-                    "OAuth scope header was returned'",
+                    "the pass must state that no classic OAuth scopes "
+                    "were returned - a statement about what the response "
+                    "did not carry, not a classification of the token",
                 )
                 self.assertNotIn(
                     "fine-grained token",
@@ -5022,12 +5292,12 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "a 401 on GET /user is not a scope answer the probe can "
             "interpret: it skips",
         )
-        reason = _field(finding, "reason") or _field(finding, "danger") or ""
-        self.assertIn(
-            "401",
-            reason,
-            "the skipped finding's reason must carry the status 401, so "
-            "the report shows why the probe did not run",
+        # The sample's skip-variant word for a 401, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "GitHub returned HTTP 401",
+            "the skipped finding's reason must be the sample's short 401 "
+            "reason, so the report shows why the probe did not run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -5100,16 +5370,13 @@ class ProbeClassicTokenTests(unittest.TestCase):
             "skipped",
             "no token means the probe skips - never a pass or a fail",
         )
-        reason = (
-            _field(finding, "reason")
-            or _field(finding, "danger")
-            or ""
-        )
-        self.assertTrue(
-            reason,
-            "the skipped finding must carry a non-empty reason stating "
-            "that a token-scope probe with no token establishes no fact "
-            "about any token",
+        # The sample's skip-variant word for a missing token, exactly.
+        self.assertEqual(
+            _field(finding, "reason"),
+            "no token in .env",
+            "the skipped finding's reason must be the sample's short "
+            "no-token reason, so the report shows why the probe did not "
+            "run",
         )
         self.assertTrue(
             _field(finding, "remedy"),
@@ -5177,10 +5444,13 @@ class ProbeClassicTokenTests(unittest.TestCase):
                     "every finding carries a non-empty check name",
                 )
                 self.assertIsInstance(_field(finding, "remedy"), str)
-                self.assertTrue(
-                    _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
-                )
+                if _field(finding, "status") != "passed":
+                    self.assertTrue(
+                        _field(finding, "remedy"),
+                        "a non-passing finding carries a non-empty remedy",
+                    )
+                # A passed probe has nothing to fix; its remedy may now be
+                # empty (behaviour 2 of plans/guard-finding-compact.md).
                 line = piguard.render_finding(finding)
                 self.assertIsInstance(line, str)
                 self.assertTrue(
@@ -5472,11 +5742,12 @@ class WorkflowsWithheldFindingTests(unittest.TestCase):
             "withholding is a write, which the probes must not perform",
         )
 
-    def test_remedy_cites_a_saved_page_and_points_to_a_manual_check(self):
+    def test_remedy_points_to_the_manual_check_in_github_settings(self):
         # The probe cannot verify the withholding, so the remedy must tell a
-        # human how to verify it by hand: a saved page under
-        # doc/external/github/ (the workflows page or the fine-grained-PAT
-        # page, both cited in the plan) and a manual check.
+        # human how to verify it by hand - a manual check in GitHub settings
+        # where the Workflows permission is visible by absence. Behaviour 2
+        # words this as a single short sentence with no doc path (the saved
+        # page is no longer named; the remedy points at the manual check).
         produce = self._producer()
 
         findings = produce()
@@ -5499,20 +5770,25 @@ class WorkflowsWithheldFindingTests(unittest.TestCase):
             "cannot say what the user can do to verify the withholding is "
             "a programming error",
         )
-        self.assertTrue(
-            self._WORKFLOWS_DOC in remedy
-            or self._FINE_GRAINED_DOC in remedy,
-            "the remedy must name a saved page under doc/external/github/ "
-            "- the workflows endpoint page or the fine-grained-PAT page - "
-            "so a reviewer can check the claim against the saved "
-            "documentation",
+        self.assertIn(
+            "in GitHub settings",
+            remedy,
+            "the remedy must point at the manual check's place - the "
+            "GitHub settings, where the Workflows permission is visible "
+            "by absence",
+        )
+        self.assertIn(
+            "Workflows permission",
+            remedy,
+            "the remedy must name what the human checks for - the absence "
+            "of the Workflows permission - the substance of the withholding",
         )
         remedy_lower = remedy.lower()
         self.assertIn(
-            "manual",
+            "check the token",
             remedy_lower,
-            "the remedy must tell a human how to verify the withholding by "
-            "hand - the probe cannot do it",
+            "the remedy must tell a human to perform the check by hand - "
+            "the probe cannot do it",
         )
         self.assertTrue(
             "ui" in remedy_lower
@@ -5643,14 +5919,19 @@ class WorkflowsWithheldFindingTests(unittest.TestCase):
             "through to 'unknown:' - a shape mismatch would hide the "
             "unprovable-withholding case in the report",
         )
-        reason = _field(finding, "reason")
-        if reason:
-            self.assertIn(
-                reason,
-                line,
-                "the rendered skipped line must carry the reason, so the "
-                "report shows why the check did not run",
-            )
+        self.assertTrue(
+            line.startswith("skipped: {}".format(_field(finding, "check"))),
+            "the rendered skipped line must keep its 'skipped: "
+            "{check}' prefix and its label: {line!r}".format(
+                check=_field(finding, "check"), line=line
+            ),
+        )
+        self.assertIn(
+            _field(finding, "brief"),
+            line,
+            "the rendered skipped line must carry the finding's own brief "
+            "- every word from the finding's fields: {!r}".format(line),
+        )
 
 
 class ProbeNamedRepoTests(unittest.TestCase):
@@ -5796,11 +6077,12 @@ class ProbeNamedRepoTests(unittest.TestCase):
             "token's full repository list",
         )
         self.assertIn(
-            "doc/external/github/",
+            "cannot enumerate the full repository list",
             remedy,
-            "the passed remedy must name a saved page under "
-            "doc/external/github/, consistent with the other probes' "
-            "passed findings",
+            "the passed remedy must carry the scope-limit non-claim as a "
+            "single clause - the probe proves only that this one repo is "
+            "out of reach, never a full-list clearance (behaviour 2 "
+            "drops the doc path)",
         )
 
     def test_recorded_200_yields_exactly_one_warn_finding_reaching_more_than_the_target(self):
@@ -5850,11 +6132,17 @@ class ProbeNamedRepoTests(unittest.TestCase):
             "every finding carries a non-empty remedy",
         )
         self.assertIn(
-            "doc/external/github/",
+            "recreate the token",
             remedy,
-            "the warn remedy must name a saved page under "
-            "doc/external/github/, so a reviewer can check the claim "
-            "against the saved documentation",
+            "the warn remedy must tell the user the fix - recreate the "
+            "token - now worded as a short sentence, not a doc path "
+            "(behaviour 2)",
+        )
+        self.assertIn(
+            "target",
+            remedy,
+            "the warn remedy must name the target the token should be "
+            "scoped to only - the substance of the 200 finding",
         )
 
     def test_no_other_repo_supplied_yields_skipped_naming_the_flag_without_request(self):
@@ -6188,10 +6476,13 @@ class ProbeNamedRepoTests(unittest.TestCase):
                     "every finding carries a non-empty check name",
                 )
                 self.assertIsInstance(_field(finding, "remedy"), str)
-                self.assertTrue(
-                    _field(finding, "remedy"),
-                    "every finding carries a non-empty remedy",
-                )
+                if _field(finding, "status") != "passed":
+                    self.assertTrue(
+                        _field(finding, "remedy"),
+                        "a non-passing finding carries a non-empty remedy",
+                    )
+                # A passed probe has nothing to fix; its remedy may now be
+                # empty (behaviour 2 of plans/guard-finding-compact.md).
                 line = piguard.render_finding(finding)
                 self.assertIsInstance(line, str)
                 self.assertTrue(
@@ -6208,14 +6499,10 @@ class ProbeNamedRepoTests(unittest.TestCase):
                 )
                 if _field(finding, "status") == "warn":
                     self.assertIn(
-                        _field(finding, "danger"),
+                        _field(finding, "brief"),
                         line,
-                        "the rendered warn line must name the danger",
-                    )
-                    self.assertIn(
-                        _field(finding, "remedy"),
-                        line,
-                        "the rendered warn line must name the remedy",
+                        "the rendered warn line must carry the finding's "
+                        "brief - the danger words the probe records",
                     )
                 if _field(finding, "status") == "passed":
                     self.assertNotIn(
@@ -6967,9 +7254,14 @@ class RenderFindingFailBranchTests(unittest.TestCase):
     asserted here: behaviour 10's sweep owns it.
     """
 
-    def _assert_fail_line(
-        self, line: str, danger: str, remedy: str
-    ) -> None:
+    def _assert_fail_line(self, finding: Dict[str, Any], line: str) -> None:
+        # Behaviour 3 of plans/guard-finding-compact.md: the fail line is
+        # the one vocabulary - "fail: {label} - {brief}" - where the label
+        # is the finding's rule (or its check on a token finding) and the
+        # brief is the finding's own short substance. Every word of the
+        # line comes from the finding's own fields; the remedy no longer
+        # rides inline (it moves to the report's "To fix" section,
+        # behaviour 7), so the old "fix: {remedy}" tail is re-pointed here.
         self.assertIsInstance(line, str)
         self.assertTrue(
             line,
@@ -6982,34 +7274,33 @@ class RenderFindingFailBranchTests(unittest.TestCase):
             "fallthrough - that line would hide the first real failure "
             "the family can emit: {!r}".format(line),
         )
+        rule = _field(finding, "rule")
+        label = rule if rule is not None else _field(finding, "check")
         self.assertTrue(
-            line.startswith("fail:"),
-            "the fail line must be marked as a failure with a 'fail:' "
-            "prefix, consistent with the ok:/warn:/skipped: prefix "
-            "convention the other branches use: {!r}".format(line),
+            line.startswith("fail: {}".format(label)),
+            "the fail line must keep its 'fail:' prefix and its label "
+            "{!r}, consistent with the ok:/warn:/skipped: prefix "
+            "convention: {!r}".format(label, line),
         )
         self.assertIn(
-            danger,
+            _field(finding, "brief"),
             line,
-            "the rendered fail line must name the danger",
+            "the rendered fail line must carry the finding's own brief - "
+            "every word from the finding's fields: {!r}".format(line),
         )
-        self.assertIn(
-            "fix:",
-            line,
-            "the rendered fail line must carry the remedy in a 'fix:' "
-            "position, consistent with the warn branch: {!r}".format(line),
-        )
-        self.assertIn(
-            remedy,
-            line,
-            "the rendered fail line must name the remedy",
+        self.assertLessEqual(
+            len(line),
+            160,
+            "the rendered line must be at most 160 characters, got {}: "
+            "{!r}".format(len(line), line),
         )
 
-    def test_wellformed_fail_finding_renders_failure_line_naming_danger_and_remedy(self):
+    def test_wellformed_fail_finding_renders_failure_line_with_label_and_brief(self):
         finding = {
             "status": "fail",
             "check": "administration",
             "rule": None,
+            "brief": "the token can delete or reconfigure owner/repo",
             "danger": (
                 "the token holds Administration (read) on owner/repo: "
                 "the repository can be deleted or reconfigured, and the "
@@ -7026,7 +7317,7 @@ class RenderFindingFailBranchTests(unittest.TestCase):
 
         line = piguard.render_finding(finding)
 
-        self._assert_fail_line(line, finding["danger"], finding["remedy"])
+        self._assert_fail_line(finding, line)
 
     def test_probe_fail_findings_with_rule_none_do_not_render_rule_none(self):
         # The real fail findings behaviours 3 and 4 emit: both carry
@@ -7069,9 +7360,7 @@ class RenderFindingFailBranchTests(unittest.TestCase):
 
                 line = piguard.render_finding(finding)
 
-                self._assert_fail_line(
-                    line, _field(finding, "danger"), _field(finding, "remedy")
-                )
+                self._assert_fail_line(finding, line)
                 self.assertNotIn(
                     "rule None",
                     line,
@@ -7096,6 +7385,7 @@ class RenderFindingFailBranchTests(unittest.TestCase):
             "status": "fail",
             "check": "administration",
             "rule": None,
+            "brief": "the token can delete or reconfigure owner/repo",
             "danger": "the repository can be deleted",
             "remedy": "recreate the token without Administration",
         }
@@ -7114,16 +7404,22 @@ class RenderFindingFailBranchTests(unittest.TestCase):
                 "a fail finding must not carry a {!r} marker: "
                 "{!r}".format(prefix, line),
             )
-        self.assertIn("the repository can be deleted", line)
-        self.assertIn("recreate the token without Administration", line)
+        self.assertIn("the token can delete or reconfigure owner/repo", line)
 
-    def test_existing_branches_render_unchanged(self):
-        # Behaviour 9 adds a fail branch without rewriting the existing
-        # ones: a known passed, warn and skipped finding must render
-        # exactly as today.
+    def test_existing_branches_render_the_one_vocabulary(self):
+        # Behaviour 3 of plans/guard-finding-compact.md: every branch of
+        # render_finding renders the one vocabulary - "{prefix}: {label}
+        # - {the finding's own brief}" - built from the finding's own
+        # fields. Re-pointed from the old verbose pins: the passed line
+        # drops the hard-coded caveat (it returns once as the trailing
+        # note, behaviour 8), the warn line drops the inline "fix:" tail
+        # (the fixes move to the report's "To fix" section, behaviour 7),
+        # and the skipped line drops the "check could not run:" phrasing
+        # (the brief is the finding's own word for it).
         render = piguard.render_finding
 
-        # passed: the fixed caveat line, verbatim.
+        # passed: the rule's API type on the line, and the finding's own
+        # brief - the sample's clause - as the substance.
         passed = piguard.check_history_rewrite(
             [rule("non_fast_forward", "main-guard")]
         )[0]
@@ -7134,13 +7430,19 @@ class RenderFindingFailBranchTests(unittest.TestCase):
         )
         self.assertEqual(
             render(passed),
-            "ok: the non_fast_forward rule is present - but the bypass "
-            "list is not visible on a read-only token (bypass_actors is "
-            "only returned to users with write access to the ruleset)",
+            "ok: {} - {}".format(
+                _field(passed, "rule"), _field(passed, "brief")
+            ),
+        )
+        self.assertNotIn(
+            "bypass",
+            render(passed).lower(),
+            "the hard-coded caveat leaves the per-finding line; it is "
+            "not a finding field",
         )
 
-        # warn: the "warn: {rule} - {danger}; fix: {remedy}" format,
-        # built from the finding's own fields.
+        # warn: the "warn: {label} - {brief}" composition, built from the
+        # finding's own fields - no inline fix.
         warn = [
             f
             for f in piguard.check_history_rewrite(
@@ -7150,22 +7452,21 @@ class RenderFindingFailBranchTests(unittest.TestCase):
         ][0]
         self.assertEqual(
             render(warn),
-            "warn: {} - {}; fix: {}".format(
-                _field(warn, "rule"),
-                _field(warn, "danger"),
-                _field(warn, "remedy"),
+            "warn: {} - {}".format(
+                _field(warn, "rule"), _field(warn, "brief")
             ),
         )
 
-        # skipped: the "skipped: {check} check could not run: {reason}"
-        # format, verbatim.
+        # skipped: the "skipped: {check} - {brief}" composition - the
+        # brief is the finding's own word for why the check did not run.
         skipped = piguard.skipped_findings(
             "GitHub was unreachable: connection refused"
         )[0]
         self.assertEqual(
             render(skipped),
-            "skipped: history_rewrite check could not run: GitHub was "
-            "unreachable: connection refused",
+            "skipped: {} - {}".format(
+                _field(skipped, "check"), _field(skipped, "brief")
+            ),
         )
 
     def test_genuinely_unknown_status_still_falls_through_to_unknown_line(self):
@@ -7195,27 +7496,24 @@ class RenderFindingFailBranchTests(unittest.TestCase):
 
 
 class RenderFindingWarnTokenTests(unittest.TestCase):
-    """Behaviour 17: the warn branch names the check on token findings.
+    """Behaviour 17 plus behaviour 3 of plans/guard-finding-compact.md.
 
     The token-scope probes (behaviours 2, 3 and 6 of
     plans/verify-guards-token.md) emit ``warn`` findings carrying
-    ``rule=None`` and a ``check`` name. The ``warn`` branch of
-    ``render_finding`` formats ``rule`` directly, so today those lines
-    render as ``warn: None - ...`` - a literal ``None`` where the report
-    should name the check.
+    ``rule=None`` and a ``check`` name. A ``warn`` finding renders a line
+    that names what is being warned about - for a token finding
+    (``rule=None``) that is the ``check`` name, never a literal ``None``.
 
-    The contract under test: a ``warn`` finding renders a line that
-    names what is being warned about - for a token finding (``rule=None``)
-    that is the ``check`` name, never a literal ``None`` - in the same
-    shape the ``fail`` branch (behaviour 9) already uses:
-    ``warn: {check} - {danger}; fix: {remedy}``. The rule-based warn
-    lines (non-None ``rule``) render byte-for-byte as they do today, and
-    a pin below keeps it that way.
+    The one vocabulary (behaviour 3 of
+    plans/guard-finding-compact.md): the warn line is
+    ``warn: {label} - {brief}`` - the label the rule (non-None) or the
+    check (token findings), the substance the finding's own short
+    ``brief``. The old ``; fix: {remedy}`` tail is re-pointed: the fixes
+    move to the report's "To fix" section (behaviour 7), so the per-
+    finding line no longer carries the remedy.
     """
 
-    def _assert_token_warn_line(
-        self, line: str, check: str, danger: str, remedy: str
-    ) -> None:
+    def _assert_token_warn_line(self, finding: Dict[str, Any], line: str) -> None:
         self.assertIsInstance(line, str)
         self.assertTrue(
             line,
@@ -7235,26 +7533,21 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
             "rendering is the defect: {!r}".format(line),
         )
         self.assertTrue(
-            line.startswith("warn: {} - ".format(check)),
+            line.startswith("warn: {} - ".format(_field(finding, "check"))),
             "the warn line must name the check first, mirroring the "
             "fail branch's 'fail: {{check}} - ...' shape: {!r}".format(line),
         )
         self.assertIn(
-            danger,
+            _field(finding, "brief"),
             line,
-            "the rendered warn line must name the danger",
+            "the rendered warn line must carry the finding's own brief - "
+            "every word from the finding's fields: {!r}".format(line),
         )
-        self.assertIn(
-            "fix:",
-            line,
-            "the rendered warn line must carry the remedy in a 'fix:' "
-            "position, consistent with the rule-based warn shape: "
-            "{!r}".format(line),
-        )
-        self.assertIn(
-            remedy,
-            line,
-            "the rendered warn line must name the remedy",
+        self.assertLessEqual(
+            len(line),
+            160,
+            "the rendered line must be at most 160 characters, got {}: "
+            "{!r}".format(len(line), line),
         )
 
     def test_probe_warn_findings_with_rule_none_render_check_not_literal_none(self):
@@ -7316,12 +7609,7 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
 
                 line = piguard.render_finding(finding)
 
-                self._assert_token_warn_line(
-                    line,
-                    _field(finding, "check"),
-                    _field(finding, "danger"),
-                    _field(finding, "remedy"),
-                )
+                self._assert_token_warn_line(finding, line)
 
     def test_minimal_token_warn_finding_renders_check_not_literal_none(self):
         # Only the fields a token warn finding carries - no reason, no
@@ -7331,20 +7619,24 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
             "status": "warn",
             "check": "administration",
             "rule": None,
+            "brief": "cannot tell whether administration is withheld",
             "danger": "d",
             "remedy": "r",
         }
 
         line = piguard.render_finding(finding)
 
-        self._assert_token_warn_line(line, "administration", "d", "r")
+        self._assert_token_warn_line(finding, line)
 
-    def test_rule_based_warn_finding_renders_byte_for_byte_unchanged(self):
+    def test_rule_based_warn_finding_renders_the_one_vocabulary(self):
         # The rule-based warns (check_history_rewrite, check_review, ...)
-        # carry a non-None rule and must keep rendering exactly as
-        # "warn: {rule} - {danger}; fix: {remedy}": the fix for the
-        # token warn path must not touch this one. This assertion passes
-        # today and pins that boundary.
+        # carry a non-None rule and render the one vocabulary
+        # (behaviour 3 of plans/guard-finding-compact.md):
+        # "warn: {rule} - {brief}" - the label the rule, the substance the
+        # finding's own brief. Re-pointed from the old "warn: {rule} -
+        # {danger}; fix: {remedy}" pin: the fix moves to the report's
+        # "To fix" section (behaviour 7), so the per-finding line no
+        # longer carries the remedy.
         warn = [
             f
             for f in piguard.check_history_rewrite(
@@ -7364,10 +7656,9 @@ class RenderFindingWarnTokenTests(unittest.TestCase):
 
         self.assertEqual(
             piguard.render_finding(warn),
-            "warn: {} - {}; fix: {}".format(
+            "warn: {} - {}".format(
                 _field(warn, "rule"),
-                _field(warn, "danger"),
-                _field(warn, "remedy"),
+                _field(warn, "brief"),
             ),
         )
 
@@ -7382,13 +7673,24 @@ class RenderFindingBlockTests(unittest.TestCase):
       ``ok:``/``warn:``/``fail:``/``skipped:`` convention, then a label: the
       ``rule`` when the finding carries one, otherwise the ``check`` name,
       never a literal ``None``;
-    - detail lines carrying the finding's substance (the danger for
-      warn/fail, the reason for skipped, the caveat + recorded values for
-      passed) wrapped so every line is at most ``width`` characters, with the
-      substance surviving word-for-word across the wrap;
-    - a remedy line, indented and beginning ``fix:`` for warn/fail/skipped
-      and ``see:`` for passed (the pinned convention - both prefixes are
-      accepted, one carries the full remedy text wrapped at the same width).
+    - for passed, ONE line (behaviour 4 of
+      plans/guard-finding-compact.md): the marked headline carrying the
+      finding's brief after an em dash - no detail line, no ``see:``
+      line, no bypass caveat;
+    - for warn/fail, ONE line (behaviour 5 of
+      plans/guard-finding-compact.md): the marked headline carrying the
+      finding's brief - the danger words - after an em dash; a long brief
+      wraps within ``width`` with no elision, and there is no detail line
+      and no ``fix:`` line, which now lives in the report's "To fix"
+      section (behaviour 7);
+    - for skipped, a headline plus one ``how:`` line (behaviour 6 of
+      plans/guard-finding-compact.md): the marked headline carrying the
+      finding's brief after an em dash, followed by one indented
+      ``  how: {remedy}`` line saying how the check can be run - no
+      detail line (the old ``_block_substance`` detail drops), no
+      ``fix:`` line; a missing ``brief`` falls back to the ``reason``, a
+      missing ``remedy`` emits no ``how:`` line, and a long brief or
+      remedy wraps within ``width`` with no elision.
 
     The existing single-line ``render_finding`` is untouched; its
     byte-for-byte pins (behaviours 9/17) keep passing, and this class pins
@@ -7425,17 +7727,6 @@ class RenderFindingBlockTests(unittest.TestCase):
             )
         return block
 
-    def _remedy_lines(self, block, allowed=("fix:", "see:")):
-        """The block's remedy lines: indented, beginning one of ``allowed``.
-
-        The pinned convention: ``fix:`` for warn/fail/skipped, ``see:`` for
-        passed - the remedy text, wrapped at the same width, carried on a
-        line of that convention.
-        """
-        return [
-            line for line in block if line.lstrip().startswith(allowed)
-        ]
-
     @staticmethod
     def _compact(text):
         """The text with every whitespace character removed.
@@ -7446,19 +7737,395 @@ class RenderFindingBlockTests(unittest.TestCase):
         """
         return "".join(text.split())
 
-    def _assert_substance_survives(self, substance, block):
-        """The substance recovers from the block word-for-word, in order."""
+    def _passed_block(self, finding, width=80):
+        """Render a passed finding as a block and pin its one-line shape.
+
+        Behaviour 4 of plans/guard-finding-compact.md: a passed block is
+        exactly one line - the marked headline with the finding's own
+        brief after an em dash. No detail line, no ``see:`` line, no
+        bypass caveat: the remedy no longer prints per finding. The
+        shared shape pins live here so each passed test pins content,
+        not shape.
+        """
+        renderer = getattr(piguard, "render_finding_block", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.pi.piguard.render_finding_block is not callable; the "
+            "behaviour-19 block renderer has not been implemented yet",
+        )
+        block = renderer(finding, width=width)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        for line in block:
+            self.assertIsInstance(line, str)
+            self.assertLessEqual(
+                len(line),
+                width,
+                "a block line exceeds the requested width {!r}: {!r}".format(
+                    width, line
+                ),
+            )
+        self.assertEqual(
+            len(block),
+            1,
+            "a passed block is ONE line - the marked headline with the "
+            "brief after an em dash:\nblock: {!r}".format(block),
+        )
+        label = _field(finding, "rule") or _field(finding, "check")
+        expected = "✅ ok: {} — {}".format(label, _field(finding, "brief"))
+        self.assertEqual(
+            block[0],
+            expected,
+            "the passed line must be exactly the marked headline with the "
+            "em-dash brief: expected {!r}, got {!r}".format(expected, block[0]),
+        )
+        text = "\n".join(block)
+        self.assertNotIn(
+            "see:",
+            text,
+            "a passed block carries no 'see:' line - the remedy no longer "
+            "prints per finding:\nblock: {!r}".format(block),
+        )
+        self.assertNotIn(
+            "bypass",
+            text,
+            "a passed block carries no bypass caveat - it is printed once "
+            "as the trailing note:\nblock: {!r}".format(block),
+        )
+        return block
+
+    def _warn_fail_block(self, finding, width=80):
+        """Render a warn or fail finding as a block and pin its one-line shape.
+
+        Behaviour 5 of plans/guard-finding-compact.md: a warn or fail
+        block is the marked headline carrying the finding's own brief
+        after an em dash - ``"{mark} warn: {label} — {brief}"`` for a
+        warn, ``"{mark} fail: {label} — {brief}"`` for a fail - exactly
+        like the passed line (behaviour 4); the warn/fail brief just
+        happens to be the danger words (the cycle-1/2 pins established
+        brief == the danger clause). No detail line and no ``fix:`` line:
+        the remedy no longer prints per finding - it moves to the
+        report's "To fix" section (behaviour 7). A long brief wraps to
+        more lines, every one within ``width``, with no elision. The
+        shared shape pins live here so each warn/fail test pins content,
+        not shape.
+        """
+        renderer = getattr(piguard, "render_finding_block", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.pi.piguard.render_finding_block is not callable; the "
+            "behaviour-19 block renderer has not been implemented yet",
+        )
+        status = _field(finding, "status")
         self.assertIn(
-            self._compact(substance),
+            status,
+            ("warn", "fail"),
+            "this helper pins only warn and fail blocks, got status "
+            "{!r}".format(status),
+        )
+        block = renderer(finding, width=width)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        for line in block:
+            self.assertIsInstance(line, str)
+            self.assertLessEqual(
+                len(line),
+                width,
+                "a block line exceeds the requested width {!r}: {!r}".format(
+                    width, line
+                ),
+            )
+        prefix = "⚠️ warn" if status == "warn" else "❌ fail"
+        label = _field(finding, "rule") or _field(finding, "check")
+        headline = "{}: {} — {}".format(prefix, label, _field(finding, "brief"))
+        self.assertNotIn(
+            "fix:",
+            "\n".join(block),
+            "a warn/fail block carries no 'fix:' line - the remedy moves "
+            "to the report's 'To fix' section (behaviour 7 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
+        )
+        self.assertEqual(
             self._compact("\n".join(block)),
-            "the substance must survive the wrap word-for-word; missing: "
-            "{!r}\nblock: {!r}".format(substance, block),
+            self._compact(headline),
+            "the warn/fail block is the marked em-dash headline, wrapped - "
+            "nothing added (no detail line), nothing elided:\n"
+            "expected text: {!r}\nblock: {!r}".format(headline, block),
+        )
+        self.assertTrue(
+            block[0].startswith(
+                "{}: {}".format(prefix, label)
+            ),
+            "the block's first line must be the marked headline: "
+            "{!r}".format(block[0]),
+        )
+        return block
+
+    def _skipped_block(self, finding, width=80):
+        """Render a skipped finding as a block and pin its two-line shape.
+
+        Behaviour 6 of plans/guard-finding-compact.md: a skipped block is
+        the marked em-dash headline plus one indented ``how:`` line -
+        ``["{mark} skipped: {label} — {brief}", "  how: {remedy}"]`` -
+        exactly two lines, one if the remedy is missing. The headline
+        carries the finding's brief after an em dash, like the
+        passed/warn/fail lines (behaviours 4-5); the ``how:`` line says
+        how the check can be run - the user's "quickly tell how they can
+        be checked". A missing ``brief`` falls back to the ``reason``; a
+        missing ``remedy`` emits no ``how:`` line rather than an empty
+        one. There is no detail line (the old ``_block_substance``
+        detail drops) and no ``fix:`` line (the prefix word changes for
+        skipped only - ``how:`` is the fixed furniture, behaviour 12).
+        A long brief or remedy wraps within ``width`` with no elision.
+        The shared shape pins live here so each skipped test pins
+        content, not shape.
+        """
+        renderer = getattr(piguard, "render_finding_block", None)
+        self.assertTrue(
+            callable(renderer),
+            "anvilkit.pi.piguard.render_finding_block is not callable; the "
+            "behaviour-19 block renderer has not been implemented yet",
+        )
+        block = renderer(finding, width=width)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        for line in block:
+            self.assertIsInstance(line, str)
+            self.assertLessEqual(
+                len(line),
+                width,
+                "a block line exceeds the requested width {!r}: {!r}".format(
+                    width, line
+                ),
+            )
+        label = _field(finding, "rule") or _field(finding, "check")
+        brief = _field(finding, "brief")
+        headline_text = _field(finding, "reason")
+        if isinstance(brief, str) and brief:
+            headline_text = brief
+        headline = "⏭️ skipped: {} — {}".format(label, headline_text)
+        self.assertTrue(
+            block[0].startswith("⏭️ skipped: {}".format(label)),
+            "the block's first line must be the marked skipped headline: "
+            "{!r}".format(block[0]),
+        )
+        self.assertNotIn(
+            "fix:",
+            "\n".join(block),
+            "a skipped block carries no 'fix:' line - the remedy rides on "
+            "the indented 'how:' line instead (behaviour 6 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
+        )
+        expected = self._compact(headline)
+        remedy = _field(finding, "remedy")
+        if isinstance(remedy, str) and remedy:
+            expected += self._compact("  how: " + remedy)
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            expected,
+            "the skipped block is the em-dash headline plus the one "
+            "'how:' line - nothing added (no detail line), nothing "
+            "elided:\nexpected text: {!r}\nblock: {!r}".format(headline, block),
+        )
+        return block
+
+    # ------------------------------------------------------------------
+    # Behaviour 4 of plans/guard-finding-compact.md: a passed block is
+    # ONE line - "{mark} ok: {label} — {brief}".
+    # ------------------------------------------------------------------
+
+    def test_passed_branch_finding_block_is_one_em_dash_line(self):
+        # The real check_all producer: a non_fast_forward rule present in
+        # the rules array yields a passed branch finding (rule set). The
+        # block is exactly one line - the marked headline with the
+        # finding's own brief after an em dash.
+        finding = piguard.check_all([rule("non_fast_forward", "main-guard")])[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            "non_fast_forward", _field(finding, "rule"), "fixture sanity"
         )
 
-    def test_fail_finding_block_names_check_wraps_danger_and_carries_fix(self):
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            ["✅ ok: non_fast_forward — {}".format(_field(finding, "brief"))],
+            "a passed branch block is exactly the marked headline with "
+            "the em-dash brief:\nblock: {!r}".format(block),
+        )
+
+    def test_passed_pull_request_block_carries_recorded_count_in_the_line(self):
+        # The recorded-value pass: the required-approvals count lives in
+        # the finding's own brief, on the one line - sample words, from
+        # the real check_review producer.
+        finding = piguard.check_review(
+            [pull_request_rule("main-guard", 2)]
+        )[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            2,
+            _field(finding, "required_approving_review_count"),
+            "fixture sanity: the recorded count must be 2",
+        )
+
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: pull_request — review required "
+                "(2 required approvals)"
+            ],
+            "the passed pull_request block is one line carrying the "
+            "recorded count from the brief:\nblock: {!r}".format(block),
+        )
+
+    def test_passed_update_block_carries_recorded_value_in_the_line(self):
+        # The recorded-value pass: update_allows_fetch_and_merge=False
+        # lives in the finding's own brief, on the one line - from the
+        # real check_update producer.
+        finding = piguard.check_update(
+            [
+                update_rule(
+                    "main-guard", {"update_allows_fetch_and_merge": False}
+                )
+            ]
+        )[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            False,
+            _field(finding, "update_allows_fetch_and_merge"),
+            "fixture sanity: the recorded value must be False",
+        )
+
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: update — direct pushes restricted "
+                "(fetch and merge: False)"
+            ],
+            "the passed update block is one line carrying the recorded "
+            "value from the brief:\nblock: {!r}".format(block),
+        )
+
+    def test_passed_file_path_block_carries_recorded_path_in_the_line(self):
+        # The recorded-value pass: the restricted paths live in the
+        # finding's own brief, on the one line - from the real
+        # check_file_paths producer.
+        finding = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-guard",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                )
+            ]
+        )[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+        self.assertEqual(
+            [".github/workflows/**"],
+            _field(finding, "restricted_file_paths"),
+            "fixture sanity: the recorded path must be recorded",
+        )
+
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: file_path_restriction — listed paths "
+                "protected (.github/workflows/**)"
+            ],
+            "the passed file_path_restriction block is one line carrying "
+            "the recorded path from the brief:\nblock: {!r}".format(block),
+        )
+
+    def test_passed_file_path_block_wraps_long_brief_with_no_elision(self):
+        # The many-restricted-paths case: headline + brief exceeds 80, so
+        # the block wraps to more than one line - every line within
+        # width, with no elision (the wrapped text is the headline and
+        # nothing else), and line 0 is the marked headline.
+        long_paths = [
+            ".github/workflows/nightly-integration-suite.yml",
+            "infrastructure/terraform/modules/production-network/**",
+            "deployment/k8s/base/production-cluster-manifests/**",
+        ]
+        finding = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-guard",
+                    {"restricted_file_paths": long_paths},
+                )
+            ]
+        )[0]
+        brief = _field(finding, "brief")
+        headline = "✅ ok: file_path_restriction — {}".format(brief)
+        self.assertGreater(
+            len(headline),
+            80,
+            "fixture sanity: the headline plus the brief must exceed 80 "
+            "to force a wrap: {!r}".format(headline),
+        )
+
+        block = piguard.render_finding_block(finding, width=80)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        self.assertGreater(
+            len(block),
+            1,
+            "an over-width passed block must wrap to more than one "
+            "line:\nblock: {!r}".format(block),
+        )
+        for line in block:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped passed line exceeds width 80: {!r}".format(line),
+            )
+        self.assertTrue(
+            block[0].startswith("✅ ok: file_path_restriction"),
+            "line 0 must be the marked headline: {!r}".format(block[0]),
+        )
+        # No elision and no extra content: with every whitespace
+        # character removed, the block IS the one-line headline.
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            self._compact(headline),
+            "the wrapped passed block must carry the headline - brief "
+            "included - with nothing added and nothing elided:\n"
+            "expected text: {!r}\nblock: {!r}".format(headline, block),
+        )
+        for path in long_paths:
+            self.assertIn(
+                path,
+                "".join("".join(block).split()),
+                "a recorded path was elided by the wrap: {!r}".format(path),
+            )
+
+    # ------------------------------------------------------------------
+    # Behaviour 5 of plans/guard-finding-compact.md: a warn or fail block
+    # is ONE line - "{mark} warn|fail: {label} — {brief}"; the warn/fail
+    # brief is the danger words (the cycle-1/2 pins established brief ==
+    # the danger clause). No detail line, no ``fix:`` line - the remedy
+    # moves to the report's "To fix" section (behaviour 7).
+    # ------------------------------------------------------------------
+
+    def test_fail_finding_block_is_one_em_dash_line(self):
         # The real behaviour-3 finding: a 200 on the actions-permissions
         # endpoint is the first emittable fail, and it carries rule=None, so
-        # the headline must name the check, never the rule.
+        # the headline must name the check, never the rule. (Re-pointed
+        # from the detail + "fix:" pins: the block is the marked em-dash
+        # headline only - the brief, which is the danger words for a fail
+        # finding, after the em dash.)
         findings = piguard.probe_administration(
             "owner",
             "repo",
@@ -7476,48 +8143,45 @@ class RenderFindingBlockTests(unittest.TestCase):
             "fixture sanity: the administration fail carries rule=None",
         )
 
-        block = self._block(finding)
-        headline = block[0]
-        self.assertTrue(
-            headline.startswith("fail:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+        block = self._warn_fail_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "❌ fail: {} — {}".format(
+                    piguard.CHECK_ADMINISTRATION, _field(finding, "brief")
+                )
+            ],
+            "the fail block is exactly the marked em-dash headline - the "
+            "brief is the danger words for a fail finding:\n"
+            "block: {!r}".format(block),
         )
         self.assertIn(
             piguard.CHECK_ADMINISTRATION,
-            headline,
-            "the fail headline must name the check: {!r}".format(headline),
+            block[0],
+            "the fail headline must name the check: {!r}".format(block[0]),
         )
-        self.assertNotIn("None", headline)
-        # The substance survives the wrap word-for-word (whitespace is the
-        # only thing a wrap may change), so the whole danger and the whole
-        # remedy recover from the block.
-        self._assert_substance_survives(_field(finding, "danger"), block)
-        self._assert_substance_survives(_field(finding, "remedy"), block)
-        self.assertIn(
-            "doc/external/github/rest-api-endpoints-for-actions-permissions.md",
+        self.assertNotIn(
+            "None",
+            block[0],
+            "the fail headline must never print a literal 'None': "
+            "{!r}".format(block[0]),
+        )
+        self.assertNotIn(
+            "doc/external/",
             self._compact("\n".join(block)),
-            "the remedy's doc path must survive the wrap intact:\n"
-            "block: {!r}".format(block),
-        )
-        # Pinned convention: a warn/fail remedy rides on a ``fix:`` line.
-        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
-        self.assertGreaterEqual(
-            len(remedy_lines),
-            1,
-            "the block must carry an indented 'fix:' line with the "
-            "remedy:\nblock: {!r}".format(block),
-        )
-        self.assertIn(
-            "recreate the token",
-            remedy_lines[0],
-            "the fix line must carry the start of the remedy:\n"
-            "block: {!r}".format(block),
+            "the fail block must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
         )
 
-    def test_warn_finding_block_names_check_carries_danger_and_fix(self):
-        # The real behaviour-6 warn: a 200 on the named other repo means the
-        # token reaches more than the target - rule=None, so the headline
-        # keys on the check.
+    def test_warn_finding_block_is_one_em_dash_line(self):
+        # The real behaviour-6 warn: a 200 on the named other repo means
+        # the token reaches more than the target - rule=None, so the
+        # headline keys on the check. (Re-pointed from the detail +
+        # "fix:" pins: the block is the marked em-dash headline only -
+        # the brief, which is the danger words for a warn finding, after
+        # the em dash. This fixture's headline exceeds 80, so the block
+        # wraps - the substance is pinned word-for-word, not the wrap
+        # points.)
         findings = piguard.probe_named_repo(
             "someorg/other-repo",
             "ghp_blocktest",
@@ -7529,98 +8193,523 @@ class RenderFindingBlockTests(unittest.TestCase):
         finding = [
             f for f in findings if _field(f, "status") == "warn"
         ][0]
-
-        block = self._block(finding)
-        headline = block[0]
-        self.assertTrue(
-            headline.startswith("warn:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+        self.assertIsNone(
+            _field(finding, "rule"),
+            "fixture sanity: the named_repo warn carries rule=None",
         )
+
+        block = self._warn_fail_block(finding)
         self.assertIn(
             piguard.CHECK_NAMED_REPO,
-            headline,
-            "the warn headline must name the check: {!r}".format(headline),
+            block[0],
+            "the warn headline must name the check: {!r}".format(block[0]),
         )
-        self.assertNotIn("None", headline)
-        self._assert_substance_survives(_field(finding, "danger"), block)
-        self._assert_substance_survives(_field(finding, "remedy"), block)
-        self.assertIn(
-            "doc/external/github/fine-grained-personal-access-tokens.md",
-            self._compact("\n".join(block)),
-            "the remedy's doc path must survive the wrap intact:\n"
+        self.assertNotIn(
+            "None",
+            "".join(block),
+            "the warn block must never print a literal 'None': "
             "block: {!r}".format(block),
         )
-        # Pinned convention: a warn remedy rides on a ``fix:`` line.
-        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
-        self.assertGreaterEqual(
-            len(remedy_lines),
-            1,
-            "the block must carry an indented 'fix:' line with the "
-            "remedy:\nblock: {!r}".format(block),
+        self.assertIn(
+            self._compact(_field(finding, "brief")),
+            self._compact("\n".join(block)),
+            "the warn block must carry the finding's own brief (the "
+            "danger words) word-for-word:\nblock: {!r}".format(block),
+        )
+        self.assertNotIn(
+            "doc/external/",
+            self._compact("\n".join(block)),
+            "the warn block must carry no doc path (behaviour 2 of "
+            "plans/guard-finding-compact.md):\nblock: {!r}".format(block),
+        )
+
+    def test_warn_branch_finding_block_is_one_em_dash_line(self):
+        # The real check_all producer: a rules array with deletion active
+        # and non_fast_forward absent yields a warn branch finding (rule
+        # set) - the approved sample report's first line. The block is
+        # exactly one line - the marked headline with the finding's own
+        # brief (the danger words) after an em dash; no detail line, no
+        # "fix:" anywhere.
+        findings = piguard.check_all([rule("deletion", "main-guard")])
+        warn = [
+            f
+            for f in findings
+            if _field(f, "status") == "warn"
+            and _field(f, "rule") == "non_fast_forward"
+        ][0]
+        self.assertEqual(
+            "history can be rewritten or erased by a force push",
+            _field(warn, "brief"),
+            "fixture sanity: the recorded warn brief",
+        )
+
+        block = self._warn_fail_block(warn)
+        self.assertEqual(
+            block,
+            ["⚠️ warn: non_fast_forward — {}".format(_field(warn, "brief"))],
+            "a warn branch block is exactly the marked headline with the "
+            "em-dash brief:\nblock: {!r}".format(block),
+        )
+
+    def test_fail_token_finding_block_is_one_em_dash_line(self):
+        # The real token probe: a non-empty X-OAuth-Scopes header is the
+        # second emittable fail, and it carries rule=None, so the headline
+        # must name the check, never the rule.
+        findings = piguard.probe_classic_token(
+            "ghp_blocktest",
+            opener=_opener(
+                _FakeResponse(
+                    b'{"login": "owner"}',
+                    200,
+                    headers={"X-OAuth-Scopes": "repo, user"},
+                )
+            ),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "fail"
+        ][0]
+        self.assertIsNone(
+            _field(finding, "rule"),
+            "fixture sanity: the classic_token fail carries rule=None",
+        )
+
+        block = self._warn_fail_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "❌ fail: {} — {}".format(
+                    piguard.CHECK_CLASSIC_TOKEN, _field(finding, "brief")
+                )
+            ],
+            "the classic_token fail block is exactly the marked em-dash "
+            "headline:\nblock: {!r}".format(block),
         )
         self.assertIn(
-            "recreate the token",
-            remedy_lines[0],
-            "the fix line must carry the start of the remedy:\n"
+            piguard.CHECK_CLASSIC_TOKEN,
+            block[0],
+            "the fail headline must name the check: {!r}".format(block[0]),
+        )
+        self.assertNotIn(
+            "None",
+            block[0],
+            "the fail headline must never print a literal 'None': "
+            "{!r}".format(block[0]),
+        )
+
+    def test_warn_token_finding_block_names_check_and_never_prints_none(self):
+        # Behaviour 5's error clause: a token warn finding (rule=None)
+        # names its ``check`` - never a literal "None" - and is ONE line
+        # with the brief (the danger words) after an em dash. The
+        # recorded 404 is the warn case of the target-access probe.
+        findings = piguard.probe_target_access(
+            "owner",
+            "repo",
+            "ghp_blocktest",
+            opener=_opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo",
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "warn"
+        ][0]
+        self.assertIsNone(
+            _field(finding, "rule"),
+            "fixture sanity: a token warn finding carries rule=None",
+        )
+
+        block = self._warn_fail_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "⚠️ warn: {} — {}".format(
+                    piguard.CHECK_TARGET_ACCESS, _field(finding, "brief")
+                )
+            ],
+            "a token warn block is one line naming the check with the "
+            "brief after an em dash:\nblock: {!r}".format(block),
+        )
+        self.assertIn(
+            piguard.CHECK_TARGET_ACCESS,
+            block[0],
+            "the warn headline must name the check: {!r}".format(block[0]),
+        )
+        self.assertNotIn(
+            "None",
+            block[0],
+            "the warn headline must never print a literal 'None': "
+            "{!r}".format(block[0]),
+        )
+
+    def test_warn_finding_block_wraps_long_brief_with_no_elision(self):
+        # Behaviour 5's error clause: a warn finding whose brief is long
+        # enough for the headline to exceed 80 wraps to more than one
+        # line - every line within the width, with no elision (the
+        # wrapped text is the headline and nothing else), and line 0 is
+        # the marked headline. The fixture is a recorded 404 on a target
+        # repo whose name is long enough to push the brief past the
+        # width.
+        long_repo = "an-extremely-long-repository-name-for-the-wrap-case"
+        findings = piguard.probe_target_access(
+            "someorg",
+            long_repo,
+            "ghp_blocktest",
+            opener=_opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/someorg/" + long_repo,
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+            timeout=10.0,
+        )
+        finding = [
+            f for f in findings if _field(f, "status") == "warn"
+        ][0]
+        brief = _field(finding, "brief")
+        headline = "⚠️ warn: target_access — {}".format(brief)
+        self.assertGreater(
+            len(headline),
+            80,
+            "fixture sanity: the headline plus the brief must exceed 80 "
+            "to force a wrap: {!r}".format(headline),
+        )
+
+        block = piguard.render_finding_block(finding, width=80)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
+        )
+        self.assertGreater(
+            len(block),
+            1,
+            "an over-width warn block must wrap to more than one "
+            "line:\nblock: {!r}".format(block),
+        )
+        for line in block:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped warn line exceeds width 80: {!r}".format(line),
+            )
+        self.assertTrue(
+            block[0].startswith("⚠️ warn: target_access"),
+            "line 0 must be the marked headline: {!r}".format(block[0]),
+        )
+        # No elision and no extra content: with every whitespace
+        # character removed, the block IS the one-line headline.
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            self._compact(headline),
+            "the wrapped warn block must carry the headline - brief "
+            "included - with nothing added and nothing elided:\n"
+            "expected text: {!r}\nblock: {!r}".format(headline, block),
+        )
+        self.assertNotIn(
+            "fix:",
+            "\n".join(block),
+            "a wrapped warn block carries no 'fix:' line:\n"
             "block: {!r}".format(block),
         )
 
-    def test_skipped_finding_block_wraps_the_long_reason(self):
-        # The real behaviour-5 finding: the workflows-withheld reason is the
-        # longest substance in the module, so it is the ideal wrap fixture -
-        # at width 80 it cannot fit on one line.
+    # ------------------------------------------------------------------
+    # Behaviour 6 of plans/guard-finding-compact.md: a skipped block is
+    # a headline plus one how line -
+    # ["{mark} skipped: {label} — {brief}", "  how: {remedy}"].
+    # ------------------------------------------------------------------
+
+    def test_workflows_withheld_skipped_block_is_headline_plus_how_line(self):
+        # The constant workflows_withheld skip: the approved sample report's
+        # exact words - the em-dash brief on the headline, the remedy on
+        # the one indented "how:" line. (Re-pointed from the detail +
+        # "fix:" pins of the old block shape: the detail line drops, the
+        # "fix:" line becomes the "how:" line, the headline gains the
+        # em-dash brief.)
         finding = piguard.workflows_withheld_finding()[0]
         self.assertEqual(
             "skipped", _field(finding, "status"), "fixture sanity"
         )
+        self.assertEqual(
+            "workflows_withheld", _field(finding, "check"), "fixture sanity"
+        )
 
-        block = self._block(finding)
-        headline = block[0]
+        block = self._skipped_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "⏭️ skipped: workflows_withheld — no read-only call can prove this",
+                "  how: in GitHub settings, check the token has no Workflows permission",
+            ],
+            "the skipped workflows_withheld block is exactly the marked "
+            "em-dash headline plus the one indented 'how:' line with the "
+            "sample's exact words:\nblock: {!r}".format(block),
+        )
+
+    def test_skipped_block_is_headline_plus_one_how_line(self):
+        # The skipped_findings producer over the recorded 404 fetch
+        # reason: every skipped finding is the marked em-dash headline
+        # (the short brief after the em dash) plus one indented "how:"
+        # line carrying the "then re-run" remedy - no "fix:" anywhere,
+        # no detail line.
+        url = "https://api.github.com/repos/owner/repo/rules/branches/main"
+        rules, reason = piguard.fetch_branch_rules(
+            "owner",
+            "repo",
+            "main",
+            opener=_opener(
+                urllib.error.HTTPError(url, 404, "Not Found", None, None)
+            ),
+        )
+        self.assertIsNone(rules, "fixture sanity: the 404 records a reason")
         self.assertTrue(
-            headline.startswith("skipped:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+            reason, "fixture sanity: the fetch failure records a reason"
         )
-        self.assertIn(
-            piguard.CHECK_WORKFLOWS_WITHHELD,
-            headline,
-            "the skipped headline must name the check: {!r}".format(headline),
+        findings = piguard.skipped_findings(reason)
+        self.assertEqual(
+            4, len(findings), "fixture sanity: one skipped finding per check"
         )
-        # The reason is the longest substance in the module: it must recover
-        # word-for-word across the wrap, as must the remedy.
-        self._assert_substance_survives(_field(finding, "reason"), block)
-        self._assert_substance_survives(_field(finding, "remedy"), block)
-        self.assertIn(
-            "doc/external/github/rest-api-endpoints-for-workflows.md",
-            self._compact("\n".join(block)),
-            "the reason's doc path must survive the wrap intact:\n"
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                self.assertEqual(
+                    "skipped", _field(finding, "status"), "fixture sanity"
+                )
+                brief = _field(finding, "brief")
+                remedy = _field(finding, "remedy")
+                label = _field(finding, "check")
+                block = self._skipped_block(finding)
+                self.assertEqual(
+                    block,
+                    [
+                        "⏭️ skipped: {} — {}".format(label, brief),
+                        "  how: {}".format(remedy),
+                    ],
+                    "a skipped finding is exactly the marked em-dash "
+                    "headline plus one indented 'how:' line with the "
+                    "remedy:\nblock: {!r}".format(block),
+                )
+                self.assertNotIn(
+                    "fix:",
+                    "\n".join(block),
+                    "the skipped block carries no 'fix:' line:\n"
+                    "block: {!r}".format(block),
+                )
+                self.assertNotIn(
+                    "doc/external/",
+                    self._compact("\n".join(block)),
+                    "the skipped block must carry no doc path (behaviour "
+                    "2 of plans/guard-finding-compact.md):\n"
+                    "block: {!r}".format(block),
+                )
+
+    def test_skipped_no_origin_block_headline_carries_brief_not_long_reason(self):
+        # The no-origin skip: the long CLI-owned reason (pinned verbatim
+        # in tests/test_cli.py for the noun invariant) is never printed
+        # in the block - the headline carries the short brief "no GitHub
+        # origin remote", and the "how:" line carries the remedy.
+        reason = (
+            "owner/repo could not be resolved from the origin remote of "
+            "/tmp/target: the target has no origin, or its remote is not "
+            "a GitHub repository, and the identity is never guessed"
+        )
+        findings = piguard.skipped_findings(reason)
+        self.assertEqual(
+            4, len(findings), "fixture sanity: one skipped finding per check"
+        )
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                self.assertEqual(
+                    "no GitHub origin remote",
+                    _field(finding, "brief"),
+                    "fixture sanity: the no-origin skip brief is the "
+                    "sample's clause",
+                )
+                block = self._skipped_block(finding)
+                self.assertEqual(
+                    len(block),
+                    2,
+                    "the skipped no-origin block is the headline plus "
+                    "the one 'how:' line:\nblock: {!r}".format(block),
+                )
+                self.assertTrue(
+                    block[0].endswith(
+                        " — no GitHub origin remote"
+                    ),
+                    "the no-origin headline carries the brief after the "
+                    "em dash:\nblock: {!r}".format(block),
+                )
+                long_reason_in_block = self._compact(reason)
+                self.assertNotIn(
+                    long_reason_in_block,
+                    self._compact("\n".join(block)),
+                    "the long CLI-owned no-origin reason must not be "
+                    "printed in the block - the headline carries the "
+                    "brief:\nreason: {!r}\nblock: {!r}".format(reason, block),
+                )
+                self.assertEqual(
+                    block[1],
+                    "  how: run this in a clone whose origin is a GitHub repo",
+                    "the 'how:' line carries the no-origin remedy:\n"
+                    "block: {!r}".format(block),
+                )
+
+    def test_skipped_block_missing_brief_falls_back_to_reason(self):
+        # Behaviour 6's error clause: a skipped finding with no brief
+        # renders the reason after the em dash - no "None", no crash.
+        finding = {
+            "status": "skipped",
+            "check": "history_rewrite",
+            "rule": None,
+            "reason": "the branch rules could not be fetched",
+            "remedy": "re-run once the branch rules can be fetched",
+        }
+        self.assertNotIn("brief", finding, "fixture sanity: no brief key")
+
+        block = self._skipped_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "⏭️ skipped: history_rewrite — "
+                "the branch rules could not be fetched",
+                "  how: re-run once the branch rules can be fetched",
+            ],
+            "a skipped finding with no brief falls back to the reason "
+            "after the em dash - no 'None', no crash:\n"
             "block: {!r}".format(block),
+        )
+        self.assertNotIn(
+            "None",
+            "\n".join(block),
+            "the block must never print a literal 'None': "
+            "block: {!r}".format(block),
+        )
+
+    def test_skipped_block_missing_remedy_emits_no_how_line(self):
+        # Behaviour 6's error clause: a skipped finding with no remedy
+        # (or an empty one) is exactly ONE line - the em-dash headline -
+        # no "how:" line at all, let alone an empty one.
+        for remedy in (None, ""):
+            with self.subTest(remedy=remedy):
+                finding = {
+                    "status": "skipped",
+                    "check": "history_rewrite",
+                    "rule": None,
+                    "brief": "api.github.com was unreachable",
+                    "remedy": remedy,
+                }
+                block = self._skipped_block(finding)
+                self.assertEqual(
+                    block,
+                    [
+                        "⏭️ skipped: history_rewrite — "
+                        "api.github.com was unreachable"
+                    ],
+                    "a skipped finding with no remedy is exactly one "
+                    "line - the em-dash headline - no 'how:' line, no "
+                    "empty 'how:' line:\nblock: {!r}".format(block),
+                )
+                self.assertNotIn(
+                    "how:",
+                    "\n".join(block),
+                    "no 'how:' line of any kind when the remedy is "
+                    "missing:\nblock: {!r}".format(block),
+                )
+
+    def test_skipped_block_wraps_long_brief_or_remedy_with_no_elision(self):
+        # Behaviour 6's error clause: a skipped finding whose brief or
+        # remedy is long enough for the block to exceed 80 wraps every
+        # line within the width, with nothing elided - the block is the
+        # wrapped headline plus the wrapped "how:" line and nothing
+        # else, and line 0 is the marked headline.
+        long_brief = (
+            "the branch rules endpoint returned an answer that names a "
+            "situation the user has to read to understand"
+        )
+        long_remedy = (
+            "check the network access to api.github.com and the "
+            "repository plan that gates the branch rules, then re-run "
+            "this command once the fetch can succeed"
+        )
+        finding = {
+            "status": "skipped",
+            "check": "history_rewrite",
+            "rule": None,
+            "brief": long_brief,
+            "reason": long_brief,
+            "remedy": long_remedy,
+        }
+
+        block = piguard.render_finding_block(finding, width=80)
+        self.assertIsInstance(
+            block, list, "render_finding_block must return a list of lines"
         )
         self.assertGreater(
             len(block),
             2,
-            "the long reason must wrap to more than the headline and the "
-            "remedy line:\nblock: {!r}".format(block),
+            "a skipped block with a long brief and remedy must wrap to "
+            "more than two lines:\nblock: {!r}".format(block),
         )
-        # Pinned convention: a skipped remedy (how to un-skip) rides on a
-        # ``fix:`` line.
-        remedy_lines = self._remedy_lines(block, allowed=("fix:",))
-        self.assertGreaterEqual(
-            len(remedy_lines),
+        for line in block:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped skipped line exceeds width 80: {!r}".format(line),
+            )
+        self.assertTrue(
+            block[0].startswith("⏭️ skipped: history_rewrite"),
+            "line 0 must be the marked skipped headline: {!r}".format(block[0]),
+        )
+        # A long brief wraps the headline, so the 'how:' line is not
+        # pinned to a fixed index - it is the only 'how:' line, and it
+        # follows the wrapped headline directly (a long remedy can wrap
+        # after it, so it is not necessarily the last line).
+        how_lines = [
+            line for line in block[1:] if line.lstrip().startswith("how:")
+        ]
+        self.assertEqual(
             1,
-            "the block must carry an indented 'fix:' line saying how to "
-            "un-skip:\nblock: {!r}".format(block),
-        )
-        self.assertIn(
-            "manual check",
-            remedy_lines[0],
-            "the fix line must carry the start of the remedy:\n"
+            len(how_lines),
+            "the wrapped skipped block carries exactly one 'how:' line:\n"
             "block: {!r}".format(block),
         )
+        how_index = block.index(how_lines[0])
+        self.assertEqual(
+            self._compact("\n".join(block[:how_index])),
+            self._compact("⏭️ skipped: history_rewrite — {}".format(long_brief)),
+            "the lines before the 'how:' line are exactly the wrapped "
+            "headline - nothing else precedes it:\n"
+            "block: {!r}".format(block),
+        )
+        # No elision and no extra content: with every whitespace
+        # character removed, the block IS the headline plus the one
+        # "how:" line.
+        expected = self._compact(
+            "⏭️ skipped: history_rewrite — {}".format(long_brief)
+        ) + self._compact("  how: " + long_remedy)
+        self.assertEqual(
+            self._compact("\n".join(block)),
+            expected,
+            "the wrapped skipped block must carry the headline and the "
+            "'how:' line - brief and remedy included - with nothing "
+            "added and nothing elided:\nexpected text: {!r}\n"
+            "block: {!r}".format(expected, block),
+        )
 
-    def test_branch_rule_passed_block_keeps_caveat_and_recorded_count(self):
-        # A rule-based passed finding (rule set) keeps its substance: the
-        # rule name on the headline, the bypass-actors caveat, and the
-        # recorded approval count - all still present, wrapped.
+    def test_branch_rule_passed_block_carries_brief_on_the_headline(self):
+        # Behaviour 4 of plans/guard-finding-compact.md: a rule-based
+        # passed finding (rule set) is ONE line - the rule name on the
+        # marked headline, the recorded approval count inside the
+        # finding's own brief, after an em dash. The bypass caveat (a
+        # non-finding field) and the indented ``see:`` line both leave
+        # the block. (Re-pointed from the caveat + detail + see: pins:
+        # the substance now lives on line 0.)
         findings = piguard.check_review([pull_request_rule("main-guard", 1)])
         finding = findings[0]
         self.assertEqual(
@@ -7635,52 +8724,25 @@ class RenderFindingBlockTests(unittest.TestCase):
             "fixture sanity: the recorded count must be 1",
         )
 
-        block = self._block(finding)
-        headline = block[0]
-        self.assertTrue(
-            headline.startswith("ok:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
-        )
-        self.assertIn(
-            "pull_request",
-            headline,
-            "a rule-based passed headline must name the rule: {!r}".format(
-                headline
-            ),
-        )
-        self.assertNotIn("None", headline)
-        # The substance is the caveat (bypass_actors visible only to write
-        # access) plus the recorded count; a wrap may only change whitespace,
-        # so the check runs on the whitespace-free form: the caveat phrase
-        # and the "(1 required approvals)" parenthetical recover
-        # word-for-word without pinning the wrap points.
-        compact = self._compact("\n".join(block))
-        self.assertIn(
-            self._compact("bypass_actors is only returned"),
-            compact,
-            "the bypass-visibility caveat must survive the wrap word-for-word:"
-            "\nblock: {!r}".format(block),
-        )
-        self.assertIn(
-            "1requiredapprovals",
-            compact,
-            "the recorded approval count must survive the wrap intact:\n"
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: pull_request — review required "
+                "(1 required approvals)"
+            ],
+            "the passed block is one line: the marked headline with the "
+            "brief (recorded count included) after an em dash:\n"
             "block: {!r}".format(block),
         )
-        # Pinned convention: a passed finding's remedy (the doc path) rides
-        # on a ``see:`` line.
-        self.assertGreaterEqual(
-            len(self._remedy_lines(block, allowed=("see:",))),
-            1,
-            "a passed block must carry an indented 'see:' line with the "
-            "doc path:\nblock: {!r}".format(block),
-        )
 
-    def test_token_passed_block_never_prints_none_or_a_rule_claim(self):
-        # The "ok: the None rule is present" bug: a token passed finding
-        # (rule=None) must render a headline naming the check, must not
-        # contain the substring "None", and must not claim a "rule is
-        # present" - the passed-branch text is written for branch rules.
+    def test_token_passed_block_names_check_and_never_prints_none(self):
+        # Behaviour 4 of plans/guard-finding-compact.md: a token passed
+        # finding (rule=None) is ONE line naming its ``check`` - never a
+        # literal "None" - with the brief after an em dash. (Re-pointed
+        # from the headline + see: line pins: the block carries no
+        # ``see:`` line and no detail any more; the check name and the
+        # no-None invariant move onto the one line.)
         findings = piguard.probe_target_access(
             "owner",
             "repo",
@@ -7696,59 +8758,28 @@ class RenderFindingBlockTests(unittest.TestCase):
             "fixture sanity: a token passed finding carries rule=None",
         )
 
-        block = self._block(finding)
-        headline = block[0]
-        self.assertTrue(
-            headline.startswith("ok:"),
-            "the block headline must carry the status prefix: {!r}".format(headline),
+        block = self._passed_block(finding)
+        self.assertEqual(
+            block,
+            [
+                "✅ ok: {} — {}".format(
+                    piguard.CHECK_TARGET_ACCESS, _field(finding, "brief")
+                )
+            ],
+            "a token passed block is one line naming the check with the "
+            "brief after an em dash:\nblock: {!r}".format(block),
         )
-        self.assertIn(
-            piguard.CHECK_TARGET_ACCESS,
-            headline,
-            "a token passed headline must name the check: {!r}".format(headline),
-        )
-        self.assertNotIn(
-            "None",
-            "\n".join(block),
-            "a token passed block must never print a literal None:\n"
-            "block: {!r}".format(block),
-        )
-        self.assertNotIn(
-            "rule is present",
-            "\n".join(block),
-            "a token passed block must not claim a 'rule is present' - "
-            "that text is written for branch rules:\nblock: {!r}".format(block),
-        )
-        # Pinned convention: a passed finding's remedy (the doc path) rides
-        # on a ``see:`` line.
-        self.assertGreaterEqual(
-            len(self._remedy_lines(block, allowed=("see:",))),
-            1,
-            "the block must carry an indented 'see:' line with the "
-            "doc path:\nblock: {!r}".format(block),
-        )
-        # The passed substance is the caveat + the recorded fact that the
-        # target is reachable; a wrap may only change whitespace.
-        compact = self._compact("\n".join(block))
-        self.assertIn(
-            "reaches",
-            compact,
-            "the passed substance must still state that the target is "
-            "reachable:\nblock: {!r}".format(block),
-        )
-        self._assert_substance_survives(_field(finding, "remedy"), block)
 
     def test_passed_finding_block_does_not_repeat_the_see_line(self):
-        # Behaviour 19a: a passed finding carries its substance in the
-        # remedy field, so the block must not restate it twice - the
-        # detail lines must not repeat a 6-word-or-longer phrase from the
-        # see: line. The detail may be EMPTY (a headline plus remedy
-        # lines is a legal block), but the caveat substance must survive
-        # somewhere in the block, so the fix cannot delete the fact to
-        # dodge the duplication. warn/fail/skipped are out of scope: their
-        # remedy (a fix) is genuinely different from their danger.
+        # Behaviour 4 of plans/guard-finding-compact.md: a passed block
+        # is ONE line - the marked headline with the brief after an em
+        # dash. There is no ``see:`` line any more and no detail to
+        # restate one: the line carries the brief, and neither "see:"
+        # nor a bypass caveat appears anywhere in the block.
+        # (Re-pointed from the 6-word-phrase dedup pin over the old
+        # detail + see: lines.)
         def passed_finding_fixture():
-            # The same fixtures the two existing passed pins use.
+            # The same fixtures the other passed pins use.
             branch = piguard.check_review(
                 [pull_request_rule("main-guard", 1)]
             )[0]
@@ -7766,67 +8797,28 @@ class RenderFindingBlockTests(unittest.TestCase):
                 if _field(f, "status") == "passed"
             ][0]
             return [
-                ("branch_rule", branch, "bypass_actors"),
-                ("token", token, None),
+                ("branch_rule", branch, _field(branch, "brief")),
+                ("token", token, _field(token, "brief")),
             ]
 
-        for name, finding, caveat_phrase in passed_finding_fixture():
+        for name, finding, brief in passed_finding_fixture():
             self.assertEqual(
                 "passed", _field(finding, "status"), "fixture sanity ({})".format(name)
             )
-            block = self._block(finding, width=80)
-            # detail = every line after the headline that is not a remedy
-            # line; remedy_text = the remedy lines with the indented
-            # fix:/see: prefix stripped and whitespace compacted.
-            detail_lines = [
-                line
-                for line in block[1:]
-                if not line.lstrip().startswith(("fix:", "see:"))
-            ]
-            remedy_text = " ".join(
-                " ".join(line.lstrip()[4:].split())
-                for line in self._remedy_lines(block)
+            block = self._passed_block(finding, width=80)
+            text = "\n".join(block)
+            self.assertIn(
+                brief,
+                text,
+                "the one line must carry the finding's own brief: "
+                "expected {!r} in the block:\nblock: {!r}".format(brief, block),
             )
-            detail_compact = self._compact(" ".join(detail_lines)).lower()
-            words = remedy_text.split()
-            duplicated = [
-                " ".join(words[start:start + 6])
-                for start in range(len(words) - 5)
-                if self._compact(" ".join(words[start:start + 6])).lower()
-                in detail_compact
-            ]
-            self.assertEqual(
-                duplicated,
-                [],
-                "the {!r} block's detail lines restate the see: line "
-                "({} 6-word phrase(s) shared between them): {}\n"
-                "block: {!r}".format(name, len(duplicated), duplicated, block),
+            self.assertNotIn(
+                "see:",
+                text,
+                "a passed block has no 'see:' line any more:\n"
+                "block: {!r}".format(block),
             )
-            # The caveat substance must still appear somewhere in the
-            # block (detail or remedy), so de-duplicating cannot delete
-            # the fact.
-            block_compact = self._compact("\n".join(block))
-            if caveat_phrase is not None:
-                self.assertIn(
-                    self._compact(caveat_phrase),
-                    block_compact,
-                    "the {} caveat must survive somewhere in the "
-                    "block:\nblock: {!r}".format(name, block),
-                )
-            else:
-                self.assertIn(
-                    piguard.CHECK_TARGET_ACCESS,
-                    block_compact,
-                    "the token check name must survive somewhere in "
-                    "the block:\nblock: {!r}".format(block),
-                )
-                self.assertIn(
-                    "doc/external/github/fine-grained-personal-access-"
-                    "tokens.md",
-                    block_compact,
-                    "the remedy's doc path must survive somewhere in "
-                    "the block:\nblock: {!r}".format(block),
-                )
 
     def test_narrower_width_wraps_to_strictly_more_lines(self):
         # Width is a real parameter: the long skipped reason wraps to
@@ -7852,6 +8844,172 @@ class RenderFindingBlockTests(unittest.TestCase):
         # report is diffable across runs.
         finding = piguard.workflows_withheld_finding()[0]
         self.assertEqual(self._block(finding), self._block(finding))
+
+
+class FindingBlockHeadlineMarkTests(unittest.TestCase):
+    """The status mark on a finding block's headline.
+
+    Every guard finding block's headline gains a status mark prepended
+    with one space, so doctor's Guards section and the other report sites
+    read at a glance:
+
+    - ``passed``  -> ``✅ ok: {label} — {brief}``
+    - ``warn``    -> ``⚠️ warn: {label} — {brief}``
+    - ``fail``    -> ``❌ fail: {label} — {brief}``
+    - ``skipped`` -> ``⏭️ skipped: {label} — {brief}``
+    - anything else -> unchanged: ``unknown: {label}`` (no mark)
+
+    Since behaviours 4-6 of plans/guard-finding-compact.md, every marked
+    headline carries the finding's brief after an em dash (for a skipped
+    finding, a missing ``brief`` falls back to its ``reason``); the mark
+    is part of the wrapped headline (the wrap budget includes it), and the
+    passed/warn/fail blocks are one line while a skipped block is the
+    headline plus one indented ``how:`` line.
+    """
+
+    # The four marks, pinned as literal strings - the set is exactly these.
+    PASSED_MARK = "✅"
+    WARN_MARK = "⚠️"
+    FAIL_MARK = "❌"
+    SKIPPED_MARK = "⏭️"
+
+    @staticmethod
+    def _finding(status, label, detail="the guard detail", remedy="fix the guard"):
+        """One finding carrying ``status`` and a headline ``label`` (rule).
+
+        The finding also carries the short ``brief`` the one-vocabulary
+        line (behaviour 3 of plans/guard-finding-compact.md) renders as
+        its substance; the old renderer ignores the key, so adding it
+        leaves every existing pin unchanged.
+        """
+        return {
+            "status": status,
+            "check": "history_rewrite",
+            "rule": label,
+            "brief": detail,
+            "danger": detail,
+            "remedy": remedy,
+        }
+
+    def _first_line(self, finding, width=80):
+        block = piguard.render_finding_block(finding, width=width)
+        self.assertIsInstance(block, list)
+        self.assertGreaterEqual(len(block), 1)
+        return block[0]
+
+    def test_passed_headline_starts_with_check_mark(self):
+        # Behaviour 4 of plans/guard-finding-compact.md: the passed
+        # headline carries the finding's brief after an em dash - line 0
+        # is the whole block. (Re-pointed from the bare-mark + headline
+        # pin: the em-dash brief is part of the headline now.)
+        finding = self._finding("passed", "non_fast_forward")
+        self.assertEqual(
+            self._first_line(finding),
+            "{} ok: non_fast_forward — the guard detail".format(
+                self.PASSED_MARK
+            ),
+            "a passed headline must be the mark, one space, the plain "
+            "headline and the em-dash brief: {!r}",
+        )
+
+    def test_warn_headline_starts_with_warning_mark(self):
+        # Behaviour 5 of plans/guard-finding-compact.md: the warn headline
+        # carries the finding's brief (the danger words) after an em dash
+        # - line 0 is the marked em-dash form. (Re-pointed from the
+        # un-briefed headline pin.)
+        finding = self._finding("warn", "deletion")
+        self.assertEqual(
+            self._first_line(finding),
+            "{} warn: deletion — the guard detail".format(self.WARN_MARK),
+            "a warn headline must be the mark, one space, the plain "
+            "headline and the em-dash brief: {!r}",
+        )
+
+    def test_fail_headline_starts_with_cross_mark(self):
+        # Behaviour 5 of plans/guard-finding-compact.md: the fail headline
+        # carries the finding's brief (the danger words) after an em dash
+        # - line 0 is the marked em-dash form. (Re-pointed from the
+        # un-briefed headline pin.)
+        finding = self._finding("fail", "pull_request")
+        self.assertEqual(
+            self._first_line(finding),
+            "{} fail: pull_request — the guard detail".format(self.FAIL_MARK),
+            "a fail headline must be the mark, one space, the plain "
+            "headline and the em-dash brief: {!r}",
+        )
+
+    def test_skipped_headline_starts_with_skipped_mark(self):
+        # Behaviour 6 of plans/guard-finding-compact.md: the skipped
+        # headline carries the finding's brief after an em dash, like
+        # the other statuses - line 0 is the marked em-dash form.
+        # (Re-pointed from the un-briefed headline pin.)
+        finding = self._finding("skipped", "workflows_withheld")
+        self.assertEqual(
+            self._first_line(finding),
+            "{} skipped: workflows_withheld — the guard detail".format(
+                self.SKIPPED_MARK
+            ),
+            "a skipped headline must be the mark, one space, the plain "
+            "headline and the em-dash brief: {!r}",
+        )
+
+    def test_unknown_status_headline_carries_no_mark(self):
+        finding = self._finding("mystery", "non_fast_forward")
+        line = self._first_line(finding)
+        self.assertEqual(
+            line,
+            "unknown: non_fast_forward",
+            "an unknown-status headline is unchanged - no mark: {!r}",
+        )
+        for mark in (
+            self.PASSED_MARK,
+            self.WARN_MARK,
+            self.FAIL_MARK,
+            self.SKIPPED_MARK,
+        ):
+            self.assertNotIn(mark, line)
+
+    def test_mark_participates_in_the_wrap_at_narrow_width(self):
+        # A long label at a narrow width: the mark is part of the wrapped
+        # headline, so every line of the block is still at most the width.
+        long_label = "a_very_long_rule_name_that_needs_wrapping"
+        finding = self._finding("warn", long_label)
+        block = piguard.render_finding_block(finding, width=40)
+        for line in block:
+            self.assertLessEqual(
+                len(line),
+                40,
+                "a block line exceeds the width 40: {!r}".format(line),
+            )
+        # The mark must be on a line (the wrapped headline carries it).
+        self.assertTrue(
+            any(self.WARN_MARK in line for line in block),
+            "the warn mark must appear on a line of the block:\n{!r}".format(
+                block
+            ),
+        )
+
+    def test_warn_block_is_one_marked_em_dash_line(self):
+        # Behaviour 5 of plans/guard-finding-compact.md: the warn block
+        # is ONE line - the marked em-dash headline with the brief. The
+        # old detail line and the indented "fix:" line this test used to
+        # pin byte-for-byte are gone: the remedy moves to the report's
+        # "To fix" section (behaviour 7). (Re-pointed and renamed from
+        # the old warn-layout pin; the mark assertion is kept.)
+        finding = self._finding("warn", "file_path_restriction")
+        block = piguard.render_finding_block(finding)
+        self.assertEqual(
+            block,
+            ["⚠️ warn: file_path_restriction — the guard detail"],
+            "the warn block is one line: the marked headline with the "
+            "brief after an em dash - no detail line, no 'fix:' "
+            "line:\nblock: {!r}".format(block),
+        )
+        self.assertTrue(
+            block[0].startswith(self.WARN_MARK),
+            "the warn headline must start with the warning mark: "
+            "{!r}".format(block[0]),
+        )
 
 
 class TokenFindingInvariantSweepTests(unittest.TestCase):
@@ -8166,11 +9324,18 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
             str,
             "remedy must be a string, not {!r}".format(type(remedy).__name__),
         )
-        self.assertTrue(
-            remedy,
-            "a token finding with an empty remedy is a programming error: "
-            "it cannot name the concrete fix",
-        )
+        if status != "passed":
+            # A non-passing token finding must still name the fix
+            # (behaviour 10, kept by behaviour 2 of
+            # plans/guard-finding-compact.md).
+            self.assertTrue(
+                remedy,
+                "a non-passing token finding ({}) with an empty remedy "
+                "is a programming error: it cannot name the concrete "
+                "fix".format(status),
+            )
+        # A passed token finding's remedy may be empty now that nothing
+        # prints it (behaviour 2 of plans/guard-finding-compact.md).
         if status != "passed":
             danger = _field(finding, "danger")
             self.assertIsInstance(
@@ -8184,13 +9349,39 @@ class TokenFindingInvariantSweepTests(unittest.TestCase):
                 "could do while the fact is unmeasured or violated; its "
                 "danger is empty".format(status),
             )
-            self.assertIn(
-                "doc/external/github/",
+            self.assertLessEqual(
+                len(remedy),
+                100,
+                "the {} token finding for check {!r} remedy must be a "
+                "single sentence of at most 100 characters, got {}: "
+                "{!r}".format(
+                    status, _field(finding, "check"), len(remedy), remedy
+                ),
+            )
+            self.assertNotIn(
+                ". ",
                 remedy,
-                "the {} token finding for check {!r} must name a doc path "
-                "under doc/external/github/ in its remedy, so a reviewer "
-                "can check the claim against the saved documentation".format(
-                    status, _field(finding, "check")
+                "the {} token finding for check {!r} remedy must be a "
+                "single sentence: {!r}".format(
+                    status, _field(finding, "check"), remedy
+                ),
+            )
+            self.assertNotIn(
+                "doc/external/",
+                remedy,
+                "the {} token finding for check {!r} must carry no doc "
+                "path in its remedy (behaviour 2 of "
+                "plans/guard-finding-compact.md): {!r}".format(
+                    status, _field(finding, "check"), remedy
+                ),
+            )
+            self.assertNotIn(
+                "see:",
+                remedy,
+                "the {} token finding for check {!r} must carry no "
+                "'see:' clause in its remedy (behaviour 2 of "
+                "plans/guard-finding-compact.md): {!r}".format(
+                    status, _field(finding, "check"), remedy
                 ),
             )
         line = piguard.render_finding(finding)
@@ -8503,6 +9694,1885 @@ class SummarizeTokenFindingsTests(unittest.TestCase):
             "a status that is not exactly 'fail' must not be read as a "
             "failure - only the literal fail status drives the exit "
             "status",
+        )
+
+
+class FindingBriefTests(unittest.TestCase):
+    """Behaviour 1 of plans/guard-finding-compact.md: brief on every finding.
+
+    Every emittable finding - the five branch rules at passed and warn,
+    the four ``skipped_findings`` checks and the five token checks at
+    their statuses - carries a non-empty ``brief`` string of at most 60
+    characters, plain words, no doc path, no API jargon beyond the rule
+    name: the one short clause the compact report's headline carries
+    after the em dash.
+
+    The approved sample report recorded with the plan is the wording
+    authority for the briefs. Exact-word pins: wherever the sample gives
+    a word for a producer path, the tests pin that exact string - the
+    five branch passed briefs, the five branch warn briefs,
+    "no paths recorded" on an empty or unreadable
+    ``restricted_file_paths``, and the token briefs the sample names
+    (the sample's target ``iar3-r8/anvil`` and other repo
+    ``someorg/other`` are the sample run's values, so those briefs pin
+    the sample's form with the recorded value substituted).
+    Shape-only pins: the statuses the sample does not name (a
+    target-access 404 warn, an administration 200 fail or 404 warn, a
+    classic-token fail) and the parentheticals at values the sample
+    does not show (counts other than 2, ``fetch and merge: True``,
+    multiple restricted paths) - there the tests pin non-empty, at most
+    60 characters, no doc path, and the recorded value in parentheses.
+
+    The producers are driven as in production: the branch findings
+    through ``check_all`` over recorded rules-array shapes, the skipped
+    findings through ``skipped_findings`` over the reasons
+    ``fetch_branch_rules`` actually records (and the resolve-failure
+    reason the CLI builds), and the token findings through the five
+    probes over recorded openers - no live network.
+    """
+
+    OWNER = "owner"
+    REPO = "repo"
+    TOKEN = "ghp_recordedtoken"
+    # The sample report's named other repo: its owner differs from the
+    # target's owner, as the sample's does (someorg vs iar3-r8).
+    OTHER_REPO = "someorg/other"
+
+    # The resolve-failure reason the CLI builds when the target has no
+    # GitHub origin (anvilkit/cli.py, _collect_guard_findings) - the
+    # input ``skipped_findings`` actually receives on that path.
+    _NO_ORIGIN_REASON = (
+        "owner/repo could not be resolved from the origin remote of "
+        "{}: the {} has no origin, or its remote is not a GitHub "
+        "repository, and the identity is never guessed"
+    )
+
+    def _assert_brief_shape(self, finding: Any, label: str) -> str:
+        """The shape every finding's brief must carry; returns the brief."""
+        brief = _field(finding, "brief")
+        self.assertIsInstance(
+            brief,
+            str,
+            "{}: the finding must carry a brief string".format(label),
+        )
+        self.assertTrue(
+            brief.strip(),
+            "{}: the brief must be non-empty".format(label),
+        )
+        self.assertLessEqual(
+            len(brief),
+            60,
+            "{}: the brief must be at most 60 characters, got {} "
+            "characters: {!r}".format(label, len(brief), brief),
+        )
+        self.assertNotIn(
+            "doc/external/",
+            brief,
+            "{}: the brief must carry no doc path: {!r}".format(label, brief),
+        )
+        return brief
+
+    def _fetch_reason(self, outcome: Any) -> str:
+        """The reason ``fetch_branch_rules`` records for a recorded failure."""
+        rules, reason = piguard.fetch_branch_rules(
+            self.OWNER, self.REPO, "main", opener=_opener(outcome)
+        )
+        self.assertIsNone(
+            rules,
+            "fixture sanity: a failed fetch must not be reported as rules",
+        )
+        self.assertIsInstance(reason, str, "fixture sanity")
+        self.assertTrue(reason, "fixture sanity: a failed fetch records a reason")
+        return reason
+
+    # ------------------------------------------------------------------
+    # The branch findings, produced by check_all
+    # ------------------------------------------------------------------
+
+    def test_check_all_all_five_rules_passed_briefs_match_sample_words(self):
+        findings = piguard.check_all(
+            [
+                rule("non_fast_forward", "main-protected"),
+                rule("deletion", "main-protected"),
+                pull_request_rule("main-protected", 2),
+                update_rule(
+                    "main-protected",
+                    {"update_allows_fetch_and_merge": False},
+                ),
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                ),
+            ]
+        )
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["passed"] * 5,
+            "fixture sanity: all five rules active yield five passed "
+            "findings",
+        )
+        expected = (
+            ("non_fast_forward", "force pushes blocked"),
+            ("deletion", "branch deletion blocked"),
+            ("pull_request", "review required (2 required approvals)"),
+            ("update", "direct pushes restricted (fetch and merge: False)"),
+            (
+                "file_path_restriction",
+                "listed paths protected (.github/workflows/**)",
+            ),
+        )
+        for finding, (rule_type, brief) in zip(findings, expected):
+            with self.subTest(rule=rule_type):
+                self.assertEqual(
+                    _field(finding, "rule"),
+                    rule_type,
+                    "fixture sanity: the finding names its rule",
+                )
+                self.assertEqual(
+                    _field(finding, "brief"),
+                    brief,
+                    "the passed {} brief must be the sample's "
+                    "clause".format(rule_type),
+                )
+
+    def test_check_all_empty_rules_warn_briefs_match_sample_words(self):
+        findings = piguard.check_all([])
+
+        self.assertEqual(
+            [_field(f, "status") for f in findings],
+            ["warn"] * 5,
+            "fixture sanity: an empty rules array warns on all five rules",
+        )
+        expected = (
+            (
+                "non_fast_forward",
+                "history can be rewritten or erased by a force push",
+            ),
+            ("deletion", "the branch can be deleted, with all its history"),
+            ("pull_request", "changes can land on main with no review"),
+            ("update", "anyone with push access can push straight to main"),
+            (
+                "file_path_restriction",
+                "a push can change .github/workflows/**, what CI runs",
+            ),
+        )
+        for finding, (rule_type, brief) in zip(findings, expected):
+            with self.subTest(rule=rule_type):
+                self.assertEqual(
+                    _field(finding, "rule"),
+                    rule_type,
+                    "fixture sanity: the finding names its rule",
+                )
+                self.assertEqual(
+                    _field(finding, "brief"),
+                    brief,
+                    "the warn {} brief must be the sample's "
+                    "clause".format(rule_type),
+                )
+
+    def test_review_passed_brief_ends_with_recorded_count_in_parentheses(self):
+        for count in (0, 1, 3):
+            with self.subTest(count=count):
+                findings = piguard.check_all(
+                    [pull_request_rule("main-protected", count)]
+                )
+                passed = [
+                    f
+                    for f in findings
+                    if _field(f, "rule") == "pull_request"
+                    and _field(f, "status") == "passed"
+                ]
+                self.assertEqual(
+                    len(passed),
+                    1,
+                    "fixture sanity: one passed review finding",
+                )
+                brief = self._assert_brief_shape(
+                    passed[0],
+                    "pull_request passed (count={})".format(count),
+                )
+                self.assertTrue(
+                    brief.endswith("({} required approvals)".format(count)),
+                    "the passed review brief must end with the recorded "
+                    "count in parentheses, got: {!r}".format(brief),
+                )
+
+    def test_update_passed_brief_ends_with_recorded_value_in_parentheses(self):
+        for value in (False, True):
+            with self.subTest(value=value):
+                findings = piguard.check_all(
+                    [
+                        update_rule(
+                            "main-protected",
+                            {"update_allows_fetch_and_merge": value},
+                        )
+                    ]
+                )
+                matching = [
+                    f
+                    for f in findings
+                    if _field(f, "rule") == "update"
+                    and _field(f, "status") == "passed"
+                ]
+                self.assertEqual(
+                    len(matching), 1, "fixture sanity: one passed update finding"
+                )
+                brief = self._assert_brief_shape(
+                    matching[0],
+                    "update passed (value={})".format(value),
+                )
+                self.assertTrue(
+                    brief.endswith("(fetch and merge: {})".format(value)),
+                    "the passed update brief must end with the recorded "
+                    "value in parentheses, got: {!r}".format(brief),
+                )
+
+    def test_file_paths_passed_brief_ends_with_recorded_paths_in_parentheses(self):
+        paths = [".github/workflows/**", "config.yaml"]
+        findings = piguard.check_all(
+            [
+                file_path_rule(
+                    "main-protected", {"restricted_file_paths": paths}
+                )
+            ]
+        )
+        matching = [
+            f
+            for f in findings
+            if _field(f, "rule") == "file_path_restriction"
+            and _field(f, "status") == "passed"
+        ]
+        self.assertEqual(
+            len(matching), 1, "fixture sanity: one passed file-path finding"
+        )
+        brief = self._assert_brief_shape(
+            matching[0],
+            "file_path_restriction passed ({} paths)".format(len(paths)),
+        )
+        self.assertTrue(
+            brief.endswith(")"),
+            "the passed file-path brief must end with the recorded paths "
+            "in parentheses, got: {!r}".format(brief),
+        )
+        for path in paths:
+            self.assertIn(
+                path,
+                brief,
+                "the passed file-path brief must carry the recorded path "
+                "{!r}, got: {!r}".format(path, brief),
+            )
+
+    def test_file_paths_passed_brief_says_no_paths_recorded_when_empty(self):
+        findings = piguard.check_all(
+            [
+                file_path_rule(
+                    "main-protected", {"restricted_file_paths": []}
+                )
+            ]
+        )
+        finding = [
+            f
+            for f in findings
+            if _field(f, "rule") == "file_path_restriction"
+        ][0]
+        self.assertEqual(
+            _field(finding, "restricted_file_paths"),
+            [],
+            "fixture sanity: an explicit empty list is recorded",
+        )
+        brief = self._assert_brief_shape(
+            finding,
+            "file_path_restriction passed (restricted_file_paths=[])",
+        )
+        self.assertIn(
+            "no paths recorded",
+            brief,
+            "an empty restricted_file_paths must render 'no paths "
+            "recorded', got: {!r}".format(brief),
+        )
+
+    def test_file_paths_passed_brief_says_no_paths_recorded_when_parameters_unreadable(self):
+        cases = (
+            ("parameters key absent", file_path_rule("main-protected")),
+            (
+                "parameters is not a dict",
+                dict(file_path_rule("main-protected"), parameters="not a dict"),
+            ),
+            (
+                "restricted_file_paths is not a list",
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": "config.yaml"},
+                ),
+            ),
+        )
+        for label, element in cases:
+            with self.subTest(parameters=label):
+                findings = piguard.check_all([element])
+                finding = [
+                    f
+                    for f in findings
+                    if _field(f, "rule") == "file_path_restriction"
+                ][0]
+                self.assertEqual(
+                    _field(finding, "restricted_file_paths"),
+                    [],
+                    "fixture sanity: unreadable parameters record an empty "
+                    "list",
+                )
+                brief = self._assert_brief_shape(
+                    finding,
+                    "file_path_restriction passed (unreadable: {})".format(
+                        label
+                    ),
+                )
+                self.assertIn(
+                    "no paths recorded",
+                    brief,
+                    "an unreadable restricted_file_paths must render 'no "
+                    "paths recorded', got: {!r}".format(brief),
+                )
+
+    # ------------------------------------------------------------------
+    # The skipped findings, produced by skipped_findings
+    # ------------------------------------------------------------------
+
+    def test_skipped_findings_no_origin_reason_brief_matches_sample(self):
+        reason = self._NO_ORIGIN_REASON.format("/tmp/target", "target")
+        findings = piguard.skipped_findings(reason)
+        self.assertEqual(
+            len(findings), 4, "fixture sanity: one skipped finding per check"
+        )
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                brief = self._assert_brief_shape(
+                    finding, "skipped ({})".format(_field(finding, "check"))
+                )
+                self.assertEqual(
+                    brief,
+                    "no GitHub origin remote",
+                    "the no-origin skip brief must be the sample's clause",
+                )
+
+    def test_skipped_findings_404_reason_brief_matches_sample(self):
+        reason = self._fetch_reason(
+            urllib.error.HTTPError(
+                "https://api.github.com/repos/owner/repo/rules/branches/main",
+                404,
+                "Not Found",
+                None,
+                None,
+            )
+        )
+        findings = piguard.skipped_findings(reason)
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                brief = self._assert_brief_shape(
+                    finding, "skipped ({})".format(_field(finding, "check"))
+                )
+                self.assertEqual(
+                    brief,
+                    "GitHub returned 404 for the branch rules",
+                    "the 404 skip brief must be the sample's clause",
+                )
+
+    def test_skipped_findings_unreachable_reason_brief_matches_sample(self):
+        reason = self._fetch_reason(
+            urllib.error.URLError("Name or service not known")
+        )
+        findings = piguard.skipped_findings(reason)
+        for finding in findings:
+            with self.subTest(check=_field(finding, "check")):
+                brief = self._assert_brief_shape(
+                    finding, "skipped ({})".format(_field(finding, "check"))
+                )
+                self.assertEqual(
+                    brief,
+                    "api.github.com was unreachable",
+                    "the unreachable skip brief must be the sample's clause",
+                )
+
+    # ------------------------------------------------------------------
+    # The token findings, produced by the five probes
+    # ------------------------------------------------------------------
+
+    def test_target_access_passed_brief_names_the_target(self):
+        findings = piguard.probe_target_access(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(_FakeResponse(b'{"full_name": "owner/repo"}', 200)),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "passed",
+            "fixture sanity: a 200 on the target passes",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "target_access passed (200)"
+        )
+        self.assertEqual(
+            brief,
+            "the token reaches {}/{}".format(self.OWNER, self.REPO),
+            "the passed target-access brief must be the sample's clause "
+            "with the recorded target",
+        )
+
+    def test_target_access_no_token_brief_matches_sample(self):
+        findings = piguard.probe_target_access(self.OWNER, self.REPO, None)
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: no token skips the probe",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "target_access no-token skip"
+        )
+        self.assertEqual(
+            brief,
+            "no token in .env",
+            "the no-token skip brief must be the sample's clause",
+        )
+
+    def test_target_access_404_brief_shape(self):
+        findings = piguard.probe_target_access(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo",
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "warn",
+            "fixture sanity: a 404 on the target warns",
+        )
+        self._assert_brief_shape(findings[0], "target_access 404 warn")
+
+    def test_target_access_401_brief_matches_sample(self):
+        findings = piguard.probe_target_access(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo",
+                    401,
+                    "Unauthorized",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: a 401 is not a scope answer",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "target_access 401 skip"
+        )
+        self.assertEqual(
+            brief,
+            "GitHub returned HTTP 401",
+            "the 401 skip brief must be the sample's clause",
+        )
+
+    def test_administration_passed_brief_matches_sample(self):
+        findings = piguard.probe_administration(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo/actions/permissions",
+                    403,
+                    "Forbidden",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "passed",
+            "fixture sanity: a 403 is the compliant answer",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "administration passed (403)"
+        )
+        self.assertEqual(
+            brief,
+            "Administration withheld (403)",
+            "the passed administration brief must be the sample's clause",
+        )
+
+    def test_administration_fail_brief_shape(self):
+        findings = piguard.probe_administration(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(_FakeResponse(b"{}", 200)),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "fail",
+            "fixture sanity: a 200 on the permissions endpoint fails",
+        )
+        self._assert_brief_shape(findings[0], "administration fail (200)")
+
+    def test_administration_warn_brief_shape(self):
+        findings = piguard.probe_administration(
+            self.OWNER,
+            self.REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/owner/repo/actions/permissions",
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "warn",
+            "fixture sanity: a 404 is ambiguous, so it warns",
+        )
+        self._assert_brief_shape(findings[0], "administration warn (404)")
+
+    def test_classic_token_passed_brief_matches_sample(self):
+        findings = piguard.probe_classic_token(
+            self.TOKEN,
+            _opener(_FakeResponse(b'{"login": "owner"}', 200)),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "passed",
+            "fixture sanity: no scope header passes",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "classic_token passed (no scopes)"
+        )
+        self.assertEqual(
+            brief,
+            "no classic OAuth scopes returned",
+            "the passed classic-token brief must be the sample's clause",
+        )
+
+    def test_classic_token_fail_brief_shape(self):
+        findings = piguard.probe_classic_token(
+            self.TOKEN,
+            _opener(
+                _FakeResponse(
+                    b'{"login": "owner"}',
+                    200,
+                    headers={"X-OAuth-Scopes": "repo, user"},
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "fail",
+            "fixture sanity: a non-empty scope header fails",
+        )
+        self._assert_brief_shape(
+            findings[0], "classic_token fail (scopes recorded)"
+        )
+
+    def test_workflows_withheld_brief_matches_sample(self):
+        findings = piguard.workflows_withheld_finding()
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: the withholding is unprovable, so it skips",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "workflows_withheld constant"
+        )
+        self.assertEqual(
+            brief,
+            "no read-only call can prove this",
+            "the workflows-withheld brief must be the sample's clause",
+        )
+
+    def test_named_repo_no_other_repo_brief_matches_sample(self):
+        findings = piguard.probe_named_repo(None, self.TOKEN)
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: nothing to probe skips",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "named_repo no-other-repo skip"
+        )
+        self.assertEqual(
+            brief,
+            "no other repo named",
+            "the no-other-repo brief must be the sample's clause",
+        )
+
+    def test_named_repo_malformed_brief_matches_sample(self):
+        findings = piguard.probe_named_repo("oops", self.TOKEN)
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: malformed input skips, opener never called",
+        )
+        brief = self._assert_brief_shape(
+            findings[0], "named_repo malformed skip"
+        )
+        self.assertEqual(
+            brief,
+            "--other-repo 'oops' is not OWNER/REPO",
+            "the malformed-input brief must be the sample's clause",
+        )
+
+    def test_named_repo_passed_brief_names_the_other_repo(self):
+        findings = piguard.probe_named_repo(
+            self.OTHER_REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/someorg/other",
+                    404,
+                    "Not Found",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "passed",
+            "fixture sanity: a 404 on the other repo passes",
+        )
+        brief = self._assert_brief_shape(findings[0], "named_repo passed (404)")
+        self.assertEqual(
+            brief,
+            "does not reach {} (404)".format(self.OTHER_REPO),
+            "the passed named-repo brief must be the sample's clause "
+            "with the recorded other repo",
+        )
+
+    def test_named_repo_warn_brief_names_the_other_repo(self):
+        findings = piguard.probe_named_repo(
+            self.OTHER_REPO,
+            self.TOKEN,
+            _opener(_FakeResponse(b'{"full_name": "someorg/other"}', 200)),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "warn",
+            "fixture sanity: a 200 on the other repo warns",
+        )
+        brief = self._assert_brief_shape(findings[0], "named_repo warn (200)")
+        self.assertEqual(
+            brief,
+            "also reaches {}, so a leak is not confined here".format(
+                self.OTHER_REPO
+            ),
+            "the warn named-repo brief must be the sample's clause with "
+            "the recorded other repo",
+        )
+
+    def test_named_repo_403_brief_matches_sample(self):
+        findings = piguard.probe_named_repo(
+            self.OTHER_REPO,
+            self.TOKEN,
+            _opener(
+                urllib.error.HTTPError(
+                    "https://api.github.com/repos/someorg/other",
+                    403,
+                    "Forbidden",
+                    None,
+                    None,
+                )
+            ),
+        )
+        self.assertEqual(
+            _field(findings[0], "status"),
+            "skipped",
+            "fixture sanity: a 403 is not a scope answer",
+        )
+        brief = self._assert_brief_shape(findings[0], "named_repo 403 skip")
+        self.assertEqual(
+            brief,
+            "GitHub returned 403, not a scope answer",
+            "the 403 named-repo brief must be the sample's clause",
+        )
+
+    # ------------------------------------------------------------------
+    # The sweep: every producer path
+    # ------------------------------------------------------------------
+
+    def _every_brief_finding(self) -> List[Tuple[str, Dict[str, Any]]]:
+        """Every finding the producers can emit as of today, with a label.
+
+        The same producer paths the per-finding tests above cover:
+        ``check_all`` over recorded rules-array shapes,
+        ``skipped_findings`` over the recorded fetch reasons and the
+        resolve-failure reason, every token probe over its recorded
+        outcomes, and the ``check_token_all`` concatenation over a
+        recorded 200 opener. A producer added to the module that is
+        absent from this sweep silently un-pins the invariant, so keep
+        the sweep in sync with the producers.
+        """
+        findings: List[Tuple[str, Dict[str, Any]]] = []
+        rules_arrays = (
+            ("empty array", []),
+            (
+                "all five rules",
+                [
+                    rule("non_fast_forward", "main-protected"),
+                    rule("deletion", "main-protected"),
+                    pull_request_rule("main-protected", 2),
+                    update_rule(
+                        "main-protected",
+                        {"update_allows_fetch_and_merge": False},
+                    ),
+                    file_path_rule(
+                        "main-protected",
+                        {"restricted_file_paths": [".github/workflows/**"]},
+                    ),
+                ],
+            ),
+            (
+                "all five rules, weak parameters",
+                [
+                    rule("non_fast_forward", "main-protected"),
+                    rule("deletion", "main-protected"),
+                    pull_request_rule("main-protected", 0),
+                    update_rule(
+                        "main-protected",
+                        {"update_allows_fetch_and_merge": True},
+                    ),
+                    file_path_rule(
+                        "main-protected",
+                        {"restricted_file_paths": []},
+                    ),
+                ],
+            ),
+        )
+        for label, rules in rules_arrays:
+            for finding in piguard.check_all(rules):
+                findings.append(
+                    (
+                        "check_all/{}: {} on rule {!r}".format(
+                            label,
+                            _field(finding, "status"),
+                            _field(finding, "rule"),
+                        ),
+                        finding,
+                    )
+                )
+        url = "https://api.github.com/repos/owner/repo/rules/branches/main"
+        skip_reasons = (
+            (
+                "no origin",
+                self._NO_ORIGIN_REASON.format("/tmp/target", "target"),
+            ),
+            (
+                "http 404",
+                self._fetch_reason(
+                    urllib.error.HTTPError(url, 404, "Not Found", None, None)
+                ),
+            ),
+            (
+                "unreachable",
+                self._fetch_reason(
+                    urllib.error.URLError("Name or service not known")
+                ),
+            ),
+            (
+                "http 401",
+                self._fetch_reason(
+                    urllib.error.HTTPError(url, 401, "Unauthorized", None, None)
+                ),
+            ),
+        )
+        for label, reason in skip_reasons:
+            for finding in piguard.skipped_findings(reason):
+                findings.append(
+                    (
+                        "skipped_findings/{}: {} on check {!r}".format(
+                            label,
+                            _field(finding, "status"),
+                            _field(finding, "check"),
+                        ),
+                        finding,
+                    )
+                )
+        target_url = "https://api.github.com/repos/owner/repo"
+        admin_url = (
+            "https://api.github.com/repos/owner/repo/actions/permissions"
+        )
+        other_url = "https://api.github.com/repos/someorg/other"
+        probe_calls = (
+            (
+                "target_access no-token",
+                lambda: piguard.probe_target_access(
+                    self.OWNER, self.REPO, None
+                ),
+            ),
+            (
+                "target_access 200",
+                lambda: piguard.probe_target_access(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(_FakeResponse(b'{"full_name": "owner/repo"}', 200)),
+                ),
+            ),
+            (
+                "target_access 404",
+                lambda: piguard.probe_target_access(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            target_url, 404, "Not Found", None, None
+                        )
+                    ),
+                ),
+            ),
+            (
+                "administration 403",
+                lambda: piguard.probe_administration(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            admin_url, 403, "Forbidden", None, None
+                        )
+                    ),
+                ),
+            ),
+            (
+                "administration 200",
+                lambda: piguard.probe_administration(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(_FakeResponse(b"{}", 200)),
+                ),
+            ),
+            (
+                "administration 404",
+                lambda: piguard.probe_administration(
+                    self.OWNER,
+                    self.REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            admin_url, 404, "Not Found", None, None
+                        )
+                    ),
+                ),
+            ),
+            (
+                "classic_token no-token",
+                lambda: piguard.probe_classic_token(None),
+            ),
+            (
+                "classic_token 200 no scopes",
+                lambda: piguard.probe_classic_token(
+                    self.TOKEN,
+                    _opener(_FakeResponse(b'{"login": "owner"}', 200)),
+                ),
+            ),
+            (
+                "classic_token 200 scopes",
+                lambda: piguard.probe_classic_token(
+                    self.TOKEN,
+                    _opener(
+                        _FakeResponse(
+                            b'{"login": "owner"}',
+                            200,
+                            headers={"X-OAuth-Scopes": "repo, user"},
+                        )
+                    ),
+                ),
+            ),
+            (
+                "workflows_withheld constant",
+                lambda: piguard.workflows_withheld_finding(),
+            ),
+            (
+                "named_repo none",
+                lambda: piguard.probe_named_repo(None, self.TOKEN),
+            ),
+            (
+                "named_repo malformed",
+                lambda: piguard.probe_named_repo("oops", self.TOKEN),
+            ),
+            (
+                "named_repo 404",
+                lambda: piguard.probe_named_repo(
+                    self.OTHER_REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            other_url, 404, "Not Found", None, None
+                        )
+                    ),
+                ),
+            ),
+            (
+                "named_repo 200",
+                lambda: piguard.probe_named_repo(
+                    self.OTHER_REPO,
+                    self.TOKEN,
+                    _opener(_FakeResponse(b'{"full_name": "someorg/other"}', 200)),
+                ),
+            ),
+            (
+                "named_repo 403",
+                lambda: piguard.probe_named_repo(
+                    self.OTHER_REPO,
+                    self.TOKEN,
+                    _opener(
+                        urllib.error.HTTPError(
+                            other_url, 403, "Forbidden", None, None
+                        )
+                    ),
+                ),
+            ),
+        )
+        for label, call in probe_calls:
+            for finding in call():
+                findings.append(
+                    (
+                        "{}: {} on check {!r}".format(
+                            label,
+                            _field(finding, "status"),
+                            _field(finding, "check"),
+                        ),
+                        finding,
+                    )
+                )
+        for finding in piguard.check_token_all(
+            self.OWNER,
+            self.REPO,
+            token=self.TOKEN,
+            other_repo=self.OTHER_REPO,
+            opener=_opener(_FakeResponse(b'{"ok": true}', 200)),
+        ):
+            findings.append(
+                (
+                    "check_token_all: {} on check {!r}".format(
+                        _field(finding, "status"), _field(finding, "check")
+                    ),
+                    finding,
+                )
+            )
+        return findings
+
+    def test_every_emittable_finding_carries_a_brief(self):
+        findings = self._every_brief_finding()
+
+        self.assertGreaterEqual(
+            len(findings),
+            20,
+            "fixture sanity: the sweep must cover the twenty emittable "
+            "findings, got {}".format(len(findings)),
+        )
+        self.assertEqual(
+            {_field(f, "check") for _label, f in findings},
+            {
+                "history_rewrite",
+                "review",
+                "update_restriction",
+                "file_paths",
+                "target_access",
+                "administration",
+                "classic_token",
+                "workflows_withheld",
+                "named_repo",
+            },
+            "fixture sanity: the sweep must cover every emitting check",
+        )
+        for label, finding in findings:
+            with self.subTest(finding=label):
+                self._assert_brief_shape(finding, label)
+
+    # ------------------------------------------------------------------
+    # Behaviour 2 of plans/guard-finding-compact.md: short danger, reason
+    # and remedy
+    # ------------------------------------------------------------------
+
+    def _assert_short_field_shape(
+        self, value: Any, label: str, allow_long: bool = False
+    ) -> None:
+        """The shape a non-empty danger/reason/remedy must carry.
+
+        ``allow_long`` lifts only the 100-character length bound; every
+        other assertion (single sentence, no doc path, no 'see:' clause)
+        still applies. It exists for the one reason this module passes
+        through but does not own: the no-origin reason is built in
+        anvilkit.cli._collect_guard_findings (not here), pinned word-for-word
+        in tests/test_cli.py - including the noun invariant "the project has
+        no origin" - and it is ~173 chars because it names the target path
+        and the full resolution failure. It is never printed inside a finding
+        block (the headline carries the brief), so the 100-char bound - which
+        exists to keep a block line short - does not apply to it.
+        """
+        self.assertIsInstance(
+            value,
+            str,
+            "{}: the field must be a string, got {!r}".format(label, value),
+        )
+        if not allow_long:
+            self.assertLessEqual(
+                len(value),
+                100,
+                "{}: the field must be a single sentence of at most 100 "
+                "characters, got {} characters: {!r}".format(
+                    label, len(value), value
+                ),
+            )
+        self.assertNotIn(
+            ". ",
+            value,
+            "{}: the field must be a single sentence - a sentence break "
+            "inside it: {!r}".format(label, value),
+        )
+        self.assertNotIn(
+            "doc/external/",
+            value,
+            "{}: the field must carry no doc path: {!r}".format(label, value),
+        )
+        self.assertNotIn(
+            "see:",
+            value,
+            "{}: the field must carry no 'see:' clause: "
+            "{!r}".format(label, value),
+        )
+
+    def test_every_emittable_finding_danger_reason_and_remedy_are_short(self):
+        """Behaviour 2: every emittable danger/reason/remedy is one short
+        sentence with no doc path and no 'see:' clause.
+
+        One documented exemption: the no-origin *reason* is exempt from the
+        100-char length bound only (see _assert_short_field_shape). It is
+        built and pinned verbatim in
+        anvilkit.cli._collect_guard_findings / tests/test_cli.py - including
+        the noun invariant "the project has no origin" - and is passed through
+        skipped_findings untouched. It is never printed inside a finding block
+        (the headline carries the brief), so the bound that exists to keep a
+        block line short does not apply to it. Every other assertion on that
+        subtest (no doc path, no 'see:' clause, single sentence) still
+        applies, and the remedy is still pinned.
+        """
+        findings = self._every_brief_finding()
+        for label, finding in findings:
+            with self.subTest(finding=label):
+                status = _field(finding, "status")
+                danger = _field(finding, "danger")
+                reason = _field(finding, "reason")
+                remedy = _field(finding, "remedy")
+
+                # danger: a single short sentence, no doc path, and never
+                # the bypass caveat - the caveat is printed once as the
+                # trailing note, not repeated per finding.
+                if isinstance(danger, str) and danger:
+                    self._assert_short_field_shape(
+                        danger, "{}: danger".format(label)
+                    )
+                    self.assertNotIn(
+                        "bypass",
+                        danger,
+                        "{}: the danger must not carry the bypass caveat "
+                        "- it is printed once as the trailing note: "
+                        "{!r}".format(label, danger),
+                    )
+
+                # reason: present only on a skipped finding, and then a
+                # single short sentence with no doc path.
+                if isinstance(reason, str) and reason:
+                    self.assertEqual(
+                        status,
+                        "skipped",
+                        "{}: a reason is only carried by a skipped "
+                        "finding".format(label),
+                    )
+                    # The no-origin reason is CLI-owned and pinned verbatim
+                    # in tests/test_cli.py (the noun invariant "the project
+                    # has no origin"), so it is exempt from the 100-char
+                    # length bound only - see the helper's docstring.
+                    self._assert_short_field_shape(
+                        reason,
+                        "{}: reason".format(label),
+                        allow_long=("has no origin" in reason),
+                    )
+
+                # remedy: a single short sentence with no doc path and no
+                # 'see:' clause; non-empty on every non-passing finding,
+                # and may be empty on a passed one now that nothing prints
+                # it.
+                if isinstance(remedy, str) and remedy:
+                    self._assert_short_field_shape(
+                        remedy, "{}: remedy".format(label)
+                    )
+                if status != "passed":
+                    self.assertTrue(
+                        remedy,
+                        "{}: a non-passing finding ({}) must still carry a "
+                        "non-empty remedy (the module invariant)".format(
+                            label, status
+                        ),
+                    )
+
+class RenderFixesTests(unittest.TestCase):
+    """Behaviour 7 of plans/guard-finding-compact.md: ``render_fixes``.
+
+    The numbered mitigation list: the header ``To fix``, then one entry per
+    ``warn``/``fail`` finding in list order - ``{n}. {label}: {remedy}`` -
+    wrapped at ``width`` with continuation lines indented under the text.
+    ``passed`` and ``skipped`` findings are never numbered; no ``warn`` and
+    no ``fail`` yields an empty list (no header). Pure: no network, no
+    write, never raises.
+
+    The findings are synthetic dicts in the module's own shape
+    (``status``/``check``/``rule``/``brief``/``reason``/``remedy``) - the
+    renderer's contract is a pure function of those fields, and the real
+    producers are already pinned by their own classes (``FindingBriefTests``,
+    ``TokenFindingInvariantSweepTests``). One entry's full text is pinned
+    against the approved sample report's wording, which the producers now
+    carry.
+
+    Wrap-indent convention (consistent with ``render_finding_block``'s
+    indented ``how:`` line, anvilkit/pi/piguard.py): the continuation lines
+    of a wrapped entry are indented exactly 2 spaces - more than the entry
+    start (column 0) - so the entry's text reads under its first line.
+    """
+
+    @staticmethod
+    def _fixes_renderer():
+        """The ``render_fixes`` seam: a clean AttributeError per test while
+        red - the attribute access lives inside each test, so a missing
+        attribute fails the individual test, not the collection."""
+        renderer = getattr(piguard, "render_fixes")
+        return renderer
+
+    @staticmethod
+    def _compact(text):
+        """The text with every whitespace character removed - the same
+        elision trick the block pins use: a wrap may only change
+        whitespace, so word-for-word survival is checkable without pinning
+        the wrap points."""
+        return "".join(text.split())
+
+    @staticmethod
+    def _finding(
+        status: str,
+        check: str,
+        rule: Optional[str] = None,
+        brief: str = "brief clause",
+        reason: Optional[str] = None,
+        remedy: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One finding in the module's dict shape, carrying only the
+        keys the status needs - ``reason`` only when given, like a
+        real skipped finding."""
+        finding: Dict[str, Any] = {
+            "status": status,
+            "check": check,
+            "rule": rule,
+            "brief": brief,
+        }
+        if reason is not None:
+            finding["reason"] = reason
+        if remedy is not None:
+            finding["remedy"] = remedy
+        return finding
+
+    def test_mixed_statuses_render_header_then_numbered_warn_and_fail_in_list_order(self):
+        # The contract, end to end: 2 passed, 1 warn, 1 skipped, 1 fail.
+        # The header comes first, then one numbered entry per warn/fail in
+        # LIST ORDER - passed and skipped never numbered, numbering
+        # 1-based in that order.
+        warn_remedy = 'turn on "Restrict deletions" for main'
+        fail_remedy = "recreate the token without the Administration permission"
+        findings = [
+            self._finding("passed", "history_rewrite", "non_fast_forward",
+                          brief="force pushes blocked"),
+            self._finding("warn", "history_rewrite", "deletion",
+                          remedy=warn_remedy),
+            self._finding("passed", "review", "pull_request",
+                          brief="review required (2 required approvals)"),
+            self._finding("skipped", "history_rewrite",
+                          brief="api.github.com was unreachable",
+                          reason="api.github.com was unreachable",
+                          remedy="check network access to api.github.com, then re-run"),
+            self._finding("fail", "administration", None,
+                          remedy=fail_remedy),
+        ]
+
+        lines = self._fixes_renderer()(findings)
+        self.assertEqual(
+            lines,
+            [
+                "To fix",
+                '1. deletion: ' + warn_remedy,
+                "2. administration: " + fail_remedy,
+            ],
+            "the mixed list is the header then one numbered entry per "
+            "warn/fail in list order - passed and skipped never "
+            "numbered:\nlines: {!r}".format(lines),
+        )
+
+    def test_warn_entry_labels_the_rule_and_token_fail_entry_labels_the_check(self):
+        # The label: the finding's ``rule`` when it carries one, else its
+        # ``check`` - never a literal "None". One entry is a branch warn
+        # (rule set), one a token fail (rule None -> check).
+        findings = [
+            self._finding("warn", "history_rewrite", "non_fast_forward",
+                          remedy='turn on "Block force pushes" for main'),
+            self._finding("fail", "classic_token", None,
+                          remedy="recreate it as a fine-grained token, iar3-r8/anvil only"),
+        ]
+
+        lines = self._fixes_renderer()(findings)
+        self.assertEqual(
+            lines[0],
+            "To fix",
+            "the header is 'To fix' even with a mixed warn/fail list:\n"
+            "lines: {!r}".format(lines),
+        )
+        self.assertEqual(
+            lines[1],
+            '1. non_fast_forward: turn on "Block force pushes" for main',
+            "a branch warn entry labels the rule:\nlines: {!r}".format(lines),
+        )
+        self.assertEqual(
+            lines[2],
+            "2. classic_token: recreate it as a fine-grained token, "
+            "iar3-r8/anvil only",
+            "a token fail entry (rule None) labels the check:\n"
+            "lines: {!r}".format(lines),
+        )
+        self.assertNotIn(
+            "None",
+            "\n".join(lines),
+            "no entry may print a literal 'None':\nlines: {!r}".format(lines),
+        )
+
+    def test_no_warn_or_fail_yields_empty_list_without_header(self):
+        # The error clause: no warn and no fail - every passed or skipped -
+        # yields an empty list, no header at all.
+        findings = [
+            self._finding("passed", "history_rewrite", "non_fast_forward",
+                          brief="force pushes blocked"),
+            self._finding("skipped", "history_rewrite",
+                          brief="api.github.com was unreachable",
+                          reason="api.github.com was unreachable",
+                          remedy="check network access to api.github.com, then re-run"),
+        ]
+
+        lines = self._fixes_renderer()(findings)
+        self.assertEqual(
+            lines,
+            [],
+            "no warn and no fail yields an empty list - no header:\n"
+            "lines: {!r}".format(lines),
+        )
+
+    def test_empty_findings_yield_empty_list(self):
+        # The degenerate list: nothing in, nothing out - no header.
+        lines = self._fixes_renderer()([])
+        self.assertEqual(
+            lines,
+            [],
+            "an empty findings list yields an empty list:\n"
+            "lines: {!r}".format(lines),
+        )
+
+    def test_over_width_entry_wraps_within_width_with_two_space_continuation_indent(self):
+        # The wrap: a warn entry whose ``{n}. {label}: {remedy}`` exceeds
+        # 80 wraps to more than one line, every line at most 80, with
+        # continuation lines indented under the text - exactly 2 spaces,
+        # the convention ``render_finding_block``'s indented ``how:``
+        # continuation carries (anvilkit/pi/piguard.py): more than the
+        # entry start (column 0), aligned under the entry's text. No
+        # elision: the compact (whitespace-free) block IS the header plus
+        # the two entries.
+        long_remedy = (
+            "turn on \"Restrict file paths\" for main, listing "
+            ".github/workflows/nightly-integration-suite.yml and "
+            "infrastructure/terraform/modules/production-network/**"
+        )
+        findings = [
+            self._finding("passed", "history_rewrite", "deletion",
+                          brief="branch deletion blocked"),
+            self._finding("warn", "file_paths", "file_path_restriction",
+                          remedy=long_remedy),
+            self._finding("skipped", "history_rewrite",
+                          brief="api.github.com was unreachable",
+                          reason="api.github.com was unreachable",
+                          remedy="check network access to api.github.com, then re-run"),
+        ]
+        entry = "1. file_path_restriction: " + long_remedy
+        self.assertGreater(
+            len(entry),
+            80,
+            "fixture sanity: the warn entry must exceed 80 to force a "
+            "wrap: {!r}".format(entry),
+        )
+
+        lines = self._fixes_renderer()(findings)
+        self.assertIsInstance(
+            lines, list, "render_fixes must return a list of lines"
+        )
+        for line in lines:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped fix line exceeds width 80: {!r}".format(line),
+            )
+        self.assertEqual(
+            lines[0],
+            "To fix",
+            "the header stays line 0 even when an entry wraps:\n"
+            "lines: {!r}".format(lines),
+        )
+        self.assertTrue(
+            lines[1].startswith("1. file_path_restriction:"),
+            "the entry's first line carries the number, the rule label "
+            "and the colon: {!r}".format(lines[1]),
+        )
+        # The passed and skipped findings must not appear anywhere: the
+        # compact block is the header plus the one entry, nothing else.
+        self.assertEqual(
+            self._compact("\n".join(lines)),
+            self._compact("To fix" + entry),
+            "the wrapped fixes are the header plus the warn entry - "
+            "nothing added and nothing elided:\nlines: {!r}".format(lines),
+        )
+        # Continuation lines: every line after the entry's first is
+        # indented exactly 2 spaces - under the entry's text, more than
+        # the entry start (column 0).
+        entry_lines = lines[2:]
+        self.assertGreater(
+            len(entry_lines),
+            0,
+            "an over-width entry must wrap to continuation lines:\n"
+            "lines: {!r}".format(lines),
+        )
+        for line in entry_lines:
+            self.assertTrue(
+                line.startswith("  ") and not line.startswith("   "),
+                "a fix continuation line is indented exactly 2 spaces - "
+                "under the entry's text, more than the entry start:\n"
+                "line: {!r}".format(line),
+            )
+
+    def test_narrower_width_wraps_the_entry_to_strictly_more_lines(self):
+        # Width is a real parameter: the same long entry wraps to strictly
+        # more lines at width=40 than at width=80, every line within its
+        # width.
+        long_remedy = (
+            "turn on \"Restrict file paths\" for main, listing "
+            ".github/workflows/nightly-integration-suite.yml and "
+            "infrastructure/terraform/modules/production-network/**"
+        )
+        findings = [
+            self._finding("warn", "file_paths", "file_path_restriction",
+                          remedy=long_remedy),
+        ]
+
+        lines_40 = self._fixes_renderer()(findings, width=40)
+        lines_80 = self._fixes_renderer()(findings, width=80)
+        for width, lines in ((40, lines_40), (80, lines_80)):
+            for line in lines:
+                self.assertLessEqual(
+                    len(line),
+                    width,
+                    "a fix line exceeds its requested width {!r}: "
+                    "{!r}".format(width, line),
+                )
+        self.assertGreater(
+            len(lines_40),
+            len(lines_80),
+            "width must be a real parameter: the same long entry wraps to "
+            "strictly more lines at width=40 than at width=80:\n"
+            "width=40: {!r}\nwidth=80: {!r}".format(lines_40, lines_80),
+        )
+
+    def test_takes_plain_dicts_and_never_raises(self):
+        # The pure contract, pinned by the fact: the renderer takes a
+        # PLAIN list of plain dicts (no finding needs to be "live") and
+        # never raises - the whole class already calls it with no
+        # fixtures, no opener and no network. The repeated call is the
+        # determinism check.
+        findings = [
+            self._finding("warn", "history_rewrite", "non_fast_forward",
+                          remedy='turn on "Block force pushes" for main'),
+            self._finding("fail", "administration", None,
+                          remedy="recreate the token without the Administration permission"),
+        ]
+        renderer = self._fixes_renderer()
+        first = renderer(findings)
+        second = renderer(findings)
+        self.assertEqual(
+            first,
+            second,
+            "the same plain findings must render equal lists:\n"
+            "first: {!r}\nsecond: {!r}".format(first, second),
+        )
+
+    def test_branch_warn_entry_text_matches_approved_sample_wording(self):
+        # The ``remedy`` is the finding's own remedy field, printed whole:
+        # the branch warn entry's full text, word for word, as in the
+        # approved sample report's "To fix" section.
+        findings = [
+            self._finding(
+                "warn",
+                "history_rewrite",
+                "non_fast_forward",
+                remedy='turn on "Block force pushes" for main',
+            ),
+        ]
+
+        lines = self._fixes_renderer()(findings)
+        self.assertEqual(
+            lines,
+            [
+                "To fix",
+                '1. non_fast_forward: turn on "Block force pushes" for main',
+            ],
+            "the branch warn entry carries the finding's own remedy field "
+            "exactly as the approved sample report prints it:\n"
+            "lines: {!r}".format(lines),
+        )
+
+
+class BypassNoteTests(unittest.TestCase):
+    """Behaviour 8 of plans/guard-finding-compact.md: BYPASS_NOTE.
+
+    The bypass caveat - hard-coded per-finding in the old report shape -
+    survives exactly once, as the report's trailing note, from one
+    module constant. doc/external/github/rest-api-endpoints-for-rules.md
+    is the source fact: ``bypass_actors`` is only returned to users with
+    write access to the ruleset, so a read-only token never sees it.
+    """
+
+    # The finding-field statuses a rendered note line must never carry.
+    _STATUS_PREFIXES = ("ok:", "warn:", "fail:", "skipped:")
+
+    # The approved sample report's trailing line (user-confirmed
+    # wording, plans/guard-finding-compact.md).
+    _SAMPLE_NOTE = "Note: bypass lists are not visible to a read-only token."
+
+    def test_bypass_note_exists_and_is_a_non_empty_string(self):
+        note = piguard.BYPASS_NOTE
+        self.assertIsInstance(
+            note,
+            str,
+            "BYPASS_NOTE must be a plain str, not a format string or other "
+            "type: {!r}".format(type(note).__name__),
+        )
+        self.assertTrue(
+            note.strip(),
+            "BYPASS_NOTE must be a non-empty string: {!r}".format(note),
+        )
+
+    def test_bypass_note_carries_the_bypass_caveat(self):
+        # Pin the caveat's substance against the approved sample's
+        # wording: it is the bypass-visibility-on-a-read-only-token
+        # caveat, and nothing else. Case-insensitive so the green's
+        # exact casing stays a green choice.
+        note = piguard.BYPASS_NOTE.lower()
+        self.assertIn(
+            "bypass",
+            note,
+            "BYPASS_NOTE must name the bypass lists - the caveat's "
+            "subject: {!r}".format(piguard.BYPASS_NOTE),
+        )
+        self.assertIn(
+            "read-only token",
+            note,
+            "BYPASS_NOTE must say the caveat is about a read-only "
+            "token's visibility: {!r}".format(piguard.BYPASS_NOTE),
+        )
+
+    def test_bypass_note_is_at_most_160_characters(self):
+        note = piguard.BYPASS_NOTE
+        self.assertLessEqual(
+            len(note),
+            160,
+            "BYPASS_NOTE must be at most 160 characters, got {}:\n"
+            "{!r}".format(len(note), note),
+        )
+
+    def test_bypass_note_wraps_to_fit_width_80(self):
+        # When rendered as the report's trailing note at width=80, every
+        # line stays within the width.
+        note = piguard.BYPASS_NOTE
+        for line in textwrap.wrap(note, width=80):
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a wrapped line of BYPASS_NOTE exceeds width=80: "
+                "{!r}".format(line),
+            )
+
+    def test_bypass_note_is_a_stable_module_level_constant(self):
+        # Single source: a plain str bound at module scope, stable across
+        # accesses and across re-imports - not something computed per
+        # call. Pin the contract, not the implementation.
+        first = piguard.BYPASS_NOTE
+        self.assertIsInstance(
+            first,
+            str,
+            "BYPASS_NOTE must be a plain str: {!r}".format(type(first).__name__),
+        )
+        self.assertEqual(
+            piguard.BYPASS_NOTE,
+            first,
+            "BYPASS_NOTE must be stable across accesses: {!r} != "
+            "{!r}".format(piguard.BYPASS_NOTE, first),
+        )
+        # A re-import of the same module object reads the same value:
+        # this is what "one module constant" pins against a per-call
+        # computation hiding behind an attribute.
+        reloaded = __import__(
+            "anvilkit.pi.piguard", fromlist=["BYPASS_NOTE"]
+        )
+        self.assertEqual(
+            getattr(reloaded, "BYPASS_NOTE"),
+            first,
+            "a re-import must read the same BYPASS_NOTE: {!r} != "
+            "{!r}".format(getattr(reloaded, "BYPASS_NOTE"), first),
+        )
+
+    def test_bypass_note_is_not_a_finding_line(self):
+        # It is a note, not a finding line: no status prefix, no
+        # headline mark.
+        note = piguard.BYPASS_NOTE
+        for prefix in self._STATUS_PREFIXES:
+            self.assertFalse(
+                note.startswith(prefix),
+                "BYPASS_NOTE must not start with the finding prefix "
+                "{!r}: {!r}".format(prefix, note),
+            )
+        for mark in ("\u2705", "\u26a0\ufe0f", "\u274c", "\u23ed\ufe0f"):
+            self.assertNotIn(
+                mark,
+                note,
+                "BYPASS_NOTE must not carry a finding mark {!r}: "
+                "{!r}".format(mark, note),
+            )
+
+
+class NoInventedWordTests(unittest.TestCase):
+    """Behaviour 12 of plans/guard-finding-compact.md: no renderer invents a word.
+
+    The drift guard that replaces the old pin "the block strips
+    render_finding's line" (the ``_block_substance``-derived detail pins,
+    retired in cycles 4-6 of this plan). Cycles 3-6 rebuilt the block and
+    the fixes directly from the finding's fields plus fixed furniture, so
+    the property that pins them is the vocabulary of the rendered text
+    itself: a word the renderer adds on its own - the bypass caveat, a
+    doc path, a reworded phrase - would fail the check even when it is
+    plausible-sounding.
+
+    GIVEN each of the twenty emittable findings, driven as in production
+    by the same matrix ``FindingBriefTests._every_brief_finding`` drives
+    its sweep (``check_all`` over recorded rules arrays,
+    ``skipped_findings`` over the recorded fetch reasons including the
+    CLI-built no-origin reason, every token probe over recorded openers,
+    ``check_token_all`` over a recorded 200) - no live network;
+    WHEN its block, its single line, or the fixes list is rendered;
+    THEN every token of the rendered text comes from the finding's own
+    content fields (``check``, ``rule``, ``brief``, ``reason``,
+    ``remedy``) or from the fixed furniture - never from the renderer.
+
+    TOKENIZER (stated once here; a green, if one is ever needed, matches
+    it): a token is a run of non-whitespace characters (the text split on
+    whitespace) with the edge punctuation ``" ' ( ) . , : ;`` stripped
+    from both ends; a token left empty after stripping is dropped.
+
+    FURNITURE (stated once here, per renderer):
+
+    - ``render_finding_block``: the status prefix words ``ok``, ``warn``,
+      ``fail``, ``skipped``; the four headline marks ✅ ⚠️ ❌ ⏭️; the em
+      dash ``—``; the skipped prefix word ``how``.
+    - ``render_finding``: the same four prefix words plus the
+      single-line renderer's hyphen ``-``.
+    - ``render_fixes``: the header words ``To`` and ``fix``; the entry
+      numbering, checked as a bare digit token (the ``1.``-style number,
+      its trailing dot stripped by the tokenizer).
+
+    Any other token is an INVENTED WORD: the failure names the token, the
+    finding (its sweep label, status and rule/check) and the offending
+    line, so a future drift is actionable.
+
+    Scope note: the twenty emittable findings carry no field word long
+    enough for ``break_long_words`` to split it across lines at
+    width=80, so no wrap fragment can read as an invented word here. The
+    long-brief fixtures that do force mid-word splits (the cycle-4
+    many-restricted-paths finding, the cycle-6 long skip) are pinned by
+    the no-elision substance pins of those cycles - the
+    whitespace-compacted block equals the field+furniture composition -
+    which is the same guarantee at the word level, and this guard keeps
+    the tokenizer strict rather than treating a fragment as vocabulary.
+
+    Pinned alongside the vocabulary: the block is deterministic (same
+    finding, same width -> equal lines, rendered twice) and ``width``
+    stays a real parameter on the block - the many-restricted-paths
+    finding wraps to strictly more lines at ``width=40`` than at
+    ``width=80``, every line within its width.
+    """
+
+    # The edge punctuation the tokenizer strips from both ends of a token.
+    _TOKEN_EDGE = "\"'(),:;."
+
+    # The block renderer's fixed furniture: the four status prefix words,
+    # the four headline marks, the em dash, the skipped prefix word.
+    _BLOCK_FURNITURE = frozenset(
+        (
+            "ok",
+            "warn",
+            "fail",
+            "skipped",
+            "how",
+            "\u2705",
+            "\u26a0\ufe0f",
+            "\u274c",
+            "\u23ed\ufe0f",
+            "\u2014",
+        )
+    )
+
+    # The single-line renderer's fixed furniture: the same four prefix
+    # words plus its hyphen.
+    _LINE_FURNITURE = frozenset(("ok", "warn", "fail", "skipped", "-"))
+
+    # The fixes renderer's fixed furniture: the header's two words. The
+    # entry numbering is checked as bare digit tokens, separately.
+    _FIXES_FURNITURE = frozenset(("To", "fix"))
+
+    # The finding's content fields the vocabulary may come from: the
+    # label (rule else check), the brief, the skip reason, the remedy.
+    _CONTENT_FIELDS = ("check", "rule", "brief", "reason", "remedy")
+
+    def _tokens(self, text):
+        """The tokenizer stated in the class docstring."""
+        return [
+            chunk.strip(self._TOKEN_EDGE)
+            for chunk in text.split()
+            if chunk.strip(self._TOKEN_EDGE)
+        ]
+
+    def _field_tokens(self, finding, fields=None):
+        """The tokens of the finding's own content field values."""
+        names = self._CONTENT_FIELDS if fields is None else fields
+        tokens = set()
+        for name in names:
+            value = _field(finding, name)
+            if isinstance(value, str) and value:
+                tokens.update(self._tokens(value))
+        return tokens
+
+    def _every_finding(self):
+        """The matrix over the twenty emittable findings (and their
+        parameter variants), driven through the real producers exactly as
+        ``FindingBriefTests``'s sweep drives them."""
+        return FindingBriefTests(
+            "test_every_emittable_finding_carries_a_brief"
+        )._every_brief_finding()
+
+    def _describe(self, label, finding):
+        """The finding, named for a failure message: sweep label, status,
+        the rule it names, else its check."""
+        return "{} ({} on {!r})".format(
+            label,
+            _field(finding, "status"),
+            _field(finding, "rule") or _field(finding, "check"),
+        )
+
+    def _assert_vocabulary(
+        self, lines, finding, label, kind, furniture, fields=None
+    ):
+        """Every token of ``lines`` is a token of one of the finding's
+        own content fields or of ``furniture``; a failure names the
+        token, the finding and the offending line."""
+        allowed = self._field_tokens(finding, fields) | set(furniture)
+        for line in lines:
+            for token in self._tokens(line):
+                if token not in allowed:
+                    self.fail(
+                        "an invented word in the {} rendering of {} - "
+                        "every word must come from the finding's own "
+                        "fields or the fixed furniture: token {!r} on "
+                        "line {!r}".format(
+                            kind,
+                            self._describe(label, finding),
+                            token,
+                            line,
+                        )
+                    )
+
+    # ------------------------------------------------------------------
+    # The vocabulary guard, per renderer
+    # ------------------------------------------------------------------
+
+    def test_block_carries_only_finding_fields_and_furniture(self):
+        # The contract, over every emittable finding: the block's every
+        # token is the finding's own word or the block furniture. The
+        # long CLI-owned no-origin reason rides in the field but never in
+        # the block - the headline carries the brief - so it can only
+        # widen, never narrow, the allowed vocabulary.
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                block = piguard.render_finding_block(finding, width=80)
+                self._assert_vocabulary(
+                    block, finding, label, "block", self._BLOCK_FURNITURE
+                )
+
+    def test_fixes_carry_only_finding_fields_and_furniture(self):
+        # The fixes list over the full matrix: every token is a token of
+        # a numbered finding's own check/rule/remedy, the header words
+        # or an entry number. The expected vocabulary is the label and
+        # remedy of exactly the findings that get numbered - passed and
+        # skipped findings never render here, so their words are not
+        # part of the allowed set.
+        findings = self._every_finding()
+        numbered = [
+            f
+            for _label, f in findings
+            if _field(f, "status") in ("warn", "fail")
+        ]
+        self.assertTrue(
+            numbered,
+            "fixture sanity: the matrix yields numbered warn/fail findings",
+        )
+        allowed = set(self._FIXES_FURNITURE)
+        for finding in numbered:
+            allowed |= self._field_tokens(finding, ("check", "rule", "remedy"))
+        lines = piguard.render_fixes([f for _label, f in findings], width=80)
+        self.assertTrue(
+            lines,
+            "fixture sanity: numbered findings yield a fixes list with "
+            "its header: {!r}".format(lines),
+        )
+        for line in lines:
+            for token in self._tokens(line):
+                if token in allowed:
+                    continue
+                if token.isascii() and token.isdigit():
+                    # The entry numbering: the 1.-style number, its dot
+                    # stripped by the tokenizer.
+                    continue
+                self.fail(
+                    "an invented word in the fixes rendering - every "
+                    "word must come from a numbered finding's own "
+                    "check/rule/remedy, the header or the numbering: "
+                    "token {!r} on line {!r}".format(token, line)
+                )
+
+    def test_single_line_carries_only_finding_fields_and_furniture(self):
+        # The one-vocabulary line is the same guarantee the block no
+        # longer strips: every token of render_finding's line is the
+        # finding's own word or the prefix plus the hyphen.
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                line = piguard.render_finding(finding)
+                self._assert_vocabulary(
+                    [line], finding, label, "single-line", self._LINE_FURNITURE
+                )
+
+    # ------------------------------------------------------------------
+    # The error clause: deterministic, and width a real parameter
+    # ------------------------------------------------------------------
+
+    def test_block_and_single_line_are_deterministic_at_the_same_width(self):
+        # Same finding, same width -> equal lines, rendered twice: the
+        # report is diffable across runs, and no hidden state (counters,
+        # caches, randomness) enters the renderers.
+        for label, finding in self._every_finding():
+            with self.subTest(finding=label):
+                first_block = piguard.render_finding_block(finding, width=80)
+                second_block = piguard.render_finding_block(finding, width=80)
+                self.assertEqual(
+                    first_block,
+                    second_block,
+                    "the block must be deterministic - the same finding "
+                    "at the same width renders equal lines:\n"
+                    "first:  {!r}\nsecond: {!r}".format(
+                        first_block, second_block
+                    ),
+                )
+                first_line = piguard.render_finding(finding)
+                second_line = piguard.render_finding(finding)
+                self.assertEqual(
+                    first_line,
+                    second_line,
+                    "the single line must be deterministic for {}:\n"
+                    "first:  {!r}\nsecond: {!r}".format(
+                        self._describe(label, finding),
+                        first_line,
+                        second_line,
+                    ),
+                )
+
+    def test_width_is_a_real_parameter_on_the_block(self):
+        # The cycle-4 many-restricted-paths finding: headline plus brief
+        # exceeds 80, so the block wraps at width 80 and wraps to
+        # strictly more lines at width 40 - the width is not a
+        # decoration, and no line ever exceeds the width it was asked
+        # to fit.
+        long_paths = [
+            ".github/workflows/nightly-integration-suite.yml",
+            "infrastructure/terraform/modules/production-network/**",
+            "deployment/k8s/base/production-cluster-manifests/**",
+        ]
+        finding = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-guard",
+                    {"restricted_file_paths": long_paths},
+                )
+            ]
+        )[0]
+        self.assertEqual(
+            "passed", _field(finding, "status"), "fixture sanity"
+        )
+
+        wide = piguard.render_finding_block(finding, width=80)
+        narrow = piguard.render_finding_block(finding, width=40)
+        for line in wide:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "a block line exceeds width 80: {!r}".format(line),
+            )
+        for line in narrow:
+            self.assertLessEqual(
+                len(line),
+                40,
+                "a block line exceeds width 40: {!r}".format(line),
+            )
+        self.assertGreater(
+            len(narrow),
+            len(wide),
+            "width=40 must wrap the long finding to strictly more lines "
+            "than width=80:\nwidth=80 ({!r} lines): {!r}\nwidth=40 "
+            "({!r} lines): {!r}".format(
+                len(wide), wide, len(narrow), narrow
+            ),
         )
 
 

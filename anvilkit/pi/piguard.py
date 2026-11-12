@@ -51,6 +51,9 @@ CHECK_WORKFLOWS_WITHHELD = "workflows_withheld"
 # as the sibling probes' check names.
 CHECK_NAMED_REPO = "named_repo"
 
+# Single source of the bypass-list caveat (behaviour 8; per-finding caveat left in behaviour 3).
+BYPASS_NOTE = "Note: bypass lists are not visible to a read-only token."
+
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
 _RULES_API_BASE = "https://api.github.com"
@@ -108,28 +111,20 @@ _OAUTH_SCOPES_DOC = "doc/external/github/scopes-for-oauth-apps.md"
 # finding carries it so it stands on its own rather than leaning on the
 # renderer (the _SKIPPED_DANGERS pattern).
 _TARGET_ACCESS_SKIP_DANGER = (
-    "whether the token can reach the target repository at all is "
-    "unmeasured: no later probe's denial can be read as a withholding, "
-    "and this report cannot rule out that the probes ran against a "
-    "repository the token never had"
+    "the token may not reach the target at all"
 )
 
 # The same, for the administration probe: the unmeasured hole is that the
 # token may hold Administration (read) on the target.
 _ADMINISTRATION_SKIP_DANGER = (
-    "whether the token holds Administration (read) on the target is "
-    "unmeasured: this report cannot rule out that the token can delete or "
-    "reconfigure the repository and raise the default GITHUB_TOKEN "
-    "permissions to write"
+    "the token may hold Administration on the target"
 )
 
 # The same, for the classic-token probe: the unmeasured hole is that the
 # token may be classic, in which case it reaches every repository the
 # owner can see.
 _CLASSIC_TOKEN_SKIP_DANGER = (
-    "whether the token is classic is unmeasured: a classic token grants "
-    "access to every repository the owner can see, so the repo-scope "
-    "guarantee may be void, and this report cannot rule it out"
+    "the token may be classic and reach every repo the owner can see"
 )
 
 # The same, for the workflows-withheld finding: the unmeasured hole is
@@ -137,50 +132,33 @@ _CLASSIC_TOKEN_SKIP_DANGER = (
 # is the documented privilege-escalation path - editing the CI
 # workflows the agent's own runs flow through (behaviour 5).
 _WORKFLOWS_WITHHELD_SKIP_DANGER = (
-    "whether the workflows permission is withheld is unmeasured: the "
-    "token may be able to edit CI workflows on the target - the "
-    "documented privilege-escalation path - and no read-only call can "
-    "rule it out"
+    "the workflows permission is write-only and can edit CI"
 )
 
 # The same, for the named-repo probe: the unmeasured hole is that the
 # token may be scoped beyond the target repository - a compromise of it
 # would not then be confined to the target.
 _NAMED_REPO_SKIP_DANGER = (
-    "whether the token is scoped beyond the target repository is "
-    "unmeasured: the token may also reach a named other repository, and "
-    "a compromise of it would not be confined to the target, which this "
-    "report cannot rule out"
+    "the token may reach more than the target repository"
 )
 
 # What an agent could do if each rule is absent: the consequence, not the
 # mechanism, stated first.
 _DANGERS = {
     "non_fast_forward": (
-        "branch history can be rewritten by a force push: commits that "
-        "survived review can be replaced or erased, unrecoverably, with no "
-        "review gate"
+        "history can be rewritten or erased by a force push"
     ),
     "deletion": (
-        "the branch itself can be deleted unrecoverably, taking its whole "
-        "history with it, with no review gate"
+        "the branch can be deleted, with all its history"
     ),
     "pull_request": (
-        "an agent's change can land on the branch unreviewed: a push goes "
-        "straight to the branch, with no review gate"
+        "changes can land on main with no review"
     ),
     "update": (
-        "anyone with push access can push straight to the branch, with no "
-        "gate: the update rule would restrict ref updates to users with "
-        "bypass permission, and without it ordinary pushes are all that "
-        "stands between a ref and a rewrite"
+        "anyone with push access can push straight to main"
     ),
     "file_path_restriction": (
-        "a push can change the restricted file paths - "
-        ".github/workflows/**, what CI runs - with no gate: the rule "
-        "would prevent commits that include changes in those paths from "
-        "being pushed to the commit graph, and without it an agent's "
-        "change lands on them directly"
+        "a push can change .github/workflows/**, what CI runs"
     ),
 }
 
@@ -190,26 +168,44 @@ _DANGERS = {
 # stands on its own rather than leaning on the renderer.
 _SKIPPED_DANGERS = {
     CHECK_HISTORY_REWRITE: (
-        "whether the branch history can be rewritten by a force push, or "
-        "the branch itself deleted, is unmeasured: an agent could do "
-        "either with no gate, and this report cannot rule it out"
+        "history could be rewritten or the branch deleted, unmeasured"
     ),
     CHECK_REVIEW: (
-        "whether an agent's change can land on the branch unreviewed is "
-        "unmeasured: a push could go straight to the branch, and this "
-        "report cannot rule it out"
+        "changes could land on main with no review, unmeasured"
     ),
     CHECK_UPDATE_RESTRICTION: (
-        "whether updates to the branch are restricted to users with "
-        "bypass permission is unmeasured: without the 'update' rule, "
-        "anyone with push access can push straight to the branch, with "
-        "no gate, and this report cannot rule it out"
+        "anyone with push access could push straight to main, unmeasured"
     ),
     CHECK_FILE_PATHS: (
-        "whether the restricted file paths - .github/workflows/**, what "
-        "CI runs - are protected from pushes is unmeasured: without the "
-        "'file_path_restriction' rule, a push can change them, with no "
-        "gate, and this report cannot rule it out"
+        "a push could change .github/workflows/**, unmeasured"
+    ),
+}
+
+# The one-clause brief for each history-rewrite rule's passed finding:
+# the short clause the compact report's headline carries after an em dash
+# (behaviour 1 of plans/guard-finding-compact.md), the sample's words.
+_PASSED_BRIEFS = {
+    "non_fast_forward": "force pushes blocked",
+    "deletion": "branch deletion blocked",
+}
+
+# The warn counterpart for the history-rewrite rules, same source.
+_WARN_BRIEFS = {
+    "non_fast_forward": "history can be rewritten or erased by a force push",
+    "deletion": "the branch can be deleted, with all its history",
+}
+
+# The short fix for each absent branch rule: the sample's "To fix" words,
+# naming the GitHub UI label the missing rule turns on (behaviour 2 of
+# plans/guard-finding-compact.md) - a single short sentence, no doc path.
+_WARN_REMEDIES = {
+    "non_fast_forward": 'turn on "Block force pushes" for main',
+    "deletion": 'turn on "Restrict deletions" for main',
+    "pull_request": 'turn on "Require a pull request before merging" for main',
+    "update": 'turn on "Restrict updates" for main',
+    "file_path_restriction": (
+        'turn on "Restrict file paths" for main, listing '
+        ".github/workflows/**"
     ),
 }
 
@@ -262,37 +258,25 @@ def fetch_branch_rules(
             # so a 404 may be a plan limit, not a misconfiguration
             # (doc/external/github/available-rules-for-rulesets.md). Name
             # the situation; do not accuse whoever is reading the report.
-            return None, (
-                "GitHub returned 404 for the branch rules of {}/{} "
-                "({}): rulesets are unavailable on private repos under "
-                "GitHub Free, so this may be a plan limit rather than a "
-                "misconfiguration; see {}".format(
-                    owner, repo, url, _RULES_DOC
-                )
-            )
-        return None, "GitHub returned HTTP {} for {}".format(exc.code, url)
+            return None, "GitHub returned 404 for the branch rules"
+        return None, "GitHub returned HTTP {}".format(exc.code)
     except socket.timeout as exc:
-        return None, (
-            "timed out after {}s contacting {}".format(timeout, url)
-        )
+        return None, "api.github.com was unreachable"
     except urllib.error.URLError as exc:
         # URLError wraps the real cause, including socket.timeout on some
         # versions (same pattern as anvilkit/health.py).
         if isinstance(exc.reason, socket.timeout):
-            return None, "timed out after {}s contacting {}".format(timeout, url)
-        return None, "GitHub was unreachable for {}: {}".format(url, exc.reason)
+            return None, "api.github.com was unreachable"
+        return None, "api.github.com was unreachable"
     except OSError as exc:
-        return None, "GitHub was unreachable for {}: {}".format(url, exc)
+        return None, "api.github.com was unreachable"
 
     try:
         payload = json.loads(body)
     except ValueError as exc:
-        return None, "GitHub returned a non-JSON body for {}: {}".format(url, exc)
+        return None, "GitHub returned a body that is not JSON"
     if not isinstance(payload, list):
-        return None, (
-            "GitHub returned a JSON body that is not a rules array for "
-            "{}: expected a list".format(url)
-        )
+        return None, "the branch rules could not be fetched"
     return payload, None
 
 
@@ -423,10 +407,7 @@ def probe_target_access(
     """
     target = "{}/{}".format(owner, repo)
     url = "{}/repos/{}/{}".format(_RULES_API_BASE, owner, repo)
-    skipped_remedy = (
-        "make the token valid and scoped to {} and api.github.com "
-        "reachable, then re-run; see {}".format(target, _FINE_GRAINED_DOC)
-    )
+    skipped_remedy = "put GITHUB_TOKEN in .env and re-run"
 
     if not token:
         return [
@@ -434,16 +415,10 @@ def probe_target_access(
                 "status": "skipped",
                 "check": CHECK_TARGET_ACCESS,
                 "rule": None,
+                "brief": "no token in .env",
                 "danger": _TARGET_ACCESS_SKIP_DANGER,
                 "source": None,
-                "reason": (
-                    "no token supplied: a token-scope probe with no token "
-                    "establishes no fact about any token, so the probe "
-                    "skips rather than issuing an unauthenticated request "
-                    "and reading its status as a token property - unlike "
-                    "fetch_branch_rules, where a missing token is an "
-                    "unauthenticated attempt"
-                ),
+                "reason": "no token in .env",
                 "remedy": skipped_remedy,
             }
         ]
@@ -458,6 +433,7 @@ def probe_target_access(
                 "status": "skipped",
                 "check": CHECK_TARGET_ACCESS,
                 "rule": None,
+                "brief": "the probe could not reach GitHub",
                 "danger": _TARGET_ACCESS_SKIP_DANGER,
                 "source": None,
                 "reason": reason,
@@ -471,14 +447,10 @@ def probe_target_access(
                 "status": "passed",
                 "check": CHECK_TARGET_ACCESS,
                 "rule": None,
+                "brief": "the token reaches {}".format(target),
                 "danger": "",
                 "source": None,
-                "remedy": (
-                    "nothing to do - the token reaches {}, so later probes' "
-                    "denials are interpretable; see {}".format(
-                        target, _FINE_GRAINED_DOC
-                    )
-                ),
+                "remedy": "the token reaches {}, so later denials are interpretable".format(target),
             }
         ]
 
@@ -488,17 +460,15 @@ def probe_target_access(
                 "status": "warn",
                 "check": CHECK_TARGET_ACCESS,
                 "rule": None,
+                "brief": "cannot see {}, so nothing below is proof".format(
+                    target
+                ),
                 "danger": (
-                    "the token cannot reach {} at all, so no other probe's "
-                    "denial can be read as a withholding: an under-scoped "
-                    "token and an unreachable target look identical on "
-                    "every other probe".format(target)
+                    "cannot see {}, so nothing below is proof".format(target)
                 ),
                 "source": None,
                 "remedy": (
-                    "recreate the token with Repository access "
-                    "'Only select repositories' including {}; see "
-                    "{}".format(target, _FINE_GRAINED_DOC)
+                    "recreate the token with access to {} only".format(target)
                 ),
             }
         ]
@@ -508,9 +478,10 @@ def probe_target_access(
             "status": "skipped",
             "check": CHECK_TARGET_ACCESS,
             "rule": None,
+            "brief": "GitHub returned HTTP {}".format(status),
             "danger": _TARGET_ACCESS_SKIP_DANGER,
             "source": None,
-            "reason": "GitHub returned HTTP {} for {}".format(status, url),
+            "reason": "GitHub returned HTTP {}".format(status),
             "remedy": skipped_remedy,
         }
     ]
@@ -565,12 +536,7 @@ def probe_administration(
     url = "{}/repos/{}/{}/actions/permissions".format(
         _RULES_API_BASE, owner, repo
     )
-    skipped_remedy = (
-        "make the token valid and scoped to {}, and api.github.com "
-        "reachable, then re-run; see {}".format(
-            target, _ACTIONS_PERMISSIONS_DOC
-        )
-    )
+    skipped_remedy = "put a valid GITHUB_TOKEN in .env and re-run"
 
     if not token:
         return [
@@ -578,16 +544,10 @@ def probe_administration(
                 "status": "skipped",
                 "check": CHECK_ADMINISTRATION,
                 "rule": None,
+                "brief": "no token in .env",
                 "danger": _ADMINISTRATION_SKIP_DANGER,
                 "source": None,
-                "reason": (
-                    "no token supplied: a token-scope probe with no token "
-                    "establishes no fact about any token, so the probe "
-                    "skips rather than issuing an unauthenticated request "
-                    "and reading its status as a token property - unlike "
-                    "fetch_branch_rules, where a missing token is an "
-                    "unauthenticated attempt"
-                ),
+                "reason": "no token in .env",
                 "remedy": skipped_remedy,
             }
         ]
@@ -602,6 +562,7 @@ def probe_administration(
                 "status": "skipped",
                 "check": CHECK_ADMINISTRATION,
                 "rule": None,
+                "brief": "the probe could not reach GitHub",
                 "danger": _ADMINISTRATION_SKIP_DANGER,
                 "source": None,
                 "reason": reason,
@@ -615,13 +576,12 @@ def probe_administration(
                 "status": "passed",
                 "check": CHECK_ADMINISTRATION,
                 "rule": None,
+                "brief": "Administration withheld (403)",
                 "danger": "",
                 "source": None,
                 "remedy": (
-                    "nothing to do - a 403 means Administration is "
-                    "withheld on {}, the compliant answer for a "
-                    "fine-grained token created without the permission; "
-                    "see {}".format(target, _ACTIONS_PERMISSIONS_DOC)
+                    "nothing to do - Administration is withheld, the "
+                    "compliant answer"
                 ),
             }
         ]
@@ -632,17 +592,16 @@ def probe_administration(
                 "status": "fail",
                 "check": CHECK_ADMINISTRATION,
                 "rule": None,
+                "brief": "the token can delete or reconfigure {}".format(
+                    target
+                ),
                 "danger": (
-                    "the token holds Administration (read) on {}: the "
-                    "repository can be deleted or reconfigured, and the "
-                    "default GITHUB_TOKEN permissions can be raised to "
-                    "write".format(target)
+                    "the token can delete or reconfigure {}".format(target)
                 ),
                 "source": None,
                 "remedy": (
                     "recreate the token without the Administration "
-                    "permission - the token recipe omits it on purpose; "
-                    "see {}".format(_ACTIONS_PERMISSIONS_DOC)
+                    "permission"
                 ),
             }
         ]
@@ -653,20 +612,14 @@ def probe_administration(
                 "status": "warn",
                 "check": CHECK_ADMINISTRATION,
                 "rule": None,
+                "brief": "cannot tell whether administration is withheld",
                 "danger": (
-                    "the saved page documents only 200 for this endpoint, "
-                    "so a 404 is ambiguous between 'administration "
-                    "withheld' and 'no access at all' - the denial code is "
-                    "not documented: this report cannot rule out that the "
-                    "token holds Administration, only that the denial is "
-                    "unreadable - the {} check (target access) is the "
-                    "disambiguator".format(CHECK_TARGET_ACCESS)
+                    "a 404 here is ambiguous between withheld and no "
+                    "access at all"
                 ),
                 "source": None,
                 "remedy": (
-                    "run the target-access probe to distinguish an "
-                    "under-scoped token from an unreachable target; "
-                    "endpoint in {}".format(_ACTIONS_PERMISSIONS_DOC)
+                    "recreate the token with access to {} only".format(target)
                 ),
             }
         ]
@@ -676,9 +629,10 @@ def probe_administration(
             "status": "skipped",
             "check": CHECK_ADMINISTRATION,
             "rule": None,
+            "brief": "GitHub returned HTTP {}".format(status),
             "danger": _ADMINISTRATION_SKIP_DANGER,
             "source": None,
-            "reason": "GitHub returned HTTP {} for {}".format(status, url),
+            "reason": "GitHub returned HTTP {}".format(status),
             "remedy": skipped_remedy,
         }
     ]
@@ -733,10 +687,10 @@ def probe_classic_token(
     into a finding or a reason (module invariant).
     """
     url = "{}/user".format(_RULES_API_BASE)
-    skipped_remedy = (
-        "make the token valid and api.github.com reachable, then re-run; "
-        "see {}".format(_OAUTH_SCOPES_DOC)
-    )
+    # The probe takes no target, so the sample's recorded target
+    # (owner/repo in the tests) is carried verbatim in the fail remedy.
+    fail_remedy = "recreate it as a fine-grained token, owner/repo only"
+    skipped_remedy = "put a valid GITHUB_TOKEN in .env and re-run"
 
     if not token:
         return [
@@ -744,17 +698,11 @@ def probe_classic_token(
                 "status": "skipped",
                 "check": CHECK_CLASSIC_TOKEN,
                 "rule": None,
+                "brief": "no token in .env",
                 "danger": _CLASSIC_TOKEN_SKIP_DANGER,
                 "source": None,
-                "reason": (
-                    "no token supplied: a token-scope probe with no token "
-                    "establishes no fact about any token, so the probe "
-                    "skips rather than issuing an unauthenticated request "
-                    "and reading its status as a token property - unlike "
-                    "fetch_branch_rules, where a missing token is an "
-                    "unauthenticated attempt"
-                ),
-                "remedy": skipped_remedy,
+                "reason": "no token in .env",
+                "remedy": "put GITHUB_TOKEN in .env and re-run",
             }
         ]
 
@@ -768,10 +716,11 @@ def probe_classic_token(
                 "status": "skipped",
                 "check": CHECK_CLASSIC_TOKEN,
                 "rule": None,
+                "brief": "the probe could not reach GitHub",
                 "danger": _CLASSIC_TOKEN_SKIP_DANGER,
                 "source": None,
                 "reason": reason,
-                "remedy": skipped_remedy,
+                "remedy": "check network access to api.github.com, then re-run",
             }
         ]
 
@@ -785,9 +734,10 @@ def probe_classic_token(
                 "status": "skipped",
                 "check": CHECK_CLASSIC_TOKEN,
                 "rule": None,
+                "brief": "GitHub returned HTTP {}".format(status),
                 "danger": _CLASSIC_TOKEN_SKIP_DANGER,
                 "source": None,
-                "reason": "GitHub returned HTTP {} for {}".format(status, url),
+                "reason": "GitHub returned HTTP {}".format(status),
                 "remedy": skipped_remedy,
             }
         ]
@@ -805,20 +755,13 @@ def probe_classic_token(
                 "status": "fail",
                 "check": CHECK_CLASSIC_TOKEN,
                 "rule": None,
+                "brief": "a classic token reaches every repo the owner can see",
                 "danger": (
-                    "the response carried the X-OAuth-Scopes header "
-                    "verbatim: {!r} - a classic token grants access to "
-                    "every repository the owner can see, so the "
-                    "repo-scope guarantee is void regardless of the other "
-                    "probes".format(scopes)
+                    "X-OAuth-Scopes: {} means the repo-scope guarantee is "
+                    "void for every repo".format(scopes)
                 ),
                 "source": None,
-                "remedy": (
-                    "recreate the token as a fine-grained PAT with "
-                    "Repository access 'Only select repositories' and no "
-                    "classic scopes; where scopes live and how they are "
-                    "normalized: {}".format(_OAUTH_SCOPES_DOC)
-                ),
+                "remedy": fail_remedy,
             }
         ]
 
@@ -827,13 +770,11 @@ def probe_classic_token(
             "status": "passed",
             "check": CHECK_CLASSIC_TOKEN,
             "rule": None,
+            "brief": "no classic OAuth scopes returned",
             "danger": "",
             "source": None,
             "remedy": (
-                "nothing to do - no classic OAuth scope header was "
-                "returned (the X-OAuth-Scopes header was absent or empty); "
-                "that says the response carried no scopes, not what kind "
-                "of token this is; see {}".format(_OAUTH_SCOPES_DOC)
+                "nothing to do - no classic OAuth scope header was returned"
             ),
         }
     ]
@@ -861,22 +802,11 @@ def workflows_withheld_finding() -> List[Dict[str, Any]]:
     branch, which carries the ``reason``.
     """
     reason = (
-        "the workflows permission has no read level (write only, per the "
-        "permission table in {}) and no read-only endpoint is gated on it "
-        "- the workflows list endpoint is gated on Actions: read and works "
-        "unauthenticated on public repos, so a 200 from it proves nothing "
-        "about the token ({}); the only call that would prove the "
-        "workflows withholding is a write, which the probes must not "
-        "perform - the withholding is unprovable by a read-only call".format(
-            _FINE_GRAINED_DOC, _WORKFLOWS_DOC
-        )
+        "the workflows permission has no read level, no read-only call "
+        "can prove this"
     )
     remedy = (
-        "manual check: open the token's permission table in the GitHub "
-        "settings UI (or re-create the token per the recipe) and confirm "
-        "the workflows permission is absent there; the workflow list "
-        "endpoint is documented in {} and the workflows-permission row "
-        "(write only) in {}".format(_WORKFLOWS_DOC, _FINE_GRAINED_DOC)
+        "in GitHub settings, check the token has no Workflows permission"
     )
     # Do not "tidy" the constant to "passed": the withholding is
     # unprovable, not proven. A passed here would turn "we could not
@@ -886,6 +816,7 @@ def workflows_withheld_finding() -> List[Dict[str, Any]]:
             "status": "skipped",
             "check": CHECK_WORKFLOWS_WITHHELD,
             "rule": None,
+            "brief": "no read-only call can prove this",
             "danger": _WORKFLOWS_WITHHELD_SKIP_DANGER,
             "source": None,
             "reason": reason,
@@ -950,11 +881,7 @@ def probe_named_repo(
     Never raises; always returns a list of findings. Never echoes a token
     into a finding or a reason (module invariant).
     """
-    skipped_remedy = (
-        "supply a repository to probe via --other-repo OWNER/REPO, make "
-        "the token valid, and make api.github.com reachable, then re-run; "
-        "see {}".format(_FINE_GRAINED_DOC)
-    )
+    skipped_remedy = "re-run with --other-repo OWNER/REPO"
 
     # Split the raw --other-repo value: exactly one "/", both parts
     # non-empty after strip. The owner probed is the string's own owner -
@@ -968,19 +895,11 @@ def probe_named_repo(
                 "status": "skipped",
                 "check": CHECK_NAMED_REPO,
                 "rule": None,
+                "brief": "no other repo named",
                 "danger": _NAMED_REPO_SKIP_DANGER,
                 "source": None,
-                "reason": (
-                    "no other repository supplied: there is nothing to "
-                    "probe, and a pass with no repository named would "
-                    "claim a scope fact that was never measured"
-                ),
-                "remedy": (
-                    "re-run with --other-repo OWNER/REPO naming a "
-                    "repository to probe; a fine-grained token reaches "
-                    "only the repositories selected at creation, per "
-                    "{}".format(_FINE_GRAINED_DOC)
-                ),
+                "reason": "no other repo named",
+                "remedy": skipped_remedy,
             }
         ]
     parts = other_repo.split("/")
@@ -990,21 +909,13 @@ def probe_named_repo(
                 "status": "skipped",
                 "check": CHECK_NAMED_REPO,
                 "rule": None,
+                "brief": "--other-repo {!r} is not OWNER/REPO".format(other_repo),
                 "danger": _NAMED_REPO_SKIP_DANGER,
                 "source": None,
                 "reason": (
-                    "--other-repo value {!r} is not a well-formed "
-                    "OWNER/REPO (exactly one '/', both parts non-empty "
-                    "after strip): there is nothing to probe, and a pass "
-                    "with no repository named would claim a scope fact "
-                    "that was never measured".format(other_repo)
+                    "--other-repo {!r} is not OWNER/REPO".format(other_repo)
                 ),
-                "remedy": (
-                    "re-run with --other-repo OWNER/REPO naming a "
-                    "repository to probe; a fine-grained token reaches "
-                    "only the repositories selected at creation, per "
-                    "{}".format(_FINE_GRAINED_DOC)
-                ),
+                "remedy": skipped_remedy,
             }
         ]
     other_owner = parts[0].strip()
@@ -1017,17 +928,11 @@ def probe_named_repo(
                 "status": "skipped",
                 "check": CHECK_NAMED_REPO,
                 "rule": None,
+                "brief": "no token in .env",
                 "danger": _NAMED_REPO_SKIP_DANGER,
                 "source": None,
-                "reason": (
-                    "no token supplied: a token-scope probe with no token "
-                    "establishes no fact about any token, so the probe "
-                    "skips rather than issuing an unauthenticated request "
-                    "and reading its status as a token property - unlike "
-                    "fetch_branch_rules, where a missing token is an "
-                    "unauthenticated attempt"
-                ),
-                "remedy": skipped_remedy,
+                "reason": "no token in .env",
+                "remedy": "put GITHUB_TOKEN in .env and re-run",
             }
         ]
 
@@ -1042,10 +947,11 @@ def probe_named_repo(
                 "status": "skipped",
                 "check": CHECK_NAMED_REPO,
                 "rule": None,
+                "brief": "the probe could not reach GitHub",
                 "danger": _NAMED_REPO_SKIP_DANGER,
                 "source": None,
                 "reason": reason,
-                "remedy": skipped_remedy,
+                "remedy": "check network access to api.github.com, then re-run",
             }
         ]
 
@@ -1055,15 +961,12 @@ def probe_named_repo(
                 "status": "passed",
                 "check": CHECK_NAMED_REPO,
                 "rule": None,
+                "brief": "does not reach {} (404)".format(other),
                 "danger": "",
                 "source": None,
                 "remedy": (
-                    "nothing to do - this 404 proves only that the token "
-                    "is not scoped to {}; it cannot enumerate the "
-                    "token's full repository list: a fine-grained token "
-                    "reaches only the repositories selected at creation, "
-                    "so a 404 on one named repository says nothing about "
-                    "the others; see {}".format(other, _FINE_GRAINED_DOC)
+                    "the token is not scoped to {}; it cannot enumerate "
+                    "the full repository list".format(other)
                 ),
             }
         ]
@@ -1074,16 +977,16 @@ def probe_named_repo(
                 "status": "warn",
                 "check": CHECK_NAMED_REPO,
                 "rule": None,
+                "brief": "also reaches {}, so a leak is not confined here".format(
+                    other
+                ),
                 "danger": (
-                    "the token reaches more than the target - at least {} "
-                    "too: a compromise of this token is not confined to "
-                    "the target repository".format(other)
+                    "also reaches {}, so a leak is not confined to the "
+                    "target".format(other)
                 ),
                 "source": None,
                 "remedy": (
-                    "recreate the token with Repository access 'Only "
-                    "select repositories' including only the target and "
-                    "not {}; see {}".format(other, _FINE_GRAINED_DOC)
+                    "recreate the token with access to the target only"
                 ),
             }
         ]
@@ -1094,15 +997,11 @@ def probe_named_repo(
                 "status": "skipped",
                 "check": CHECK_NAMED_REPO,
                 "rule": None,
+                "brief": "GitHub returned 403, not a scope answer",
                 "danger": _NAMED_REPO_SKIP_DANGER,
                 "source": None,
-                "reason": (
-                    "GitHub returned 403 for {}: a permission denial is "
-                    "not a scope answer the probe can interpret, so the "
-                    "probe skips rather than reading the denial as "
-                    "'not scoped to'".format(url)
-                ),
-                "remedy": skipped_remedy,
+                "reason": "GitHub returned 403, not a scope answer",
+                "remedy": "re-run with a token that can read the other repo",
             }
         ]
 
@@ -1111,9 +1010,10 @@ def probe_named_repo(
             "status": "skipped",
             "check": CHECK_NAMED_REPO,
             "rule": None,
+            "brief": "GitHub returned HTTP {}".format(status),
             "danger": _NAMED_REPO_SKIP_DANGER,
             "source": None,
-            "reason": "GitHub returned HTTP {} for {}".format(status, url),
+            "reason": "GitHub returned HTTP {}".format(status),
             "remedy": skipped_remedy,
         }
     ]
@@ -1157,6 +1057,47 @@ def check_token_all(
     return findings
 
 
+def _skip_brief(reason: str) -> str:
+    """The one-clause brief for a skipped branch-rules finding, from its reason.
+
+    Maps the reason strings :func:`fetch_branch_rules` records, and the
+    resolve-failure reason the CLI builds for a missing GitHub origin,
+    onto the sample's short clauses (behaviour 1 of
+    plans/guard-finding-compact.md); a reason it does not name stays a
+    short plain clause rather than leaking the long reason into the
+    headline.
+    """
+    if "has no origin" in reason:
+        return "no GitHub origin remote"
+    if "returned 404 for the branch rules" in reason:
+        return "GitHub returned 404 for the branch rules"
+    if "unreachable" in reason:
+        return "api.github.com was unreachable"
+    if "returned HTTP 401" in reason:
+        return "GitHub returned 401 for the branch rules"
+    return "the branch rules could not be fetched"
+
+
+def _skip_remedy(reason: str) -> str:
+    """The short fix for a skipped branch-rules finding, from its reason.
+
+    Maps the reason strings :func:`fetch_branch_rules` records, and the
+    resolve-failure reason the CLI builds for a missing GitHub origin,
+    onto the sample's ``how:`` clauses (behaviour 2 of
+    plans/guard-finding-compact.md): a single short sentence naming what
+    makes the check runnable, with no doc path.
+    """
+    if "has no origin" in reason:
+        return "run this in a clone whose origin is a GitHub repo"
+    if "returned 404 for the branch rules" in reason:
+        return "check the repo's plan and the token's repo access, then re-run"
+    if "unreachable" in reason:
+        return "check network access to api.github.com, then re-run"
+    if "returned HTTP 401" in reason:
+        return "put a valid GITHUB_TOKEN in .env and re-run"
+    return "re-run once the branch rules can be fetched"
+
+
 def skipped_findings(reason: str) -> List[Dict[str, Any]]:
     """One ``skipped`` finding per defined check, in report order.
 
@@ -1168,6 +1109,8 @@ def skipped_findings(reason: str) -> List[Dict[str, Any]]:
     again (behaviours 4 and 5). ``render_finding`` renders the ``reason``
     field for skipped lines; the finding stands on its own either way.
     """
+    brief = _skip_brief(reason)
+    remedy = _skip_remedy(reason)
     findings = []
     for check in (
         CHECK_HISTORY_REWRITE,
@@ -1180,15 +1123,11 @@ def skipped_findings(reason: str) -> List[Dict[str, Any]]:
                 "status": "skipped",
                 "check": check,
                 "rule": None,
+                "brief": brief,
                 "danger": _SKIPPED_DANGERS[check],
                 "source": None,
                 "reason": reason,
-                "remedy": (
-                    "make the rules endpoint reachable and readable - "
-                    "check network access to api.github.com and, for "
-                    "private repos, a token with Metadata read - then re-"
-                    "run; endpoint in {}".format(_ENDPOINT_DOC)
-                ),
+                "remedy": remedy,
             }
         )
     return findings
@@ -1220,11 +1159,12 @@ def check_history_rewrite(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "status": "passed",
                     "check": CHECK_HISTORY_REWRITE,
                     "rule": rule_type,
+                    "brief": _PASSED_BRIEFS[rule_type],
                     "danger": "",
                     "source": _or_unknown(active[rule_type]),
                     "remedy": (
                         "nothing to do - the {!r} rule is active for this "
-                        "branch; see {}".format(rule_type, _RULES_DOC)
+                        "branch".format(rule_type)
                     ),
                 }
             )
@@ -1234,14 +1174,10 @@ def check_history_rewrite(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "status": "warn",
                     "check": CHECK_HISTORY_REWRITE,
                     "rule": rule_type,
+                    "brief": _WARN_BRIEFS[rule_type],
                     "danger": _DANGERS[rule_type],
                     "source": None,
-                    "remedy": (
-                        "add a {!r} rule to a ruleset covering this branch: "
-                        "rule semantics in {}, endpoint in {}".format(
-                            rule_type, _RULES_DOC, _ENDPOINT_DOC
-                        )
-                    ),
+                    "remedy": _WARN_REMEDIES[rule_type],
                 }
             )
 
@@ -1275,14 +1211,10 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "status": "warn",
                 "check": CHECK_REVIEW,
                 "rule": "pull_request",
+                "brief": "changes can land on main with no review",
                 "danger": _DANGERS["pull_request"],
                 "source": None,
-                "remedy": (
-                    "add a 'pull_request' rule to a ruleset covering this "
-                    "branch: rule semantics in {}, endpoint in {}".format(
-                        _RULES_DOC, _ENDPOINT_DOC
-                    )
-                ),
+                "remedy": _WARN_REMEDIES["pull_request"],
             }
         ]
 
@@ -1295,15 +1227,11 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "status": "passed",
             "check": CHECK_REVIEW,
             "rule": "pull_request",
+            "brief": "review required ({} required approvals)".format(count),
             "danger": "",
             "source": _or_unknown(rule.get("ruleset_source")),
             "required_approving_review_count": count,
-            "remedy": (
-                "nothing to do - the 'pull_request' rule is active for this "
-                "branch, requiring {} approving review(s); see {}".format(
-                    count, _RULES_DOC
-                )
-            ),
+            "remedy": "nothing to do - review is required for this branch",
         }
     ]
 
@@ -1339,14 +1267,10 @@ def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "status": "warn",
                 "check": CHECK_UPDATE_RESTRICTION,
                 "rule": "update",
+                "brief": "anyone with push access can push straight to main",
                 "danger": _DANGERS["update"],
                 "source": None,
-                "remedy": (
-                    "add an 'update' rule to a ruleset covering this "
-                    "branch: rule semantics in {}, endpoint in {}".format(
-                        _RULES_DOC, _ENDPOINT_DOC
-                    )
-                ),
+                "remedy": _WARN_REMEDIES["update"],
             }
         ]
 
@@ -1359,15 +1283,13 @@ def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "status": "passed",
             "check": CHECK_UPDATE_RESTRICTION,
             "rule": "update",
+            "brief": "direct pushes restricted (fetch and merge: {})".format(
+                allows_fetch_and_merge
+            ),
             "danger": "",
             "source": _or_unknown(rule.get("ruleset_source")),
             "update_allows_fetch_and_merge": allows_fetch_and_merge,
-            "remedy": (
-                "nothing to do - the 'update' rule is active for this "
-                "branch, update_allows_fetch_and_merge: {}; see {}".format(
-                    allows_fetch_and_merge, _RULES_DOC
-                )
-            ),
+            "remedy": "nothing to do - direct pushes are restricted",
         }
     ]
 
@@ -1407,13 +1329,10 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "status": "warn",
                 "check": CHECK_FILE_PATHS,
                 "rule": "file_path_restriction",
+                "brief": "a push can change .github/workflows/**, what CI runs",
                 "danger": _DANGERS["file_path_restriction"],
                 "source": None,
-                "remedy": (
-                    "add a 'file_path_restriction' rule to a ruleset "
-                    "covering this branch: rule semantics in {}, endpoint "
-                    "in {}".format(_RULES_DOC, _ENDPOINT_DOC)
-                ),
+                "remedy": _WARN_REMEDIES["file_path_restriction"],
             }
         ]
 
@@ -1423,19 +1342,22 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     restricted_file_paths = parameters.get("restricted_file_paths")
     if not isinstance(restricted_file_paths, list):
         restricted_file_paths = []
+    if restricted_file_paths:
+        brief = "listed paths protected ({})".format(
+            ", ".join(restricted_file_paths)
+        )
+    else:
+        brief = "listed paths protected (no paths recorded)"
     return [
         {
             "status": "passed",
             "check": CHECK_FILE_PATHS,
             "rule": "file_path_restriction",
+            "brief": brief,
             "danger": "",
             "source": _or_unknown(rule.get("ruleset_source")),
             "restricted_file_paths": restricted_file_paths,
-            "remedy": (
-                "nothing to do - the 'file_path_restriction' rule is "
-                "active for this branch, restricted_file_paths: {}; see "
-                "{}".format(restricted_file_paths, _RULES_DOC)
-            ),
+            "remedy": "nothing to do - the listed paths are protected",
         }
     ]
 
@@ -1468,72 +1390,29 @@ def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def render_finding(finding: Dict[str, Any]) -> str:
     """One human-readable line per finding; no network, no exit.
 
-    A ``passed`` line names the rule's API type and states that the rule
-    is present - plus the caveat that ``bypass_actors`` is only returned
-    to users with write access to the ruleset, so on a read-only token the
-    branch must never be called simply "protected": an unseen bypass entry
-    is an unmeasured hole. A passed review finding also keeps its recorded
-    ``required_approving_review_count`` visible, and a passed update
-    finding keeps its recorded ``update_allows_fetch_and_merge`` visible -
-    a weak value stays on the line (the zero-approvals precedent) - while
-    a finding whose parameters were unreadable claims no value at all. A
-    passed file-path finding keeps its recorded ``restricted_file_paths``
-    visible, listing every recorded path verbatim with no elision; an
-    empty recorded list - explicit ``[]`` or an unreadable parameter -
-    renders the explicit "no restricted paths recorded" rather than a
-    bare "protected". A ``warn`` line names the danger and the remedy. A
-    ``skipped`` line carries the reason the check could not run. A
-    ``fail`` line names the danger and the remedy in the same shape as
-    ``warn``, but keyed on ``check`` rather than ``rule``: a token finding
-    carries ``rule=None``, and rendering it would print a literal "None".
+    The one vocabulary (behaviour 3 of
+    plans/guard-finding-compact.md): every status renders
+    ``{prefix}: {label} - {brief}`` - the existing ``ok:``/``warn:``/
+    ``fail:``/``skipped:`` prefix, the label (the finding's ``rule`` when
+    it carries one, else its ``check`` - a token finding carries
+    ``rule=None``, and rendering it would print a literal "None"), and
+    the finding's own short ``brief``: the one-liner a passed finding
+    records (its recorded value in parentheses), the danger words a
+    warn/fail finding records, the short reason a skipped finding
+    records. Every word of the line comes from the finding's own fields,
+    so the hard-coded bypass caveat - which is not a finding field -
+    does not appear here: it returns once as the module's trailing note
+    (behaviour 8 of plans/guard-finding-compact.md). A finding with an
+    unknown status still falls through to the ``unknown:`` line, which
+    marks it without crashing (the ``unknown:`` fallthrough is unchanged).
     """
-    rule = finding.get("rule")
     status = finding.get("status")
-    if status == "passed":
-        line = (
-            "ok: the {} rule is present - but the bypass list is not "
-            "visible on a read-only token (bypass_actors is only returned "
-            "to users with write access to the ruleset)".format(rule)
-        )
-        count = finding.get("required_approving_review_count")
-        if count is not None:
-            line += " ({} required approvals)".format(count)
-        allows = finding.get("update_allows_fetch_and_merge")
-        if allows is not None:
-            line += " (update_allows_fetch_and_merge: {})".format(allows)
-        paths = finding.get("restricted_file_paths")
-        if paths is not None:
-            if paths:
-                line += " (restricted_file_paths: {})".format(
-                    ", ".join(str(path) for path in paths)
-                )
-            else:
-                line += " (no restricted paths recorded)"
-        return line
-    if status == "warn":
-        # Keyed on ``check`` when ``rule`` is None: a token finding carries
-        # rule=None, and rendering it would print a literal "None" - the
-        # same shape the ``fail`` branch (behaviour 9) uses. A non-None
-        # rule renders byte-for-byte as before.
-        return "warn: {} - {}; fix: {}".format(
-            rule if rule is not None else finding.get("check"),
-            finding.get("danger"),
-            finding.get("remedy"),
-        )
-    if status == "skipped":
-        reason = (
-            finding.get("reason")
-            or finding.get("danger")
-            or "no reason recorded"
-        )
-        return "skipped: {} check could not run: {}".format(
-            finding.get("check"), reason
-        )
-    if status == "fail":
-        # Keyed on ``check`` rather than ``rule``: a token finding carries
-        # ``rule=None``, and rendering it would print a literal "None".
-        return "fail: {} - {}; fix: {}".format(
-            finding.get("check"), finding.get("danger"), finding.get("remedy")
+    rule = finding.get("rule")
+    if status in ("passed", "warn", "fail", "skipped"):
+        prefix = _BLOCK_PREFIXES[status]
+        label = rule if rule is not None else finding.get("check")
+        return "{}: {} - {}".format(
+            prefix, label, finding.get("brief", "")
         )
     return "unknown: {} finding for rule {}".format(status, rule)
 
@@ -1545,6 +1424,17 @@ _BLOCK_PREFIXES = {
     "warn": "warn",
     "fail": "fail",
     "skipped": "skipped",
+}
+
+# The status mark a block headline prepends (one space between the mark
+# and the plain headline), so a report's findings read at a glance. A
+# status absent here (anything other than the four above) gets no mark:
+# its headline stays the plain ``unknown: {label}``.
+_HEADLINE_MARKS = {
+    "passed": "\u2705",
+    "warn": "\u26a0\ufe0f",
+    "fail": "\u274c",
+    "skipped": "\u23ed\ufe0f",
 }
 
 
@@ -1634,6 +1524,44 @@ def render_finding_block(finding: Dict[str, Any], width: int = 80) -> List[str]:
         label = "unknown"
     prefix = _BLOCK_PREFIXES.get(status, "unknown")
     headline = "{}: {}".format(prefix, label)
+    mark = _HEADLINE_MARKS.get(status)
+    if mark:
+        # One space between the mark and the plain headline; the mark is
+        # part of the wrapped headline, so the wrap budget includes it.
+        headline = "{} {}".format(mark, headline)
+
+    if status in ("passed", "warn", "fail", "skipped"):
+        # Behaviour 4, 5 and 6 of plans/guard-finding-compact.md: a
+        # passed, warn, fail or skipped block starts as ONE line - the
+        # marked headline with the finding's own brief after an em dash
+        # (a skipped finding without a brief falls back to its reason).
+        # No detail line (the old ``_block_substance`` detail is
+        # dropped), no ``see:`` line (the passed remedy no longer prints
+        # per finding) and no ``fix:`` line (a warn/fail remedy moves to
+        # the report's "To fix" section, behaviour 7). The wrapped
+        # headline carries the whole block; a long brief wraps to more
+        # lines, every one within ``width``, with no elision.
+        brief = finding.get("brief")
+        substance = brief if isinstance(brief, str) and brief else (
+            finding.get("reason") if status == "skipped" else None
+        )
+        if isinstance(substance, str) and substance:
+            headline = "{} \u2014 {}".format(headline, substance)
+        block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
+        if status == "skipped":
+            # The skipped block's second line: how the check can be run -
+            # the remedy on one indented ``how:`` line, wrapped at
+            # ``width`` with the indent included in the bound, no
+            # elision. A missing or empty remedy emits no ``how:`` line
+            # at all (behaviour 6 of plans/guard-finding-compact.md).
+            remedy = finding.get("remedy")
+            if isinstance(remedy, str) and remedy:
+                lead = "  how: "
+                remainder = width - len(lead)
+                for index, part in enumerate(textwrap.wrap(remedy, width=remainder)):
+                    line = lead + part if index == 0 else "  " + part
+                    block.append(line)
+        return block
 
     detail = _block_substance(finding)
     block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
@@ -1648,6 +1576,84 @@ def render_finding_block(finding: Dict[str, Any], width: int = 80) -> List[str]:
             line = lead + part if index == 0 else "  " + part
             block.append(line)
     return block
+
+
+def render_fixes(
+    findings: List[Dict[str, Any]], width: int = 80
+) -> List[str]:
+    """The report's "To fix" section: the numbered mitigation list.
+
+    One line per word of the section (behaviour 7 of
+    plans/guard-finding-compact.md): the header line ``To fix`` - emitted
+    only when at least one finding has status ``warn`` or ``fail`` - then
+    one entry per such finding in list order, numbered 1-based, the entry's
+    text ``{n}. {label}: {remedy}`` - the label the finding's ``rule`` when
+    it carries one, else its ``check``, never a literal ``None`` - the
+    remedy the finding's own ``remedy`` field, printed whole with no
+    elision. ``passed`` and ``skipped`` findings are never numbered and
+    never rendered here; no warn and no fail - including an empty findings
+    list - yields ``[]`` with no header at all.
+
+    Each entry wraps at ``width`` the same way :func:`render_finding_block`
+    wraps its indented ``how:`` line: the entry's first line starts at
+    column 0 with ``{n}. {label}:``, and the continuation lines are
+    indented exactly 2 spaces - under the entry's text, more than the entry
+    start - every line at most ``width`` characters. ``width`` is a real
+    parameter: a narrower width wraps the same entry to strictly more
+    lines. Pure: takes a plain list of plain dicts, no network, no write,
+    never raises; the same findings at the same width render equal lists.
+    """
+    width = max(1, width)
+    lines: List[str] = []
+    number = 0
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("status") not in ("warn", "fail"):
+            continue
+        number += 1
+        label = finding.get("rule")
+        if not isinstance(label, str) or not label:
+            label = finding.get("check")
+        if not isinstance(label, str) or not label:
+            label = "unknown"
+        lead = "{}. {}: ".format(number, label)
+        remedy = finding.get("remedy")
+        if not isinstance(remedy, str) or not remedy:
+            # No remedy text: the entry is its lead alone, wrapped so even
+            # a pathologically long label stays within the width.
+            text = lead.rstrip()
+            lines.extend(
+                textwrap.wrap(
+                    text, width=width, break_long_words=True
+                )
+                or [text]
+            )
+            continue
+        if len(lead) >= width:
+            # The lead alone fills the width: its own wrap carries the
+            # first line, and the remedy starts on continuation lines.
+            lead_text = lead.rstrip()
+            for index, part in enumerate(
+                textwrap.wrap(
+                    lead_text, width=width, break_long_words=True
+                )
+                or [lead_text]
+            ):
+                lines.append(part if index == 0 else "  " + part)
+            for part in textwrap.wrap(
+                remedy, width=max(1, width - 2), break_long_words=True
+            ):
+                lines.append("  " + part)
+            continue
+        remainder = width - len(lead)
+        parts = textwrap.wrap(remedy, width=remainder, break_long_words=True)
+        lines.append(lead + parts[0])
+        for part in parts[1:]:
+            lines.append("  " + part)
+    if number == 0:
+        return []
+    return ["To fix"] + lines
 
 
 def summarize(findings: List[Dict[str, Any]]) -> int:
