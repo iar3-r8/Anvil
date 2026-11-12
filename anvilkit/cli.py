@@ -32,7 +32,7 @@ from . import compose, config, env, health, prompts, provision, render, smoke
 from .compose import Compose, ComposeError
 from .pi import pibakeoff
 from .config import ConfigError
-from .pi import piguard, pitokenrecipe, piruleset
+from .pi import picodeowners, piguard, pitokenrecipe, piruleset
 from .pi.piruleset import RulesetError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
@@ -1589,6 +1589,27 @@ def _report_config_health(shared: Context) -> None:
                     MODELS_FILENAME + " parse", "{} {}".format(_mark(False), exc)
                 )
             )
+
+
+def _ask_free_plan(
+    shared: Context,
+    findings: List[Dict[str, Any]],
+    asker: Optional[Callable[..., bool]] = None,
+) -> bool:
+    """Ask the free-plan question once when a file_paths warn is present
+    (behaviour 4 of plans/file-path-interactive-free-plan.md): one
+    ``prompts.confirm`` with default False whose text asks whether the plan
+    does not offer "Restrict file paths"; the asker is injectable for tests.
+    ``shared`` is kept for the caller-side gating (non-interactive /
+    assume_yes / dry_run) and printing, which land with behaviours 5-6."""
+    if asker is None:
+        asker = prompts.confirm
+    if not picodeowners.wants_walkthrough(findings):
+        return False
+    return asker(
+        'Does your GitHub plan not offer "Restrict file paths" in the ruleset UI?',
+        default=False,
+    )
 
 
 def _echo_guard_report(
