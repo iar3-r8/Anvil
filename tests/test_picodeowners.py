@@ -5,9 +5,9 @@ walkthrough steps builder (behaviour 2).
 Every test imports the module through a guarded ``try``/``except
 ImportError`` inside the test method and fails with a clear assertion
 message instead of letting a collection-time ImportError mask the reason
-the suite is red. The module now exists (behaviour 1 is implemented); the
-behaviour-2 tests fail on a guarded fetch of the not-yet-implemented
-``walkthrough_steps`` attribute for the same reason.
+the suite is red. The module now exists and behaviours 1-2 are
+implemented; the behaviour-3 tests fail on a guarded fetch of the
+not-yet-implemented ``wants_walkthrough`` attribute for the same reason.
 
 The ``walkthrough_steps`` pins assert substance, not full strings: each
 step is display text for a human following the saved pages
@@ -384,5 +384,293 @@ class WalkthroughStepsTests(WalkthroughStepsTestCase):
         )
 
 
+class WantsWalkthroughTestCase(unittest.TestCase):
+   """Shared guarded imports and a finding builder for behaviour 3's pins."""
+
+   def _picodeowners(self):
+       """Import anvilkit.pi.picodeowners, failing clearly if the module is absent."""
+       try:
+           from anvilkit.pi import picodeowners
+       except ImportError:
+           self.fail(_ABSENT)
+       return picodeowners
+
+   def _get_wants_walkthrough(self):
+       """Fetch ``anvilkit.pi.picodeowners.wants_walkthrough``, failing clearly if absent."""
+       picodeowners = self._picodeowners()
+       wants = getattr(picodeowners, "wants_walkthrough", None)
+       self.assertTrue(
+           callable(wants),
+           "anvilkit.pi.picodeowners.wants_walkthrough is not callable; "
+           "behaviour 3 of plans/file-path-interactive-free-plan.md has "
+           "not been implemented yet (the module imports fine; only the "
+           "function is missing)",
+       )
+       return wants
+
+   @staticmethod
+   def _finding(status, check, rule=None, **extra):
+       """One finding in the shape ``piguard.check_all`` produces.
+
+       ``piguard.check_file_paths`` emits exactly these keys for a warn
+       (``anvilkit/pi/piguard.py``): ``status``, ``check``, ``rule``,
+       ``brief``, ``danger``, ``source``, ``remedy``. ``extra`` overrides
+       any of them so a pin can vary one key at a time.
+       """
+       finding = {
+           "status": status,
+           "check": check,
+           "rule": rule,
+           "brief": "a push can change .github/workflows/**, what CI runs",
+           "danger": "the file-path restriction rule is not active",
+           "source": None,
+           "remedy": "turn on the file-path restriction rule",
+       }
+       finding.update(extra)
+       return finding
+
+
+class WantsWalkthroughTests(WantsWalkthroughTestCase):
+   """Behaviour 3: ``wants_walkthrough(findings)`` -> the once-per-run warn predicate.
+
+   The predicate is True iff at least one finding has ``check ==
+   "file_paths"`` and ``status == "warn"``: True once for the single such
+   finding, never once per finding; False for a passed, skipped or absent
+   ``file_paths`` finding, and False for an empty list. A non-dict element
+   or a finding missing ``check``/``status`` is ignored, never a crash.
+   Pure: no network, no file, no state between calls.
+   """
+
+   def test_wants_walkthrough_true_for_a_warn_file_paths_finding(self):
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding("warn", "file_paths", "file_path_restriction"),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           True,
+           "a single warn file_paths finding must yield True",
+       )
+
+   def test_wants_walkthrough_true_when_other_findings_are_present(self):
+       # The guard report carries up to five branch findings plus the
+       # token findings; the warn must be seen among them.
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding(
+               "passed",
+               "history_rewrite",
+               "non_fast_forward",
+               brief="force pushes blocked",
+               danger="",
+               remedy="nothing to do",
+           ),
+           self._finding(
+               "passed",
+               "review",
+               "pull_request",
+               brief="review required (1 required approval)",
+               danger="",
+               remedy="nothing to do",
+           ),
+           self._finding(
+               "passed",
+               "update_restriction",
+               "non_fast_forward",
+               brief="fast-forward only",
+               danger="",
+               remedy="nothing to do",
+           ),
+           self._finding(
+               "skipped",
+               "file_paths",
+               "file_path_restriction",
+               brief="api.github.com was unreachable",
+               danger="",
+           ),
+           self._finding("warn", "file_paths", "file_path_restriction"),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           True,
+           "the warn file_paths finding must be seen among the other "
+           "branch findings",
+       )
+
+   def test_wants_walkthrough_false_for_a_passed_file_paths_finding(self):
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding(
+               "passed",
+               "file_paths",
+               "file_path_restriction",
+               brief="listed paths protected (.github/workflows/**)",
+               danger="",
+               remedy="nothing to do - the listed paths are protected",
+           ),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           False,
+           "a passed file_paths finding must not trigger the walkthrough",
+       )
+
+   def test_wants_walkthrough_false_for_a_skipped_file_paths_finding(self):
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding(
+               "skipped",
+               "file_paths",
+               "file_path_restriction",
+               brief="api.github.com was unreachable",
+               danger="",
+           ),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           False,
+           "a skipped file_paths finding must not trigger the walkthrough",
+       )
+
+   def test_wants_walkthrough_false_when_file_paths_is_absent(self):
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding(
+               "warn",
+               "history_rewrite",
+               "deletion",
+               brief="branch deletion not blocked",
+               danger="main can be force-deleted",
+               remedy="turn on the deletion protection rule",
+           ),
+           self._finding(
+               "passed",
+               "review",
+               "pull_request",
+               brief="review required (1 required approval)",
+               danger="",
+               remedy="nothing to do",
+           ),
+           self._finding(
+               "passed",
+               "update_restriction",
+               "non_fast_forward",
+               brief="fast-forward only",
+               danger="",
+               remedy="nothing to do",
+           ),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           False,
+           "other warns must not trigger the walkthrough when the "
+           "file_paths check is absent",
+       )
+
+   def test_wants_walkthrough_false_for_an_empty_list(self):
+       wants = self._get_wants_walkthrough()
+
+       self.assertIs(
+           wants([]),
+           False,
+           "an empty findings list must yield False",
+       )
+
+   def test_wants_walkthrough_ignores_non_dict_elements(self):
+       # A malformed element is ignored, never a crash: the real warn
+       # among the garbage still yields True.
+       wants = self._get_wants_walkthrough()
+       findings = [
+           "garbage",
+           None,
+           42,
+           self._finding("warn", "file_paths", "file_path_restriction"),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           True,
+           "non-dict elements must be ignored and the real warn still "
+           "seen; a crash would mean the contract is unmet",
+       )
+
+   def test_wants_walkthrough_false_for_only_malformed_elements(self):
+       wants = self._get_wants_walkthrough()
+
+       self.assertIs(
+           wants(["garbage", None, 42]),
+           False,
+           "a list of only malformed elements must yield False, not "
+           "raise",
+       )
+
+   def test_wants_walkthrough_ignores_findings_missing_check_or_status(self):
+       # A dict finding without ``check`` or without ``status`` is
+       # ignored: no KeyError, no TypeError.
+       wants = self._get_wants_walkthrough()
+
+       missing_check = {
+           "status": "warn",
+           "rule": "file_path_restriction",
+           "brief": "a push can change .github/workflows/**, what CI runs",
+       }
+       missing_status = {
+           "check": "file_paths",
+           "rule": "file_path_restriction",
+           "brief": "a push can change .github/workflows/**, what CI runs",
+       }
+
+       self.assertIs(
+           wants([missing_check, missing_status]),
+           False,
+           "findings missing check or status must be ignored; a KeyError "
+           "or TypeError here would break the contract",
+       )
+
+       self.assertIs(
+           wants(
+               [
+                   missing_check,
+                   missing_status,
+                   self._finding("warn", "file_paths", "file_path_restriction"),
+               ]
+           ),
+           True,
+           "malformed findings must not hide a real warn file_paths "
+           "finding",
+       )
+
+   def test_wants_walkthrough_is_pure_and_deterministic(self):
+       # Once-per-run is at the cli layer (behaviour 4); this predicate
+       # is a pure function of its argument: two calls with the same list
+       # return the same answer, and neither call mutates the list.
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding("warn", "file_paths", "file_path_restriction"),
+       ]
+       original = [dict(finding) for finding in findings]
+
+       first = wants(findings)
+       second = wants(findings)
+
+       self.assertIs(first, True, "the first call must see the warn")
+       self.assertIs(
+           second,
+           True,
+           "a second call with the same list must return the same answer: "
+           "the predicate is pure, not a stateful asked-once flag",
+       )
+       self.assertEqual(
+           findings,
+           original,
+           "the predicate must not mutate the findings list",
+       )
+
+
 if __name__ == "__main__":
-    unittest.main()
+   unittest.main()
