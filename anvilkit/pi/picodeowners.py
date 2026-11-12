@@ -11,7 +11,7 @@ module builds text only — it never writes a file, never makes a network
 call and never prompts; the prompt belongs to a later behaviour.
 """
 
-from typing import List
+from typing import Any, Dict, List
 
 
 class CodeownersError(Exception):
@@ -103,3 +103,12 @@ def walkthrough_steps(owner: str, repo: str, branch: str, body: str) -> List[str
             "Pro, Team, Enterprise."
         ),
     ]
+
+
+def wants_walkthrough(findings: List[Dict[str, Any]]) -> bool:
+    """True iff a warn file_paths finding is present; the ask happens at the cli layer, behaviour 4."""
+    for finding in findings:
+        if isinstance(finding, dict):
+            if finding.get("check") == "file_paths" and finding.get("status") == "warn":
+                return True
+    return False
