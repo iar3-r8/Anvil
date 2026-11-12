@@ -1360,6 +1360,7 @@ def setup_repo(
                 # verify-guards prints - never re-derived. The findings
                 # carry no token value, so nothing secret is echoed.
                 _echo_guard_report(shared, branch_findings, token_findings)
+                _free_plan_followup(shared, branch_findings, repository)
                 shared.echo("")
                 remediation = piguard.gate_remediation(
                     branch_findings, token_findings
@@ -1612,6 +1613,50 @@ def _ask_free_plan(
     )
 
 
+def _free_plan_followup(
+    shared: Context,
+    branch_findings: List[Dict[str, Any]],
+    repository: Optional[Tuple[str, str]],
+) -> None:
+    """The free-plan follow-up, printed after the guard report at the two
+    call sites that prompt (behaviour 5 of
+    plans/file-path-interactive-free-plan.md; doctor reports and never
+    prompts, so it calls this nowhere).
+
+    Gated on a ``file_paths`` warn (behaviour 3's predicate) and on a
+    resolved repository: with neither, or an unresolvable repository, the
+    report is byte-identical to before the wiring - no line, no prompt,
+    no walkthrough (behaviour 6's error clause, landed early because the
+    follow-up needs the repository anyway).
+
+    Non-interactive, ``--yes`` and ``--dry-run`` runs never ask: they print
+    exactly one line naming the free-plan fallback and how to see the
+    walkthrough, then return - no prompt, no stdin read, and the exit code
+    is untouched (behaviour 5). The line is a report line, one sentence,
+    built here, not in a module.
+
+    An interactive run asks the behaviour-4 unit exactly once: a ``no``
+    answer keeps the output byte-identical - no confirmation line
+    (behaviour 7). A ``yes`` answer's six-step walkthrough (behaviour 6)
+    lands in the next cycle; this green prints nothing more for it.
+    """
+    if not picodeowners.wants_walkthrough(branch_findings):
+        return
+    if repository is None:
+        return
+    if shared.dry_run or shared.assume_yes or not shared.interactive():
+        shared.echo(
+            "Your plan may not offer \"Restrict file paths\" - the "
+            "free-plan CODEOWNERS fix: re-run without --yes to see the "
+            "walkthrough."
+        )
+        return
+    # behaviour 7: a 'no' keeps the output byte-identical - no
+    # confirmation line. The yes-branch's walkthrough emission (behaviour
+    # 6, and its CodeownersError handling) lands in the next cycle.
+    _ask_free_plan(shared, branch_findings)
+
+
 def _echo_guard_report(
     shared: Context,
     branch_findings: List[Dict[str, Any]],
@@ -1846,6 +1891,7 @@ def verify_guards(
     # lines and no report line exceeds 80 characters.
     shared.echo("")
     _echo_guard_report(shared, findings, token_findings)
+    _free_plan_followup(shared, findings, repository)
     shared.echo(_SEPARATOR)
 
     raise typer.Exit(piguard.summarize(findings + token_findings))
