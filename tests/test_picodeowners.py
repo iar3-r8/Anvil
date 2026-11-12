@@ -1,11 +1,23 @@
 """Tests for anvilkit.pi.picodeowners - the CODEOWNERS body builder
-(behaviour 1 of plans/file-path-interactive-free-plan.md).
+(behaviour 1 of plans/file-path-interactive-free-plan.md) and the
+walkthrough steps builder (behaviour 2).
 
-Written before the implementation (TDD RED step). The production module
-``anvilkit.pi.picodeowners`` does not exist yet, so every test imports it
-through a guarded ``try``/``except ImportError`` inside the test method and
-fails with a clear assertion message instead of letting a collection-time
-ImportError mask the reason the suite is red.
+Every test imports the module through a guarded ``try``/``except
+ImportError`` inside the test method and fails with a clear assertion
+message instead of letting a collection-time ImportError mask the reason
+the suite is red. The module now exists (behaviour 1 is implemented); the
+behaviour-2 tests fail on a guarded fetch of the not-yet-implemented
+``walkthrough_steps`` attribute for the same reason.
+
+The ``walkthrough_steps`` pins assert substance, not full strings: each
+step is display text for a human following the saved pages
+``doc/external/github/about-code-owners.md`` (the ``/.github/`` owner line,
+the write-access requirement, the public/private availability caveat) and
+``doc/external/github/available-rules-for-rulesets.md`` (the UI label
+"Require review from Code Owners"). Display tokens are matched
+case-insensitively as substrings within a single step (same-step pairing,
+so the pin cannot pass on two unrelated steps that share one word); the
+body's owner line is data, not display text, and is matched exactly.
 
 The ``/.github/`` owner line is GitHub's own "most secure method" - it owns
 the CODEOWNERS file itself: the saved page
@@ -19,6 +31,7 @@ No test writes a file or makes a network call: ``codeowners_body`` is a pure
 string builder; the observable surface of it is exactly what it returns.
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -143,6 +156,231 @@ class CodeownersBodyTests(unittest.TestCase):
             body,
             "the owner must appear verbatim as @{!r} (no quoting, no "
             "shell-escaping, no case-folding); got: {!r}".format(owner, body),
+        )
+
+
+# Word-boundary match for "Pro" in the availability caveat, so "proper" or
+# "protection" in some other step cannot satisfy the plan-tier assertion
+# (doc/external/github/about-code-owners.md: "GitHub Pro, GitHub Team,
+# GitHub Enterprise Cloud, and GitHub Enterprise Server").
+_PRO = re.compile(r"\bpro\b", re.IGNORECASE)
+
+
+class WalkthroughStepsTestCase(unittest.TestCase):
+    """Shared guarded imports and fetchers for behaviour 2's pins."""
+
+    def _picodeowners(self):
+        """Import anvilkit.pi.picodeowners, failing clearly if the module is absent."""
+        try:
+            from anvilkit.pi import picodeowners
+        except ImportError:
+            self.fail(_ABSENT)
+        return picodeowners
+
+    def _get_walkthrough_steps(self):
+        """Fetch ``anvilkit.pi.picodeowners.walkthrough_steps``, failing clearly if absent."""
+        picodeowners = self._picodeowners()
+        steps = getattr(picodeowners, "walkthrough_steps", None)
+        self.assertTrue(
+            callable(steps),
+            "anvilkit.pi.picodeowners.walkthrough_steps is not callable; "
+            "behaviour 2 of plans/file-path-interactive-free-plan.md has "
+            "not been implemented yet (the module imports fine; only the "
+            "function is missing)",
+        )
+        return steps
+
+    def _steps(self, owner="iar3-r8", repo="anvil", branch="main"):
+        """The walkthrough steps for ``owner``/``repo``/``branch`` with behaviour 1's body."""
+        picodeowners = self._picodeowners()
+        walkthrough_steps = self._get_walkthrough_steps()
+        body = picodeowners.codeowners_body(owner)
+        return walkthrough_steps(owner, repo, branch, body)
+
+    @staticmethod
+    def _first_index(steps, needle):
+        """The index of the first step containing ``needle`` (case-insensitive)."""
+        wanted = needle.lower()
+        for index, step in enumerate(steps):
+            if wanted in step.lower():
+                return index
+        raise AssertionError(
+            "no step mentions {!r}; steps: {!r}".format(needle, steps)
+        )
+
+    @staticmethod
+    def _step_with(steps, *needles):
+        """The first step containing every ``needle`` (case-insensitive).
+
+        The same-step pairing keeps the pin from passing on two unrelated
+        steps that happen to share one word; raises AssertionError when no
+        single step carries them all.
+        """
+        for step in steps:
+            lowered = step.lower()
+            if all(needle.lower() in lowered for needle in needles):
+                return step
+        raise AssertionError(
+            "no single step mentions all of {!r}; steps: {!r}".format(
+                needles, steps
+            )
+        )
+
+
+class WalkthroughStepsTests(WalkthroughStepsTestCase):
+    """Behaviour 2: ``walkthrough_steps(owner, repo, branch, body)`` -> the ordered six steps.
+
+    The steps are display text for a human, built by the module from its
+    inputs; the assertions pin substance and order, not the full string of
+    every step.
+    """
+
+    def test_walkthrough_steps_returns_exactly_six_strings(self):
+        steps = self._steps()
+
+        self.assertIsInstance(
+            steps, list, "walkthrough_steps must return a list"
+        )
+        self.assertEqual(
+            len(steps),
+            6,
+            "the walkthrough must have exactly six steps; got {}: "
+            "{!r}".format(len(steps), steps),
+        )
+        for step in steps:
+            self.assertIsInstance(step, str, "each step must be a str")
+
+    def test_walkthrough_steps_are_in_the_contracts_order(self):
+        steps = self._steps()
+
+        # One token per contract step, each first-mentioned by its own step:
+        # create the file, write access, commit to the base branch, the
+        # ruleset option, re-run verify-guards, the availability caveat.
+        order = (
+            self._first_index(steps, ".github/CODEOWNERS"),
+            self._first_index(steps, "write access"),
+            self._first_index(steps, "commit"),
+            self._first_index(steps, "Require review from Code Owners"),
+            self._first_index(steps, "verify-guards"),
+            self._first_index(steps, "private"),
+        )
+        self.assertTrue(
+            all(a < b for a, b in zip(order, order[1:])),
+            "the six steps must appear in the contract's order, one token "
+            "per step, each before the next; got order {!r} for steps: "
+            "{!r}".format(order, steps),
+        )
+
+    def test_walkthrough_steps_create_step_names_the_file_and_embeds_the_body(self):
+        steps = self._steps()
+        first = steps[0]
+
+        self.assertIn(
+            ".github/CODEOWNERS",
+            first.lower(),
+            "the first step must name the file at .github/CODEOWNERS; got: "
+            + first,
+        )
+        self.assertIn(
+            OWNER_LINE,
+            first,
+            "the create step must embed behaviour 1's body - its exact "
+            "owner line {!r} is data, matched verbatim; got: {}".format(
+                OWNER_LINE, first
+            ),
+        )
+
+    def test_walkthrough_steps_write_access_step_names_the_handle_forms(self):
+        steps = self._steps()
+
+        self._step_with(steps, "write access", "@user", "team")
+
+    def test_walkthrough_steps_commit_step_uses_the_branch_verbatim(self):
+        steps = self._steps(branch="main")
+
+        self._step_with(steps, "commit", "main")
+
+        release_steps = self._steps(branch="release")
+
+        self._step_with(release_steps, "commit", "release")
+
+    def test_walkthrough_steps_ruleset_step_names_the_code_owner_option_and_save(self):
+        # The UI label is GitHub's, verbatim, per
+        # doc/external/github/available-rules-for-rulesets.md.
+        steps = self._steps()
+
+        self._step_with(steps, "Require review from Code Owners", "Save")
+
+    def test_walkthrough_steps_ruleset_step_names_the_repository(self):
+        # The repo is named verbatim in the ruleset step - the step that
+        # points at the repository's rulesets settings - for the default
+        # repo and for a non-default one.
+        steps = self._steps(repo="anvil")
+
+        self._step_with(steps, "ruleset", "anvil")
+
+        other = self._steps(repo="other-repo")
+
+        self._step_with(other, "ruleset", "other-repo")
+
+    def test_walkthrough_steps_verify_guards_step_says_the_warn_stays(self):
+        # The load-bearing honesty pin: the walkthrough is a review-gate
+        # mitigation, and check_file_paths verifies the push rule only, so
+        # the file_paths warn persists after the walkthrough (the plan's
+        # scope section, user decision 2).
+        steps = self._steps()
+
+        self._step_with(steps, "verify-guards", "warn", "stays")
+
+    def test_walkthrough_steps_availability_step_names_the_free_plan_caveat(self):
+        # doc/external/github/about-code-owners.md: code owners work in
+        # public repositories on GitHub Free; a private repository needs
+        # Pro, Team, Enterprise Cloud or Enterprise Server.
+        steps = self._steps()
+
+        for step in steps:
+            lowered = step.lower()
+            if (
+                "public" in lowered
+                and "free" in lowered
+                and "private" in lowered
+                and "team" in lowered
+                and "enterprise" in lowered
+                and _PRO.search(step)
+            ):
+                return
+        self.fail(
+            "a step must record that code owners work in public repos on "
+            "GitHub Free and a private repo needs Pro/Team/Enterprise "
+            "(doc/external/github/about-code-owners.md); steps: "
+            "{!r}".format(steps),
+        )
+
+    def test_walkthrough_steps_empty_branch_raises_codeowners_error(self):
+        picodeowners = self._picodeowners()
+        walkthrough_steps = self._get_walkthrough_steps()
+        body = picodeowners.codeowners_body("iar3-r8")
+
+        for branch in ("", "   "):
+            with self.assertRaises(
+                picodeowners.CodeownersError,
+                msg="walkthrough_steps must raise CodeownersError for an "
+                "empty or whitespace-only branch {!r}; the base branch is "
+                "never guessed".format(branch),
+            ):
+                walkthrough_steps("iar3-r8", "anvil", branch, body)
+
+    def test_walkthrough_steps_happy_path_returns_without_raising(self):
+        # No other exception type leaves the module: a valid
+        # owner/repo/branch returns the steps, nothing raised.
+        steps = self._steps(owner="octodemo", repo="other-repo", branch="release")
+
+        self.assertIsInstance(steps, list, "walkthrough_steps must return a list")
+        self.assertEqual(
+            len(steps),
+            6,
+            "the walkthrough must have exactly six steps; got {}: "
+            "{!r}".format(len(steps), steps),
         )
 
 
