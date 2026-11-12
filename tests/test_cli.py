@@ -38,6 +38,7 @@ import os
 import shutil
 import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -9412,4 +9413,127 @@ class TestCollectGuardFindings(CliCase):
             (self.OWNER, self.REPO),
             repository,
             "the repository is returned even when the fetch fails",
+        )
+
+
+class TestAskFreePlanUnit(unittest.TestCase):
+    """RED pins for behaviour 4: the interactive free-plan ask, as a unit.
+
+    ``cli._ask_free_plan(shared, findings, asker=None)`` asks exactly one
+    ``prompts.confirm`` (default False) when ``wants_walkthrough`` is True and
+    returns its boolean answer; when it is False no confirm call is made and
+    False is returned. The ``asker`` parameter stands in for
+    ``anvilkit.prompts.confirm`` so the ask can be unit-tested without a TTY.
+    The non-interactive / assume_yes / dry_run gating and all printing are
+    later cycles (behaviours 5-7) and are deliberately not pinned here.
+    """
+
+    def _finding(self, status, check="file_paths"):
+        """One finding in the ``piguard.check_all`` shape used throughout tests/test_piguard.py."""
+        return {
+            "status": status,
+            "check": check,
+            "rule": "file_path_restriction",
+            "brief": "no file-path restriction on main",
+            "danger": "any pushed branch can touch any path",
+            "source": "the main ruleset",
+            "remedy": 'turn on "Restrict file paths" for main',
+        }
+
+    def _require_under_test(self):
+        # Guard the red: the function does not exist yet, so a bare import
+        # would fail at collection. Fail with a clean assertion instead.
+        try:
+            from anvilkit.cli import _ask_free_plan
+        except ImportError:
+            self.fail(
+                "anvilkit.cli._ask_free_plan does not exist yet - "
+                "behaviour 4 of plans/file-path-interactive-free-plan.md"
+            )
+        return _ask_free_plan
+
+    def _recording_asker(self, answer):
+        calls = []
+
+        def asker(prompt, default=False, *args, **kwargs):
+            calls.append((prompt, default))
+            return answer
+
+        return asker, calls
+
+    def test_warn_finding_asks_once_default_false_returns_true(self):
+        ask = self._require_under_test()
+        asker, calls = self._recording_asker(True)
+        shared = types.SimpleNamespace()
+        findings = [self._finding("warn")]
+
+        result = ask(shared, findings, asker=asker)
+
+        self.assertIs(True, result)
+        self.assertEqual(
+            1,
+            len(calls),
+            "exactly one confirm call is expected when a file_paths warn "
+            "finding is present",
+        )
+        self.assertIs(
+            False,
+            calls[0][1],
+            "the confirm must default to False - the walkthrough is opt-in",
+        )
+
+    def test_warn_finding_returns_asker_false(self):
+        ask = self._require_under_test()
+        asker, calls = self._recording_asker(False)
+        shared = types.SimpleNamespace()
+        findings = [self._finding("warn")]
+
+        result = ask(shared, findings, asker=asker)
+
+        self.assertFalse(result)
+        self.assertEqual(
+            1,
+            len(calls),
+            "a 'no' answer still comes from exactly one confirm call",
+        )
+
+    def test_passed_finding_asks_nothing_returns_false(self):
+        ask = self._require_under_test()
+        asker, calls = self._recording_asker(True)
+        shared = types.SimpleNamespace()
+        findings = [self._finding("passed")]
+
+        result = ask(shared, findings, asker=asker)
+
+        self.assertFalse(result)
+        self.assertEqual(
+            0,
+            len(calls),
+            "wants_walkthrough False means the confirm is never called",
+        )
+
+    def test_empty_findings_asks_nothing_returns_false(self):
+        ask = self._require_under_test()
+        asker, calls = self._recording_asker(True)
+        shared = types.SimpleNamespace()
+
+        result = ask(shared, [], asker=asker)
+
+        self.assertFalse(result)
+        self.assertEqual(0, len(calls))
+
+    def test_prompt_text_names_restrict_file_paths(self):
+        ask = self._require_under_test()
+        asker, calls = self._recording_asker(True)
+        shared = types.SimpleNamespace()
+        findings = [self._finding("warn")]
+
+        ask(shared, findings, asker=asker)
+
+        self.assertEqual(1, len(calls))
+        self.assertIn(
+            "Restrict file paths",
+            calls[0][0],
+            "the prompt must ask whether the plan does not offer "
+            '"Restrict file paths" (the plan-availability question)',
         )
