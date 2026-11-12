@@ -3166,6 +3166,88 @@ class TestSetupRepoGuardGate(CliCase):
             ),
         )
 
+    def test_blocked_gate_already_prepared_prints_the_import_steps(self):
+        """Blocked run with TARGET/.github-ruleset.json pre-existing: the
+        report keeps the already-prepared phrasing (never claiming to have
+        written the file, never overwriting it) and prints the same import
+        steps the fresh-write path prints, so "import it as below" is true
+        (RED - the already-prepared path returns without printing steps,
+        so the "Import a" marker is absent)."""
+        self.write_env(GITHUB_TOKEN="ghp_test")
+        sentinel = "sentinel-do-not-touch"
+        self._ruleset_path().write_text(sentinel, encoding="utf-8")
+        self._spy_provision(invoke_real=True)
+        force_kwargs = []
+
+        def write_spy(path, text, force=False):
+            # Same mirror as the never-overwrites test: records force
+            # either way and refuses the write, so a gate that calls
+            # write_ruleset and catches the RulesetError still runs.
+            force_kwargs.append(force)
+            raise piruleset.RulesetError(
+                "refusing to overwrite {path}: an existing file is "
+                "present; pass --force to overwrite it".format(path=path)
+            )
+
+        self._blocked_run_wiring(write_spy=write_spy)
+
+        result = self.invoke_allowing_exception(
+            ["setup-repo", self.target, "--yes"]
+        )
+
+        # The Error-clause guarantees of the never-overwrites test still
+        # hold: nothing was provisioned, the run still ends blocked, the
+        # file's bytes are untouched, and force was never passed true.
+        self.assertEqual(
+            0, len(self._provision_calls), result.output
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "an already-prepared ruleset never masks the block: "
+            "exit {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertEqual(
+            sentinel,
+            self._ruleset_path().read_text(encoding="utf-8"),
+            "the existing ruleset file must be left untouched",
+        )
+        self.assertEqual([], force_kwargs)
+        self.assertIn(
+            self.RULESET_NAME,
+            result.output,
+            "the blocked report must name the existing ruleset path:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            "already",
+            result.output.lower(),
+            "the blocked report must say the ruleset is already "
+            "prepared (not claim to have written it):\n{}".format(
+                result.output
+            ),
+        )
+        # The new pin: the already-prepared path prints the same import
+        # steps the fresh-write path prints, so "import it as below" is
+        # true - the same marker the fresh-write test asserts.
+        self.assertIn(
+            "Import a",
+            result.output,
+            "the already-prepared path must print the import steps "
+            "(import_steps), so 'import it as below' is true:\n{}".format(
+                result.output
+            ),
+        )
+        # It must not use the fresh-write phrasing for a file it never
+        # wrote.
+        self.assertNotIn(
+            "Wrote the ruleset to",
+            result.output,
+            "the already-prepared path must not claim to have written "
+            "the file:\n{}".format(result.output),
+        )
+
     def test_blocked_gate_ruleset_error_is_reported_and_still_blocked(self):
         """Blocked run where the ruleset write fails: the failure is
         named in the report and the run still exits blocked - a

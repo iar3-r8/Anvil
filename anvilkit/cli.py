@@ -1645,7 +1645,8 @@ def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
     steps, so a junior sees exactly what to import next.
 
     An existing file is never overwritten: it is named as already
-    prepared and left untouched (``force`` is never passed true). A
+    prepared and left untouched (``force`` is never passed true), but
+    the import steps still follow, since printing is not writing. A
     ``RulesetError`` is reported, naming the path, and never raised -
     the run still ends blocked, never masked into success. This
     function raises no other exception type.
@@ -1666,6 +1667,8 @@ def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
             "the ruleset is already prepared at {} - import it as "
             "below".format(path)
         )
+        for line in piruleset.import_steps(None, path):
+            shared.echo("  - {}".format(line))
         return
     try:
         written = piruleset.write_ruleset(
