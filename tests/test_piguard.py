@@ -636,6 +636,95 @@ class CheckFilePathsTests(unittest.TestCase):
                     "no passed file-path finding when the rule is absent",
                 )
 
+    def test_file_paths_warn_remedy_keeps_first_clause_turning_on_restrict_file_paths(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        remedy = _field(warn, "remedy") or ""
+        self.assertIn(
+            'turn on "Restrict file paths" for main',
+            remedy,
+            "the warn remedy must keep its first clause: the GitHub UI "
+            "label to turn on for main",
+        )
+        self.assertIn(
+            ".github/workflows/**",
+            remedy,
+            "the warn remedy must keep naming the paths to list",
+        )
+
+    def test_file_paths_warn_remedy_names_plan_availability_fallback(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        remedy = _field(warn, "remedy") or ""
+        self.assertIn(
+            "CODEOWNERS",
+            remedy,
+            "the warn remedy must name the CODEOWNERS file fallback for "
+            "the paths",
+        )
+        self.assertIn(
+            "require_code_owner_review",
+            remedy,
+            "the warn remedy must name require_code_owner_review turned "
+            "on for the branch as the fallback",
+        )
+        self.assertIn(
+            "plan",
+            remedy.lower(),
+            "the warn remedy must say the option is not shown when the "
+            "plan does not offer file-path restrictions",
+        )
+
+    def test_file_paths_warn_remedy_stays_plain_words_with_no_doc_path(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        self.assertNotIn(
+            "doc/external/",
+            _field(warn, "remedy") or "",
+            "the warn remedy must stay plain words - no doc path and no "
+            "invented UI step",
+        )
+
+    def test_file_paths_passed_finding_remedy_unchanged_when_rule_present(self):
+        findings = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                )
+            ]
+        )
+
+        finding = findings[0]
+        self.assertEqual(_field(finding, "status"), "passed")
+        self.assertEqual(
+            _field(finding, "remedy"),
+            "nothing to do - the listed paths are protected",
+            "the passed finding's remedy is untouched by the warn remedy "
+            "fallback",
+        )
+
+    def test_file_paths_warn_finding_danger_brief_and_labels_unchanged(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        self.assertEqual(_field(warn, "status"), "warn")
+        self.assertEqual(_field(warn, "check"), "file_paths")
+        self.assertEqual(_field(warn, "rule"), "file_path_restriction")
+        self.assertEqual(
+            _field(warn, "brief"),
+            "a push can change .github/workflows/**, what CI runs",
+            "the warn's brief is untouched by the remedy fallback",
+        )
+        self.assertEqual(
+            _field(warn, "danger"),
+            "a push can change .github/workflows/**, what CI runs",
+            "the warn's danger is untouched by the remedy fallback",
+        )
+
     def test_missing_or_non_dict_parameters_records_empty_list_and_never_raises(self):
         cases = (
             ("parameters key absent", file_path_rule("main-protected")),
@@ -2400,20 +2489,40 @@ class FindingInvariantsTests(unittest.TestCase):
                 continue
             checked += 1
             with self.subTest(finding=label):
+                rule = _field(finding, "rule")
                 remedy = _field(finding, "remedy") or ""
-                self.assertLessEqual(
-                    len(remedy),
-                    100,
-                    "the {} finding on rule {!r} remedy must be a single "
-                    "sentence of at most 100 characters, got {}: "
-                    "{!r}".format(status, _field(finding, "rule"), len(remedy), remedy),
-                )
-                self.assertNotIn(
-                    ". ",
-                    remedy,
-                    "the {} finding on rule {!r} remedy must be a single "
-                    "sentence: {!r}".format(status, _field(finding, "rule"), remedy),
-                )
+                if rule == "file_path_restriction":
+                    # Behaviour 1 of plans/file-path-remedy-plan-fallback.md:
+                    # this remedy is two clauses by requirement - the UI
+                    # fix, then the plan-availability fallback - because
+                    # Anvil cannot detect whether the plan offers the rule,
+                    # so the remedy must carry both. It gets its own 180-
+                    # char bound (two short sentences, not a paragraph)
+                    # and is the only remedy allowed a second sentence;
+                    # every other remedy keeps the 100-char, single-
+                    # sentence pin. The no-doc-path and no-'see:' bounds
+                    # below apply to it without exemption.
+                    self.assertLessEqual(
+                        len(remedy),
+                        180,
+                        "the {} finding on rule {!r} remedy must be two "
+                        "short sentences of at most 180 characters, got "
+                        "{}: {!r}".format(status, rule, len(remedy), remedy),
+                    )
+                else:
+                    self.assertLessEqual(
+                        len(remedy),
+                        100,
+                        "the {} finding on rule {!r} remedy must be a single "
+                        "sentence of at most 100 characters, got {}: "
+                        "{!r}".format(status, rule, len(remedy), remedy),
+                    )
+                    self.assertNotIn(
+                        ". ",
+                        remedy,
+                        "the {} finding on rule {!r} remedy must be a single "
+                        "sentence: {!r}".format(status, rule, remedy),
+                    )
                 self.assertNotIn(
                     "doc/external/",
                     remedy,
@@ -10727,6 +10836,14 @@ class FindingBriefTests(unittest.TestCase):
         and the full resolution failure. It is never printed inside a finding
         block (the headline carries the brief), so the 100-char bound - which
         exists to keep a block line short - does not apply to it.
+
+        The one remedy this helper is NOT called with is the
+        ``file_path_restriction`` warn remedy (see
+        ``test_every_emittable_finding_danger_reason_and_remedy_are_short``):
+        it is two clauses by requirement (behaviour 1 of
+        plans/file-path-remedy-plan-fallback.md), so the 100-char and
+        single-sentence bounds are lifted there by an explicit branch,
+        while the no-doc-path and no-'see:' pins are re-asserted.
         """
         self.assertIsInstance(
             value,
@@ -10764,7 +10881,7 @@ class FindingBriefTests(unittest.TestCase):
         """Behaviour 2: every emittable danger/reason/remedy is one short
         sentence with no doc path and no 'see:' clause.
 
-        One documented exemption: the no-origin *reason* is exempt from the
+        Two documented exemptions. The no-origin *reason* is exempt from the
         100-char length bound only (see _assert_short_field_shape). It is
         built and pinned verbatim in
         anvilkit.cli._collect_guard_findings / tests/test_cli.py - including
@@ -10774,6 +10891,18 @@ class FindingBriefTests(unittest.TestCase):
         block line short does not apply to it. Every other assertion on that
         subtest (no doc path, no 'see:' clause, single sentence) still
         applies, and the remedy is still pinned.
+
+        The ``file_path_restriction`` warn *remedy* is exempt from the 100-char
+        length bound and the single-sentence bound by requirement: behaviour 1
+        of plans/file-path-remedy-plan-fallback.md makes it two clauses - the
+        UI fix, then the plan-availability fallback - because Anvil cannot
+        detect whether the plan offers the rule, so the remedy must carry
+        both. It gets its own 180-char bound (two short sentences, not a
+        paragraph) and is the only remedy allowed a second sentence; the
+        no-doc-path and no-'see:' pins apply to it without exemption, exactly
+        as the sibling sweep's branch
+        (test_non_passing_findings_remedy_is_short_and_carries_no_doc_path)
+        treats it.
         """
         findings = self._every_brief_finding()
         for label, finding in findings:
@@ -10822,9 +10951,43 @@ class FindingBriefTests(unittest.TestCase):
                 # and may be empty on a passed one now that nothing prints
                 # it.
                 if isinstance(remedy, str) and remedy:
-                    self._assert_short_field_shape(
-                        remedy, "{}: remedy".format(label)
-                    )
+                    rule = _field(finding, "rule")
+                    if rule == "file_path_restriction":
+                        # Behaviour 1 of plans/file-path-remedy-plan-fallback.md:
+                        # this remedy is two clauses by requirement - the UI
+                        # fix, then the plan-availability fallback - because
+                        # Anvil cannot detect whether the plan offers the rule,
+                        # so the remedy must carry both. It gets its own 180-
+                        # char bound (two short sentences, not a paragraph)
+                        # and is the only remedy allowed a second sentence;
+                        # every other remedy keeps the 100-char, single-
+                        # sentence pin. The no-doc-path and no-'see:' bounds
+                        # below apply to it without exemption.
+                        self.assertLessEqual(
+                            len(remedy),
+                            180,
+                            "{}: the {} finding on rule {!r} remedy must be "
+                            "two short sentences of at most 180 characters, "
+                            "got {}: {!r}".format(
+                                label, status, rule, len(remedy), remedy
+                            ),
+                        )
+                        self.assertNotIn(
+                            "doc/external/",
+                            remedy,
+                            "{}: the field must carry no doc path: "
+                            "{!r}".format(label, remedy),
+                        )
+                        self.assertNotIn(
+                            "see:",
+                            remedy,
+                            "{}: the field must carry no 'see:' clause: "
+                            "{!r}".format(label, remedy),
+                        )
+                    else:
+                        self._assert_short_field_shape(
+                            remedy, "{}: remedy".format(label)
+                        )
                 if status != "passed":
                     self.assertTrue(
                         remedy,

@@ -4893,28 +4893,31 @@ class TestGuardReportCompactLineCount(CliCase):
         +  1 "To fix"
         +  9 numbered entries           (one per warn/fail; the skip is not numbered)
         +  1 note
-        +  2 within-width wraps          (the file_path_restriction warn headline
-                                          is 85 chars and fix entry 5 is 94 chars;
+        +  4 within-width wraps          (the file_path_restriction warn headline
+                                          is 85 chars and fix entry 5 is 204 chars;
                                           both exceed the 80-col bound and wrap to
-                                          2 lines, per behaviours 4/5/7)
-        = 26
+                                          2 and 4 lines, per behaviours 4/5/7 -
+                                          entry 5's extra lines since behaviour 1
+                                          of plans/file-path-remedy-plan-
+                                          fallback.md lengthened its remedy)
+        = 28
 
         NOTE: the plan's task brief stated "9 finding lines" and a total of 23;
         that is short by 3 - it omits the skip's own headline (there are 10
-        finding headlines, not 9) and ignores the two within-width wraps.
-        The 26 measured here is the report a correct implementation actually
+        finding headlines, not 9) and ignores the within-width wraps.
+        The 28 measured here is the report a correct implementation actually
         prints, so the pin is set to that reachable value."""
         branch = self._all_failing_branch_findings()
         token = self._all_failing_token_findings()
         lines = self._report_lines(branch, token)
         count = len(self._non_blank(lines))
-        expected = 2 + 10 + 1 + 1 + 9 + 1 + 2
+        expected = 2 + 10 + 1 + 1 + 9 + 1 + 4
         self.assertEqual(
             expected,
             count,
             "the all-failing report must decompose to {} non-blank lines "
             "(2 headers + 10 finding headlines + 1 how: line + 1 'To fix' + "
-            "9 numbered entries + 1 note + 2 within-width wraps), got "
+            "9 numbered entries + 1 note + 4 within-width wraps), got "
             "{}:\n{}".format(expected, count, "\n".join(lines)),
         )
 
