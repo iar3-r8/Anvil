@@ -48,7 +48,7 @@ chmod +x anvil
 | Command | Action | Description |
 | :--- | :--- | :--- |
 | `./anvil init` | Configure | Creates the `.env` file interactively (storage paths, gateway port, GPU device ids). Runs automatically the first time you use a command that needs it. Refuses to overwrite an existing `.env` unless you pass `--force`. |
-| `./anvil doctor` | Diagnose | Reports the Python interpreter and venv, Docker, Compose v2, NVIDIA tooling, whether your configuration files parse, and the GitHub branch rules on this repository's `main` branch (the Guards section). Writes nothing and never fails on what it is diagnosing. |
+| `./anvil doctor` | Diagnose | Reports the Python interpreter and venv, Docker, Compose v2, NVIDIA tooling, whether your configuration files parse, and — in the Guards section — the same branch-rule and token-scope findings [`verify-guards`](#main-commands) runs against this repository's `main` branch. Writes nothing and never fails on what it is diagnosing: even a `fail` token finding does not change its exit status. |
 | `./anvil up` | Start Stack | Starts the llama-swap gateway and Qdrant vector database in the background. |
 | `./anvil build` | Rebuild | Force rebuild of custom Docker configurations. |
 | `./anvil status` | View Status | Shows llama-swap gateway health and which models are actively loaded vs cold/swapped out. Add `--json` for machine-readable output. |
@@ -57,9 +57,8 @@ chmod +x anvil
 | `./anvil down` | Stop Stack | Stops all containers and cleans up any orphaned on-demand vLLM model containers. Add `--keep-orphans` to skip the sweep. |
 | `./anvil test-model [MODEL_NAME]` | Test a Model | Sends one prompt to a model and reports whether it answered. Run without `MODEL_NAME` to list the registered ids. Add `--json` for machine-readable output. |
 | `./anvil stress MODEL_NAME` | Stress Test | Ramps a model from one concurrent request to `--max-concurrency` and reports latency and failures at each level, to the terminal and a log file. See [Stress testing a model](#stress-testing-a-model). |
-| `./anvil setup-repo PATH` | Provision | Injects Zoo Code settings, the `.roo` framework and VS Code recommendations into a target repository. See the [VS Code guide](2-setting-up-vscode-plugin.md) — and [how the agents work](how-the-agents-work.md) for what the provisioned agent pipeline actually does. |
-| `./anvil verify-guards [TARGET]` | Verify Guards | Checks the GitHub branch rules of the target repository (default: the current directory) — owner and repo resolved from its `origin` remote — and reports each of the five issue-#50 rules: force-push and branch-deletion blocking, the pull-request requirement, the update restriction, and the file-path restriction. Read-only: writes nothing, uses `GITHUB_TOKEN` from `.env` when present, and a missing guard is a warning, not a failure — the command exits `0`. `--branch NAME` checks a branch other than `main`. |
-| `./anvil ruleset-write [TARGET]` | Write Ruleset | Writes the importable GitHub main-branch guard ruleset (the five issue-#50 rules, scoped to the default branch) to `TARGET/.github-ruleset.json` and prints the manual import steps. Runs offline: it reads no token, makes no network call, and never touches git. `--output PATH` overrides the file location; an existing file is refused (exit `3`) unless `--force` is passed. |
+| `./anvil setup-repo PATH` | Provision | Gates on the GitHub guards first — the same five branch rules and token-scope findings [`verify-guards`](#main-commands) reports, against the target's `main` branch — and only then injects Zoo Code settings, the `.roo` framework and VS Code recommendations into the target repository. A `warn` or `fail` finding blocks the run: the sectioned report prints, the fixes are prepared (the importable ruleset is written to `TARGET/.github-ruleset.json` when the branch rules need it — never overwritten, and only announced under `--dry-run` — and the pre-filled token creation URL plus its steps print when the token scope fails), and the run exits `9` without provisioning anything: nothing is wrong with Anvil, the report says what to fix in GitHub, and the run ends by telling you to re-run `setup-repo`. A clean or all-`skipped` gate — including a target with no resolvable GitHub origin — provisions exactly as before, and `--no-github` skips the gate entirely. See the [VS Code guide](2-setting-up-vscode-plugin.md) — and [how the agents work](how-the-agents-work.md) for what the provisioned agent pipeline actually does. |
+| `./anvil verify-guards [TARGET]` | Verify Guards | Checks the GitHub branch rules of the target repository (default: the current directory) — owner and repo resolved from its `origin` remote — and reports each of the five issue-#50 rules: force-push and branch-deletion blocking, the pull-request requirement, the update restriction, and the file-path restriction. After the branch findings it reports token-scope findings for `GITHUB_TOKEN` from `.env` (when present): whether the token can read the repository's actions-permissions endpoint (an Administration grant that could delete or reconfigure the repo), whether it is a classic token (an `X-OAuth-Scopes` header means it reaches every repository the owner can see), and — with `--other-repo OWNER/REPO` — whether it reaches one named other repository (the raw `OWNER/REPO`, never guessed). Read-only: writes nothing, and anything that cannot be verified is a `skipped` finding, never a pass — including the `workflows` permission, which has no read level and cannot be proven by a read-only call, so it is always reported as `skipped`, never `passed`. A missing guard is a warning; a `fail` token finding (an Administration grant or a classic token) exits non-zero. `--branch NAME` checks a branch other than `main`. |
 
 Any arguments Anvil does not recognise are passed straight through to Docker
 Compose, so `./anvil up --force-recreate` and `./anvil logs llama-swap` work as
@@ -81,7 +80,7 @@ rather than hanging.
 | `--gpu-generic ID` | `init` | Generic LLM GPU device id. |
 | `--gpu-coder ID[,ID]` | `init` | Coder GPU device ids; a single id is used for both slots. |
 | `--gpu-embedder ID` | `init` | Indexer GPU device id. |
-| `--force` | `init`, `ruleset-write` | Regenerate `.env` / overwrite the ruleset file even though it already exists. |
+| `--force` | `init` | Regenerate `.env` even though it already exists. |
 | `--github-token TOKEN` / `--no-github` | `setup-repo` | Supply or explicitly skip the GitHub token. |
 | `--anthropic-key KEY` / `--no-anthropic` | `setup-repo` | Supply or explicitly skip the Anthropic key. `--anthropic` reuses a key already in `.env`. |
 | `--anthropic-model ID` | `setup-repo` | Any model id, including one not on the menu. |
@@ -102,14 +101,15 @@ Each failure class has its own code, so scripts can react to what went wrong:
 | Code | Meaning |
 | :--- | :--- |
 | `0` | Success |
-| `1` | Unexpected internal error |
+| `1` | Unexpected internal error — or, from `verify-guards`, a `fail` token-scope finding (an Administration grant or a classic token) |
 | `2` | Usage error (unknown command, bad flag) |
-| `3` | Configuration error (`anvil.yaml`, `config.yaml`, invalid `LLM_PORT`, a refused `ruleset-write` overwrite) |
+| `3` | Configuration error (`anvil.yaml`, `config.yaml`, invalid `LLM_PORT`) |
 | `4` | Docker or Compose unavailable |
 | `5` | Provisioning failure (missing target directory or template) |
 | `6` | A required value was missing while running non-interactively |
 | `7` | Stress unavailable: the gateway could not be reached, the registry could not be read, or warm-up never succeeded within its budget. No results were produced. |
 | `8` | Stress failures: the run finished and produced a full report, but at least one request failed. This is a successful measurement, not an Anvil error. |
+| `9` | `setup-repo` blocked by the GitHub guards gate: nothing was provisioned and nothing is wrong with Anvil — a branch rule or the token scope needs fixing in GitHub. The report prints the findings and the prepared fixes; fix GitHub and re-run `setup-repo`. |
 
 When Docker itself fails, its own exit code is passed through unchanged.
 

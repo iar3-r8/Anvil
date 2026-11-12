@@ -18,6 +18,7 @@ import json
 import re
 import socket
 import subprocess
+import textwrap
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -28,6 +29,31 @@ CHECK_REVIEW = "review"
 CHECK_UPDATE_RESTRICTION = "update_restriction"
 CHECK_FILE_PATHS = "file_paths"
 
+# The token-scope probe's check name (behaviour 2 of
+# plans/verify-guards-token.md).
+CHECK_TARGET_ACCESS = "target_access"
+
+# The administration probe's check name (behaviour 3 of
+# plans/verify-guards-token.md).
+CHECK_ADMINISTRATION = "administration"
+
+# The classic-token probe's check name (behaviour 4 of
+# plans/verify-guards-token.md).
+CHECK_CLASSIC_TOKEN = "classic_token"
+
+# The check name for the workflows-withheld finding (behaviour 5 of
+# plans/verify-guards-token.md): the documented-unprovable case, one
+# constant finding per run, not one per repo or per probe.
+CHECK_WORKFLOWS_WITHHELD = "workflows_withheld"
+
+# The named-repo probe's check name (behaviour 6 of
+# plans/verify-guards-token.md), in the same snake_case spelling pattern
+# as the sibling probes' check names.
+CHECK_NAMED_REPO = "named_repo"
+
+# Single source of the bypass-list caveat (behaviour 8; per-finding caveat left in behaviour 3).
+BYPASS_NOTE = "Note: bypass lists are not visible to a read-only token."
+
 # The rules endpoint lives on the API host, not the web host. Two GETs per
 # run, run rarely, so no caching (plans/pi-guard-verification.md).
 _RULES_API_BASE = "https://api.github.com"
@@ -35,6 +61,13 @@ _RULES_API_BASE = "https://api.github.com"
 # Generous on purpose: a slow GitHub must not turn a live check into a
 # skipped one (plans/pi-guard-verification.md, Assumptions).
 DEFAULT_RULES_TIMEOUT = 10.0
+
+# The X-GitHub-Api-Version the saved probe-endpoint docs pin, sent by the
+# token-scope probes. A new constant on purpose: fetch_branch_rules
+# predates those docs and sends no version header, and its existing header
+# behaviour is untouched (doc/external/github/rest-api-endpoints-for-
+# actions-permissions.md, doc/external/github/rest-api-endpoints-for-users.md).
+_PROBE_API_VERSION = "2026-03-10"
 
 # The API rule types the history-rewrite guard looks for, in report order.
 # These are the API names, not the UI labels: the endpoint returns
@@ -46,34 +79,86 @@ _HISTORY_REWRITE_RULES = ("non_fast_forward", "deletion")
 _ENDPOINT_DOC = "doc/external/github/rest-api-endpoints-for-rules.md"
 _RULES_DOC = "doc/external/github/available-rules-for-rulesets.md"
 
+# Cited by the target-access probe's findings. No saved page documents
+# GET /repos/{owner}/{repo}'s access semantics directly, so the probe cites
+# the nearest saved page: it documents that a fine-grained token reaches
+# only the repositories selected at creation, which is exactly what a 404
+# on the target repo tells the report reader.
+_FINE_GRAINED_DOC = "doc/external/github/fine-grained-personal-access-tokens.md"
+
+# Cited by the administration probe's findings. It documents that the
+# endpoint requires Administration repository permissions (read) and
+# documents only 200 - the denial code is not stated - which is exactly
+# what makes a 404 there ambiguous (behaviour 3).
+_ACTIONS_PERMISSIONS_DOC = (
+    "doc/external/github/rest-api-endpoints-for-actions-permissions.md"
+)
+
+# Cited by the workflows-withheld finding. It documents that the
+# workflows list endpoint requires "Actions" repository permissions
+# (read) - not the workflows permission - and that it works
+# unauthenticated on public repos, so a 200 proves nothing about the
+# token (behaviour 5).
+_WORKFLOWS_DOC = "doc/external/github/rest-api-endpoints-for-workflows.md"
+
+# Cited by the classic-token probe's findings. It documents that a token's
+# scope list is the X-OAuth-Scopes response header and that scopes are
+# normalized - which is exactly why the probe's discriminator is a
+# non-empty header, never an exact scope string (behaviour 4).
+_OAUTH_SCOPES_DOC = "doc/external/github/scopes-for-oauth-apps.md"
+
+# What an agent could do while the target access is unmeasured: the skipped
+# finding carries it so it stands on its own rather than leaning on the
+# renderer (the _SKIPPED_DANGERS pattern).
+_TARGET_ACCESS_SKIP_DANGER = (
+    "the token may not reach the target at all"
+)
+
+# The same, for the administration probe: the unmeasured hole is that the
+# token may hold Administration (read) on the target.
+_ADMINISTRATION_SKIP_DANGER = (
+    "the token may hold Administration on the target"
+)
+
+# The same, for the classic-token probe: the unmeasured hole is that the
+# token may be classic, in which case it reaches every repository the
+# owner can see.
+_CLASSIC_TOKEN_SKIP_DANGER = (
+    "the token may be classic and reach every repo the owner can see"
+)
+
+# The same, for the workflows-withheld finding: the unmeasured hole is
+# that the token may hold the workflows permission (write only), which
+# is the documented privilege-escalation path - editing the CI
+# workflows the agent's own runs flow through (behaviour 5).
+_WORKFLOWS_WITHHELD_SKIP_DANGER = (
+    "the workflows permission is write-only and can edit CI"
+)
+
+# The same, for the named-repo probe: the unmeasured hole is that the
+# token may be scoped beyond the target repository - a compromise of it
+# would not then be confined to the target.
+_NAMED_REPO_SKIP_DANGER = (
+    "the token may reach more than the target repository"
+)
+
 # What an agent could do if each rule is absent: the consequence, not the
 # mechanism, stated first.
 _DANGERS = {
     "non_fast_forward": (
-        "branch history can be rewritten by a force push: commits that "
-        "survived review can be replaced or erased, unrecoverably, with no "
-        "review gate"
+        "history can be rewritten or erased by a force push"
     ),
     "deletion": (
-        "the branch itself can be deleted unrecoverably, taking its whole "
-        "history with it, with no review gate"
+        "the branch can be deleted, with all its history"
     ),
     "pull_request": (
-        "an agent's change can land on the branch unreviewed: a push goes "
-        "straight to the branch, with no review gate"
+        "changes can land on main with no review"
     ),
     "update": (
-        "anyone with push access can push straight to the branch, with no "
-        "gate: the update rule would restrict ref updates to users with "
-        "bypass permission, and without it ordinary pushes are all that "
-        "stands between a ref and a rewrite"
+        "anyone with push access can push straight to main"
     ),
     "file_path_restriction": (
-        "a push can change the restricted file paths - "
-        ".github/workflows/**, what CI runs - with no gate: the rule "
-        "would prevent commits that include changes in those paths from "
-        "being pushed to the commit graph, and without it an agent's "
-        "change lands on them directly"
+        "a push can change .github/workflows/**, what CI runs"
     ),
 }
 
@@ -83,26 +168,44 @@ _DANGERS = {
 # stands on its own rather than leaning on the renderer.
 _SKIPPED_DANGERS = {
     CHECK_HISTORY_REWRITE: (
-        "whether the branch history can be rewritten by a force push, or "
-        "the branch itself deleted, is unmeasured: an agent could do "
-        "either with no gate, and this report cannot rule it out"
+        "history could be rewritten or the branch deleted, unmeasured"
     ),
     CHECK_REVIEW: (
-        "whether an agent's change can land on the branch unreviewed is "
-        "unmeasured: a push could go straight to the branch, and this "
-        "report cannot rule it out"
+        "changes could land on main with no review, unmeasured"
     ),
     CHECK_UPDATE_RESTRICTION: (
-        "whether updates to the branch are restricted to users with "
-        "bypass permission is unmeasured: without the 'update' rule, "
-        "anyone with push access can push straight to the branch, with "
-        "no gate, and this report cannot rule it out"
+        "anyone with push access could push straight to main, unmeasured"
     ),
     CHECK_FILE_PATHS: (
-        "whether the restricted file paths - .github/workflows/**, what "
-        "CI runs - are protected from pushes is unmeasured: without the "
-        "'file_path_restriction' rule, a push can change them, with no "
-        "gate, and this report cannot rule it out"
+        "a push could change .github/workflows/**, unmeasured"
+    ),
+}
+
+# The one-clause brief for each history-rewrite rule's passed finding:
+# the short clause the compact report's headline carries after an em dash
+# (behaviour 1 of plans/guard-finding-compact.md), the sample's words.
+_PASSED_BRIEFS = {
+    "non_fast_forward": "force pushes blocked",
+    "deletion": "branch deletion blocked",
+}
+
+# The warn counterpart for the history-rewrite rules, same source.
+_WARN_BRIEFS = {
+    "non_fast_forward": "history can be rewritten or erased by a force push",
+    "deletion": "the branch can be deleted, with all its history",
+}
+
+# The short fix for each absent branch rule: the sample's "To fix" words,
+# naming the GitHub UI label the missing rule turns on (behaviour 2 of
+# plans/guard-finding-compact.md) - a single short sentence, no doc path.
+_WARN_REMEDIES = {
+    "non_fast_forward": 'turn on "Block force pushes" for main',
+    "deletion": 'turn on "Restrict deletions" for main',
+    "pull_request": 'turn on "Require a pull request before merging" for main',
+    "update": 'turn on "Restrict updates" for main',
+    "file_path_restriction": (
+        'turn on "Restrict file paths" for main, listing '
+        ".github/workflows/**"
     ),
 }
 
@@ -155,38 +258,844 @@ def fetch_branch_rules(
             # so a 404 may be a plan limit, not a misconfiguration
             # (doc/external/github/available-rules-for-rulesets.md). Name
             # the situation; do not accuse whoever is reading the report.
-            return None, (
-                "GitHub returned 404 for the branch rules of {}/{} "
-                "({}): rulesets are unavailable on private repos under "
-                "GitHub Free, so this may be a plan limit rather than a "
-                "misconfiguration; see {}".format(
-                    owner, repo, url, _RULES_DOC
-                )
-            )
-        return None, "GitHub returned HTTP {} for {}".format(exc.code, url)
+            return None, "GitHub returned 404 for the branch rules"
+        return None, "GitHub returned HTTP {}".format(exc.code)
     except socket.timeout as exc:
-        return None, (
-            "timed out after {}s contacting {}".format(timeout, url)
-        )
+        return None, "api.github.com was unreachable"
     except urllib.error.URLError as exc:
         # URLError wraps the real cause, including socket.timeout on some
         # versions (same pattern as anvilkit/health.py).
         if isinstance(exc.reason, socket.timeout):
-            return None, "timed out after {}s contacting {}".format(timeout, url)
-        return None, "GitHub was unreachable for {}: {}".format(url, exc.reason)
+            return None, "api.github.com was unreachable"
+        return None, "api.github.com was unreachable"
     except OSError as exc:
-        return None, "GitHub was unreachable for {}: {}".format(url, exc)
+        return None, "api.github.com was unreachable"
 
     try:
         payload = json.loads(body)
     except ValueError as exc:
-        return None, "GitHub returned a non-JSON body for {}: {}".format(url, exc)
+        return None, "GitHub returned a body that is not JSON"
     if not isinstance(payload, list):
-        return None, (
-            "GitHub returned a JSON body that is not a rules array for "
-            "{}: expected a list".format(url)
-        )
+        return None, "the branch rules could not be fetched"
     return payload, None
+
+
+def fetch_probe(
+    url: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> Tuple[Optional[int], Optional[Any], Optional[bytes], Optional[str]]:
+    """Issue one read-only GET and observe the answer; never raises.
+
+    The fetch seam for the token-scope probes (behaviour 1 of
+    plans/verify-guards-token.md): builds a ``GET`` for ``url`` with
+    ``Accept: application/vnd.github+json`` and
+    ``X-GitHub-Api-Version`` pinned to the version the saved probe-endpoint
+    docs use (doc/external/github/rest-api-endpoints-for-actions-permissions.
+    md and doc/external/github/rest-api-endpoints-for-users.md) and opens it
+    through ``opener``, which defaults to ``urllib.request.urlopen``. A
+    ``token`` adds the ``Authorization: Bearer <token>`` header - the same
+    shape :func:`fetch_branch_rules` builds - and without one the request
+    goes out with no ``Authorization`` header at all. That contrast is the
+    point: in :func:`fetch_branch_rules` a missing token is an
+    unauthenticated attempt the endpoint allows, whereas a probe is meant to
+    measure a token's scope, so this function simply sends what it is given
+    and decides nothing - a fact about a token cannot be established without
+    one, and that judgement belongs to the probes, not the fetch.
+
+    An ``HTTPError`` is a **successful observation**: its ``code`` and
+    ``headers`` are returned with ``reason=None``, because a ``403`` is the
+    compliant answer to a token-scope probe - a denial is the data. Only
+    transport-level failures - a ``URLError``, a ``socket.timeout``, a bare
+    ``OSError`` - yield ``(None, None, None, reason)`` with a non-empty
+    reason string; this function never raises.
+
+    Returns ``(status, headers, body, reason)``: the response's status code
+    (``getcode``), its headers, its body as raw bytes - the probes inspect
+    headers and, where they parse, decode - and ``None`` on any HTTP answer,
+    or the three ``None``s with the reason string on a transport failure.
+    The reason never carries the token.
+
+    ``opener`` is the injection seam: tests pass a recorded opener, so the
+    suite never touches the live network. ``timeout`` is passed through to
+    the opener unchanged.
+    """
+    if opener is None:
+        opener = urllib.request.urlopen
+
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": _PROBE_API_VERSION,
+    }
+    if token:
+        headers["Authorization"] = "Bearer {}".format(token)
+    request = urllib.request.Request(url, headers=headers)
+
+    try:
+        with opener(request, timeout=timeout) as response:
+            status = response.getcode()
+            resp_headers = dict(response.headers)
+            body = response.read()
+    except urllib.error.HTTPError as exc:
+        # An HTTPError is a successful observation, not a failure: a 403 is
+        # the compliant answer to a probe, so return the status and headers
+        # as data. exc.hdrs is the attribute HTTPError always sets, even
+        # when no response body was captured (exc.headers is only present
+        # when one was).
+        body: Optional[bytes]
+        try:
+            body = exc.read()
+        except Exception:
+            body = None
+        # exc.hdrs is None when no response headers were captured.
+        return exc.code, dict(exc.hdrs) if exc.hdrs is not None else {}, body, None
+    except socket.timeout as exc:
+        return None, None, None, "probe timed out contacting {}: {}".format(url, exc)
+    except urllib.error.URLError as exc:
+        # URLError wraps the real cause, including socket.timeout on some
+        # versions (same pattern as fetch_branch_rules and
+        # anvilkit/health.py).
+        reason = exc.reason
+        if isinstance(reason, socket.timeout):
+            return None, None, None, "probe timed out contacting {}".format(url)
+        return None, None, None, "probe could not reach {}: {}".format(url, reason)
+    except OSError as exc:
+        return None, None, None, "probe could not reach {}: {}".format(url, exc)
+
+    return status, resp_headers, body, None
+
+
+def probe_target_access(
+    owner: str,
+    repo: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The first token-scope probe: does the token reach the target repo at all?
+
+    Issues ``GET /repos/{owner}/{repo}`` through :func:`fetch_probe`
+    (behaviour 1 of plans/verify-guards-token.md) - one probe, one API call -
+    and interprets the observation:
+
+    - ``200`` -> one ``passed`` finding: the target is reachable, so a later
+      probe's denial can be read as a withholding.
+    - ``404`` -> one ``warn`` finding: the token cannot reach the target repo
+      at all, so no other probe's denial can be read as a withholding - an
+      under-scoped token and an unreachable target look identical on every
+      other probe, and this finding is the disambiguator.
+    - ``401`` or any other status -> one ``skipped`` finding whose reason
+      carries the status.
+    - a transport reason from :func:`fetch_probe` -> one ``skipped`` finding
+      with a non-empty reason.
+
+    This probe differs from :func:`fetch_branch_rules` in what a missing
+    token means: there, a missing token is an unauthenticated attempt the
+    endpoint allows on public repositories; here, a missing token is a
+    **skip** - no request is attempted at all - because a token-scope probe
+    reads a token's property, and an unauthenticated request establishes no
+    fact about any token (behaviour 7).
+
+    The 404 remedy cites ``doc/external/github/fine-grained-personal-access-
+    tokens.md`` - the nearest saved page, which documents that a fine-grained
+    token reaches only the repositories selected at creation; no saved page
+    documents ``GET /repos/{owner}/{repo}``'s access semantics directly.
+
+    Never raises; always returns a list of findings. Never echoes a token
+    into a finding or a reason (module invariant).
+    """
+    target = "{}/{}".format(owner, repo)
+    url = "{}/repos/{}/{}".format(_RULES_API_BASE, owner, repo)
+    skipped_remedy = "put GITHUB_TOKEN in .env and re-run"
+
+    if not token:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_TARGET_ACCESS,
+                "rule": None,
+                "brief": "no token in .env",
+                "danger": _TARGET_ACCESS_SKIP_DANGER,
+                "source": None,
+                "reason": "no token in .env",
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    status, _headers, _body, reason = fetch_probe(
+        url, token, opener=opener, timeout=timeout
+    )
+
+    if reason is not None:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_TARGET_ACCESS,
+                "rule": None,
+                "brief": "the probe could not reach GitHub",
+                "danger": _TARGET_ACCESS_SKIP_DANGER,
+                "source": None,
+                "reason": reason,
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    if status == 200:
+        return [
+            {
+                "status": "passed",
+                "check": CHECK_TARGET_ACCESS,
+                "rule": None,
+                "brief": "the token reaches {}".format(target),
+                "danger": "",
+                "source": None,
+                "remedy": "the token reaches {}, so later denials are interpretable".format(target),
+            }
+        ]
+
+    if status == 404:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_TARGET_ACCESS,
+                "rule": None,
+                "brief": "cannot see {}, so nothing below is proof".format(
+                    target
+                ),
+                "danger": (
+                    "cannot see {}, so nothing below is proof".format(target)
+                ),
+                "source": None,
+                "remedy": (
+                    "recreate the token with access to {} only".format(target)
+                ),
+            }
+        ]
+
+    return [
+        {
+            "status": "skipped",
+            "check": CHECK_TARGET_ACCESS,
+            "rule": None,
+            "brief": "GitHub returned HTTP {}".format(status),
+            "danger": _TARGET_ACCESS_SKIP_DANGER,
+            "source": None,
+            "reason": "GitHub returned HTTP {}".format(status),
+            "remedy": skipped_remedy,
+        }
+    ]
+
+
+def probe_administration(
+    owner: str,
+    repo: str,
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The second token-scope probe: does the token hold Administration on the target?
+
+    Issues ``GET /repos/{owner}/{repo}/actions/permissions`` through
+    :func:`fetch_probe` (behaviour 1 of plans/verify-guards-token.md) - one
+    probe, one API call - and interprets the observation. The saved page
+    doc/external/github/rest-api-endpoints-for-actions-permissions.md
+    documents the endpoint as gated on **Administration repository
+    permissions (read)** and documents **only ``200``** - the denial code is
+    not stated - so a ``403`` is read as the withholding and a ``404`` is
+    left ambiguous:
+
+    - ``403`` -> one ``passed`` finding: administration is withheld - the
+      compliant answer, because a fine-grained token created per the recipe
+      has no ``administration`` permission.
+    - ``200`` -> one ``fail`` finding - the first emittable ``fail`` in the
+      module: the token holds ``administration: read`` on the target, so the
+      repository can be deleted or reconfigured and the default
+      ``GITHUB_TOKEN`` permissions raised to write (the plan's danger
+      wording, per the saved page). The finding carries a non-empty danger
+      (the consequence first) and a non-empty remedy citing the saved page.
+    - ``404`` -> one ``warn`` finding: the page documents only ``200``, so a
+      404 is ambiguous between "administration withheld" and "no access at
+      all" - the finding names the target-access probe
+      (:func:`probe_target_access`, :data:`CHECK_TARGET_ACCESS`) as the
+      disambiguator.
+    - ``401`` or any other status -> one ``skipped`` finding whose reason
+      carries the status.
+    - a transport reason from :func:`fetch_probe` -> one ``skipped`` finding
+      with a non-empty reason.
+
+    Like :func:`probe_target_access`, a missing or empty token is a
+    **skip** - no request is attempted at all - because a token-scope probe
+    reads a token's property, and an unauthenticated request establishes no
+    fact about any token (behaviour 7).
+
+    Never raises; always returns a list of findings. Never echoes a token
+    into a finding or a reason (module invariant).
+    """
+    target = "{}/{}".format(owner, repo)
+    url = "{}/repos/{}/{}/actions/permissions".format(
+        _RULES_API_BASE, owner, repo
+    )
+    skipped_remedy = "put a valid GITHUB_TOKEN in .env and re-run"
+
+    if not token:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "brief": "no token in .env",
+                "danger": _ADMINISTRATION_SKIP_DANGER,
+                "source": None,
+                "reason": "no token in .env",
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    status, _headers, _body, reason = fetch_probe(
+        url, token, opener=opener, timeout=timeout
+    )
+
+    if reason is not None:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "brief": "the probe could not reach GitHub",
+                "danger": _ADMINISTRATION_SKIP_DANGER,
+                "source": None,
+                "reason": reason,
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    if status == 403:
+        return [
+            {
+                "status": "passed",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "brief": "Administration withheld (403)",
+                "danger": "",
+                "source": None,
+                "remedy": (
+                    "nothing to do - Administration is withheld, the "
+                    "compliant answer"
+                ),
+            }
+        ]
+
+    if status == 200:
+        return [
+            {
+                "status": "fail",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "brief": "the token can delete or reconfigure {}".format(
+                    target
+                ),
+                "danger": (
+                    "the token can delete or reconfigure {}".format(target)
+                ),
+                "source": None,
+                "remedy": (
+                    "recreate the token without the Administration "
+                    "permission"
+                ),
+            }
+        ]
+
+    if status == 404:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_ADMINISTRATION,
+                "rule": None,
+                "brief": "cannot tell whether administration is withheld",
+                "danger": (
+                    "a 404 here is ambiguous between withheld and no "
+                    "access at all"
+                ),
+                "source": None,
+                "remedy": (
+                    "recreate the token with access to {} only".format(target)
+                ),
+            }
+        ]
+
+    return [
+        {
+            "status": "skipped",
+            "check": CHECK_ADMINISTRATION,
+            "rule": None,
+            "brief": "GitHub returned HTTP {}".format(status),
+            "danger": _ADMINISTRATION_SKIP_DANGER,
+            "source": None,
+            "reason": "GitHub returned HTTP {}".format(status),
+            "remedy": skipped_remedy,
+        }
+    ]
+
+
+def probe_classic_token(
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The third token-scope probe: is the token a classic (OAuth-scoped) token?
+
+    Issues ``GET /user`` through :func:`fetch_probe` (behaviour 1 of
+    plans/verify-guards-token.md) - one probe, one API call, no owner or repo
+    - and reads the ``X-OAuth-Scopes`` response header, looked up
+    case-insensitively (HTTP headers are case-insensitive; the ``headers``
+    value from :func:`fetch_probe` is a dict that may be empty). The saved
+    page doc/external/github/scopes-for-oauth-apps.md settles the
+    discriminator: a token's scope list is that header - GitHub's own
+    example shows ``X-OAuth-Scopes: repo, user`` - and scopes are
+    normalized, so exact-string matching is brittle; the honest
+    discriminator is the header **present and non-empty**.
+
+    - header present and non-empty -> one ``fail`` finding - the second
+      emittable ``fail`` in the module: a classic token grants access to
+      *every* repository the owner can see (the saved page says the same),
+      so the repo-scope guarantee the other probes protect is void
+      regardless of their answers. The finding quotes the recorded scopes
+      verbatim and carries a non-empty remedy citing the saved page.
+    - header present but empty, or absent -> one ``passed`` finding worded
+      "no classic OAuth scope header was returned" - deliberately *not*
+      "this is a fine-grained token", because the saved page documents no
+      ``X-OAuth-Scopes`` semantics for fine-grained PATs and does not
+      license that claim.
+    - ``401`` or any other status -> one ``skipped`` finding whose reason
+      carries the status; for an ``HTTPError`` the headers may be absent,
+      and the skip records the status, never the header.
+    - a transport reason from :func:`fetch_probe` -> one ``skipped`` finding
+      with a non-empty reason.
+
+    The body is **never** parsed for a ``scopes`` field: the documented
+    ``GET /user`` 200 body (doc/external/github/rest-api-endpoints-for-users.
+    md) contains no such key, so a recorded body carrying one is ignored.
+
+    Like :func:`probe_target_access` and :func:`probe_administration`, a
+    missing or empty token is a **skip** - no request is attempted at all -
+    because a token-scope probe reads a token's property, and an
+    unauthenticated request establishes no fact about any token (behaviour
+    7).
+
+    Never raises; always returns a list of findings. Never echoes a token
+    into a finding or a reason (module invariant).
+    """
+    url = "{}/user".format(_RULES_API_BASE)
+    # The probe takes no target, so the sample's recorded target
+    # (owner/repo in the tests) is carried verbatim in the fail remedy.
+    fail_remedy = "recreate it as a fine-grained token, owner/repo only"
+    skipped_remedy = "put a valid GITHUB_TOKEN in .env and re-run"
+
+    if not token:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_CLASSIC_TOKEN,
+                "rule": None,
+                "brief": "no token in .env",
+                "danger": _CLASSIC_TOKEN_SKIP_DANGER,
+                "source": None,
+                "reason": "no token in .env",
+                "remedy": "put GITHUB_TOKEN in .env and re-run",
+            }
+        ]
+
+    status, headers, _body, reason = fetch_probe(
+        url, token, opener=opener, timeout=timeout
+    )
+
+    if reason is not None:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_CLASSIC_TOKEN,
+                "rule": None,
+                "brief": "the probe could not reach GitHub",
+                "danger": _CLASSIC_TOKEN_SKIP_DANGER,
+                "source": None,
+                "reason": reason,
+                "remedy": "check network access to api.github.com, then re-run",
+            }
+        ]
+
+    if status != 200:
+        # 401 is the unauthenticated answer the saved page documents for
+        # GET /user; any other status is likewise not a scope answer. The
+        # headers of a non-200 are not consulted: an HTTPError's headers
+        # may be absent, and a skip records the status, not the header.
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_CLASSIC_TOKEN,
+                "rule": None,
+                "brief": "GitHub returned HTTP {}".format(status),
+                "danger": _CLASSIC_TOKEN_SKIP_DANGER,
+                "source": None,
+                "reason": "GitHub returned HTTP {}".format(status),
+                "remedy": skipped_remedy,
+            }
+        ]
+
+    scopes = ""
+    if isinstance(headers, dict):
+        for key, value in headers.items():
+            if isinstance(key, str) and key.lower() == "x-oauth-scopes":
+                scopes = value if isinstance(value, str) else str(value)
+                break
+
+    if scopes:
+        return [
+            {
+                "status": "fail",
+                "check": CHECK_CLASSIC_TOKEN,
+                "rule": None,
+                "brief": "a classic token reaches every repo the owner can see",
+                "danger": (
+                    "X-OAuth-Scopes: {} means the repo-scope guarantee is "
+                    "void for every repo".format(scopes)
+                ),
+                "source": None,
+                "remedy": fail_remedy,
+            }
+        ]
+
+    return [
+        {
+            "status": "passed",
+            "check": CHECK_CLASSIC_TOKEN,
+            "rule": None,
+            "brief": "no classic OAuth scopes returned",
+            "danger": "",
+            "source": None,
+            "remedy": (
+                "nothing to do - no classic OAuth scope header was returned"
+            ),
+        }
+    ]
+
+
+def workflows_withheld_finding() -> List[Dict[str, Any]]:
+    """The workflows-withheld finding (behaviour 5 of plans/verify-guards-token.md).
+
+    Takes nothing - no network, no token, no owner or repo - and returns a
+    constant one-element findings list. The ``workflows`` permission has
+    access level ``write`` only - no ``read`` form exists - per the
+    permission table in doc/external/github/fine-grained-personal-access-
+    tokens.md, and the workflows list endpoint
+    (``GET /repos/{owner}/{repo}/actions/workflows``) is gated on
+    "Actions" repository permissions (read), not ``workflows``, and works
+    unauthenticated on public repos (doc/external/github/rest-api-endpoints-
+    for-workflows.md). So no read-only call can prove the ``workflows``
+    withholding: the only call that would is a write, which the probes must
+    not perform.
+
+    The finding is therefore ``skipped``, never ``passed`` - the #68
+    rule's exact case: an unprovable withholding must not read as clean.
+    Deterministic: every call returns equal findings. Never raises. The
+    finding renders through :func:`render_finding`'s existing ``skipped``
+    branch, which carries the ``reason``.
+    """
+    reason = (
+        "the workflows permission has no read level, no read-only call "
+        "can prove this"
+    )
+    remedy = (
+        "in GitHub settings, check the token has no Workflows permission"
+    )
+    # Do not "tidy" the constant to "passed": the withholding is
+    # unprovable, not proven. A passed here would turn "we could not
+    # check it" into "it is withheld" - the one lie the report must not tell.
+    return [
+        {
+            "status": "skipped",
+            "check": CHECK_WORKFLOWS_WITHHELD,
+            "rule": None,
+            "brief": "no read-only call can prove this",
+            "danger": _WORKFLOWS_WITHHELD_SKIP_DANGER,
+            "source": None,
+            "reason": reason,
+            "remedy": remedy,
+        }
+    ]
+
+
+def probe_named_repo(
+    other_repo: Optional[str],
+    token: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The named-repo token-scope probe: does the token reach a named other repo?
+
+    Takes the raw user-supplied ``--other-repo OWNER/REPO`` string and
+    splits it itself (behaviour 18 amendment of plans/verify-guards-token.md):
+    exactly one ``/``, both parts non-empty after strip. The target owner is
+    no longer a parameter - the owner probed is the other repository's own
+    owner, as written in the string, and is never assumed to equal the
+    target's owner (plan Assumptions). Then issues
+    ``GET /repos/{other_owner}/{other_name}`` through :func:`fetch_probe`
+    (behaviour 1) - one probe, one API call. The probe hits the *other*
+    repository, never the target: a ``404`` on the target is behaviour 2's
+    louder finding, not this probe's.
+
+    Malformed input - ``None`` or empty (the no-other-repo skip), no
+    ``/``, more than one ``/``, or an empty owner or repo part after strip
+    - is exactly one ``skipped`` finding whose reason and remedy name
+    ``--other-repo`` as the fix, and the opener is never called: when the
+    input is unparseable there is nothing to probe. Never a crash.
+
+    The framing rule this probe exists to encode: a ``404`` is the honest
+    answer, and it only proves one thing.
+
+    - ``404`` -> one ``passed`` finding worded "proves only that the token
+      is not scoped to {other_owner}/{other_name}; it cannot enumerate the
+      token's full repository list" - both halves: the specific proof and
+      the explicit non-claim, naming the split parts of the raw string.
+      The remedy cites the saved page that documents a fine-grained token
+      reaching only the repositories selected at creation.
+    - ``200`` -> one ``warn`` finding: the token reaches more than the
+      target, so a compromise of it is not confined to the target repo.
+    - no other repo supplied -> one ``skipped`` finding naming
+      ``--other-repo`` as the fix - never a pass - with no request
+      attempted at all: there is nothing to probe.
+    - malformed other repo -> one ``skipped`` finding whose reason and
+      remedy name ``--other-repo`` as the fix, opener never called.
+    - ``403`` -> one ``skipped`` finding: a permission denial is not a
+      scope answer the probe can interpret.
+    - any other status -> one ``skipped`` finding whose reason carries
+      the status.
+    - a transport reason from :func:`fetch_probe` -> one ``skipped``
+      finding with a non-empty reason.
+
+    Like the other token-scope probes, a missing or empty token is a
+    **skip** - no request is attempted at all - because a token-scope probe
+    reads a token's property, and an unauthenticated request establishes no
+    fact about any token (behaviour 7).
+
+    Never raises; always returns a list of findings. Never echoes a token
+    into a finding or a reason (module invariant).
+    """
+    skipped_remedy = "re-run with --other-repo OWNER/REPO"
+
+    # Split the raw --other-repo value: exactly one "/", both parts
+    # non-empty after strip. The owner probed is the string's own owner -
+    # the target owner never feeds this probe (behaviour 18). Malformed
+    # input is a skip, never a crash, and the opener is never called:
+    # when the input is unparseable there is nothing to probe.
+    other = None
+    if not other_repo:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "brief": "no other repo named",
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": "no other repo named",
+                "remedy": skipped_remedy,
+            }
+        ]
+    parts = other_repo.split("/")
+    if len(parts) != 2 or not parts[0].strip() or not parts[1].strip():
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "brief": "--other-repo {!r} is not OWNER/REPO".format(other_repo),
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": (
+                    "--other-repo {!r} is not OWNER/REPO".format(other_repo)
+                ),
+                "remedy": skipped_remedy,
+            }
+        ]
+    other_owner = parts[0].strip()
+    other_name = parts[1].strip()
+    other = "{}/{}".format(other_owner, other_name)
+
+    if not token:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "brief": "no token in .env",
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": "no token in .env",
+                "remedy": "put GITHUB_TOKEN in .env and re-run",
+            }
+        ]
+
+    url = "{}/repos/{}/{}".format(_RULES_API_BASE, other_owner, other_name)
+    status, _headers, _body, reason = fetch_probe(
+        url, token, opener=opener, timeout=timeout
+    )
+
+    if reason is not None:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "brief": "the probe could not reach GitHub",
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": reason,
+                "remedy": "check network access to api.github.com, then re-run",
+            }
+        ]
+
+    if status == 404:
+        return [
+            {
+                "status": "passed",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "brief": "does not reach {} (404)".format(other),
+                "danger": "",
+                "source": None,
+                "remedy": (
+                    "the token is not scoped to {}; it cannot enumerate "
+                    "the full repository list".format(other)
+                ),
+            }
+        ]
+
+    if status == 200:
+        return [
+            {
+                "status": "warn",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "brief": "also reaches {}, so a leak is not confined here".format(
+                    other
+                ),
+                "danger": (
+                    "also reaches {}, so a leak is not confined to the "
+                    "target".format(other)
+                ),
+                "source": None,
+                "remedy": (
+                    "recreate the token with access to the target only"
+                ),
+            }
+        ]
+
+    if status == 403:
+        return [
+            {
+                "status": "skipped",
+                "check": CHECK_NAMED_REPO,
+                "rule": None,
+                "brief": "GitHub returned 403, not a scope answer",
+                "danger": _NAMED_REPO_SKIP_DANGER,
+                "source": None,
+                "reason": "GitHub returned 403, not a scope answer",
+                "remedy": "re-run with a token that can read the other repo",
+            }
+        ]
+
+    return [
+        {
+            "status": "skipped",
+            "check": CHECK_NAMED_REPO,
+            "rule": None,
+            "brief": "GitHub returned HTTP {}".format(status),
+            "danger": _NAMED_REPO_SKIP_DANGER,
+            "source": None,
+            "reason": "GitHub returned HTTP {}".format(status),
+            "remedy": skipped_remedy,
+        }
+    ]
+
+
+def check_token_all(
+    owner: str,
+    repo: str,
+    token: Optional[str] = None,
+    other_repo: Optional[str] = None,
+    opener: Optional[Callable[..., Any]] = None,
+    timeout: Optional[float] = None,
+) -> List[Dict[str, Any]]:
+    """The token-scope probe concatenation (behaviour 8 of plans/verify-guards-token.md).
+
+    Concatenates, in this fixed order, the one-element findings lists of the
+    token-scope probes: :func:`probe_target_access`,
+    :func:`probe_administration`, :func:`probe_classic_token`,
+    :func:`workflows_withheld_finding` (constant, no network or token) and
+    :func:`probe_named_repo` (with ``other_repo`` possibly ``None`` - the
+    probe's own no-other-repo skip). The fixed, explicit order is the
+    load-bearing contract: this is the single seam both CLI call sites
+    (verify-guards and doctor's Guards section) report through, so a probe
+    added here reaches both with no edit at either.
+
+    It is a thin concatenation: it delegates to the probes, each of which
+    handles its own no-token skip, transport skip and never-raises contract,
+    and fetches nothing itself. Every network probe reaches its endpoint
+    through the one injected ``opener`` (via :func:`fetch_probe`), never a
+    parallel fetch path. Never raises, never exits: an all-failing opener
+    yields all-``skipped`` findings, not an exception.
+    """
+    findings: List[Dict[str, Any]] = []
+    findings.extend(
+        probe_target_access(owner, repo, token, opener, timeout)
+    )
+    findings.extend(probe_administration(owner, repo, token, opener, timeout))
+    findings.extend(probe_classic_token(token, opener, timeout))
+    findings.extend(workflows_withheld_finding())
+    findings.extend(probe_named_repo(other_repo, token, opener, timeout))
+    return findings
+
+
+def _skip_brief(reason: str) -> str:
+    """The one-clause brief for a skipped branch-rules finding, from its reason.
+
+    Maps the reason strings :func:`fetch_branch_rules` records, and the
+    resolve-failure reason the CLI builds for a missing GitHub origin,
+    onto the sample's short clauses (behaviour 1 of
+    plans/guard-finding-compact.md); a reason it does not name stays a
+    short plain clause rather than leaking the long reason into the
+    headline.
+    """
+    if "has no origin" in reason:
+        return "no GitHub origin remote"
+    if "returned 404 for the branch rules" in reason:
+        return "GitHub returned 404 for the branch rules"
+    if "unreachable" in reason:
+        return "api.github.com was unreachable"
+    if "returned HTTP 401" in reason:
+        return "GitHub returned 401 for the branch rules"
+    return "the branch rules could not be fetched"
+
+
+def _skip_remedy(reason: str) -> str:
+    """The short fix for a skipped branch-rules finding, from its reason.
+
+    Maps the reason strings :func:`fetch_branch_rules` records, and the
+    resolve-failure reason the CLI builds for a missing GitHub origin,
+    onto the sample's ``how:`` clauses (behaviour 2 of
+    plans/guard-finding-compact.md): a single short sentence naming what
+    makes the check runnable, with no doc path.
+    """
+    if "has no origin" in reason:
+        return "run this in a clone whose origin is a GitHub repo"
+    if "returned 404 for the branch rules" in reason:
+        return "check the repo's plan and the token's repo access, then re-run"
+    if "unreachable" in reason:
+        return "check network access to api.github.com, then re-run"
+    if "returned HTTP 401" in reason:
+        return "put a valid GITHUB_TOKEN in .env and re-run"
+    return "re-run once the branch rules can be fetched"
 
 
 def skipped_findings(reason: str) -> List[Dict[str, Any]]:
@@ -200,6 +1109,8 @@ def skipped_findings(reason: str) -> List[Dict[str, Any]]:
     again (behaviours 4 and 5). ``render_finding`` renders the ``reason``
     field for skipped lines; the finding stands on its own either way.
     """
+    brief = _skip_brief(reason)
+    remedy = _skip_remedy(reason)
     findings = []
     for check in (
         CHECK_HISTORY_REWRITE,
@@ -212,15 +1123,11 @@ def skipped_findings(reason: str) -> List[Dict[str, Any]]:
                 "status": "skipped",
                 "check": check,
                 "rule": None,
+                "brief": brief,
                 "danger": _SKIPPED_DANGERS[check],
                 "source": None,
                 "reason": reason,
-                "remedy": (
-                    "make the rules endpoint reachable and readable - "
-                    "check network access to api.github.com and, for "
-                    "private repos, a token with Metadata read - then re-"
-                    "run; endpoint in {}".format(_ENDPOINT_DOC)
-                ),
+                "remedy": remedy,
             }
         )
     return findings
@@ -252,11 +1159,12 @@ def check_history_rewrite(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "status": "passed",
                     "check": CHECK_HISTORY_REWRITE,
                     "rule": rule_type,
+                    "brief": _PASSED_BRIEFS[rule_type],
                     "danger": "",
                     "source": _or_unknown(active[rule_type]),
                     "remedy": (
                         "nothing to do - the {!r} rule is active for this "
-                        "branch; see {}".format(rule_type, _RULES_DOC)
+                        "branch".format(rule_type)
                     ),
                 }
             )
@@ -266,14 +1174,10 @@ def check_history_rewrite(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                     "status": "warn",
                     "check": CHECK_HISTORY_REWRITE,
                     "rule": rule_type,
+                    "brief": _WARN_BRIEFS[rule_type],
                     "danger": _DANGERS[rule_type],
                     "source": None,
-                    "remedy": (
-                        "add a {!r} rule to a ruleset covering this branch: "
-                        "rule semantics in {}, endpoint in {}".format(
-                            rule_type, _RULES_DOC, _ENDPOINT_DOC
-                        )
-                    ),
+                    "remedy": _WARN_REMEDIES[rule_type],
                 }
             )
 
@@ -307,14 +1211,10 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "status": "warn",
                 "check": CHECK_REVIEW,
                 "rule": "pull_request",
+                "brief": "changes can land on main with no review",
                 "danger": _DANGERS["pull_request"],
                 "source": None,
-                "remedy": (
-                    "add a 'pull_request' rule to a ruleset covering this "
-                    "branch: rule semantics in {}, endpoint in {}".format(
-                        _RULES_DOC, _ENDPOINT_DOC
-                    )
-                ),
+                "remedy": _WARN_REMEDIES["pull_request"],
             }
         ]
 
@@ -327,15 +1227,11 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "status": "passed",
             "check": CHECK_REVIEW,
             "rule": "pull_request",
+            "brief": "review required ({} required approvals)".format(count),
             "danger": "",
             "source": _or_unknown(rule.get("ruleset_source")),
             "required_approving_review_count": count,
-            "remedy": (
-                "nothing to do - the 'pull_request' rule is active for this "
-                "branch, requiring {} approving review(s); see {}".format(
-                    count, _RULES_DOC
-                )
-            ),
+            "remedy": "nothing to do - review is required for this branch",
         }
     ]
 
@@ -371,14 +1267,10 @@ def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "status": "warn",
                 "check": CHECK_UPDATE_RESTRICTION,
                 "rule": "update",
+                "brief": "anyone with push access can push straight to main",
                 "danger": _DANGERS["update"],
                 "source": None,
-                "remedy": (
-                    "add an 'update' rule to a ruleset covering this "
-                    "branch: rule semantics in {}, endpoint in {}".format(
-                        _RULES_DOC, _ENDPOINT_DOC
-                    )
-                ),
+                "remedy": _WARN_REMEDIES["update"],
             }
         ]
 
@@ -391,15 +1283,13 @@ def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "status": "passed",
             "check": CHECK_UPDATE_RESTRICTION,
             "rule": "update",
+            "brief": "direct pushes restricted (fetch and merge: {})".format(
+                allows_fetch_and_merge
+            ),
             "danger": "",
             "source": _or_unknown(rule.get("ruleset_source")),
             "update_allows_fetch_and_merge": allows_fetch_and_merge,
-            "remedy": (
-                "nothing to do - the 'update' rule is active for this "
-                "branch, update_allows_fetch_and_merge: {}; see {}".format(
-                    allows_fetch_and_merge, _RULES_DOC
-                )
-            ),
+            "remedy": "nothing to do - direct pushes are restricted",
         }
     ]
 
@@ -439,13 +1329,10 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
                 "status": "warn",
                 "check": CHECK_FILE_PATHS,
                 "rule": "file_path_restriction",
+                "brief": "a push can change .github/workflows/**, what CI runs",
                 "danger": _DANGERS["file_path_restriction"],
                 "source": None,
-                "remedy": (
-                    "add a 'file_path_restriction' rule to a ruleset "
-                    "covering this branch: rule semantics in {}, endpoint "
-                    "in {}".format(_RULES_DOC, _ENDPOINT_DOC)
-                ),
+                "remedy": _WARN_REMEDIES["file_path_restriction"],
             }
         ]
 
@@ -455,19 +1342,22 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     restricted_file_paths = parameters.get("restricted_file_paths")
     if not isinstance(restricted_file_paths, list):
         restricted_file_paths = []
+    if restricted_file_paths:
+        brief = "listed paths protected ({})".format(
+            ", ".join(restricted_file_paths)
+        )
+    else:
+        brief = "listed paths protected (no paths recorded)"
     return [
         {
             "status": "passed",
             "check": CHECK_FILE_PATHS,
             "rule": "file_path_restriction",
+            "brief": brief,
             "danger": "",
             "source": _or_unknown(rule.get("ruleset_source")),
             "restricted_file_paths": restricted_file_paths,
-            "remedy": (
-                "nothing to do - the 'file_path_restriction' rule is "
-                "active for this branch, restricted_file_paths: {}; see "
-                "{}".format(restricted_file_paths, _RULES_DOC)
-            ),
+            "remedy": "nothing to do - the listed paths are protected",
         }
     ]
 
@@ -500,59 +1390,270 @@ def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 def render_finding(finding: Dict[str, Any]) -> str:
     """One human-readable line per finding; no network, no exit.
 
-    A ``passed`` line names the rule's API type and states that the rule
-    is present - plus the caveat that ``bypass_actors`` is only returned
-    to users with write access to the ruleset, so on a read-only token the
-    branch must never be called simply "protected": an unseen bypass entry
-    is an unmeasured hole. A passed review finding also keeps its recorded
-    ``required_approving_review_count`` visible, and a passed update
-    finding keeps its recorded ``update_allows_fetch_and_merge`` visible -
-    a weak value stays on the line (the zero-approvals precedent) - while
-    a finding whose parameters were unreadable claims no value at all. A
-    passed file-path finding keeps its recorded ``restricted_file_paths``
-    visible, listing every recorded path verbatim with no elision; an
-    empty recorded list - explicit ``[]`` or an unreadable parameter -
-    renders the explicit "no restricted paths recorded" rather than a
-    bare "protected". A ``warn`` line names the danger and the remedy. A
-    ``skipped`` line carries the reason the check could not run.
+    The one vocabulary (behaviour 3 of
+    plans/guard-finding-compact.md): every status renders
+    ``{prefix}: {label} - {brief}`` - the existing ``ok:``/``warn:``/
+    ``fail:``/``skipped:`` prefix, the label (the finding's ``rule`` when
+    it carries one, else its ``check`` - a token finding carries
+    ``rule=None``, and rendering it would print a literal "None"), and
+    the finding's own short ``brief``: the one-liner a passed finding
+    records (its recorded value in parentheses), the danger words a
+    warn/fail finding records, the short reason a skipped finding
+    records. Every word of the line comes from the finding's own fields,
+    so the hard-coded bypass caveat - which is not a finding field -
+    does not appear here: it returns once as the module's trailing note
+    (behaviour 8 of plans/guard-finding-compact.md). A finding with an
+    unknown status still falls through to the ``unknown:`` line, which
+    marks it without crashing (the ``unknown:`` fallthrough is unchanged).
     """
-    rule = finding.get("rule")
     status = finding.get("status")
-    if status == "passed":
-        line = (
-            "ok: the {} rule is present - but the bypass list is not "
-            "visible on a read-only token (bypass_actors is only returned "
-            "to users with write access to the ruleset)".format(rule)
-        )
-        count = finding.get("required_approving_review_count")
-        if count is not None:
-            line += " ({} required approvals)".format(count)
-        allows = finding.get("update_allows_fetch_and_merge")
-        if allows is not None:
-            line += " (update_allows_fetch_and_merge: {})".format(allows)
-        paths = finding.get("restricted_file_paths")
-        if paths is not None:
-            if paths:
-                line += " (restricted_file_paths: {})".format(
-                    ", ".join(str(path) for path in paths)
-                )
-            else:
-                line += " (no restricted paths recorded)"
-        return line
-    if status == "warn":
-        return "warn: {} - {}; fix: {}".format(
-            rule, finding.get("danger"), finding.get("remedy")
-        )
-    if status == "skipped":
-        reason = (
-            finding.get("reason")
-            or finding.get("danger")
-            or "no reason recorded"
-        )
-        return "skipped: {} check could not run: {}".format(
-            finding.get("check"), reason
+    rule = finding.get("rule")
+    if status in ("passed", "warn", "fail", "skipped"):
+        prefix = _BLOCK_PREFIXES[status]
+        label = rule if rule is not None else finding.get("check")
+        return "{}: {} - {}".format(
+            prefix, label, finding.get("brief", "")
         )
     return "unknown: {} finding for rule {}".format(status, rule)
+
+
+# The status prefixes a block headline uses, in the same convention
+# render_finding's line prefixes already use (ok:/warn:/fail:/skipped:).
+_BLOCK_PREFIXES = {
+    "passed": "ok",
+    "warn": "warn",
+    "fail": "fail",
+    "skipped": "skipped",
+}
+
+# The status mark a block headline prepends (one space between the mark
+# and the plain headline), so a report's findings read at a glance. A
+# status absent here (anything other than the four above) gets no mark:
+# its headline stays the plain ``unknown: {label}``.
+_HEADLINE_MARKS = {
+    "passed": "\u2705",
+    "warn": "\u26a0\ufe0f",
+    "fail": "\u274c",
+    "skipped": "\u23ed\ufe0f",
+}
+
+
+def _block_substance(finding: Dict[str, Any]) -> str:
+    """The block's detail text, derived from :func:`render_finding`'s line.
+
+    Takes the single-line renderer's output and strips what the block
+    renders on its own: the leading status prefix, the trailing
+    `` fix: {remedy}`` (which the block carries on its own indented
+    ``fix:``/``see:`` line), and - for a ``skipped`` line - the
+    ``{check} check could not run:`` phrasing the headline already names.
+    Deriving the substance this way keeps :func:`render_finding` the single
+    source of the finding's text: a word added to a probe's danger or reason
+    reaches the block automatically, without the block re-deriving it.
+
+    The one special case is a passed finding whose ``rule`` is None - a
+    token passed finding: :func:`render_finding`'s passed branch is written
+    for branch rules and would print "the None rule is present", a claim
+    about a ruleset object the token probes never looked at. For that case
+    the block's detail is empty (behaviour 19a): the substance of a token
+    passed finding lives entirely in its remedy, which the block prints on
+    its indented ``see:`` line - the check is named by the headline, and
+    the detail would only restate the see: line.
+    """
+    status = finding.get("status")
+    prefix = _BLOCK_PREFIXES.get(status, "unknown")
+    line = render_finding(finding)
+    marker = "{}: ".format(prefix)
+    if not line.startswith(marker):
+        # render_finding's own "unknown:" fallthrough: nothing to strip.
+        return line
+    substance = line[len(marker):]
+
+    if status == "passed" and finding.get("rule") is None:
+        # Behaviour 19a: a token passed finding (rule=None) carries its
+        # substance in the remedy field - the block prints that text on its
+        # indented see: line - so there is no detail to reword into: a
+        # detail line derived from the remedy would restate the see: line.
+        # The block is the headline (which names the check) plus the
+        # wrapped see: line; returning empty detail keeps every other
+        # invariant (headline, width, line count, determinism) intact.
+        return ""
+
+    fix_marker = " fix: "
+    cut = substance.rfind(fix_marker)
+    if cut != -1:
+        substance = substance[:cut]
+
+    if status == "skipped":
+        lead = "{} check could not run: ".format(finding.get("check"))
+        if substance.startswith(lead):
+            substance = substance[len(lead):]
+
+    return substance.strip()
+
+
+def render_finding_block(finding: Dict[str, Any], width: int = 80) -> List[str]:
+    """ONE finding as a small readable block: headline, detail, remedy.
+
+    The human-facing renderer (behaviour 19 of
+    plans/verify-guards-token.md), replacing the flat 300-600 character
+    lines the single-line :func:`render_finding` produced when its output
+    was printed whole: the block is a ``{prefix}: {label}`` headline - the
+    prefix from the finding's status (``ok``/``warn``/``fail``/
+    ``skipped``, the existing convention), the label the finding's
+    ``rule`` when it carries one, else its ``check`` - never a literal
+    ``None`` - followed by the finding's substance wrapped so every line
+    of the block is at most ``width`` characters, followed by an indented
+    remedy line: ``fix:`` for ``warn``/``fail``/``skipped`` and ``see:``
+    for ``passed``, the remedy text wrapped at ``width`` with the indent
+    included in the bound.
+
+    The block is derived from :func:`render_finding`'s text (see
+    :func:`_block_substance`): that single-line renderer remains the one
+    and only source of a finding's words, for programmatic consumers, and
+    the two cannot drift because the block's detail lines are its line
+    stripped and wrapped, never re-derived. The block is deterministic -
+    the same finding at the same width renders equal blocks - and
+    ``width`` is a real parameter: a narrower width wraps to more lines,
+    every one still within it.
+    """
+    status = finding.get("status")
+    label = finding.get("rule")
+    if not label:
+        label = finding.get("check")
+    if not label:
+        label = "unknown"
+    prefix = _BLOCK_PREFIXES.get(status, "unknown")
+    headline = "{}: {}".format(prefix, label)
+    mark = _HEADLINE_MARKS.get(status)
+    if mark:
+        # One space between the mark and the plain headline; the mark is
+        # part of the wrapped headline, so the wrap budget includes it.
+        headline = "{} {}".format(mark, headline)
+
+    if status in ("passed", "warn", "fail", "skipped"):
+        # Behaviour 4, 5 and 6 of plans/guard-finding-compact.md: a
+        # passed, warn, fail or skipped block starts as ONE line - the
+        # marked headline with the finding's own brief after an em dash
+        # (a skipped finding without a brief falls back to its reason).
+        # No detail line (the old ``_block_substance`` detail is
+        # dropped), no ``see:`` line (the passed remedy no longer prints
+        # per finding) and no ``fix:`` line (a warn/fail remedy moves to
+        # the report's "To fix" section, behaviour 7). The wrapped
+        # headline carries the whole block; a long brief wraps to more
+        # lines, every one within ``width``, with no elision.
+        brief = finding.get("brief")
+        substance = brief if isinstance(brief, str) and brief else (
+            finding.get("reason") if status == "skipped" else None
+        )
+        if isinstance(substance, str) and substance:
+            headline = "{} \u2014 {}".format(headline, substance)
+        block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
+        if status == "skipped":
+            # The skipped block's second line: how the check can be run -
+            # the remedy on one indented ``how:`` line, wrapped at
+            # ``width`` with the indent included in the bound, no
+            # elision. A missing or empty remedy emits no ``how:`` line
+            # at all (behaviour 6 of plans/guard-finding-compact.md).
+            remedy = finding.get("remedy")
+            if isinstance(remedy, str) and remedy:
+                lead = "  how: "
+                remainder = width - len(lead)
+                for index, part in enumerate(textwrap.wrap(remedy, width=remainder)):
+                    line = lead + part if index == 0 else "  " + part
+                    block.append(line)
+        return block
+
+    detail = _block_substance(finding)
+    block = textwrap.wrap(headline, width=width, break_long_words=True) or [headline]
+    if detail:
+        block.extend(textwrap.wrap(detail, width=width, break_long_words=True))
+
+    remedy = finding.get("remedy")
+    if isinstance(remedy, str) and remedy:
+        lead = "  see: " if status == "passed" else "  fix: "
+        remainder = width - len(lead)
+        for index, part in enumerate(textwrap.wrap(remedy, width=remainder)):
+            line = lead + part if index == 0 else "  " + part
+            block.append(line)
+    return block
+
+
+def render_fixes(
+    findings: List[Dict[str, Any]], width: int = 80
+) -> List[str]:
+    """The report's "To fix" section: the numbered mitigation list.
+
+    One line per word of the section (behaviour 7 of
+    plans/guard-finding-compact.md): the header line ``To fix`` - emitted
+    only when at least one finding has status ``warn`` or ``fail`` - then
+    one entry per such finding in list order, numbered 1-based, the entry's
+    text ``{n}. {label}: {remedy}`` - the label the finding's ``rule`` when
+    it carries one, else its ``check``, never a literal ``None`` - the
+    remedy the finding's own ``remedy`` field, printed whole with no
+    elision. ``passed`` and ``skipped`` findings are never numbered and
+    never rendered here; no warn and no fail - including an empty findings
+    list - yields ``[]`` with no header at all.
+
+    Each entry wraps at ``width`` the same way :func:`render_finding_block`
+    wraps its indented ``how:`` line: the entry's first line starts at
+    column 0 with ``{n}. {label}:``, and the continuation lines are
+    indented exactly 2 spaces - under the entry's text, more than the entry
+    start - every line at most ``width`` characters. ``width`` is a real
+    parameter: a narrower width wraps the same entry to strictly more
+    lines. Pure: takes a plain list of plain dicts, no network, no write,
+    never raises; the same findings at the same width render equal lists.
+    """
+    width = max(1, width)
+    lines: List[str] = []
+    number = 0
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        if finding.get("status") not in ("warn", "fail"):
+            continue
+        number += 1
+        label = finding.get("rule")
+        if not isinstance(label, str) or not label:
+            label = finding.get("check")
+        if not isinstance(label, str) or not label:
+            label = "unknown"
+        lead = "{}. {}: ".format(number, label)
+        remedy = finding.get("remedy")
+        if not isinstance(remedy, str) or not remedy:
+            # No remedy text: the entry is its lead alone, wrapped so even
+            # a pathologically long label stays within the width.
+            text = lead.rstrip()
+            lines.extend(
+                textwrap.wrap(
+                    text, width=width, break_long_words=True
+                )
+                or [text]
+            )
+            continue
+        if len(lead) >= width:
+            # The lead alone fills the width: its own wrap carries the
+            # first line, and the remedy starts on continuation lines.
+            lead_text = lead.rstrip()
+            for index, part in enumerate(
+                textwrap.wrap(
+                    lead_text, width=width, break_long_words=True
+                )
+                or [lead_text]
+            ):
+                lines.append(part if index == 0 else "  " + part)
+            for part in textwrap.wrap(
+                remedy, width=max(1, width - 2), break_long_words=True
+            ):
+                lines.append("  " + part)
+            continue
+        remainder = width - len(lead)
+        parts = textwrap.wrap(remedy, width=remainder, break_long_words=True)
+        lines.append(lead + parts[0])
+        for part in parts[1:]:
+            lines.append("  " + part)
+    if number == 0:
+        return []
+    return ["To fix"] + lines
 
 
 def summarize(findings: List[Dict[str, Any]]) -> int:
@@ -570,6 +1671,74 @@ def summarize(findings: List[Dict[str, Any]]) -> int:
         if finding.get("status") == "fail":
             return 1
     return 0
+
+
+def gate_verdict(findings: List[Dict[str, Any]]) -> str:
+    """The gate seam ``setup-repo`` runs before any provisioning:
+    ``"blocked"`` when any finding has status ``fail`` or ``warn``, else
+    ``"clean"``.
+
+    A ``skipped`` never blocks: it is an honest "could not verify" (issue
+    #100, decision 2), and a target with no GitHub origin yields only
+    skipped findings yet must still provision. A ``warn`` blocks, though,
+    because a junior must fix it - or consciously accept it - before the
+    repo is called guarded. An unknown status is neither a fail nor a
+    warn, so it neither blocks nor crashes the gate.
+
+    This is a sibling of :func:`summarize`, not a replacement:
+    ``verify-guards`` keeps its ``1``-iff-any-``fail`` contract, with a
+    ``warn`` still exiting ``0``, while the gate needs a fail OR a warn to
+    block. Pure: one positional findings list, a ``str`` result, no
+    network, no write, never raises (behaviour 1 of
+    plans/setup-repo-guards.md).
+    """
+    for finding in findings:
+        if finding.get("status") in ("fail", "warn"):
+            return "blocked"
+    return "clean"
+
+
+def gate_remediation(
+    branch_findings: List[Dict[str, Any]],
+    token_findings: List[Dict[str, Any]],
+) -> Dict[str, bool]:
+    """The remediation seam ``setup-repo`` runs once the gate is blocked:
+    which of the two prepared fixes a junior must apply.
+
+    ``needs_ruleset`` is true iff any **branch** finding has status ``fail``
+    or ``warn`` - the importable ruleset is the fix for a branch rule that is
+    missing or weak (issue #100, decision 3: the gate prepares the fix a
+    junior can follow). ``needs_token_recipe`` is true iff any **token**
+    finding has status ``fail`` - the pre-filled token recipe is the fix for
+    a bad token. The two booleans are computed independently from their own
+    list: a token fail must not need the ruleset, a branch fail must not
+    need the recipe.
+
+    The warn asymmetry is deliberate: a branch ``warn`` sets
+    ``needs_ruleset``, because the ruleset IS the fix for a missing/weak
+    rule; a token ``warn`` (a reachable named repo) does NOT set
+    ``needs_token_recipe``, because the warn is a scope judgement with its
+    own remedy text saying what to decide - only a bad token (``fail``)
+    gets the recipe. A token warn still blocks the gate via its sibling
+    :func:`gate_verdict`; it simply prints no recipe.
+
+    A ``skipped`` triggers neither - it is an honest "could not verify" - and
+    an unknown status triggers neither, the same discipline as
+    :func:`gate_verdict`. Pure: two positional findings lists, a
+    ``Dict[str, bool]`` with exactly the keys ``"needs_ruleset"`` and
+    ``"needs_token_recipe"``, no network, no write, never raises
+    (behaviour 2 of plans/setup-repo-guards.md).
+    """
+    needs_ruleset = any(
+        finding.get("status") in ("fail", "warn") for finding in branch_findings
+    )
+    needs_token_recipe = any(
+        finding.get("status") == "fail" for finding in token_findings
+    )
+    return {
+        "needs_ruleset": needs_ruleset,
+        "needs_token_recipe": needs_token_recipe,
+    }
 
 
 def render_report(findings: List[Dict[str, Any]]) -> List[str]:
