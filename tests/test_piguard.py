@@ -2489,20 +2489,40 @@ class FindingInvariantsTests(unittest.TestCase):
                 continue
             checked += 1
             with self.subTest(finding=label):
+                rule = _field(finding, "rule")
                 remedy = _field(finding, "remedy") or ""
-                self.assertLessEqual(
-                    len(remedy),
-                    100,
-                    "the {} finding on rule {!r} remedy must be a single "
-                    "sentence of at most 100 characters, got {}: "
-                    "{!r}".format(status, _field(finding, "rule"), len(remedy), remedy),
-                )
-                self.assertNotIn(
-                    ". ",
-                    remedy,
-                    "the {} finding on rule {!r} remedy must be a single "
-                    "sentence: {!r}".format(status, _field(finding, "rule"), remedy),
-                )
+                if rule == "file_path_restriction":
+                    # Behaviour 1 of plans/file-path-remedy-plan-fallback.md:
+                    # this remedy is two clauses by requirement - the UI
+                    # fix, then the plan-availability fallback - because
+                    # Anvil cannot detect whether the plan offers the rule,
+                    # so the remedy must carry both. It gets its own 180-
+                    # char bound (two short sentences, not a paragraph)
+                    # and is the only remedy allowed a second sentence;
+                    # every other remedy keeps the 100-char, single-
+                    # sentence pin. The no-doc-path and no-'see:' bounds
+                    # below apply to it without exemption.
+                    self.assertLessEqual(
+                        len(remedy),
+                        180,
+                        "the {} finding on rule {!r} remedy must be two "
+                        "short sentences of at most 180 characters, got "
+                        "{}: {!r}".format(status, rule, len(remedy), remedy),
+                    )
+                else:
+                    self.assertLessEqual(
+                        len(remedy),
+                        100,
+                        "the {} finding on rule {!r} remedy must be a single "
+                        "sentence of at most 100 characters, got {}: "
+                        "{!r}".format(status, rule, len(remedy), remedy),
+                    )
+                    self.assertNotIn(
+                        ". ",
+                        remedy,
+                        "the {} finding on rule {!r} remedy must be a single "
+                        "sentence: {!r}".format(status, rule, remedy),
+                    )
                 self.assertNotIn(
                     "doc/external/",
                     remedy,
