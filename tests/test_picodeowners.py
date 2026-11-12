@@ -277,7 +277,7 @@ class WalkthroughStepsTests(WalkthroughStepsTestCase):
 
         self.assertIn(
             ".github/CODEOWNERS",
-            first.lower(),
+            first,
             "the first step must name the file at .github/CODEOWNERS; got: "
             + first,
         )
