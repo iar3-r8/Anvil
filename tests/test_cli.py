@@ -34,6 +34,7 @@ overridden whenever a default derived from it is asserted.
 import contextlib
 import io
 import json
+import re
 import os
 import shutil
 import sys
@@ -9537,3 +9538,305 @@ class TestAskFreePlanUnit(unittest.TestCase):
             "the prompt must ask whether the plan does not offer "
             '"Restrict file paths" (the plan-availability question)',
         )
+
+
+class TestFreePlanNonInteractiveSkip(CliCase):
+    """RED pins for behaviour 5: non-interactive and --yes skip the prompt
+    - behaviour 5 of plans/file-path-interactive-free-plan.md.
+
+    With a ``file_paths`` warn among the branch findings (the other four
+    rules passed, so ``wants_walkthrough`` is True), each skip mode must
+    print the guard report plus EXACTLY ONE extra line naming the
+    free-plan fallback and how to see the walkthrough, ask no prompt
+    (the prompt seams are booby-trapped and no ``input=`` is passed, so
+    any prompt fails the run loudly), print no walkthrough, and leave the
+    exit code unchanged: ``summarize`` (0 for this warn-only fixture) for
+    ``verify-guards``, ``EXIT_GUARDS_BLOCKED`` (9) for the blocked
+    ``setup-repo`` gate. The follow-up wiring does not exist yet - the
+    extra line is absent - so every pin in this class fails.
+
+    The interactive prompt path and the yes-walkthrough (behaviours 4 and
+    6) are pinned elsewhere and deliberately not here.
+
+    Token pins for the extra line (the wording is the green's; these are
+    the minimal honest tokens):
+
+    * the fallback exists: ``CODEOWNERS`` (exact) plus a "free plan"
+      phrasing (``free[-\\s]plan``, case-insensitive);
+    * how to see the walkthrough: ``walkthrough`` (case-insensitive)
+      plus ``without --yes`` (exact) or ``interactively``
+      (case-insensitive).
+
+    All the tokens are required on ONE line, the output must carry
+    exactly ONE such line, and it must sit after the guard report's
+    bypass note - the wiring lands after ``_echo_guard_report``.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    GATE_TOKEN = "ghp_freepan_gate"
+
+    # The walkthrough's step-4 text: its absence is the "no walkthrough"
+    # pin (behaviour 6's steps are the only place it prints).
+    WALKTHROUGH_STEP_TEXT = "Require review from Code Owners"
+    _FALLBACK_PHRASE = re.compile(r"free[-\s]plan", re.IGNORECASE)
+
+    # -- fixture, seams and traps --------------------------------------------
+
+    def _file_paths_warn_findings(self):
+        """The five-rule findings with ``file_paths`` flipped to its warn
+        shape: the other four rules passed, ``wants_walkthrough`` True,
+        ``summarize`` 0 (a warn never fails the summarize)."""
+        findings = cli.piguard.check_all(five_rule_branch_rules())
+        warn = cli.piguard.check_file_paths([])[0]
+        for index, finding in enumerate(findings):
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
+                findings[index] = warn
+        self.assertTrue(
+            cli.picodeowners.wants_walkthrough(findings),
+            "the fixture must carry a file_paths warn finding so the "
+            "walkthrough ask is wanted",
+        )
+        self.assertEqual(
+            0,
+            cli.piguard.summarize(findings),
+            "the fixture must summarize to 0 - a warn is reported, not "
+            "a failure",
+        )
+        return findings
+
+    def _prompt_traps(self):
+        """Booby-traps over every question function the skip path must not
+        reach (the TestSetupRepoGuardGate convention): a prompt asked on a
+        skipped run fails the test loudly instead of hanging or eating
+        input."""
+        boom = AssertionError(
+            "a prompt was asked on a skipped (non-interactive / --yes / "
+            "--dry-run) run - behaviour 5 asks nothing"
+        )
+        return (
+            mock.patch.object(cli.prompts, "confirm", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    def _guard_seams(self, findings):
+        """The four piguard seams replaced, so the guard flow runs offline
+        on exactly the fixture this class wants reported."""
+        return (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(
+                cli.piguard, "check_all", return_value=findings
+            ),
+            mock.patch.object(
+                cli.piguard, "check_token_all", return_value=[]
+            ),
+        )
+
+    def _verify_guards_with_file_paths_warn(self, prefix=()):
+        """One ``verify-guards`` run on the warn fixture, offline, with the
+        prompt seams booby-trapped and NO ``input=`` (CliRunner's default
+        stdin is not a tty, so ``interactive()`` resolves False itself).
+        ``prefix`` carries global flags (e.g. ``--dry-run``). Returns
+        ``(result, findings)``; ``self.invoke`` re-raises any non-exit
+        exception, so the run must complete normally."""
+        findings = self._file_paths_warn_findings()
+        for patcher in self._guard_seams(findings) + self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(
+            list(prefix) + ["verify-guards", str(self.project), "--branch", "main"]
+        )
+        return result, findings
+
+    def _blocked_gate_with_file_paths_warn(self):
+        """One blocked ``setup-repo`` run on the warn fixture: a stored
+        token (reused without prompting), offline seams, booby-trapped
+        prompts, NO ``input=``. Returns ``(result, findings)``."""
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN=self.GATE_TOKEN)
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        findings = self._file_paths_warn_findings()
+        for patcher in self._guard_seams(findings) + self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(["setup-repo", target.name])
+        return result, findings
+
+    # -- the behaviour-5 pins --------------------------------------------------
+
+    def _fallback_lines(self, output):
+        """The lines carrying ALL the extra-line tokens: the fallback
+        (CODEOWNERS + a free-plan phrasing) and the how-to
+        (walkthrough + without --yes / interactively) on one line."""
+        return [
+            line
+            for line in output.splitlines()
+            if "CODEOWNERS" in line
+            and self._FALLBACK_PHRASE.search(line)
+            and "walkthrough" in line.lower()
+            and ("without --yes" in line or "interactively" in line.lower())
+        ]
+
+    def _assert_fallback_pins(self, result, site):
+        """The Then clause, pinned: exactly ONE extra line with the
+        fallback + how-to tokens, positioned after the guard report's
+        bypass note, and the walkthrough itself absent."""
+        output = result.output
+        lines = output.splitlines()
+        note = cli.piguard.BYPASS_NOTE
+        self.assertIn(
+            note,
+            lines,
+            "{}: the guard report is missing its closing note line:\n{}".format(
+                site, output
+            ),
+        )
+        fallback = self._fallback_lines(output)
+        self.assertEqual(
+            1,
+            len(fallback),
+            "{}: exactly one extra line must name the free-plan fallback "
+            "(CODEOWNERS + a 'free plan' phrasing) AND how to see the "
+            "walkthrough ('walkthrough' + 'without --yes' or "
+            "'interactively') - {} such line(s) found:\n{}".format(
+                site, len(fallback), output
+            ),
+        )
+        self.assertGreater(
+            lines.index(fallback[0]),
+            lines.index(note),
+            "{}: the extra line must print after the guard report "
+            "(after the bypass note):\n{}".format(site, output),
+        )
+        self.assertNotIn(
+            self.WALKTHROUGH_STEP_TEXT,
+            output,
+            "{}: the walkthrough itself must NOT print when the prompt "
+            "is skipped - the step text {!r} is present:\n{}".format(
+                site, self.WALKTHROUGH_STEP_TEXT, output
+            ),
+        )
+
+    # -- verify-guards: the three skip modes ----------------------------------
+
+    def test_verify_guards_non_interactive_skips_prompt_and_prints_fallback_line(
+        self,
+    ):
+        """Plain CliRunner invoke (no ``input=``): stdin is not a tty, so
+        ``interactive()`` is False and the ask is skipped - the report
+        gains exactly one fallback line and the exit stays summarize (0
+        for a warn), never the missing-value 6."""
+        result, findings = self._verify_guards_with_file_paths_warn()
+
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "verify-guards (non-interactive) still exits summarize of its "
+            "findings - the skipped ask has a safe default and changes "
+            "no exit code:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "verify-guards with only a warn exits 0, not the "
+            "missing-value 6:\n{}".format(result.output),
+        )
+        self._assert_fallback_pins(result, "verify-guards non-interactive")
+
+    def test_verify_guards_assume_yes_skips_prompt_and_prints_fallback_line(
+        self,
+    ):
+        """``assume_yes=True`` (the ``--yes`` case) skips the ask the same
+        way. ``verify-guards`` declares no ``--yes`` flag of its own, so
+        the mode is forced through the ``_context`` seam the command uses
+        to build its Context."""
+        real_context = cli._context
+
+        def forcing_context(ctx, assume_yes=False):
+            shared = real_context(ctx, assume_yes)
+            shared.assume_yes = True
+            return shared
+
+        with mock.patch.object(cli, "_context", side_effect=forcing_context):
+            result, findings = self._verify_guards_with_file_paths_warn()
+
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "verify-guards (assume_yes) still exits summarize of its "
+            "findings - the skipped ask has a safe default and changes "
+            "no exit code:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "verify-guards with only a warn exits 0, not the "
+            "missing-value 6:\n{}".format(result.output),
+        )
+        self._assert_fallback_pins(result, "verify-guards assume_yes=True")
+
+    def test_verify_guards_dry_run_skips_prompt_and_prints_fallback_line(
+        self,
+    ):
+        """The global ``--dry-run`` is treated as non-interactive for this
+        ask (the plan's assumption): the same one-line fallback, the
+        same unchanged exit."""
+        result, findings = self._verify_guards_with_file_paths_warn(
+            prefix=("--dry-run",)
+        )
+
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "verify-guards (--dry-run) still exits summarize of its "
+            "findings - the skipped ask has a safe default and changes "
+            "no exit code:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "verify-guards with only a warn exits 0, not the "
+            "missing-value 6:\n{}".format(result.output),
+        )
+        self._assert_fallback_pins(result, "verify-guards --dry-run")
+
+    # -- the blocked setup-repo gate ------------------------------------------
+
+    def test_blocked_gate_non_interactive_skips_prompt_and_prints_fallback_line(
+        self,
+    ):
+        """The gate variant: a blocked ``setup-repo`` run on the warn
+        fixture, non-interactive (no ``input=``), still exits
+        ``EXIT_GUARDS_BLOCKED`` (9) with exactly one fallback line after
+        the report and no walkthrough."""
+        result, findings = self._blocked_gate_with_file_paths_warn()
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate still exits blocked (9) - the skipped ask "
+            "changes no exit code:\n{}".format(result.output),
+        )
+        self.assertNotEqual(
+            cli.EXIT_PROMPT,
+            result.exit_code,
+            "a blocked gate must not surface a prompt error (6) from the "
+            "skipped ask:\n{}".format(result.output),
+        )
+        self._assert_fallback_pins(result, "blocked setup-repo gate")
