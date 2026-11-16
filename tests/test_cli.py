@@ -10288,13 +10288,19 @@ class TestFreePlanBoundary(CliCase):
     the word ``confirmation`` case-insensitive), no behaviour-5
     non-interactive fallback line, the ``To fix`` entry for
     ``file_path_restriction`` and ``BYPASS_NOTE`` present. No state is
-    kept between runs: the whole project tree is byte-identical before
-    and after an interactive yes or no ``verify-guards`` run (the
-    walkthrough prints guidance, it never writes - no
-    ``.github/CODEOWNERS`` anywhere), and the blocked gate's interactive
-    no run leaves the project ``.env`` byte-identical and the target
-    unchanged apart from the one file the gate is allowed to prepare
-    (``.github-ruleset.json``) - never ``.github/CODEOWNERS``.
+    kept between runs, and the no-write boundary is conditional
+    (re-pointed by behaviour 16 of
+    plans/file-path-codeowners-interactive.md): no
+    ``.github/CODEOWNERS`` is written without the explicit offer
+    accepted - a declined offer, a declined content, ``--yes``,
+    ``--dry-run`` and a non-TTY all still leave the tree byte-identical
+    - so the whole project tree is byte-identical before and after an
+    interactive yes or no ``verify-guards`` run, and the blocked
+    gate's interactive no run leaves the project ``.env``
+    byte-identical and the target unchanged apart from the one file the
+    gate is allowed to prepare (``.github-ruleset.json``) - the
+    positive side (an accepted offer writes the file) is behaviour
+    18's own pin.
 
     Behaviour 8 - the prompt never changes an exit code. ``verify-guards``
     interactive yes and no both exit ``summarize`` of the warn-only
@@ -10610,7 +10616,12 @@ class TestFreePlanBoundary(CliCase):
     def test_verify_guards_interactive_no_keeps_the_project_byte_unchanged(self):
         """No state is kept between runs: after an interactive no
         verify-guards run the whole project tree is byte-identical -
-        the answer is never persisted to .env or anywhere else."""
+        the answer is never persisted to .env or anywhere else.
+
+        The no-write boundary is conditional (behaviour 16): the no
+        answer never reaches the write offer, so nothing is written.
+        The positive side (an accepted offer writes the file) lands in
+        behaviour 18."""
         findings = self._file_paths_warn_findings()
         before = self.snapshot()
         self._verify_guards_interactive(False, findings)
@@ -10619,8 +10630,9 @@ class TestFreePlanBoundary(CliCase):
         self.assertEqual(
             before,
             after,
-            "an interactive no run must write nothing - no new files and "
-            "no modified bytes anywhere in the project tree; changed: "
+            "an interactive no run (no offer accepted) must write nothing - "
+            "no new files and no modified bytes anywhere in the project "
+            "tree; changed: "
             "{}".format(
                 sorted(set(before) ^ set(after))
                 + [k for k in set(before) & set(after) if before[k] != after[k]]
@@ -10628,7 +10640,8 @@ class TestFreePlanBoundary(CliCase):
         )
         self.assertFalse(
             (self.project / ".github" / "CODEOWNERS").exists(),
-            "the walkthrough must never write a CODEOWNERS file",
+            "no write without the offer accepted: an interactive no run "
+            "(the offer is never reached) must not write .github/CODEOWNERS",
         )
 
     def test_verify_guards_interactive_no_answer_keeps_the_project_byte_unchanged(
@@ -10636,8 +10649,12 @@ class TestFreePlanBoundary(CliCase):
     ):
         """The no-answer run (the free plan) prints guidance only: after an
         interactive no verify-guards run the whole project tree is
-        byte-identical - the walkthrough prints, it never writes
-        (behaviour 9's inverted polarity)."""
+        byte-identical (behaviour 9's inverted polarity).
+
+        The no-write boundary is conditional (behaviour 16): the no
+        answer never reaches the write offer, so nothing is written.
+        The positive side (an accepted offer writes the file) lands in
+        behaviour 18."""
         findings = self._file_paths_warn_findings()
         before = self.snapshot()
         result = self._verify_guards_interactive(False, findings)
@@ -10654,15 +10671,16 @@ class TestFreePlanBoundary(CliCase):
         self.assertEqual(
             before,
             after,
-            "an interactive no run must write nothing - the walkthrough "
-            "prints guidance only; changed: {}".format(
+            "an interactive no run (no offer accepted) must write nothing - "
+            "the walkthrough prints guidance only; changed: {}".format(
                 sorted(set(before) ^ set(after))
                 + [k for k in set(before) & set(after) if before[k] != after[k]]
             ),
         )
         self.assertFalse(
             (self.project / ".github" / "CODEOWNERS").exists(),
-            "the walkthrough must never write a CODEOWNERS file",
+            "no write without the offer accepted: an interactive no run "
+            "(the offer is never reached) must not write .github/CODEOWNERS",
         )
 
     # -- behaviour 8: the prompt never changes an exit code -------------------
@@ -10763,8 +10781,13 @@ class TestFreePlanBoundary(CliCase):
         run the project .env is byte-identical (the token the fixture
         stored for the run is its precondition, not the run's effect)
         and the target carries exactly the one file the gate is allowed
-        to prepare (``.github-ruleset.json``) - never
-        ``.github/CODEOWNERS``."""
+        to prepare (``.github-ruleset.json``).
+
+        The no-write boundary is conditional (behaviour 16): no
+        ``.github/CODEOWNERS`` without the offer accepted - the no
+        answer never reaches the offer, so the target holds no
+        CODEOWNERS. The positive side (an accepted offer writes the
+        file) lands in behaviour 18."""
         result, target, env_before = self._blocked_gate_interactive(False)
 
         self.assertEqual(cli.EXIT_GUARDS_BLOCKED, result.exit_code, result.output)
@@ -10776,15 +10799,17 @@ class TestFreePlanBoundary(CliCase):
         self.assertEqual(
             [".github-ruleset.json"],
             sorted(after),
-            "a blocked gate run must leave the target unchanged apart "
-            "from the prepared ruleset; files present: {}".format(
+            "a blocked gate run (no offer accepted) must leave the "
+            "target unchanged apart from the prepared ruleset; files "
+            "present: {}".format(
                 sorted(after)
             ),
         )
         self.assertFalse(
             (target / ".github" / "CODEOWNERS").exists(),
-            "the walkthrough must never write a CODEOWNERS file into "
-            "the target",
+            "no write without the offer accepted: the gate's no run "
+            "(the offer is never reached) must not write "
+            ".github/CODEOWNERS into the target",
         )
         self.assertEqual(
             env_before,
@@ -12060,10 +12085,14 @@ class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
     # -- pin 7: the confirm-yes path, in this behaviour only --------------------
 
     def test_a_confirmed_content_returns_without_writing_yet(self):
-        """In THIS behaviour the flow ends after the confirm (the offer
-        is behaviour 18, the commands behaviour 19): it returns without
-        raising and has not yet written .github/CODEOWNERS (the write is
-        behaviour 17/18)."""
+        """The confirm-yes path ends the flow before any offer exists:
+        it returns without raising and writes nothing.
+
+        The boundary is conditional (behaviour 16): no write without the
+        explicit offer accepted. At THIS point in the plan the offer does
+        not exist yet, so a confirmed content writes nothing - and the
+        positive side (an accepted offer writes the file) lands in
+        behaviour 18, the write seam in behaviour 17."""
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             log = self._run_flow(target, confirm_answer=True)
@@ -12083,11 +12112,15 @@ class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
         self.assertEqual(
             [],
             self._tree(target),
-            "the write lands in behaviour 17/18 - not yet",
+            "no write without the offer accepted: the offer does not "
+            "exist at this point in the plan - the write lands in "
+            "behaviours 17/18",
         )
         self.assertFalse(
             (target / ".github" / "CODEOWNERS").exists(),
-            ".github/CODEOWNERS is written by behaviour 18, not here",
+            "no write without the offer accepted: a confirmed content "
+            "without an accepted offer must not write "
+            ".github/CODEOWNERS",
         )
 
 
