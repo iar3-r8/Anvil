@@ -11825,6 +11825,11 @@ class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
     the pre-filled ``@iar3-r8`` and the confirm default is True; the body
     is ``picodeowners.codeowners_body``'s output, pinned line by line,
     the owner line ``/.github/ @alice @bob`` among them.
+
+    Behaviour 18 adds a SECOND confirm (the write offer) after this one:
+    the pins below track the CONTENT confirm - the first - and the
+    confirm fake consumes its answers per call (content first, then the
+    offer, which it declines by default).
     """
 
     OWNER = "iar3-r8"
@@ -11841,9 +11846,20 @@ class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
 
     # -- fakes ----------------------------------------------------------------
 
-    def _fakes(self, ask_answer="@alice @bob", confirm_answer=True):
-        """One ordered log shared by the echo, ask and confirm fakes."""
+    def _fakes(self, ask_answer="@alice @bob", confirm_answer=(True, False)):
+        """One ordered log shared by the echo, ask and confirm fakes.
+
+        ``confirm_answer`` may be a scalar (every confirm gets it) or an
+        ordered sequence consumed per confirm call - the content confirm
+        first, then the write offer (behaviour 18); a confirm the queue
+        has not covered declines, so an unoffered confirm never accepts
+        a write."""
         log = []
+        confirm_queue = (
+            list(confirm_answer)
+            if isinstance(confirm_answer, (list, tuple))
+            else None
+        )
 
         def echo(line):
             log.append(("echo", line))
@@ -11856,11 +11872,15 @@ class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
 
         def confirm(prompt, default=None, *args, **kwargs):
             log.append(("confirm", prompt, default))
-            return confirm_answer
+            if confirm_queue is None:
+                return confirm_answer
+            return confirm_queue.pop(0) if confirm_queue else False
 
         return shared, ask, confirm, log
 
-    def _run_flow(self, target, ask_answer="@alice @bob", confirm_answer=True):
+    def _run_flow(
+        self, target, ask_answer="@alice @bob", confirm_answer=(True, False)
+    ):
         """One ``_codeowners_flow`` call on an empty temp target. The
         attribute reference is unguarded: the function does not exist
         yet, so the intended red is the AttributeError it raises."""
@@ -11946,36 +11966,37 @@ class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
             ),
         )
 
-    # -- pin 3: exactly one confirm, the right text and default ----------------
+    # -- pin 3: the FIRST confirm is the content question, default True ------
+    # (re-pointed by behaviour 18: the write offer is a SECOND confirm, so
+    # the total-count assertion is dropped - the offer has its own pins in
+    # TestCodeownersFlowOffer)
 
-    def test_confirms_once_with_the_content_question_default_true(self):
-        """Exactly one confirm, whose prompt carries the content question
-        and whose default is True."""
+    def test_the_first_confirm_is_the_content_question_default_true(self):
+        """The FIRST confirm is the content confirm: its prompt carries
+        the content question and its default is True. (Behaviour 18
+        adds a second - the offer - confirm after it.)"""
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             log = self._run_flow(target)
 
         confirms = self._entries(log, "confirm")
-        self.assertEqual(
-            1,
-            len(confirms),
-            "exactly one confirm is expected:\n{}".format(
-                "\n".join(str(entry) for entry in log)
-            ),
+        self.assertTrue(
+            confirms,
+            "the content confirm was never recorded:\n{}".format(log),
         )
         prompt, default = confirms[0][1], confirms[0][2]
         self.assertIn(
             self.CONFIRM_PROMPT,
             prompt,
-            "the confirm prompt must carry {!r}:\nprompt={!r}".format(
+            "the content confirm prompt must carry {!r}:\nprompt={!r}".format(
                 self.CONFIRM_PROMPT, prompt
             ),
         )
         self.assertIs(
             True,
             default,
-            "the confirm must default to True - the content is shown as "
-            "what it will be",
+            "the content confirm must default to True - the content is "
+            "shown as what it will be",
         )
 
     # -- pin 4: the order - ask, then body, then confirm -----------------------
@@ -12082,45 +12103,50 @@ class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
             "a CodeownersError must write nothing into the target",
         )
 
-    # -- pin 7: the confirm-yes path, in this behaviour only --------------------
+    # -- pin 7: the confirmed content, the offer declined ----------------------
 
     def test_a_confirmed_content_returns_without_writing_yet(self):
-        """The confirm-yes path ends the flow before any offer exists:
-        it returns without raising and writes nothing.
+        """A confirmed content with a DECLINED offer writes nothing: it
+        returns without raising and leaves the target tree empty.
 
         The boundary is conditional (behaviour 16): no write without the
-        explicit offer accepted. At THIS point in the plan the offer does
-        not exist yet, so a confirmed content writes nothing - and the
-        positive side (an accepted offer writes the file) lands in
-        behaviour 18, the write seam in behaviour 17."""
+        explicit offer accepted. This pin drives the offer confirm to
+        False - the offer is declined here - so a confirmed content
+        still writes nothing; the positive side (an accepted offer
+        writes the file) is behaviour 18's own pin, the write seam is
+        behaviour 17's."""
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
-            log = self._run_flow(target, confirm_answer=True)
+            log = self._run_flow(target, confirm_answer=(True, False))
 
         self.assertEqual(
             1,
             len(self._entries(log, "ask")),
-            "the confirm-yes path still asks exactly once:\n{}".format(log),
-        )
-        self.assertEqual(
-            1,
-            len(self._entries(log, "confirm")),
-            "the confirm-yes path still confirms exactly once:\n{}".format(
+            "the confirmed-content path still asks exactly once:\n{}".format(
                 log
             ),
+        )
+        confirms = self._entries(log, "confirm")
+        self.assertTrue(
+            confirms,
+            "the content confirm was never recorded:\n{}".format(log),
+        )
+        self.assertIn(
+            self.CONFIRM_PROMPT,
+            confirms[0][1],
+            "the first confirm must be the content confirm:\n{}".format(log),
         )
         self.assertEqual(
             [],
             self._tree(target),
-            "no write without the offer accepted: the offer does not "
-            "exist at this point in the plan - the write lands in "
+            "no write without the offer accepted: the offer is declined "
+            "here, so nothing is written - the write lands in "
             "behaviours 17/18",
         )
         self.assertFalse(
             (target / ".github" / "CODEOWNERS").exists(),
             "no write without the offer accepted: a confirmed content "
-            "without an accepted offer must not write "
-            ".github/CODEOWNERS",
+            "with a declined offer must not write .github/CODEOWNERS",
         )
 
 
@@ -12159,9 +12185,19 @@ class TestCodeownersFlowSelfApproval(unittest.TestCase):
 
     # -- fakes (behaviour 14's wiring) ------------------------------------
 
-    def _fakes(self, ask_answer, confirm_answer=True):
-        """One ordered log shared by the echo, ask and confirm fakes."""
+    def _fakes(self, ask_answer, confirm_answer=(True, False)):
+        """One ordered log shared by the echo, ask and confirm fakes.
+
+        ``confirm_answer`` may be a scalar or an ordered sequence
+        consumed per confirm call - the content confirm first, then the
+        write offer (behaviour 18); a confirm the queue has not covered
+        declines, so an unoffered confirm never accepts a write."""
         log = []
+        confirm_queue = (
+            list(confirm_answer)
+            if isinstance(confirm_answer, (list, tuple))
+            else None
+        )
 
         def echo(line):
             log.append(("echo", line))
@@ -12174,11 +12210,13 @@ class TestCodeownersFlowSelfApproval(unittest.TestCase):
 
         def confirm(prompt, default=None, *args, **kwargs):
             log.append(("confirm", prompt, default))
-            return confirm_answer
+            if confirm_queue is None:
+                return confirm_answer
+            return confirm_queue.pop(0) if confirm_queue else False
 
         return shared, ask, confirm, log
 
-    def _run_flow(self, target, ask_answer, confirm_answer=True):
+    def _run_flow(self, target, ask_answer, confirm_answer=(True, False)):
         """One ``_codeowners_flow`` call on an empty temp target."""
         shared, ask, confirm, log = self._fakes(ask_answer, confirm_answer)
         cli._codeowners_flow(
@@ -12203,8 +12241,9 @@ class TestCodeownersFlowSelfApproval(unittest.TestCase):
     def test_warning_fires_when_chosen_handle_is_the_repo_owner(self):
         """The chosen handle is the repo owner: the warning line and the
         extra step print (behaviour 13's text, compared exactly), each
-        present, and the run is never blocked - the confirm is still
-        called exactly once."""
+        present, and the run is never blocked - the content confirm (the
+        first confirm) is still called. (Re-pointed by behaviour 18,
+        which adds the offer confirm after it.)"""
         from anvilkit.pi import picodeowners
 
         warning = picodeowners.self_approval_warning(self.OWNER, self.OWNER)
@@ -12225,19 +12264,13 @@ class TestCodeownersFlowSelfApproval(unittest.TestCase):
             "the extra step (last_push_step) must be echoed when a "
             "chosen handle is the repo owner:\n{}".format(echoes),
         )
-        self.assertEqual(
-            1,
-            len(self._entries(log, "confirm")),
-            "the warning must never block the run - the confirm is "
-            "still called exactly once:\n{}".format(log),
-        )
 
     # -- pin 2: does not fire for a different handle ----------------------
 
     def test_no_warning_when_chosen_handle_is_not_the_repo_owner(self):
         """A different handle: NEITHER the warning NOR the extra step
-        prints; the body still echoes and the confirm is still called -
-        the flow proceeds."""
+        prints; the body still echoes and the content confirm (the first
+        confirm) is still called - the flow proceeds."""
         from anvilkit.pi import picodeowners
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -12263,10 +12296,17 @@ class TestCodeownersFlowSelfApproval(unittest.TestCase):
                 echoes
             ),
         )
-        self.assertEqual(
-            1,
-            len(self._entries(log, "confirm")),
-            "the flow must still proceed to the confirm:\n{}".format(log),
+        confirms = self._entries(log, "confirm")
+        self.assertTrue(
+            confirms,
+            "the flow must still proceed to the content confirm:\n{}".format(
+                log
+            ),
+        )
+        self.assertIn(
+            "Use this CODEOWNERS content?",
+            confirms[0][1],
+            "the first confirm must be the content confirm:\n{}".format(log),
         )
 
     # -- pin 3: case-insensitive with @ stripped ---------------------------
@@ -12320,8 +12360,10 @@ class TestCodeownersFlowSelfApproval(unittest.TestCase):
     def test_warning_and_step_print_after_the_body_before_the_confirm(self):
         """Placement, pinned against the ordered log: body echoes ->
         warning -> extra step -> confirm. And the run is never blocked:
-        the confirm is called exactly once and the function returns
-        normally."""
+        the FIRST (content) confirm is after the warning and the step
+        and the function returns normally. (Re-pointed by behaviour 18,
+        which adds the offer confirm after the content confirm, so the
+        total-count assertion is dropped.)"""
         from anvilkit.pi import picodeowners
 
         warning = picodeowners.self_approval_warning(self.OWNER, self.OWNER)
@@ -12379,12 +12421,11 @@ class TestCodeownersFlowSelfApproval(unittest.TestCase):
                 log
             ),
         )
-        self.assertEqual(
-            1,
-            len(confirms),
-            "the warning must never block the run - exactly one confirm:\n{}".format(
-                log
-            ),
+        self.assertIn(
+            "Use this CODEOWNERS content?",
+            log[confirms[0]][1],
+            "the first confirm after the warning and step must be the "
+            "content confirm:\n{}".format(log),
         )
 
     # -- pin 6: the .env token is never compared ---------------------------
@@ -12421,9 +12462,303 @@ class TestCodeownersFlowSelfApproval(unittest.TestCase):
                 log
             ),
         )
+        confirms = self._entries(log, "confirm")
+        self.assertTrue(
+            confirms,
+            "the flow must complete normally with the env seams trapped "
+            "- the content confirm is called:\n{}".format(log),
+        )
+        self.assertIn(
+            "Use this CODEOWNERS content?",
+            confirms[0][1],
+            "the first confirm must be the content confirm:\n{}".format(log),
+        )
+
+
+class TestCodeownersFlowOffer(unittest.TestCase):
+    """RED pins for behaviour 18 of
+    plans/file-path-codeowners-interactive.md: the write offer is
+    explicit and defaults to no.
+
+    The offer is the flow's SECOND ``confirm`` seam: the flow already
+    confirms the content (behaviour 14, default True) and the offer
+    confirm comes after it, so a confirm-True run makes two confirm
+    calls. The offer's prompt carries ``Write .github/CODEOWNERS into
+    {target}?`` and defaults to False; a yes writes through
+    ``picodeowners.write_codeowners`` (behaviour 17's seam) and echoes
+    the written path; a no writes nothing and says so in one line; a
+    ``CodeownersError`` from the seam prints one line and lets no
+    exception out.
+
+    The ``--dry-run``/``--yes``/non-TTY "never reach the offer" half is
+    the command wiring (behaviour 5's early return, pinned at command
+    level by behaviour 20) - the flow is only ever reached
+    interactively, so it is not pinned here.
+
+    Function-level and in isolation, reusing behaviour 14/15's wiring:
+    a fake ``shared`` with an ordered echo log, an injected ``ask``
+    returning a fixed handle, an injected ``confirm`` driven per call
+    (content first, then the offer), an empty temp target. The pins
+    call ``cli._codeowners_flow(fake_shared, "iar3-r8", "Anvil",
+    "main", target, ask=fake_ask, confirm=fake_confirm)``.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    BRANCH = "main"
+
+    # The offer prompt's pinned opening clause, verbatim from the
+    # contract.
+    OFFER_PROMPT_OPENING = "Write .github/CODEOWNERS into"
+    # The content confirm's pinned text (behaviour 14).
+    CONTENT_PROMPT = "Use this CODEOWNERS content?"
+    # The declined-offer outcome line's pinned token: the line says
+    # nothing was written.
+    NOT_WRITTEN_TOKEN = "not written"
+
+    # -- fakes (behaviour 14/15's wiring, confirm driven per call) --------
+
+    def _fakes(self, ask_answer="@alice", confirm_answers=(True, False)):
+        """One ordered log shared by the echo, ask and confirm fakes.
+
+        ``confirm_answers`` is consumed per confirm call - the content
+        confirm first, then the write offer; a confirm the list has not
+        covered declines, so a run reaching an unoffered confirm never
+        accepts a write."""
+        log = []
+        confirm_queue = list(confirm_answers)
+
+        def echo(line):
+            log.append(("echo", line))
+
+        shared = types.SimpleNamespace(echo=echo)
+
+        def ask(prompt, default=None, *args, **kwargs):
+            log.append(("ask", prompt, default))
+            return ask_answer
+
+        def confirm(prompt, default=None, *args, **kwargs):
+            log.append(("confirm", prompt, default))
+            return confirm_queue.pop(0) if confirm_queue else False
+
+        return shared, ask, confirm, log
+
+    def _run_flow(
+        self, target, ask_answer="@alice", confirm_answers=(True, False)
+    ):
+        """One ``_codeowners_flow`` call on an empty temp target."""
+        shared, ask, confirm, log = self._fakes(ask_answer, confirm_answers)
+        cli._codeowners_flow(
+            shared,
+            self.OWNER,
+            self.REPO,
+            self.BRANCH,
+            target,
+            ask=ask,
+            confirm=confirm,
+        )
+        return log
+
+    def _entries(self, log, kind):
+        return [entry for entry in log if entry[0] == kind]
+
+    def _echo_lines(self, log):
+        return [entry[1] for entry in log if entry[0] == "echo"]
+
+    # -- pin 1: the offer is a second confirm, right text, default no -----
+
+    def test_the_offer_is_a_second_confirm_naming_the_target_default_no(self):
+        """The offer confirm is a SECOND confirm - distinct from the
+        content confirm - whose prompt carries
+        ``Write .github/CODEOWNERS into {target}?`` and whose default is
+        False (the offer defaults to no)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(True, True)
+            )
+
+        confirms = self._entries(log, "confirm")
+        self.assertTrue(
+            any(self.CONTENT_PROMPT in entry[1] for entry in confirms),
+            "the content confirm must still be made - the offer is "
+            "distinct from it:\n{}".format(log),
+        )
+        offer_confirms = [
+            entry
+            for entry in confirms
+            if self.OFFER_PROMPT_OPENING in entry[1]
+        ]
         self.assertEqual(
             1,
-            len(self._entries(log, "confirm")),
-            "the flow must complete normally with the env seams "
-            "trapped:\n{}".format(log),
+            len(offer_confirms),
+            "exactly one offer confirm is expected:\n{}".format(log),
+        )
+        prompt, default = offer_confirms[0][1], offer_confirms[0][2]
+        self.assertIn(
+            str(target),
+            prompt,
+            "the offer prompt must name the write target {!r}:\n"
+            "prompt={!r}".format(target, prompt),
+        )
+        self.assertIs(
+            False,
+            default,
+            "the offer must default to no (False)",
+        )
+
+    # -- pin 2: the offer is the SECOND confirm, after the content one ----
+
+    def test_the_offer_is_the_second_confirm_after_the_content_confirm(self):
+        """The offer is the SECOND confirm: in the ordered log the
+        content confirm precedes the offer confirm."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(True, False)
+            )
+
+        confirms = [
+            (i, entry) for i, entry in enumerate(log) if entry[0] == "confirm"
+        ]
+        self.assertEqual(
+            2,
+            len(confirms),
+            "the content confirm and the offer confirm are both "
+            "expected:\n{}".format(log),
+        )
+        content_indices = [
+            i for i, entry in confirms if self.CONTENT_PROMPT in entry[1]
+        ]
+        offer_indices = [
+            i for i, entry in confirms if self.OFFER_PROMPT_OPENING in entry[1]
+        ]
+        self.assertEqual(
+            1,
+            len(content_indices),
+            "the content confirm is expected once:\n{}".format(log),
+        )
+        self.assertEqual(
+            1,
+            len(offer_indices),
+            "the offer confirm is expected once:\n{}".format(log),
+        )
+        self.assertLess(
+            content_indices[0],
+            offer_indices[0],
+            "the content confirm must precede the offer confirm:\n{}".format(
+                log
+            ),
+        )
+
+    # -- pin 3: a yes writes through the seam and prints the path ---------
+
+    def test_an_accepted_offer_writes_the_file_and_echoes_the_path(self):
+        """A yes to the offer writes ``.github/CODEOWNERS`` through
+        ``picodeowners.write_codeowners`` (behaviour 17's seam) - the
+        built body's bytes exactly - and echoes the written path."""
+        from anvilkit.pi import picodeowners
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(True, True)
+            )
+            written = target / ".github" / "CODEOWNERS"
+            self.assertTrue(
+                written.exists(),
+                "an accepted offer must write .github/CODEOWNERS into "
+                "the target",
+            )
+            self.assertEqual(
+                picodeowners.codeowners_body("@alice").encode("utf-8"),
+                written.read_bytes(),
+                "the written bytes must be the built body UTF-8 "
+                "exactly",
+            )
+        self.assertIn(
+            str(written),
+            self._echo_lines(log),
+            "the written path must be echoed:\n{}".format(
+                self._echo_lines(log)
+            ),
+        )
+
+    # -- pin 4: a no writes nothing and says so in one line ---------------
+
+    def test_a_declined_offer_writes_nothing_and_says_so_in_one_line(self):
+        """A no to the offer writes nothing and says so in exactly one
+        line - the "not written" outcome line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(True, False)
+            )
+
+        self.assertFalse(
+            (target / ".github" / "CODEOWNERS").exists(),
+            "a declined offer must not write .github/CODEOWNERS",
+        )
+        confirm_indices = [
+            i for i, entry in enumerate(log) if entry[0] == "confirm"
+        ]
+        self.assertTrue(
+            confirm_indices, "no confirm was recorded:\n{}".format(log)
+        )
+        offer_index = max(confirm_indices)
+        after = [
+            entry for entry in log[offer_index + 1:] if entry[0] == "echo"
+        ]
+        self.assertEqual(
+            1,
+            len(after),
+            "a declined offer must say so in exactly one line - got "
+            "{} line(s):\n{}".format(len(after), log),
+        )
+        self.assertIn(
+            self.NOT_WRITTEN_TOKEN,
+            after[0][1],
+            "the outcome line must say nothing was written - token "
+            "{!r} missing:\nline={!r}".format(self.NOT_WRITTEN_TOKEN,
+                                              after[0][1]),
+        )
+
+    # -- pin 5: a CodeownersError from the seam ---------------------------
+
+    def test_a_codeowners_error_from_the_seam_prints_one_line_no_raise(self):
+        """A pre-existing ``.github/CODEOWNERS`` makes the seam raise
+        ``CodeownersError`` (an existing file is never clobbered): the
+        flow prints exactly one line after the offer, leaves the file's
+        bytes untouched, and lets no exception out. (The "continues to
+        the commands" half is behaviour 19 - not pinned here.)"""
+        known = b"# pre-existing - must never be clobbered\n/.github/ @bob\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            existing = target / ".github" / "CODEOWNERS"
+            existing.parent.mkdir(parents=True)
+            existing.write_bytes(known)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(True, True)
+            )
+            self.assertEqual(
+                known,
+                existing.read_bytes(),
+                "a CodeownersError must leave the pre-existing file's "
+                "bytes untouched",
+            )
+        confirm_indices = [
+            i for i, entry in enumerate(log) if entry[0] == "confirm"
+        ]
+        self.assertTrue(
+            confirm_indices, "no confirm was recorded:\n{}".format(log)
+        )
+        offer_index = max(confirm_indices)
+        after = [
+            entry for entry in log[offer_index + 1:] if entry[0] == "echo"
+        ]
+        self.assertEqual(
+            1,
+            len(after),
+            "a CodeownersError from the seam must print exactly one "
+            "line - got {} line(s):\n{}".format(len(after), log),
         )
