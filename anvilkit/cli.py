@@ -1600,16 +1600,19 @@ def _ask_free_plan(
     """Ask the free-plan question once when a file_paths warn is present
     (behaviour 4 of plans/file-path-interactive-free-plan.md): one
     ``prompts.confirm`` with default False whose text asks whether the plan
-    does not offer "Restrict file paths"; the asker is injectable for tests.
-    ``shared`` is unused here: the gating (non-interactive /
-    ``assume_yes`` / ``dry_run``) and the printing happen in the caller,
-    ``_free_plan_followup``."""
+    offers "Restrict file paths" - the positive form, re-asked after the
+    double negative read as confusing (behaviour 9): the question is
+    positive and the caller inverts - a ``no`` answer means the plan lacks
+    the option, which is exactly when the walkthrough applies. The asker is
+    injectable for tests. ``shared`` is unused here: the gating
+    (non-interactive / ``assume_yes`` / ``dry_run``) and the printing happen
+    in the caller, ``_free_plan_followup``."""
     if asker is None:
         asker = prompts.confirm
     if not picodeowners.wants_walkthrough(findings):
         return False
     return asker(
-        'Does your GitHub plan not offer "Restrict file paths" in the ruleset UI?',
+        'Does your GitHub plan offer "Restrict file paths" in the ruleset UI?',
         default=False,
     )
 
@@ -1637,12 +1640,15 @@ def _free_plan_followup(
     is untouched (behaviour 5). The line is a report line, one sentence,
     built here, not in a module.
 
-    An interactive run asks the behaviour-4 unit exactly once: a ``no``
-    answer keeps the output byte-identical - no confirmation line
-    (behaviour 7). A ``yes`` answer prints the six-step walkthrough
+    An interactive run asks the behaviour-4 unit exactly once: the question
+    is positive (behaviour 9) and the caller inverts - a ``no`` answer means
+    the plan lacks the option, so it prints the six-step walkthrough
     (behaviour 6) built by ``picodeowners`` from the resolved repository
     and the checked ``branch`` - never re-derived here - after the
-    report's "To fix" section and bypass note. A ``CodeownersError`` is
+    report's "To fix" section and bypass note. A ``yes`` answer keeps the
+    output byte-identical - no confirmation line (behaviour 7's polarity
+    under the positive question): the plan offers the option, and the
+    report's "To fix" line is the fix. A ``CodeownersError`` is
     reported as one line and never raised, so the run is never masked
     into success.
     """
@@ -1658,9 +1664,11 @@ def _free_plan_followup(
         )
         return
     answer = _ask_free_plan(shared, branch_findings)
-    if not answer:
-        # behaviour 7: a 'no' keeps the output byte-identical - no
-        # confirmation line, no walkthrough.
+    if answer:
+        # behaviour 7 under the positive question (behaviour 9): a 'yes'
+        # means the plan offers the option - the 'To fix' line is the fix,
+        # so nothing more to walk; output stays byte-identical, no
+        # confirmation line.
         return
     owner, repo = repository
     try:
