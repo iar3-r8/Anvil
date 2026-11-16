@@ -1011,5 +1011,233 @@ class CommitCommandsTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Behaviour 13 of plans/file-path-codeowners-interactive.md: the
+# self-approval step and its warning exist as text. ``last_push_step()``
+# returns the extra walkthrough step naming "Require approval of the most
+# recent reviewable push" (the UI rule) and ``require_last_push_approval``
+# (the rulesets parameter); ``self_approval_warning(owner, repo_owner)``
+# returns the one-line non-blocking advisory when the chosen owner is the
+# repo owner, and None when the handles differ - the caller prints nothing.
+# Neither function prompts, writes or raises. The rule facts are pinned to
+# doc/external/github/about-protected-branches.md ("the most recent
+# reviewable push must be approved by someone other than the person who
+# pushed it") and doc/external/github/rest-api-endpoints-for-rules.md
+# (the parameter name).
+# ---------------------------------------------------------------------------
+
+# The exact UI rule name and the rulesets parameter the step must name
+# (doc/external/github/about-protected-branches.md;
+# doc/external/github/rest-api-endpoints-for-rules.md).
+_LAST_PUSH_RULE = "Require approval of the most recent reviewable push"
+_LAST_PUSH_PARAM = "require_last_push_approval"
+
+# The warning's pin tokens, all asserted on the single warning line:
+# the owner named verbatim, "repo owner" (case-insensitive substring),
+# "approve" and "own" as separate words (the approve-own-change idea;
+# \bown\b does NOT match inside "owner"), "unless" (the option-off
+# condition), and the option name itself.
+_OWNER = "iar3-r8"
+_REPO_OWNER = "repo owner"
+_APPROVE = "approve"
+_OWN_WORD = re.compile(r"\bown\b")
+_OPTION_OFF = "unless"
+
+
+class SelfApprovalTextTests(unittest.TestCase):
+    """Behaviour 13: ``last_push_step()`` and ``self_approval_warning(owner, repo_owner)`` as display text.
+
+    Both functions are pure text builders: the module holds no subprocess
+    (so nothing prompts, executes or writes), the calls are side-effect
+    free, and the differing/None cases return None without raising.
+    """
+
+    def _picodeowners(self):
+        """Import anvilkit.pi.picodeowners, failing clearly if the module is absent."""
+        try:
+            from anvilkit.pi import picodeowners
+        except ImportError:
+            self.fail(_ABSENT)
+        return picodeowners
+
+    def _expect_none(self, picodeowners, owner, repo):
+        """Assert ``self_approval_warning(owner, repo)`` returns None, raising a clear failure if it raises."""
+        try:
+            result = picodeowners.self_approval_warning(owner, repo)
+        except Exception as exc:
+            self.fail(
+                "self_approval_warning({!r}, {!r}) raised {}; the "
+                "differing-handles case must return None without "
+                "raising".format(owner, repo, exc)
+            )
+        self.assertIs(
+            result,
+            None,
+            "self_approval_warning({!r}, {!r}) must return None when the "
+            "handles differ (the caller prints nothing); got: "
+            "{!r}".format(owner, repo, result),
+        )
+
+    def test_last_push_step_names_the_rule_and_the_rulesets_parameter(self):
+        """Pin 1: the step names "Require approval of the most recent reviewable push" and require_last_push_approval."""
+        picodeowners = self._picodeowners()
+
+        step = picodeowners.last_push_step()
+
+        self.assertIsInstance(step, str, "last_push_step must return a str")
+        self.assertIn(
+            _LAST_PUSH_RULE,
+            step,
+            "the step must name the UI rule verbatim {!r} "
+            "(doc/external/github/about-protected-branches.md); got: "
+            "{!r}".format(_LAST_PUSH_RULE, step),
+        )
+        self.assertIn(
+            _LAST_PUSH_PARAM,
+            step,
+            "the step must name the rulesets parameter {!r} "
+            "(doc/external/github/rest-api-endpoints-for-rules.md); got: "
+            "{!r}".format(_LAST_PUSH_PARAM, step),
+        )
+
+    def test_last_push_step_every_line_is_at_most_80_characters(self):
+        """Pin 1: the step is display text; every line stays at most 80 characters."""
+        picodeowners = self._picodeowners()
+
+        step = picodeowners.last_push_step()
+
+        for line in step.splitlines():
+            self.assertLessEqual(
+                len(line),
+                80,
+                "every line of the step must stay at most 80 characters; "
+                "this line is {}: {!r}".format(len(line), line),
+            )
+
+    def test_self_approval_warning_for_the_repo_owner_is_one_line_naming_owner_and_option(self):
+        """Pin 2: owner == repo_owner -> exactly one line, at most 80 chars, naming the owner, 'repo owner', approve + own, 'unless' and the option name."""
+        picodeowners = self._picodeowners()
+
+        warning = picodeowners.self_approval_warning(_OWNER, _OWNER)
+
+        self.assertIsInstance(
+            warning,
+            str,
+            "self_approval_warning must return a str when the owner is "
+            "the repo owner",
+        )
+        self.assertNotIn(
+            "\n",
+            warning,
+            "the warning is exactly one line (no \\n inside); got: "
+            "{!r}".format(warning),
+        )
+        self.assertLessEqual(
+            len(warning),
+            80,
+            "the one-line warning is display text and must stay at most "
+            "80 characters; it is {}: {!r}".format(len(warning), warning),
+        )
+        self.assertIn(
+            _OWNER,
+            warning,
+            "the warning must name the owner {!r} verbatim; got: "
+            "{!r}".format(_OWNER, warning),
+        )
+        self.assertIn(
+            _REPO_OWNER,
+            warning.lower(),
+            "the warning must say the owner is the repo owner (pin "
+            "{!r}, case-insensitive); got: {!r}".format(_REPO_OWNER, warning),
+        )
+        self.assertIn(
+            _APPROVE,
+            warning.lower(),
+            "the warning must carry the approve-own-change idea (pin "
+            "{!r}); got: {!r}".format(_APPROVE, warning),
+        )
+        self.assertTrue(
+            _OWN_WORD.search(warning),
+            "the warning must carry the approve-own-change idea: {!r} as "
+            "its own word (not merely inside 'owner') on the same line as "
+            "'approve'; got: {!r}".format(_OWN_WORD.pattern, warning),
+        )
+        self.assertIn(
+            _OPTION_OFF,
+            warning.lower(),
+            "the warning must reference the option being off (pin "
+            "{!r}); got: {!r}".format(_OPTION_OFF, warning),
+        )
+        self.assertIn(
+            _LAST_PUSH_PARAM,
+            warning,
+            "the warning must name the option {!r} it is weak without "
+            "(doc/external/github/rest-api-endpoints-for-rules.md); got: "
+            "{!r}".format(_LAST_PUSH_PARAM, warning),
+        )
+
+    def test_self_approval_warning_returns_none_when_handles_differ(self):
+        """Pin 3: ('alice', 'bob') -> None, no raise - the caller prints nothing."""
+        picodeowners = self._picodeowners()
+
+        self._expect_none(picodeowners, "alice", "bob")
+
+    def test_self_approval_warning_normalises_case_and_leading_at(self):
+        """Pin 4: comparison is case-insensitive with @ stripped - both directions of ("@Alice", "alice") warn."""
+        picodeowners = self._picodeowners()
+
+        for owner, repo in (("@Alice", "alice"), ("alice", "@Alice")):
+            with self.subTest(owner=owner, repo=repo):
+                warning = picodeowners.self_approval_warning(owner, repo)
+                self.assertIsInstance(
+                    warning,
+                    str,
+                    "self_approval_warning({!r}, {!r}) must return the "
+                    "warning: the comparison is case-insensitive with @ "
+                    "stripped; got: {!r}".format(owner, repo, warning),
+                )
+
+    def test_self_approval_warning_team_handle_never_matches_a_user(self):
+        """Pin 5: an @org/team handle is not a user identity - ('org/team', 'team') -> None, and an owner containing '/' never warns even on an exact match."""
+        picodeowners = self._picodeowners()
+
+        self._expect_none(picodeowners, "org/team", "team")
+        self._expect_none(picodeowners, "@org/team", "@org/team")
+
+    def test_neither_function_prompts_writes_or_raises(self):
+        """Pin 6: the module imports no subprocess, and neither call writes a file in a temp cwd (no prompt, no write, no raise)."""
+        import os
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        self.assertIsNone(
+            getattr(picodeowners, "subprocess", None),
+            "anvilkit.pi.picodeowners must never import subprocess: these "
+            "functions prompt, write and execute nothing "
+            "(behaviour 13's error clause)",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_cwd:
+            before = sorted(os.listdir(temp_cwd))
+            original_cwd = os.getcwd()
+            os.chdir(temp_cwd)
+            try:
+                picodeowners.last_push_step()
+                picodeowners.self_approval_warning(_OWNER, _OWNER)
+                picodeowners.self_approval_warning("alice", "bob")
+            finally:
+                os.chdir(original_cwd)
+            after = sorted(os.listdir(temp_cwd))
+
+        self.assertEqual(
+            before,
+            after,
+            "last_push_step() and self_approval_warning(...) must write "
+            "no file: the temp cwd listing changed from {!r} to "
+            "{!r}".format(before, after),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
