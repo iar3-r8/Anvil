@@ -9524,6 +9524,10 @@ class TestAskFreePlanUnit(unittest.TestCase):
         self.assertEqual(0, len(calls))
 
     def test_prompt_text_names_restrict_file_paths(self):
+        """The recorded prompt names the option in the positive form:
+        the plan-availability question carries "Restrict file paths"
+        (behaviour 9's positive re-phrase; the assertion is unchanged -
+        the option name is present in both the old and the new wording)."""
         ask = self._require_under_test()
         asker, calls = self._recording_asker(True)
         shared = types.SimpleNamespace()
@@ -9535,8 +9539,9 @@ class TestAskFreePlanUnit(unittest.TestCase):
         self.assertIn(
             "Restrict file paths",
             calls[0][0],
-            "the prompt must ask whether the plan does not offer "
-            '"Restrict file paths" (the plan-availability question)',
+            "the prompt must ask whether the plan offers "
+            '"Restrict file paths" (the plan-availability question, '
+            "behaviour 9's positive form)",
         )
 
 
@@ -10160,40 +10165,42 @@ class TestFreePlanYesWalkthrough(CliCase):
 
     # -- verify-guards --------------------------------------------------------
 
-    def test_verify_guards_interactive_yes_prints_walkthrough(self):
-        """Interactive yes (prompts.confirm -> True) prints the six-step
+    def test_verify_guards_interactive_no_answer_prints_walkthrough(self):
+        """Interactive no answer (prompts.confirm -> False; the plan does
+        NOT offer the option - the free plan) prints the six-step
         walkthrough after the "To fix" section and the bypass note, in
         order, naming the checked branch and the resolved owner, every
         line at most 80 characters, without the non-interactive fallback
-        line."""
-        findings = self._file_paths_warn_findings()
-        result = self._verify_guards_interactive(
-            lambda *a, **k: True, findings, (self.OWNER, self.REPO)
-        )
-        self._assert_walkthrough_pins(
-            result, "verify-guards interactive yes", full_width=True
-        )
-
-    def test_verify_guards_interactive_no_prints_no_walkthrough(self):
-        """Interactive no (prompts.confirm -> False): the output carries
-        none of the six step tokens - the no half of behaviour 7's
-        'no confirmation line' clause, pinned interactively (its
-        dedicated cycle pins the non-interactive no-equivalence)."""
+        line - behaviour 9's inverted polarity at the call site."""
         findings = self._file_paths_warn_findings()
         result = self._verify_guards_interactive(
             lambda *a, **k: False, findings, (self.OWNER, self.REPO)
         )
-        self._assert_no_walkthrough(result, "verify-guards interactive no")
+        self._assert_walkthrough_pins(
+            result, "verify-guards interactive no answer", full_width=True
+        )
+
+    def test_verify_guards_interactive_yes_answer_prints_no_walkthrough(self):
+        """Interactive yes answer (prompts.confirm -> True; the option
+        exists - the "To fix" line is the fix): the output carries none
+        of the six step tokens and no non-interactive fallback line -
+        the yes answer changes nothing (behaviour 9)."""
+        findings = self._file_paths_warn_findings()
+        result = self._verify_guards_interactive(
+            lambda *a, **k: True, findings, (self.OWNER, self.REPO)
+        )
+        self._assert_no_walkthrough(result, "verify-guards interactive yes answer")
 
     # -- the blocked setup-repo gate ------------------------------------------
 
-    def test_blocked_gate_interactive_yes_prints_walkthrough(self):
+    def test_blocked_gate_interactive_no_answer_prints_walkthrough(self):
         """The gate variant: a blocked ``setup-repo`` run, interactive,
-        confirm -> True, the file_paths warn fixture - the six step
-        tokens appear after the report, the exit is still 9, and the
-        steps do not mask the block: the ``⛔`` line is present and
-        still the last non-blank line a blocked run prints (the existing
-        gate pin's position contract)."""
+        confirm -> False (the plan does NOT offer the option - the free
+        plan), the file_paths warn fixture - the six step tokens appear
+        after the report, the exit is still 9, and the steps do not mask
+        the block: the ``⛔`` line is present and still the last
+        non-blank line a blocked run prints (the existing gate pin's
+        position contract; behaviour 9's inverted polarity)."""
         self.write_env(LLM_PORT="8000", GITHUB_TOKEN=self.GATE_TOKEN)
         target = tempfile.TemporaryDirectory()
         self.addCleanup(target.cleanup)
@@ -10201,7 +10208,7 @@ class TestFreePlanYesWalkthrough(CliCase):
         patchers = (
             (
                 mock.patch.object(cli, "_is_interactive", return_value=True),
-                mock.patch.object(cli.prompts, "confirm", return_value=True),
+                mock.patch.object(cli.prompts, "confirm", return_value=False),
             )
             + self._guard_seams(findings, (self.OWNER, self.REPO))
             + self._prompt_traps()
@@ -10214,10 +10221,10 @@ class TestFreePlanYesWalkthrough(CliCase):
         self.assertEqual(
             cli.EXIT_GUARDS_BLOCKED,
             result.exit_code,
-            "a blocked gate still exits blocked (9) - the yes answer "
+            "a blocked gate still exits blocked (9) - the no answer "
             "changes no exit code:\n{}".format(result.output),
         )
-        self._assert_walkthrough_pins(result, "blocked gate interactive yes")
+        self._assert_walkthrough_pins(result, "blocked gate interactive no answer")
         non_blank = [line for line in result.output.splitlines() if line.strip()]
         self.assertTrue(
             non_blank and non_blank[-1].lstrip().startswith("⛔"),
@@ -10478,27 +10485,28 @@ class TestFreePlanBoundary(CliCase):
 
     # -- behaviour 7: no keeps today's output ---------------------------------
 
-    def test_verify_guards_interactive_no_output_identical_to_run_without_followup(
+    def test_verify_guards_interactive_yes_output_identical_to_run_without_followup(
         self,
     ):
-        """Interactive no (prompts.confirm -> False): the output is
-        byte-identical to the same run with ``_free_plan_followup``
-        disabled - the no answer adds exactly nothing to the report -
-        and it carries the To fix entry for file_path_restriction and
-        BYPASS_NOTE, none of the six step tokens, no confirmation
-        phrasing and no behaviour-5 fallback line."""
+        """Interactive yes (prompts.confirm -> True; the option exists -
+        the "To fix" line is the fix): the output is byte-identical to
+        the same run with ``_free_plan_followup`` disabled - the yes
+        answer adds exactly nothing to the report - and it carries the
+        To fix entry for file_path_restriction and BYPASS_NOTE, none of
+        the six step tokens, no confirmation phrasing and no
+        behaviour-5 fallback line (behaviour 9's inverted polarity)."""
         findings = self._file_paths_warn_findings()
-        result = self._verify_guards_interactive(False, findings)
+        result = self._verify_guards_interactive(True, findings)
         with mock.patch.object(
             cli, "_free_plan_followup", lambda *a, **k: None
         ):
-            baseline = self._verify_guards_interactive(False, findings)
+            baseline = self._verify_guards_interactive(True, findings)
 
         self.assertEqual(
             baseline.output,
             result.output,
-            "the interactive no output must be byte-identical to the "
-            "same run without the follow-up feature - a 'no' must add "
+            "the interactive yes output must be byte-identical to the "
+            "same run without the follow-up feature - a 'yes' must add "
             "exactly nothing:\n--- with follow-up ---\n{}\n--- baseline "
             "---\n{}".format(result.output, baseline.output),
         )
@@ -10506,22 +10514,22 @@ class TestFreePlanBoundary(CliCase):
             self.assertNotIn(
                 token,
                 result.output,
-                "the no output must not print the step token {!r}:\n{}".format(
+                "the yes output must not print the step token {!r}:\n{}".format(
                     token, result.output
                 ),
             )
         self.assertNotIn(
             self.STEP4_TOKEN,
             result.output,
-            "the no output must not print step 4's option name:\n{}".format(
+            "the yes output must not print step 4's option name:\n{}".format(
                 result.output
             ),
         )
-        self._assert_no_confirmation(result.output, "verify-guards interactive no")
+        self._assert_no_confirmation(result.output, "verify-guards interactive yes")
         self.assertEqual(
             [],
             self._fallback_lines(result.output),
-            "the no output must not carry the non-interactive fallback "
+            "the yes output must not carry the non-interactive fallback "
             "line (that line is only for the skipped case):\n{}".format(
                 result.output
             ),
@@ -10530,7 +10538,7 @@ class TestFreePlanBoundary(CliCase):
         self.assertIn(
             "To fix",
             lines,
-            "the no output must still carry the 'To fix' section:\n{}".format(
+            "the yes output must still carry the 'To fix' section:\n{}".format(
                 result.output
             ),
         )
@@ -10558,7 +10566,7 @@ class TestFreePlanBoundary(CliCase):
         self.assertIn(
             cli.piguard.BYPASS_NOTE,
             lines,
-            "the no output must still end the report with the bypass "
+            "the yes output must still end the report with the bypass "
             "note:\n{}".format(result.output),
         )
 
@@ -10586,19 +10594,22 @@ class TestFreePlanBoundary(CliCase):
             "the walkthrough must never write a CODEOWNERS file",
         )
 
-    def test_verify_guards_interactive_yes_keeps_the_project_byte_unchanged(self):
-        """The yes run prints guidance only: after an interactive yes
-        verify-guards run the whole project tree is byte-identical - the
-        walkthrough prints, it never writes."""
+    def test_verify_guards_interactive_no_answer_keeps_the_project_byte_unchanged(
+        self,
+    ):
+        """The no-answer run (the free plan) prints guidance only: after an
+        interactive no verify-guards run the whole project tree is
+        byte-identical - the walkthrough prints, it never writes
+        (behaviour 9's inverted polarity)."""
         findings = self._file_paths_warn_findings()
         before = self.snapshot()
-        result = self._verify_guards_interactive(True, findings)
+        result = self._verify_guards_interactive(False, findings)
         after = self.snapshot()
 
         self.assertIn(
             self.STEP1,
             result.output,
-            "the sanity half: the yes run must actually print the "
+            "the sanity half: the no run must actually print the "
             "walkthrough, so the no-write pin is meaningful:\n{}".format(
                 result.output
             ),
@@ -10606,7 +10617,7 @@ class TestFreePlanBoundary(CliCase):
         self.assertEqual(
             before,
             after,
-            "an interactive yes run must write nothing - the walkthrough "
+            "an interactive no run must write nothing - the walkthrough "
             "prints guidance only; changed: {}".format(
                 sorted(set(before) ^ set(after))
                 + [k for k in set(before) & set(after) if before[k] != after[k]]
@@ -10662,10 +10673,14 @@ class TestFreePlanBoundary(CliCase):
         )
 
     def test_blocked_gate_interactive_no_exits_blocked_with_blocking_line_last(self):
-        """The gate variant, answered no: the blocked run still exits
-        ``EXIT_GUARDS_BLOCKED`` (9) deterministically, the ``⛔`` line is
-        still the last non-blank line, and the no answer prints no
-        walkthrough, no confirmation line and no fallback line."""
+        """The gate variant, answered no (the free plan - the option is
+        NOT offered): the six-step walkthrough prints after the report,
+        the blocked run still exits ``EXIT_GUARDS_BLOCKED`` (9)
+        deterministically, and the ``⛔`` line is still the last
+        non-blank line - the steps never mask the block (behaviour 9's
+        inverted polarity). The yes variant's no-confirmation and
+        no-fallback-line pins are covered by
+        ``TestFreePlanQuestionPositive``."""
         result, _target, _env_before = self._blocked_gate_interactive(False)
 
         self.assertEqual(
@@ -10681,18 +10696,19 @@ class TestFreePlanBoundary(CliCase):
             "ask:\n{}".format(result.output),
         )
         for token in self.STEP_TOKENS:
-            self.assertNotIn(
+            self.assertIn(
                 token,
                 result.output,
-                "the gate's no output must not print the step token "
-                "{!r}:\n{}".format(token, result.output),
+                "the gate's no output must print the step token "
+                "{!r} - the walkthrough did not print:\n{}".format(
+                    token, result.output
+                ),
             )
-        self._assert_no_confirmation(result.output, "blocked gate interactive no")
-        self.assertEqual(
-            [],
-            self._fallback_lines(result.output),
-            "the gate's no output must not carry the non-interactive "
-            "fallback line:\n{}".format(result.output),
+        self.assertIn(
+            self.STEP4_TOKEN,
+            result.output,
+            "the gate's no output must name step 4's option "
+            "{!r}:\n{}".format(self.STEP4_TOKEN, result.output),
         )
         non_blank = [line for line in result.output.splitlines() if line.strip()]
         self.assertTrue(
@@ -10816,12 +10832,13 @@ class TestFreePlanBoundary(CliCase):
 
     def test_branch_release_names_release_in_header_and_commit_step(self):
         """``--branch release`` does not gate the prompt (it is about the
-        plan): interactive yes with the warn fixture still prints the
-        steps, the commit step names ``release`` on its line, and the
-        report header checks ``release``."""
+        plan): interactive no (the free plan) with the warn fixture
+        still prints the steps, the commit step names ``release`` on its
+        line, and the report header checks ``release`` (behaviour 9's
+        inverted polarity - the steps now come from a no answer)."""
         findings = self._file_paths_warn_findings()
         result = self._verify_guards_interactive(
-            True, findings, branch="release"
+            False, findings, branch="release"
         )
 
         self.assertEqual(0, result.exit_code, result.output)
@@ -10834,7 +10851,7 @@ class TestFreePlanBoundary(CliCase):
         self.assertIn(
             self.STEP1,
             result.output,
-            "the interactive yes run must still print the walkthrough "
+            "the interactive no run must still print the walkthrough "
             "steps with --branch release:\n{}".format(result.output),
         )
         commit_lines = [
