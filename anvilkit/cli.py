@@ -1611,8 +1611,14 @@ def _ask_free_plan(
         asker = prompts.confirm
     if not picodeowners.wants_walkthrough(findings):
         return False
+    # Behaviour 10 (plans/file-path-codeowners-interactive.md): the question
+    # names where the option lives, on its OWN line - the near-exact
+    # parenthetical from the saved rulesets page. The option sits under
+    # "Push protections" of a push ruleset, NOT under "Restrictions", so no
+    # section name is claimed beyond the UI path and the ruleset it lands in.
     return asker(
-        'Does your GitHub plan offer "Restrict file paths" in the ruleset UI?',
+        'Does your GitHub plan offer "Restrict file paths" in the ruleset UI?\n'
+        "(Settings > Rulesets > Rulesets, then your main branch ruleset)",
         default=False,
     )
 
@@ -1665,10 +1671,15 @@ def _free_plan_followup(
         return
     answer = _ask_free_plan(shared, branch_findings)
     if answer:
-        # behaviour 7 under the positive question (behaviour 9): a 'yes'
-        # means the plan offers the option - the 'To fix' line is the fix,
-        # so nothing more to walk; output stays byte-identical, no
-        # confirmation line.
+        # A 'yes' means the plan offers the option: no walkthrough (the
+        # caller inverts, behaviour 9), but behaviour 10 of
+        # plans/file-path-codeowners-interactive.md replaces the silent
+        # return with exactly one locating line - tell the reader to tick
+        # it in that ruleset and that the report's "To fix" entry names
+        # the rule. One sentence, at most 80 characters.
+        shared.echo(
+            'Tick it in that ruleset; the "To fix" entry above names the rule.'
+        )
         return
     owner, repo = repository
     try:
