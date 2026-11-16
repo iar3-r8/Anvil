@@ -672,5 +672,210 @@ class WantsWalkthroughTests(WantsWalkthroughTestCase):
        )
 
 
+# ---------------------------------------------------------------------------
+# Behaviour 11 of plans/file-path-codeowners-interactive.md: the body
+# accepts the handles the user gave. The same function, the same name, one
+# argument - the argument is now a string that may hold several
+# whitespace-separated handles, each with or without a leading ``@``. Every
+# handle is normalised to exactly one leading ``@``; order is preserved;
+# each handle is used verbatim otherwise. A single handle returns today's
+# one-handle line unchanged, so behaviour 1 of
+# plans/file-path-interactive-free-plan.md stays green at the new boundary
+# (its pins in CodeownersBodyTests above are untouched).
+# ---------------------------------------------------------------------------
+
+
+class MultipleOwnersBodyTests(unittest.TestCase):
+    """Behaviour 11: ``codeowners_body(owners)`` with several handles in one string."""
+
+    def _picodeowners(self):
+        """Import anvilkit.pi.picodeowners, failing clearly if the module is absent."""
+        try:
+            from anvilkit.pi import picodeowners
+        except ImportError:
+            self.fail(_ABSENT)
+        return picodeowners
+
+    def test_codeowners_body_mixed_handles_gives_the_exact_normalised_owner_line(self):
+        """Pin 1: "@alice bob @org/team" -> the exact owner line "/.github/ @alice @bob @org/team"."""
+        picodeowners = self._picodeowners()
+
+        body = picodeowners.codeowners_body("@alice bob @org/team")
+
+        self.assertIn(
+            "/.github/ @alice @bob @org/team",
+            body.splitlines(),
+            "behaviour 11: the owner line must be exactly "
+            "'/.github/ @alice @bob @org/team' - every handle normalised "
+            "to exactly one leading @, order preserved, used verbatim "
+            "otherwise; got lines: {!r}".format(body.splitlines()),
+        )
+
+    def test_codeowners_body_double_space_and_mixed_at_normalises_to_single_spaces(self):
+        """Pin 2a: "alice  @bob" (double space, mixed @) -> the exact owner line "/.github/ @alice @bob"."""
+        picodeowners = self._picodeowners()
+
+        body = picodeowners.codeowners_body("alice  @bob")
+
+        self.assertIn(
+            "/.github/ @alice @bob",
+            body.splitlines(),
+            "handles are split on whitespace and re-joined with single "
+            "spaces, each with exactly one leading @; got lines: "
+            "{!r}".format(body.splitlines()),
+        )
+
+    def test_codeowners_body_double_leading_at_normalises_to_exactly_one_at(self):
+        """Pin 2b: "@@weird" -> leading @@ collapses to exactly one @ -> the exact owner line "/.github/ @weird"."""
+        picodeowners = self._picodeowners()
+
+        body = picodeowners.codeowners_body("@@weird")
+
+        self.assertIn(
+            "/.github/ @weird",
+            body.splitlines(),
+            "a leading @@ must normalise to exactly one leading @; got "
+            "lines: {!r}".format(body.splitlines()),
+        )
+
+    def test_codeowners_body_lone_at_handle_raises_codeowners_error(self):
+        """Pin 3a: a handle that is only "@" is empty after stripping the optional leading @ -> raises."""
+        picodeowners = self._picodeowners()
+
+        with self.assertRaises(
+            picodeowners.CodeownersError,
+            msg="codeowners_body('@') must raise CodeownersError: a handle "
+            "that is only @ is empty after stripping the optional leading "
+            "@, and the handle is never guessed",
+        ):
+            picodeowners.codeowners_body("@")
+
+    def test_codeowners_body_trailing_lone_at_handle_raises_codeowners_error(self):
+        """Pin 3b: "alice @" carries a handle that is only "@" -> raises."""
+        picodeowners = self._picodeowners()
+
+        with self.assertRaises(
+            picodeowners.CodeownersError,
+            msg="codeowners_body('alice @') must raise CodeownersError: the "
+            "second token is a lone @, empty after stripping the optional "
+            "leading @, and the handle is never guessed",
+        ):
+            picodeowners.codeowners_body("alice @")
+
+    def test_codeowners_body_empty_or_whitespace_only_still_raises_codeowners_error(self):
+        """Pin 4: empty or whitespace-only still raises (behaviour 1's error path, re-affirmed for the multi form)."""
+        picodeowners = self._picodeowners()
+
+        for owners in ("", "   "):
+            with self.assertRaises(
+                picodeowners.CodeownersError,
+                msg="codeowners_body({!r}) must raise CodeownersError; the "
+                "handle is never guessed".format(owners),
+            ):
+                picodeowners.codeowners_body(owners)
+
+    def test_codeowners_body_preserves_handle_order_without_sorting(self):
+        """Pin 5: "zeta alpha" -> the exact owner line "/.github/ @zeta @alpha" (order preserved, no sorting)."""
+        picodeowners = self._picodeowners()
+
+        body = picodeowners.codeowners_body("zeta alpha")
+
+        self.assertIn(
+            "/.github/ @zeta @alpha",
+            body.splitlines(),
+            "handles must keep the order the user gave, never sorted; got "
+            "lines: {!r}".format(body.splitlines()),
+        )
+
+    def test_codeowners_body_single_handle_is_behaviour_1s_body_unchanged(self):
+        """Pin 6: a single handle returns exactly what behaviour 1 pins - the same owner line, the same edit-me comment."""
+        picodeowners = self._picodeowners()
+
+        body = picodeowners.codeowners_body("iar3-r8")
+
+        self.assertIn(
+            OWNER_LINE,
+            body.splitlines(),
+            "behaviour 1's exact owner line {!r} must be unchanged at the "
+            "new boundary; got lines: {!r}".format(
+                OWNER_LINE, body.splitlines()
+            ),
+        )
+        lowered = body.lower()
+        self.assertIn(
+            _EDIT,
+            lowered,
+            "the edit-me comment must be unchanged at the new boundary; "
+            "got: {!r}".format(body),
+        )
+        self.assertIn(
+            _WRITE,
+            lowered,
+            "the write-access comment must be unchanged at the new "
+            "boundary; got: {!r}".format(body),
+        )
+
+    def test_codeowners_body_handles_reach_the_file_content_only_and_write_nothing(self):
+        """Pin 7: no handle is ever substituted into anything executable - it reaches the FILE content only.
+
+        The honest form, in three parts: the module holds no subprocess
+        (it never imports one, so no handle can be substituted into
+        anything executable); a call writes no file (the listing of a
+        temp cwd is unchanged before and after the call); and the user's
+        handles reach the returned file content as their normalised
+        tokens - the owner line's tokens are exactly
+        ``['/.github/', '@alice', '@bob', '@org/team']``, so each handle
+        is data in the text, not an execution.
+        """
+        import os
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        self.assertIsNone(
+            getattr(picodeowners, "subprocess", None),
+            "anvilkit.pi.picodeowners must never import subprocess: a "
+            "handle that could be substituted into an executable is not "
+            "file content (behaviour 11's error clause)",
+        )
+
+        owners = "@alice bob @org/team"
+        with tempfile.TemporaryDirectory() as temp_cwd:
+            before = sorted(os.listdir(temp_cwd))
+            original_cwd = os.getcwd()
+            os.chdir(temp_cwd)
+            try:
+                body = picodeowners.codeowners_body(owners)
+            finally:
+                os.chdir(original_cwd)
+            after = sorted(os.listdir(temp_cwd))
+
+        self.assertEqual(
+            before,
+            after,
+            "codeowners_body({!r}) must write no file: the temp cwd "
+            "listing changed from {!r} to {!r}".format(owners, before, after),
+        )
+
+        content = [
+            line
+            for line in body.splitlines()
+            if line and not line.lstrip().startswith("#")
+        ]
+        self.assertEqual(
+            len(content),
+            1,
+            "the body must carry exactly one owner line; got: "
+            "{!r}".format(content),
+        )
+        self.assertEqual(
+            content[0].split(),
+            ["/.github/", "@alice", "@bob", "@org/team"],
+            "the user's handles must reach the file content as their "
+            "normalised tokens, order preserved; the owner line's tokens "
+            "are: {!r}".format(content[0].split()),
+        )
+
+
 if __name__ == "__main__":
-   unittest.main()
+    unittest.main()
