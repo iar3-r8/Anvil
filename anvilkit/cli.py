@@ -1692,6 +1692,52 @@ def _free_plan_followup(
         shared.echo(step)
 
 
+def _codeowners_flow(
+    shared: Context,
+    owner: str,
+    repo: str,
+    branch: str,
+    target: Path,
+    ask: Optional[Callable[..., str]] = None,
+    confirm: Optional[Callable[..., bool]] = None,
+) -> None:
+    """The interactive CODEOWNERS follow-up for a free plan (behaviour 14
+    of plans/file-path-codeowners-interactive.md): ask the owner handles,
+    show the built content, confirm it.
+
+    One ``ask`` for the handles, defaulting to the pre-filled ``@owner``
+    (editable); the body ``picodeowners.codeowners_body`` builds from the
+    answered handles is echoed verbatim, line by line; then one
+    ``confirm`` "Use this CODEOWNERS content?" default True. A no ends the
+    flow with no write and no further prompt. A ``CodeownersError`` prints
+    exactly one line and ends the flow; no exception leaves the function
+    and no exit code changes.
+
+    ``ask``/``confirm`` are injected seams (the ``_ask_free_plan``
+    precedent) defaulting to ``prompts.ask``/``prompts.confirm``.
+    ``branch`` and ``target`` are unused in this behaviour: ``branch``
+    feeds the behaviour-19 commit step and ``target`` the behaviour-18
+    write - both extend this function, so the signature is fixed now.
+    """
+    if ask is None:
+        ask = prompts.ask
+    if confirm is None:
+        confirm = prompts.confirm
+    handles = ask("CODEOWNERS owner handle(s), space-separated:", default="@" + owner)
+    try:
+        body = picodeowners.codeowners_body(handles)
+    except picodeowners.CodeownersError as exc:
+        shared.echo("could not build the CODEOWNERS content: {}".format(exc))
+        return
+    for line in body.splitlines():
+        shared.echo(line)
+    if not confirm("Use this CODEOWNERS content?", default=True):
+        return
+    # behaviour 15: the self-approval warning + last_push_step land here (before the offer);
+    # behaviour 18: the write offer; behaviour 19: the git commands.
+    return
+
+
 def _echo_guard_report(
     shared: Context,
     branch_findings: List[Dict[str, Any]],
