@@ -133,3 +133,24 @@ def wants_walkthrough(findings: List[Dict[str, Any]]) -> bool:
             if finding.get("check") == "file_paths" and finding.get("status") == "warn":
                 return True
     return False
+
+
+def commit_commands() -> List[str]:
+    """Return the three git command strings for the CODEOWNERS commit, built never run.
+
+    Behaviour 12 of plans/file-path-codeowners-interactive.md: the path is
+    fixed at ``.github/CODEOWNERS`` and the commit message is fixed text, so
+    the function takes no parameters — nothing the user typed can be
+    interpolated into a command (the handles reach the file content via
+    behaviour 11, never a command). The strings are display text for the
+    user to run: each stays at most 80 characters, the module imports no
+    subprocess and the call produces no side effect. Deterministic: two
+    calls return equal lists.
+    """
+    return [
+        "git add {path}".format(path=".github/CODEOWNERS"),
+        'git commit -m "{message}"'.format(
+            message="Add CODEOWNERS for the review gate"
+        ),
+        "git push",
+    ]
