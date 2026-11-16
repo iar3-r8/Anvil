@@ -18,32 +18,53 @@ class CodeownersError(Exception):
     """A CODEOWNERS body input that cannot be turned into the text."""
 
 
-def codeowners_body(owner: str) -> str:
-    """Return the CODEOWNERS text with the owner line ``/.github/ @{owner}``.
+def codeowners_body(owners: str) -> str:
+    """Return the CODEOWNERS text whose owner line lists the normalised handles.
 
-    The owner line is exactly ``/.github/ @{owner}`` — the ``/.github/``
-    prefix is GitHub's "most secure method": the CODEOWNERS file owns
-    itself (``doc/external/github/about-code-owners.md``, section
+    ``owners`` is the handle string: one or several whitespace-separated
+    handles, each with an optional leading ``@``. Each handle is split on
+    whitespace, stripped, and normalised to exactly one leading ``@``
+    (every leading ``@`` is stripped, then one is re-added), and used
+    verbatim otherwise — no quoting, no escaping, no case-folding — with
+    the order the user gave preserved and the handles joined with single
+    spaces. A single clean handle returns behaviour 1's one-handle line
+    unchanged (behaviour 11 of plans/file-path-codeowners-interactive.md).
+
+    The owner line is ``/.github/ `` plus the normalised handles — the
+    ``/.github/`` prefix is GitHub's "most secure method": the CODEOWNERS
+    file owns itself (``doc/external/github/about-code-owners.md``, section
     "CODEOWNERS and branch protection"). A comment line tells the reader to
-    EDIT the pre-filled handle to the real owners, who need explicit write
+    EDIT the pre-filled handles to the real owners, who need explicit write
     access to the repository per the same page.
 
-    ``owner`` is used verbatim — no quoting, no escaping, no case-folding —
-    and is never shell- or string-substituted into anything executable.
-    Deterministic: the same ``owner`` returns the identical string.
+    The handles reach the returned file content only — they are never
+    shell- or string-substituted into anything executable. Deterministic:
+    the same ``owners`` returns the identical string.
 
-    Raises :class:`CodeownersError` if ``owner`` is empty or
-    whitespace-only — the handle is never guessed.
+    Raises :class:`CodeownersError` if ``owners`` is empty or
+    whitespace-only, or if any handle is empty after stripping the
+    optional leading ``@`` (e.g. ``"@"``) — the handle is never guessed.
     """
-    if not owner or not owner.strip():
+    tokens = owners.split()
+    if not tokens:
         raise CodeownersError(
             "refusing to build a CODEOWNERS body without an owner: "
             "the handle is pre-filled and never guessed"
         )
+    handles: List[str] = []
+    for token in tokens:
+        handle = token.strip().lstrip("@")
+        if not handle:
+            raise CodeownersError(
+                "refusing to build a CODEOWNERS body with an empty handle "
+                "{!r}: a handle that is only @ is never guessed".format(token)
+            )
+        handles.append("@" + handle)
+    owner = " ".join(handles)
     return (
         "# CODEOWNERS — pre-filled; edit the handle below to the real\n"
         "# owners, who need explicit write access to the repository.\n"
-        "/.github/ @{owner}\n"
+        "/.github/ {owner}\n"
     ).format(owner=owner)
 
 
