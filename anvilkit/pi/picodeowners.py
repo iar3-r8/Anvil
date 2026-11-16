@@ -6,12 +6,15 @@ the CODEOWNERS text whose owner line is ``/.github/ @{owner}``,
 GitHub's own "most secure method": the file owns itself (the saved page
 ``doc/external/github/about-code-owners.md``, section "CODEOWNERS and
 branch protection"), and ``walkthrough_steps`` turns that body plus the
-repository and base branch into the six ordered display steps. The
-module builds text only — it never writes a file, never makes a network
-call and never prompts; the prompt belongs to the cli layer.
+repository and base branch into the six ordered display steps.
+Behaviour 13 of plans/file-path-codeowners-interactive.md adds the
+last-push rule as ``last_push_step`` (the extra display step) and the
+self-approval advisory as ``self_approval_warning`` (one line, or None).
+The module builds text only — it never writes a file, never makes a
+network call and never prompts; the prompt belongs to the cli layer.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class CodeownersError(Exception):
@@ -154,3 +157,56 @@ def commit_commands() -> List[str]:
         ),
         "git push",
     ]
+
+
+def last_push_step() -> str:
+    """Return the extra walkthrough step for the last-push approval rule.
+
+    Behaviour 13 of plans/file-path-codeowners-interactive.md: the six
+    walkthrough steps end at the review gate, but a code owner may
+    approve their own change, so the gate is weak without the last push
+    rule — the cli layer (behaviour 15) prints this step after them. It
+    names the UI rule verbatim, "Require approval of the most recent
+    reviewable push" (doc/external/github/about-protected-branches.md:
+    "the most recent reviewable push must be approved by someone other
+    than the person who pushed it"), and the rulesets parameter
+    ``require_last_push_approval`` (doc/external/github/rest-api-
+    endpoints-for-rules.md). Display text: every line stays at most 80
+    characters. Pure: the call prompts, writes and raises nothing;
+    deterministic — two calls return the identical string.
+    """
+    return (
+        '7. Also tick "Require approval of the most recent reviewable '
+        'push"\n'
+        "   (rulesets param require_last_push_approval): a code owner "
+        "can\n"
+        "   approve their own change, so without it the gate is weak."
+    )
+
+
+def self_approval_warning(owner: str, repo_owner: str) -> Optional[str]:
+    """Return the one-line self-approval advisory, or None to print nothing.
+
+    Behaviour 13 of plans/file-path-codeowners-interactive.md: when the
+    CODEOWNERS owner the user chose is the repository owner, that owner
+    can approve their own change, which weakens the review gate unless
+    the ``require_last_push_approval`` rulesets option is on. Both
+    handles are normalised — stripped, with every leading ``@``
+    removed — then compared case-insensitively. A handle containing
+    ``/`` is a team, not a user identity, and never matches: it returns
+    None even on an exact match. Differing handles return None (the
+    caller prints nothing). On a match, returns exactly one line, at
+    most 80 characters for the pinned owner ``iar3-r8``, built with
+    ``.format`` so the handle is data, never substituted into anything
+    executable. Pure: the call prompts, writes and raises nothing.
+    """
+    normalised_owner = owner.strip().lstrip("@")
+    normalised_repo = repo_owner.strip().lstrip("@")
+    if "/" in normalised_owner or "/" in normalised_repo:
+        return None
+    if normalised_owner.lower() != normalised_repo.lower():
+        return None
+    return (
+        "{owner} repo owner: approve own change unless "
+        "require_last_push_approval."
+    ).format(owner=normalised_owner)
