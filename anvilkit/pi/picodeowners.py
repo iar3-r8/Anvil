@@ -8,7 +8,7 @@ GitHub's own "most secure method": the file owns itself (the saved page
 branch protection"), and ``walkthrough_steps`` turns that body plus the
 repository and base branch into the six ordered display steps. The
 module builds text only — it never writes a file, never makes a network
-call and never prompts; the prompt belongs to a later behaviour.
+call and never prompts; the prompt belongs to the cli layer.
 """
 
 from typing import Any, Dict, List

@@ -1601,8 +1601,9 @@ def _ask_free_plan(
     (behaviour 4 of plans/file-path-interactive-free-plan.md): one
     ``prompts.confirm`` with default False whose text asks whether the plan
     does not offer "Restrict file paths"; the asker is injectable for tests.
-    ``shared`` is kept for the caller-side gating (non-interactive /
-    assume_yes / dry_run) and printing, which land with behaviours 5-6."""
+    ``shared`` is unused here: the gating (non-interactive /
+    ``assume_yes`` / ``dry_run``) and the printing happen in the caller,
+    ``_free_plan_followup``."""
     if asker is None:
         asker = prompts.confirm
     if not picodeowners.wants_walkthrough(findings):
