@@ -1722,11 +1722,20 @@ def _codeowners_flow(
     continues to the confirm - the run is never blocked, and the token is
     never compared: only handle-vs-``owner``, no env lookup.
 
+    Behaviour 18: after the content confirm passes, the flow makes the
+    write offer - one more ``confirm`` "Write .github/CODEOWNERS into
+    {target}?" default False. A yes writes through
+    ``picodeowners.write_codeowners`` (behaviour 17's seam) and echoes
+    the written path; a no echoes exactly one line saying nothing was
+    written; a ``CodeownersError`` from the seam echoes exactly one line
+    and lets no exception out - the flow ends here for now (behaviour
+    19 will make it continue to the git commands).
+
     ``ask``/``confirm`` are injected seams (the ``_ask_free_plan``
     precedent) defaulting to ``prompts.ask``/``prompts.confirm``.
-    ``branch`` and ``target`` are unused in this behaviour: ``branch``
-    feeds the behaviour-19 commit step and ``target`` the behaviour-18
-    write - both extend this function, so the signature is fixed now.
+    ``branch`` is unused in these behaviours: it feeds the behaviour-19
+    commit step, which extends this function, so the signature is fixed
+    now.
     """
     if ask is None:
         ask = prompts.ask
@@ -1748,7 +1757,23 @@ def _codeowners_flow(
             break
     if not confirm("Use this CODEOWNERS content?", default=True):
         return
-    # behaviour 18: the write offer; behaviour 19: the git commands.
+    # behaviour 18: the write offer - explicit, default no.
+    if not confirm(
+        "Write .github/CODEOWNERS into {}?".format(target), default=False
+    ):
+        shared.echo(
+            "Nothing written: the offer was declined; .github/CODEOWNERS "
+            "is not written."
+        )
+        return
+    try:
+        path = target / ".github" / "CODEOWNERS"
+        written = picodeowners.write_codeowners(path, body)
+        shared.echo(str(written))
+    except picodeowners.CodeownersError as exc:
+        shared.echo("could not write .github/CODEOWNERS: {}".format(exc))
+        return
+    # behaviour 19: the git commands.
     return
 
 
