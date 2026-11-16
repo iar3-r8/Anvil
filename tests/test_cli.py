@@ -10257,3 +10257,592 @@ class TestFreePlanYesWalkthrough(CliCase):
                 result.output
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 7 & 8 boundary pins (plans/file-path-interactive-free-plan.md):
+# no production change drives these - the C5/C6 greens and the existing
+# exit pins already hold, so every pin below passes now. Its value is that
+# a future change breaking "no keeps today's output" or "the prompt never
+# changes an exit code" fails loudly here.
+# ---------------------------------------------------------------------------
+
+
+class TestFreePlanBoundary(CliCase):
+    """Boundary pins for behaviours 7 and 8 of
+    plans/file-path-interactive-free-plan.md (no production change).
+
+    Behaviour 7 - no keeps today's output. The strongest honest form the
+    fixture supports is a byte-identical comparison of the interactive no
+    ``verify-guards`` output against the same run with
+    ``cli._free_plan_followup`` disabled (the no answer must add exactly
+    nothing to the report), plus explicit pins: none of the six step
+    tokens, no confirmation phrasing (tokens ``"Yes,"``, ``"No,"`` and
+    the word ``confirmation`` case-insensitive), no behaviour-5
+    non-interactive fallback line, the ``To fix`` entry for
+    ``file_path_restriction`` and ``BYPASS_NOTE`` present. No state is
+    kept between runs: the whole project tree is byte-identical before
+    and after an interactive yes or no ``verify-guards`` run (the
+    walkthrough prints guidance, it never writes - no
+    ``.github/CODEOWNERS`` anywhere), and the blocked gate's interactive
+    no run leaves the project ``.env`` byte-identical and the target
+    unchanged apart from the one file the gate is allowed to prepare
+    (``.github-ruleset.json``) - never ``.github/CODEOWNERS``.
+
+    Behaviour 8 - the prompt never changes an exit code. ``verify-guards``
+    interactive yes and no both exit ``summarize`` of the warn-only
+    fixture (0); the blocked gate interactive no exits
+    ``EXIT_GUARDS_BLOCKED`` (9) with the ``⛔`` line still the last
+    non-blank line (the yes variant is already pinned by
+    ``TestFreePlanYesWalkthrough``); ``--no-github`` on ``setup-repo``
+    skips the gate entirely - no prompt asked (booby-trapped confirm),
+    no fallback line, no steps, provisioning proceeds with an empty
+    token; ``--branch release`` does not gate the prompt (it is about
+    the plan) but the printed commit step names ``release`` and the
+    report header checks ``release``.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    GATE_TOKEN = "ghp_freeplan_boundary"
+
+    # The six walkthrough step tokens (behaviour 2's pins), one per step.
+    STEP1 = "1. Create .github/CODEOWNERS"
+    STEP2 = "2. Owners need write access"
+    STEP3 = "3. Commit"
+    STEP4 = "4. In Settings"
+    STEP4_TOKEN = "Require review from Code Owners"
+    STEP5 = "5. Re-run"
+    STEP6 = "6. Public repos only on GitHub Free"
+    STEP_TOKENS = (STEP1, STEP2, STEP3, STEP4, STEP5, STEP6)
+    # A confirmation echo of the answer would carry one of these; the no
+    # output must carry none.
+    CONFIRMATION_TOKENS = ("Yes,", "No,")
+    CONFIRMATION_WORD = "confirmation"
+    _FALLBACK_PHRASE = re.compile(r"free[-\s]plan", re.IGNORECASE)
+
+    # -- fixtures, seams and traps -------------------------------------------
+
+    def setUp(self):
+        super().setUp()
+        self.write_env(LLM_PORT="8000")
+
+    def _file_paths_warn_findings(self):
+        """The five-rule findings with ``file_paths`` flipped to its warn
+        shape: the other four rules passed, ``wants_walkthrough`` True,
+        ``summarize`` 0 (a warn never fails the summarize)."""
+        findings = cli.piguard.check_all(five_rule_branch_rules())
+        warn = cli.piguard.check_file_paths([])[0]
+        for index, finding in enumerate(findings):
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
+                findings[index] = warn
+        self.assertTrue(
+            cli.picodeowners.wants_walkthrough(findings),
+            "the fixture must carry a file_paths warn finding so the "
+            "walkthrough ask is wanted",
+        )
+        self.assertEqual(
+            0,
+            cli.piguard.summarize(findings),
+            "the fixture must summarize to 0 - a warn is reported, not "
+            "a failure",
+        )
+        return findings
+
+    def _guard_seams(self, findings, repository):
+        """The four piguard seams replaced, so the guard flow runs
+        offline on exactly the fixture this class wants reported."""
+        return (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", return_value=repository
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=findings),
+            mock.patch.object(
+                cli.piguard, "check_token_all", return_value=[]
+            ),
+        )
+
+    def _prompt_traps(self):
+        """Booby-traps over every question seam the interactive runs must
+        not reach apart from the (separately patched) ``confirm``: any
+        prompt read fails the run loudly instead of hanging or eating
+        input."""
+        boom = AssertionError(
+            "a prompt was asked where the free-plan path must not read "
+            "stdin"
+        )
+        return (
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    def _verify_guards_interactive(self, confirm_value, findings, branch="main"):
+        """One interactive ``verify-guards`` run on the given fixture:
+        ``_is_interactive`` forced True, ``prompts.confirm`` patched to
+        ``confirm_value`` (a real confirm under CliRunner would hang),
+        the other prompt seams booby-trapped, NO ``input=``."""
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "confirm", return_value=confirm_value),
+        ) + self._guard_seams(findings, (self.OWNER, self.REPO)) + self._prompt_traps()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return self.invoke(
+            ["verify-guards", str(self.project), "--branch", branch]
+        )
+
+    def _blocked_gate_interactive(self, confirm_value):
+        """One interactive blocked ``setup-repo`` run on the warn fixture:
+        a stored token (reused without prompting), offline seams,
+        ``confirm`` patched to ``confirm_value``, the other prompt seams
+        booby-trapped, NO ``input=``. Returns ``(result, target,
+        env_before)`` - the project .env's bytes captured AFTER the
+        fixture's token store and BEFORE the run, so the persistence pin
+        compares the run's own effect, not the fixture's."""
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN=self.GATE_TOKEN)
+        env_before = self.env_path().read_bytes()
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        findings = self._file_paths_warn_findings()
+        patchers = (
+            (
+                mock.patch.object(cli, "_is_interactive", return_value=True),
+                mock.patch.object(
+                    cli.prompts, "confirm", return_value=confirm_value
+                ),
+            )
+            + self._guard_seams(findings, (self.OWNER, self.REPO))
+            + self._prompt_traps()
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(["setup-repo", target.name])
+        return result, Path(target.name), env_before
+
+    def _spy_provision(self):
+        """A recorder over ``provision.setup_repo`` that provisions
+        nothing and returns the target, so the run stops at the seam."""
+        calls = []
+
+        def spy(target, repo_plan, **kwargs):
+            calls.append((str(target), repo_plan, kwargs))
+            return str(target)
+
+        patcher = mock.patch.object(cli.provision, "setup_repo", spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def _fallback_lines(self, output):
+        """The lines carrying ALL the non-interactive fallback line's
+        tokens (behaviour 5's line): CODEOWNERS + a free-plan phrasing +
+        walkthrough + without --yes / interactively on ONE line."""
+        return [
+            line
+            for line in output.splitlines()
+            if "CODEOWNERS" in line
+            and self._FALLBACK_PHRASE.search(line)
+            and "walkthrough" in line.lower()
+            and ("without --yes" in line or "interactively" in line.lower())
+        ]
+
+    def _assert_no_confirmation(self, output, site):
+        """No confirmation echo of the answer: none of the pinned
+        tokens in the output (behaviour 7's 'no confirmation line')."""
+        for token in self.CONFIRMATION_TOKENS:
+            self.assertNotIn(
+                token,
+                output,
+                "{}: the no output must carry no confirmation phrasing "
+                "{!r}:\n{}".format(site, token, output),
+            )
+        self.assertNotIn(
+            self.CONFIRMATION_WORD,
+            output.lower(),
+            "{}: the no output must carry no confirmation phrasing "
+            "{!r}:\n{}".format(site, self.CONFIRMATION_WORD, output),
+        )
+
+    # -- behaviour 7: no keeps today's output ---------------------------------
+
+    def test_verify_guards_interactive_no_output_identical_to_run_without_followup(
+        self,
+    ):
+        """Interactive no (prompts.confirm -> False): the output is
+        byte-identical to the same run with ``_free_plan_followup``
+        disabled - the no answer adds exactly nothing to the report -
+        and it carries the To fix entry for file_path_restriction and
+        BYPASS_NOTE, none of the six step tokens, no confirmation
+        phrasing and no behaviour-5 fallback line."""
+        findings = self._file_paths_warn_findings()
+        result = self._verify_guards_interactive(False, findings)
+        with mock.patch.object(
+            cli, "_free_plan_followup", lambda *a, **k: None
+        ):
+            baseline = self._verify_guards_interactive(False, findings)
+
+        self.assertEqual(
+            baseline.output,
+            result.output,
+            "the interactive no output must be byte-identical to the "
+            "same run without the follow-up feature - a 'no' must add "
+            "exactly nothing:\n--- with follow-up ---\n{}\n--- baseline "
+            "---\n{}".format(result.output, baseline.output),
+        )
+        for token in self.STEP_TOKENS:
+            self.assertNotIn(
+                token,
+                result.output,
+                "the no output must not print the step token {!r}:\n{}".format(
+                    token, result.output
+                ),
+            )
+        self.assertNotIn(
+            self.STEP4_TOKEN,
+            result.output,
+            "the no output must not print step 4's option name:\n{}".format(
+                result.output
+            ),
+        )
+        self._assert_no_confirmation(result.output, "verify-guards interactive no")
+        self.assertEqual(
+            [],
+            self._fallback_lines(result.output),
+            "the no output must not carry the non-interactive fallback "
+            "line (that line is only for the skipped case):\n{}".format(
+                result.output
+            ),
+        )
+        lines = result.output.splitlines()
+        self.assertIn(
+            "To fix",
+            lines,
+            "the no output must still carry the 'To fix' section:\n{}".format(
+                result.output
+            ),
+        )
+        fixes = cli.piguard.render_fixes(findings)
+        self.assertEqual(
+            "To fix",
+            fixes[0],
+            "the fixture must render a 'To fix' section",
+        )
+        for line in fixes[1:]:
+            self.assertIn(
+                line,
+                lines,
+                "the 'To fix' entry line {!r} must still print:\n{}".format(
+                    line, result.output
+                ),
+            )
+        self.assertIn(
+            "file_path_restriction",
+            result.output,
+            "the 'To fix' entry must still name file_path_restriction:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            cli.piguard.BYPASS_NOTE,
+            lines,
+            "the no output must still end the report with the bypass "
+            "note:\n{}".format(result.output),
+        )
+
+    def test_verify_guards_interactive_no_keeps_the_project_byte_unchanged(self):
+        """No state is kept between runs: after an interactive no
+        verify-guards run the whole project tree is byte-identical -
+        the answer is never persisted to .env or anywhere else."""
+        findings = self._file_paths_warn_findings()
+        before = self.snapshot()
+        self._verify_guards_interactive(False, findings)
+        after = self.snapshot()
+
+        self.assertEqual(
+            before,
+            after,
+            "an interactive no run must write nothing - no new files and "
+            "no modified bytes anywhere in the project tree; changed: "
+            "{}".format(
+                sorted(set(before) ^ set(after))
+                + [k for k in set(before) & set(after) if before[k] != after[k]]
+            ),
+        )
+        self.assertFalse(
+            (self.project / ".github" / "CODEOWNERS").exists(),
+            "the walkthrough must never write a CODEOWNERS file",
+        )
+
+    def test_verify_guards_interactive_yes_keeps_the_project_byte_unchanged(self):
+        """The yes run prints guidance only: after an interactive yes
+        verify-guards run the whole project tree is byte-identical - the
+        walkthrough prints, it never writes."""
+        findings = self._file_paths_warn_findings()
+        before = self.snapshot()
+        result = self._verify_guards_interactive(True, findings)
+        after = self.snapshot()
+
+        self.assertIn(
+            self.STEP1,
+            result.output,
+            "the sanity half: the yes run must actually print the "
+            "walkthrough, so the no-write pin is meaningful:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            before,
+            after,
+            "an interactive yes run must write nothing - the walkthrough "
+            "prints guidance only; changed: {}".format(
+                sorted(set(before) ^ set(after))
+                + [k for k in set(before) & set(after) if before[k] != after[k]]
+            ),
+        )
+        self.assertFalse(
+            (self.project / ".github" / "CODEOWNERS").exists(),
+            "the walkthrough must never write a CODEOWNERS file",
+        )
+
+    # -- behaviour 8: the prompt never changes an exit code -------------------
+
+    def test_verify_guards_interactive_yes_exits_summarize_zero(self):
+        """verify-guards interactive yes: the answer changes no exit code
+        - the exit is still summarize of the findings, 0 for this
+        warn-only fixture."""
+        findings = self._file_paths_warn_findings()
+        result = self._verify_guards_interactive(True, findings)
+
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "verify-guards (interactive yes) still exits summarize of its "
+            "findings - the yes answer changes no exit code:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "verify-guards with only a warn exits 0:\n{}".format(result.output),
+        )
+
+    def test_verify_guards_interactive_no_exits_summarize_zero(self):
+        """verify-guards interactive no: the answer changes no exit code -
+        the exit is still summarize of the findings, 0 for this
+        warn-only fixture."""
+        findings = self._file_paths_warn_findings()
+        result = self._verify_guards_interactive(False, findings)
+
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "verify-guards (interactive no) still exits summarize of its "
+            "findings - the no answer changes no exit code:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "verify-guards with only a warn exits 0:\n{}".format(result.output),
+        )
+
+    def test_blocked_gate_interactive_no_exits_blocked_with_blocking_line_last(self):
+        """The gate variant, answered no: the blocked run still exits
+        ``EXIT_GUARDS_BLOCKED`` (9) deterministically, the ``⛔`` line is
+        still the last non-blank line, and the no answer prints no
+        walkthrough, no confirmation line and no fallback line."""
+        result, _target, _env_before = self._blocked_gate_interactive(False)
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate still exits blocked (9) - the no answer "
+            "changes no exit code:\n{}".format(result.output),
+        )
+        self.assertNotEqual(
+            cli.EXIT_PROMPT,
+            result.exit_code,
+            "a blocked gate must not surface a prompt error (6) from the "
+            "ask:\n{}".format(result.output),
+        )
+        for token in self.STEP_TOKENS:
+            self.assertNotIn(
+                token,
+                result.output,
+                "the gate's no output must not print the step token "
+                "{!r}:\n{}".format(token, result.output),
+            )
+        self._assert_no_confirmation(result.output, "blocked gate interactive no")
+        self.assertEqual(
+            [],
+            self._fallback_lines(result.output),
+            "the gate's no output must not carry the non-interactive "
+            "fallback line:\n{}".format(result.output),
+        )
+        non_blank = [line for line in result.output.splitlines() if line.strip()]
+        self.assertTrue(
+            non_blank and non_blank[-1].lstrip().startswith("⛔"),
+            "the last non-blank line of a blocked no run must still be "
+            "the ⛔ re-run line - the block is never masked, got {!r}:\n{}".format(
+                non_blank[-1] if non_blank else "", result.output
+            ),
+        )
+
+    def test_blocked_gate_interactive_no_writes_nothing_beyond_the_prepared_ruleset(
+        self,
+    ):
+        """No persistence at the gate: after an interactive no blocked
+        run the project .env is byte-identical (the token the fixture
+        stored for the run is its precondition, not the run's effect)
+        and the target carries exactly the one file the gate is allowed
+        to prepare (``.github-ruleset.json``) - never
+        ``.github/CODEOWNERS``."""
+        result, target, env_before = self._blocked_gate_interactive(False)
+
+        self.assertEqual(cli.EXIT_GUARDS_BLOCKED, result.exit_code, result.output)
+        after = {
+            str(path.relative_to(target)): path.read_bytes()
+            for path in sorted(target.rglob("*"))
+            if path.is_file()
+        }
+        self.assertEqual(
+            [".github-ruleset.json"],
+            sorted(after),
+            "a blocked gate run must leave the target unchanged apart "
+            "from the prepared ruleset; files present: {}".format(
+                sorted(after)
+            ),
+        )
+        self.assertFalse(
+            (target / ".github" / "CODEOWNERS").exists(),
+            "the walkthrough must never write a CODEOWNERS file into "
+            "the target",
+        )
+        self.assertEqual(
+            env_before,
+            self.env_path().read_bytes(),
+            "the no answer must never be persisted to .env - the file "
+            "must be byte-identical",
+        )
+
+    def test_no_github_skips_gate_prompt_fallback_and_steps(self):
+        """``--no-github`` on setup-repo skips the gate entirely: no
+        guard seam is called, no free-plan prompt is asked (the
+        ``_free_plan_followup`` seam is booby-trapped - a call fails the
+        run loudly), no fallback line and no steps print, and
+        provisioning proceeds with an empty token - the normal
+        provision path's exit (the gate is skipped, not failed).
+
+        The prompt pin targets ``_free_plan_followup`` rather than
+        ``prompts.confirm``: under ``--yes`` the run's remaining prompts
+        (the frontier and oxylabs resolvers) are the normal provision
+        path's own questions - ``prompts.confirm`` answers them from its
+        default without reading stdin (assume_yes) - so trapping
+        confirm would pin the wrong seam. The free-plan ask is the only
+        one that exists because of the gate, and it lives in
+        ``_free_plan_followup``."""
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        calls = self._spy_provision()
+        boom = AssertionError(
+            "a guard seam or the free-plan follow-up was invoked under "
+            "--no-github - the gate must be skipped entirely"
+        )
+        traps = (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", side_effect=boom
+            ),
+            mock.patch.object(
+                cli.piguard, "fetch_branch_rules", side_effect=boom
+            ),
+            mock.patch.object(
+                cli.piguard, "check_token_all", side_effect=boom
+            ),
+            mock.patch.object(
+                cli, "_free_plan_followup", side_effect=boom
+            ),
+        )
+        for patcher in traps:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        result = self.invoke(
+            ["setup-repo", target.name, "--yes", "--no-github"]
+        )
+
+        self.assertEqual(0, result.exit_code, result.output)
+        self.assertEqual(
+            1,
+            len(calls),
+            "--no-github must provision exactly as today (the gate is "
+            "skipped, not failed):\n{}".format(result.output),
+        )
+        self.assertEqual(
+            "",
+            calls[0][1].github_token,
+            "--no-github provisions with an empty token",
+        )
+        for token in self.STEP_TOKENS:
+            self.assertNotIn(
+                token,
+                result.output,
+                "--no-github prints no walkthrough (the gate is skipped "
+                "entirely); step token {!r} present:\n{}".format(
+                    token, result.output
+                ),
+            )
+        self.assertEqual(
+            [],
+            self._fallback_lines(result.output),
+            "--no-github prints no fallback line (no gate, no ask):\n{}".format(
+                result.output
+            ),
+        )
+
+    def test_branch_release_names_release_in_header_and_commit_step(self):
+        """``--branch release`` does not gate the prompt (it is about the
+        plan): interactive yes with the warn fixture still prints the
+        steps, the commit step names ``release`` on its line, and the
+        report header checks ``release``."""
+        findings = self._file_paths_warn_findings()
+        result = self._verify_guards_interactive(
+            True, findings, branch="release"
+        )
+
+        self.assertEqual(0, result.exit_code, result.output)
+        lines = result.output.splitlines()
+        self.assertTrue(
+            any("branch:" in line and "release" in line for line in lines),
+            "the report header must name release as the checked "
+            "branch:\n{}".format(result.output),
+        )
+        self.assertIn(
+            self.STEP1,
+            result.output,
+            "the interactive yes run must still print the walkthrough "
+            "steps with --branch release:\n{}".format(result.output),
+        )
+        commit_lines = [
+            line for line in lines if "Commit" in line and "release" in line
+        ]
+        self.assertGreaterEqual(
+            len(commit_lines),
+            1,
+            "the commit step must name release (the branch to commit "
+            "to) on its line:\n{}".format(result.output),
+        )
