@@ -877,5 +877,139 @@ class MultipleOwnersBodyTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Behaviour 12 of plans/file-path-codeowners-interactive.md: the git
+# commands are built, never run. ``commit_commands()`` takes no arguments
+# (the path is fixed at .github/CODEOWNERS and the commit message is fixed
+# text) and returns the three command strings in order. The strings are
+# display text for the user to run: the module runs no subprocess and
+# imports none, and nothing the user typed reaches any of them (the
+# handles go into the file content via behaviour 11, never into a command).
+# ---------------------------------------------------------------------------
+
+
+class CommitCommandsTests(unittest.TestCase):
+    """Behaviour 12: ``commit_commands()`` -> the three git command strings, built never run."""
+
+    def _picodeowners(self):
+        """Import anvilkit.pi.picodeowners, failing clearly if the module is absent."""
+        try:
+            from anvilkit.pi import picodeowners
+        except ImportError:
+            self.fail(_ABSENT)
+        return picodeowners
+
+    def test_commit_commands_returns_the_three_git_commands_in_order(self):
+        """Pin 1: commit_commands() returns exactly three strings, pinned exactly, in order."""
+        picodeowners = self._picodeowners()
+
+        commands = picodeowners.commit_commands()
+
+        self.assertIsInstance(
+            commands,
+            list,
+            "commit_commands must return a list",
+        )
+        self.assertEqual(
+            len(commands),
+            3,
+            "commit_commands must return exactly three commands; got {}: "
+            "{!r}".format(len(commands), commands),
+        )
+        for command in commands:
+            self.assertIsInstance(
+                command,
+                str,
+                "each command must be a str; got {!r}".format(command),
+            )
+        self.assertEqual(
+            commands,
+            [
+                "git add .github/CODEOWNERS",
+                'git commit -m "Add CODEOWNERS for the review gate"',
+                "git push",
+            ],
+            "behaviour 12: the three commands must be exactly the fixed "
+            "strings, in order; got: {!r}".format(commands),
+        )
+
+    def test_commit_commands_every_string_is_at_most_80_characters(self):
+        """Pin 2: every command is display text shown to the user and stays at most 80 characters."""
+        picodeowners = self._picodeowners()
+
+        commands = picodeowners.commit_commands()
+
+        for command in commands:
+            self.assertLessEqual(
+                len(command),
+                80,
+                "every command is display text for the user and must stay "
+                "at most 80 characters; {!r} is {} characters".format(
+                    command, len(command)
+                ),
+            )
+
+    def test_commit_commands_takes_no_parameters_so_no_user_input_is_interpolated(self):
+        """Pin 3: the function takes no parameters, so nothing the user typed can be interpolated into a command."""
+        import inspect
+
+        picodeowners = self._picodeowners()
+
+        parameters = inspect.signature(picodeowners.commit_commands).parameters
+
+        self.assertEqual(
+            len(parameters),
+            0,
+            "commit_commands must take no parameters: the path and the "
+            "commit message are fixed text, so nothing the user typed can "
+            "reach any command; got parameters {!r}".format(list(parameters)),
+        )
+
+    def test_commit_commands_never_run_no_subprocess_and_no_side_effect(self):
+        """Pin 4: the module runs no subprocess and imports none; a call produces no side effect."""
+        import os
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        self.assertIsNone(
+            getattr(picodeowners, "subprocess", None),
+            "anvilkit.pi.picodeowners must run no subprocess and import "
+            "none: the command strings are display text for the user to "
+            "run (behaviour 12's error clause)",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_cwd:
+            before = sorted(os.listdir(temp_cwd))
+            original_cwd = os.getcwd()
+            os.chdir(temp_cwd)
+            try:
+                picodeowners.commit_commands()
+            finally:
+                os.chdir(original_cwd)
+            after = sorted(os.listdir(temp_cwd))
+
+        self.assertEqual(
+            before,
+            after,
+            "commit_commands() must produce no side effect: the temp cwd "
+            "listing changed from {!r} to {!r}".format(before, after),
+        )
+
+    def test_commit_commands_is_deterministic(self):
+        """Pin 5: two calls return equal lists."""
+        picodeowners = self._picodeowners()
+
+        first = picodeowners.commit_commands()
+        second = picodeowners.commit_commands()
+
+        self.assertEqual(
+            first,
+            second,
+            "commit_commands must be deterministic; got two different "
+            "lists: {!r} vs {!r}".format(first, second),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
