@@ -1713,6 +1713,15 @@ def _codeowners_flow(
     exactly one line and ends the flow; no exception leaves the function
     and no exit code changes.
 
+    Behaviour 15: between the body echoes and the confirm, each answered
+    handle token is checked with
+    ``picodeowners.self_approval_warning(token, owner)`` (behaviour 13:
+    case-insensitive, ``@`` stripped, a ``/`` team handle -> None); if any
+    is non-None, the first warning line and
+    ``picodeowners.last_push_step()`` are echoed once each, then the flow
+    continues to the confirm - the run is never blocked, and the token is
+    never compared: only handle-vs-``owner``, no env lookup.
+
     ``ask``/``confirm`` are injected seams (the ``_ask_free_plan``
     precedent) defaulting to ``prompts.ask``/``prompts.confirm``.
     ``branch`` and ``target`` are unused in this behaviour: ``branch``
@@ -1731,9 +1740,14 @@ def _codeowners_flow(
         return
     for line in body.splitlines():
         shared.echo(line)
+    for token in handles.split():
+        warning = picodeowners.self_approval_warning(token, owner)
+        if warning is not None:
+            shared.echo(warning)
+            shared.echo(picodeowners.last_push_step())
+            break
     if not confirm("Use this CODEOWNERS content?", default=True):
         return
-    # behaviour 15: the self-approval warning + last_push_step land here (before the offer);
     # behaviour 18: the write offer; behaviour 19: the git commands.
     return
 
