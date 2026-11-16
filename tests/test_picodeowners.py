@@ -1239,5 +1239,325 @@ class SelfApprovalTextTests(unittest.TestCase):
         )
 
 
+# ---------------------------------------------------------------------------
+# Behaviour 17 of plans/file-path-codeowners-interactive.md: the write
+# seam. ``write_codeowners(path, body)`` is the ONLY function in the
+# module that writes: it writes ``body`` UTF-8 verbatim to the full
+# target path (e.g. ``target/.github/CODEOWNERS``), creates the parent
+# directory if absent, and returns the path. An existing file is never
+# clobbered; a directory at the path or an unwritable parent raises
+# ``CodeownersError`` and leaves nothing partial; no other exception
+# type leaves the module. The seam follows the
+# ``anvilkit/pi/piruleset.py::write_ruleset`` precedent (one exception
+# type per module). The fake target is a temp dir: no test touches the
+# network, the real Docker daemon or $HOME, and the only tree the
+# function may touch is the given target.
+# ---------------------------------------------------------------------------
+
+# A body carrying non-ASCII text so the UTF-8 pin is load-bearing: the
+# em dash encodes to three UTF-8 bytes (b"\xe2\x80\x94"), so a write in
+# any other encoding cannot match the pinned bytes.
+_WRITE_BODY = (
+    "# CODEOWNERS \u2014 pre-filled; edit the handle below to the real\n"
+    "# owners, who need explicit write access to the repository.\n"
+    "/.github/ @iar3-r8\n"
+)
+
+
+class WriteCodeownersTests(unittest.TestCase):
+    """Behaviour 17: ``write_codeowners(path, body)`` -> the body UTF-8 verbatim at ``path``, the parent created if absent, ``path`` returned."""
+
+    def _picodeowners(self):
+        """Import anvilkit.pi.picodeowners, failing clearly if the module is absent."""
+        try:
+            from anvilkit.pi import picodeowners
+        except ImportError:
+            self.fail(_ABSENT)
+        return picodeowners
+
+    @staticmethod
+    def _snapshot(root):
+        """Every entry under ``root`` as a sorted list of relative path strings - a listing that ignores nothing."""
+        import os
+
+        entries = []
+        for dirpath, dirnames, filenames in os.walk(str(root)):
+            for name in dirnames + filenames:
+                entries.append(
+                    str((Path(dirpath) / name).relative_to(str(root)))
+                )
+        return sorted(entries)
+
+    def test_write_codeowners_writes_verbatim_utf8_creates_parent_returns_path(self):
+        """Pin 1: parent absent -> the file exists with exactly body.encode("utf-8"), the parent dir is created, and the returned value is the path as a Path."""
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            path = target / ".github" / "CODEOWNERS"
+            self.assertFalse(
+                path.parent.exists(),
+                "the fixture must start with the parent dir absent",
+            )
+
+            result = picodeowners.write_codeowners(path, _WRITE_BODY)
+
+            self.assertIsInstance(
+                result,
+                Path,
+                "write_codeowners must return the path as a Path; got: "
+                "{!r}".format(result),
+            )
+            self.assertEqual(
+                result,
+                path,
+                "write_codeowners must return the exact path it wrote to; "
+                "got: {!r}".format(result),
+            )
+            self.assertTrue(
+                path.is_file(),
+                "the CODEOWNERS file must exist at the full target path "
+                "{!r}".format(path),
+            )
+            self.assertEqual(
+                path.read_bytes(),
+                _WRITE_BODY.encode("utf-8"),
+                "the file must hold the body UTF-8 verbatim, byte for "
+                "byte; got: {!r}".format(path.read_bytes()),
+            )
+
+    def test_write_codeowners_never_clobbers_an_existing_file(self):
+        """Pin 2: a pre-existing file at the path is never clobbered - CodeownersError names the path, and the original bytes survive the failed call unchanged."""
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            path = target / ".github" / "CODEOWNERS"
+            original = b"pre-existing bytes that must survive\n"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(original)
+
+            with self.assertRaises(
+                picodeowners.CodeownersError,
+                msg="an existing file at the path must raise "
+                "CodeownersError; it is never clobbered",
+            ) as ctx:
+                picodeowners.write_codeowners(path, _WRITE_BODY)
+
+            self.assertIn(
+                str(path),
+                str(ctx.exception),
+                "the CodeownersError must name the path {!r}; message: "
+                "{!r}".format(str(path), str(ctx.exception)),
+            )
+            self.assertEqual(
+                path.read_bytes(),
+                original,
+                "the existing file's bytes must be untouched after the "
+                "failed call; got: {!r}".format(path.read_bytes()),
+            )
+
+    def test_write_codeowners_raises_when_the_path_is_a_directory(self):
+        """Pin 3: a directory at the path raises CodeownersError and leaves nothing partial - the directory is still a directory and no file is created."""
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            path = target / ".github" / "CODEOWNERS"
+            path.mkdir(parents=True)
+
+            with self.assertRaises(
+                picodeowners.CodeownersError,
+                msg="a directory at the path must raise CodeownersError; "
+                "a write to a directory must never silently succeed",
+            ):
+                picodeowners.write_codeowners(path, _WRITE_BODY)
+
+            self.assertTrue(
+                path.is_dir(),
+                "nothing partial: the path must still be a directory "
+                "after the failed call",
+            )
+            self.assertFalse(
+                path.is_file(),
+                "nothing partial: no file may be created at the path",
+            )
+            self.assertEqual(
+                self._snapshot(target),
+                [".github", ".github/CODEOWNERS"],
+                "nothing partial: the failed call must add no entries "
+                "under the target; got: {!r}".format(self._snapshot(target)),
+            )
+
+    def test_write_codeowners_raises_when_the_parent_cannot_be_created(self):
+        """Pin 4: an unwritable parent raises CodeownersError and leaves nothing partial.
+
+        Root-independent construction: the path's grandparent
+        (``target/blocker``) is a regular file, so its parent
+        (``target/blocker/sub``) can never be created - the filesystem
+        refuses to make a directory under a file (NotADirectoryError)
+        regardless of privileges. A chmod 0o500 on the parent would be
+        ignored when the suite runs as root, making the test
+        non-deterministic in CI; this construction is not.
+        """
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            blocker = target / "blocker"
+            blocker_bytes = b"i am a file, not a directory"
+            blocker.write_bytes(blocker_bytes)
+            path = target / "blocker" / "sub" / "CODEOWNERS"
+
+            with self.assertRaises(
+                picodeowners.CodeownersError,
+                msg="an unwritable parent (a file where a directory is "
+                "needed) must raise CodeownersError; no other exception "
+                "type may leave the module",
+            ):
+                picodeowners.write_codeowners(path, _WRITE_BODY)
+
+            self.assertFalse(
+                (target / "blocker" / "sub").exists(),
+                "nothing partial: the un-creatable parent dir must not "
+                "exist after the failed call",
+            )
+            self.assertFalse(
+                path.exists(),
+                "nothing partial: no file may exist at the path",
+            )
+            self.assertEqual(
+                blocker.read_bytes(),
+                blocker_bytes,
+                "the blocking file must be untouched after the failed "
+                "call; got: {!r}".format(blocker.read_bytes()),
+            )
+
+    def test_write_codeowners_touches_only_the_given_target_tree(self):
+        """Pin 5: the only thing touched is the given target tree - the new entries under target are exactly the parent dir + the file (only the file if the parent pre-existed), and a sentinel tree outside the target is unchanged."""
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp_target, \
+             tempfile.TemporaryDirectory() as tmp_sentinel:
+            target = Path(tmp_target)
+            sentinel = Path(tmp_sentinel)
+            (sentinel / "sentinel-file").write_bytes(b"untouched")
+            sentinel_before = self._snapshot(sentinel)
+
+            path = target / ".github" / "CODEOWNERS"
+            before = self._snapshot(target)
+
+            picodeowners.write_codeowners(path, _WRITE_BODY)
+
+            after = self._snapshot(target)
+            new_entries = [entry for entry in after if entry not in before]
+            self.assertEqual(
+                new_entries,
+                [".github", ".github/CODEOWNERS"],
+                "the only new entries under the target must be exactly "
+                "the parent dir and the file; got: {!r}".format(
+                    new_entries
+                ),
+            )
+            self.assertEqual(
+                after,
+                [".github", ".github/CODEOWNERS"],
+                "the target tree after the write must be exactly the "
+                "parent dir and the file; got: {!r}".format(after),
+            )
+            self.assertEqual(
+                self._snapshot(sentinel),
+                sentinel_before,
+                "nothing outside the target tree may be touched: the "
+                "sentinel listing changed from {!r} to "
+                "{!r}".format(sentinel_before, self._snapshot(sentinel)),
+            )
+
+        # The at-most-parent pin: with the parent dir pre-existing, the
+        # write adds exactly one entry - the file.
+        with tempfile.TemporaryDirectory() as tmp_target:
+            target = Path(tmp_target)
+            (target / ".github").mkdir()
+            before = self._snapshot(target)
+
+            picodeowners.write_codeowners(
+                target / ".github" / "CODEOWNERS", _WRITE_BODY
+            )
+
+            new_entries = [
+                entry
+                for entry in self._snapshot(target)
+                if entry not in before
+            ]
+            self.assertEqual(
+                new_entries,
+                [".github/CODEOWNERS"],
+                "with the parent dir pre-existing, the write may create "
+                "at most its file - no other entry; got: "
+                "{!r}".format(new_entries),
+            )
+
+    def test_write_codeowners_only_codeowners_error_leaves_the_module(self):
+        """Pin 6: in every error case the raised exception is specifically CodeownersError - not OSError, FileNotFoundError, IsADirectoryError or PermissionError leaking out."""
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            cases = {}
+
+            clobber = target / ".github" / "CODEOWNERS"
+            clobber.parent.mkdir(parents=True)
+            clobber.write_bytes(b"original")
+            cases["clobber"] = lambda: picodeowners.write_codeowners(
+                clobber, _WRITE_BODY
+            )
+
+            directory = target / "asis" / "CODEOWNERS"
+            directory.mkdir(parents=True)
+            cases["directory"] = lambda: picodeowners.write_codeowners(
+                directory, _WRITE_BODY
+            )
+
+            blocker = target / "blocker"
+            blocker.write_bytes(b"file")
+            blocked = target / "blocker" / "sub" / "CODEOWNERS"
+            cases["unwritable-parent"] = (
+                lambda: picodeowners.write_codeowners(blocked, _WRITE_BODY)
+            )
+
+            for name, fn in cases.items():
+                with self.subTest(case=name):
+                    try:
+                        fn()
+                    except picodeowners.CodeownersError:
+                        # The one and only exception type the module
+                        # may raise.
+                        pass
+                    except Exception as exc:
+                        self.fail(
+                            "case {!r}: a non-CodeownersError leaked out "
+                            "of the module: {!r} ({}); only "
+                            "CodeownersError may leave the "
+                            "module".format(name, exc, type(exc).__name__)
+                        )
+                    else:
+                        self.fail(
+                            "case {!r}: no exception raised; the error "
+                            "path must raise CodeownersError".format(name)
+                        )
+
+
 if __name__ == "__main__":
     unittest.main()
