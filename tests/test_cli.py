@@ -9840,3 +9840,420 @@ class TestFreePlanNonInteractiveSkip(CliCase):
             "skipped ask:\n{}".format(result.output),
         )
         self._assert_fallback_pins(result, "blocked setup-repo gate")
+
+
+class TestFreePlanYesWalkthrough(CliCase):
+    """RED pins for behaviour 6: a yes answer prints the six-step
+    walkthrough - behaviour 6 of plans/file-path-interactive-free-plan.md.
+
+    Given a prompt answered yes, a resolved (owner, repo) and the checked
+    branch, the guard report must finish by printing the six steps after
+    the "To fix" section and after the bypass note, each output line at
+    most 80 characters, built by picodeowners and never re-derived in
+    cli. The steps are pinned by DISTINCTIVE tokens, one per step (the
+    green's wording may vary within behaviour 2's pins):
+
+    * step 1: ``1. Create .github/CODEOWNERS`` (the step number and the
+      exact case-sensitive filename, per the behaviour-2 green) plus the
+      body's owner line ``/.github/ @iar3-r8`` built from the resolved
+      owner;
+    * step 2: ``2. Owners need write access``;
+    * step 3: ``3. Commit`` on a line that also names the checked branch
+      (``main`` for the default branch);
+    * step 4: ``4. In Settings`` + ``Require review from Code Owners``;
+    * step 5: ``5. Re-run`` on ONE line carrying ``verify-guards``,
+      ``warn`` and ``stays`` together;
+    * step 6: ``6. Public repos only on GitHub Free``.
+
+    The six first mentions must be strictly increasing in the output, so
+    the steps arrive in their contract order.
+
+    The error clause is pinned for its reachable half only: an
+    unresolvable repository (repository is None) prints no walkthrough
+    and no prompt is asked - the confirm seam is booby-trapped, so a
+    prompt on that path fails the run loudly - and the run completes
+    with the no-repository exit. The CodeownersError half is deliberately
+    NOT pinned (manager ruling: unreachable with the real builder, KISS
+    - no seam for an unreachable path).
+
+    Behaviour 7's "no keeps today's output" is pinned in its own cycle;
+    the interactive no case here pins only the step absence (the no half
+    of the "no confirmation line" clause) and does not overlap further.
+
+    Token pins: the six step tokens above, the owner line
+    ``/.github/ @iar3-r8``, and the non-interactive fallback line's
+    tokens (CODEOWNERS + a free-plan phrasing + walkthrough +
+    without --yes / interactively on one line), which must be ABSENT
+    from an interactive yes run.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    GATE_TOKEN = "ghp_freepan_yes"
+
+    # One distinctive token per step, in contract order.
+    STEP1 = "1. Create .github/CODEOWNERS"
+    STEP2 = "2. Owners need write access"
+    STEP3 = "3. Commit"
+    STEP4 = "4. In Settings"
+    STEP4_TOKEN = "Require review from Code Owners"
+    STEP5 = "5. Re-run"
+    STEP6 = "6. Public repos only on GitHub Free"
+    STEP_TOKENS = (STEP1, STEP2, STEP3, STEP4, STEP5, STEP6)
+    OWNER_LINE = "/.github/ @{}".format(OWNER)
+    _FALLBACK_PHRASE = re.compile(r"free[-\s]plan", re.IGNORECASE)
+
+    # -- fixtures and seams ------------------------------------------------
+
+    def _file_paths_warn_findings(self):
+        """The five-rule findings with ``file_paths`` flipped to its warn
+        shape: the other four rules passed, ``wants_walkthrough`` True,
+        ``summarize`` 0 (a warn never fails the summarize)."""
+        findings = cli.piguard.check_all(five_rule_branch_rules())
+        warn = cli.piguard.check_file_paths([])[0]
+        for index, finding in enumerate(findings):
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
+                findings[index] = warn
+        self.assertTrue(
+            cli.picodeowners.wants_walkthrough(findings),
+            "the fixture must carry a file_paths warn finding so the "
+            "walkthrough ask is wanted",
+        )
+        self.assertEqual(
+            0,
+            cli.piguard.summarize(findings),
+            "the fixture must summarize to 0 - a warn is reported, not "
+            "a failure",
+        )
+        return findings
+
+    def _guard_seams(self, findings, repository):
+        """The four piguard seams replaced, so the guard flow runs
+        offline on exactly the fixture this class wants reported.
+        ``repository`` is None for the unresolvable-repository case."""
+        return (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", return_value=repository
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=findings),
+            mock.patch.object(
+                cli.piguard, "check_token_all", return_value=[]
+            ),
+        )
+
+    def _prompt_traps(self):
+        """Booby-traps over every question function the free-plan path
+        must not reach: any prompt read fails the run loudly instead of
+        hanging or eating input."""
+        boom = AssertionError(
+            "a prompt was asked where the free-plan path must not read "
+            "stdin"
+        )
+        return (
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    def _verify_guards_interactive(
+        self, confirm_side_effect, findings, repository
+    ):
+        """One interactive ``verify-guards`` run on the given fixture:
+        ``_is_interactive`` forced True, ``prompts.confirm`` patched
+        (a real confirm under CliRunner would hang), the other prompt
+        seams booby-trapped, NO ``input=``. The default branch is
+        ``main``, so the commit step must name ``main``."""
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(
+                cli.prompts, "confirm", side_effect=confirm_side_effect
+            ),
+        ) + self._guard_seams(findings, repository) + self._prompt_traps()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+
+    def _fallback_lines(self, output):
+        """The lines carrying ALL the non-interactive fallback line's
+        tokens (behaviour 5's line): CODEOWNERS + a free-plan phrasing +
+        walkthrough + without --yes / interactively on ONE line."""
+        return [
+            line
+            for line in output.splitlines()
+            if "CODEOWNERS" in line
+            and self._FALLBACK_PHRASE.search(line)
+            and "walkthrough" in line.lower()
+            and ("without --yes" in line or "interactively" in line.lower())
+        ]
+
+    # -- the behaviour-6 pins -------------------------------------------------
+
+    def _assert_walkthrough_pins(self, result, site, full_width=False):
+        """The Then clause, pinned: all six steps after the "To fix"
+        section and the bypass note, in contract order, the commit step
+        naming the checked branch, the owner line present, the step
+        lines at most 80 characters, and the non-interactive fallback
+        line absent (an interactive yes run prints the steps, not the
+        skip notice).
+
+        ``full_width`` widens the 80-column pin from the step lines to
+        EVERY printed line - valid for ``verify-guards`` (the whole
+        report is 80 columns by construction), not for the blocked gate
+        (whose pre-existing ruleset import steps carry a 131-character
+        line that predates this behaviour and is out of its scope)."""
+        output = result.output
+        lines = output.splitlines()
+        width_lines = (
+            lines
+            if full_width
+            else [
+                line
+                for line in lines
+                if any(token in line for token in self.STEP_TOKENS)
+            ]
+        )
+        for line in width_lines:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "{}: the walkthrough step lines must stay at most 80 "
+                "characters; found a {}-character line {!r}:\n{}".format(
+                    site, len(line), line, output
+                ),
+            )
+        # Every step's distinctive token is present.
+        for token in self.STEP_TOKENS:
+            self.assertIn(
+                token,
+                output,
+                "{}: the step token {!r} is missing - the six-step "
+                "walkthrough did not print:\n{}".format(site, token, output),
+            )
+        self.assertIn(
+            self.STEP4_TOKEN,
+            output,
+            "{}: step 4 must name the ruleset option "
+            "{!r}:\n{}".format(site, self.STEP4_TOKEN, output),
+        )
+        # Step 5's three tokens share one line: the re-run command, the
+        # persisting warn and the "stays" verdict.
+        step5_lines = [
+            line
+            for line in lines
+            if "verify-guards" in line and "warn" in line and "stays" in line
+        ]
+        self.assertGreaterEqual(
+            len(step5_lines),
+            1,
+            "{}: step 5 must carry 'verify-guards', 'warn' and 'stays' "
+            "on the same line:\n{}".format(site, output),
+        )
+        # The body's owner line, built from the resolved owner, is in
+        # the output.
+        self.assertIn(
+            self.OWNER_LINE,
+            output,
+            "{}: the CODEOWNERS body's owner line {!r} (built from the "
+            "resolved owner) is missing:\n{}".format(
+                site, self.OWNER_LINE, output
+            ),
+        )
+        # The commit step names the checked branch (main for the
+        # default).
+        commit_lines = [
+            line for line in lines if self.STEP3 in line and "main" in line
+        ]
+        self.assertGreaterEqual(
+            len(commit_lines),
+            1,
+            "{}: step 3 must name the checked branch (main) on its "
+            "line:\n{}".format(site, output),
+        )
+        # Position: every step first mention is strictly increasing and
+        # after BOTH the "To fix" section and the bypass note.
+        to_fix = lines.index("To fix")
+        note = cli.piguard.BYPASS_NOTE
+        self.assertIn(
+            note,
+            lines,
+            "{}: the guard report is missing its closing note line "
+            "{!r}:\n{}".format(site, note, output),
+        )
+        note_index = lines.index(note)
+        positions = [min(lines.index(line) for line in lines if token in line)
+                     for token in self.STEP_TOKENS]
+        self.assertEqual(
+            sorted(positions),
+            positions,
+            "{}: the six steps must appear in their contract order - "
+            "first mentions at {}:\n{}".format(site, positions, output),
+        )
+        self.assertGreater(
+            positions[0],
+            to_fix,
+            "{}: the steps must print after the 'To fix' section "
+            "(first step at {}, 'To fix' at {}):\n{}".format(
+                site, positions[0], to_fix, output
+            ),
+        )
+        self.assertGreater(
+            positions[0],
+            note_index,
+            "{}: the steps must print after the bypass note (first step "
+            "at {}, note at {}):\n{}".format(
+                site, positions[0], note_index, output
+            ),
+        )
+        # The non-interactive fallback line (behaviour 5) is ABSENT: an
+        # interactive yes run prints the steps, not the skip notice.
+        self.assertEqual(
+            [],
+            self._fallback_lines(output),
+            "{}: the non-interactive fallback line must not print on an "
+            "interactive yes run:\n{}".format(site, output),
+        )
+
+    def _assert_no_walkthrough(self, result, site):
+        """The error clause's reachable half, pinned: none of the six
+        step tokens, no owner line, no fallback line."""
+        output = result.output
+        for token in self.STEP_TOKENS:
+            self.assertNotIn(
+                token,
+                output,
+                "{}: the step token {!r} must NOT print:\n{}".format(
+                    site, token, output
+                ),
+            )
+        self.assertNotIn(
+            self.STEP4_TOKEN,
+            output,
+            "{}: step 4's option name must NOT print:\n{}".format(
+                site, output
+            ),
+        )
+        self.assertNotIn(
+            self.OWNER_LINE,
+            output,
+            "{}: the owner line must NOT print:\n{}".format(site, output),
+        )
+        self.assertEqual(
+            [],
+            self._fallback_lines(output),
+            "{}: the non-interactive fallback line must not print:\n{}".format(
+                site, output
+            ),
+        )
+
+    # -- verify-guards --------------------------------------------------------
+
+    def test_verify_guards_interactive_yes_prints_walkthrough(self):
+        """Interactive yes (prompts.confirm -> True) prints the six-step
+        walkthrough after the "To fix" section and the bypass note, in
+        order, naming the checked branch and the resolved owner, every
+        line at most 80 characters, without the non-interactive fallback
+        line."""
+        findings = self._file_paths_warn_findings()
+        result = self._verify_guards_interactive(
+            lambda *a, **k: True, findings, (self.OWNER, self.REPO)
+        )
+        self._assert_walkthrough_pins(
+            result, "verify-guards interactive yes", full_width=True
+        )
+
+    def test_verify_guards_interactive_no_prints_no_walkthrough(self):
+        """Interactive no (prompts.confirm -> False): the output carries
+        none of the six step tokens - the no half of behaviour 7's
+        'no confirmation line' clause, pinned interactively (its
+        dedicated cycle pins the non-interactive no-equivalence)."""
+        findings = self._file_paths_warn_findings()
+        result = self._verify_guards_interactive(
+            lambda *a, **k: False, findings, (self.OWNER, self.REPO)
+        )
+        self._assert_no_walkthrough(result, "verify-guards interactive no")
+
+    # -- the blocked setup-repo gate ------------------------------------------
+
+    def test_blocked_gate_interactive_yes_prints_walkthrough(self):
+        """The gate variant: a blocked ``setup-repo`` run, interactive,
+        confirm -> True, the file_paths warn fixture - the six step
+        tokens appear after the report, the exit is still 9, and the
+        steps do not mask the block: the ``⛔`` line is present and
+        still the last non-blank line a blocked run prints (the existing
+        gate pin's position contract)."""
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN=self.GATE_TOKEN)
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        findings = self._file_paths_warn_findings()
+        patchers = (
+            (
+                mock.patch.object(cli, "_is_interactive", return_value=True),
+                mock.patch.object(cli.prompts, "confirm", return_value=True),
+            )
+            + self._guard_seams(findings, (self.OWNER, self.REPO))
+            + self._prompt_traps()
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(["setup-repo", target.name])
+
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate still exits blocked (9) - the yes answer "
+            "changes no exit code:\n{}".format(result.output),
+        )
+        self._assert_walkthrough_pins(result, "blocked gate interactive yes")
+        non_blank = [line for line in result.output.splitlines() if line.strip()]
+        self.assertTrue(
+            non_blank and non_blank[-1].lstrip().startswith("⛔"),
+            "the last non-blank line of a blocked run must still be the "
+            "⛔ re-run line - the steps must not mask the block, got "
+            "{!r}:\n{}".format(non_blank[-1] if non_blank else "", result.output),
+        )
+
+    # -- the error clause: an unresolvable repository ---------------------------
+
+    def test_unresolvable_repository_asks_no_prompt_and_prints_no_walkthrough(
+        self,
+    ):
+        """repository is None (no origin / non-GitHub remote): even with
+        a file_paths warn, interactive True and confirm booby-trapped to
+        RAISE, no prompt is asked (the trap is not hit), no steps and no
+        fallback line print, and the run completes with the
+        no-repository exit (summarize of the skipped findings - 0)."""
+        findings = self._file_paths_warn_findings()
+        result = self._verify_guards_interactive(
+            lambda *a, **k: 1 / 0, findings, None
+        )
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "verify-guards with an unresolvable repository exits "
+            "summarize of its findings - the no-repository state is "
+            "unchanged:\n{}".format(result.output),
+        )
+        self._assert_no_walkthrough(
+            result, "verify-guards unresolvable repository"
+        )
+        self.assertIn(
+            "not resolvable from origin",
+            result.output,
+            "the unresolvable repository must still be reported:\n{}".format(
+                result.output
+            ),
+        )
