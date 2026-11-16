@@ -1360,7 +1360,7 @@ def setup_repo(
                 # verify-guards prints - never re-derived. The findings
                 # carry no token value, so nothing secret is echoed.
                 _echo_guard_report(shared, branch_findings, token_findings)
-                _free_plan_followup(shared, branch_findings, repository)
+                _free_plan_followup(shared, branch_findings, repository, "main")
                 shared.echo("")
                 remediation = piguard.gate_remediation(
                     branch_findings, token_findings
@@ -1617,6 +1617,7 @@ def _free_plan_followup(
     shared: Context,
     branch_findings: List[Dict[str, Any]],
     repository: Optional[Tuple[str, str]],
+    branch: str,
 ) -> None:
     """The free-plan follow-up, printed after the guard report at the two
     call sites that prompt (behaviour 5 of
@@ -1637,8 +1638,12 @@ def _free_plan_followup(
 
     An interactive run asks the behaviour-4 unit exactly once: a ``no``
     answer keeps the output byte-identical - no confirmation line
-    (behaviour 7). A ``yes`` answer's six-step walkthrough (behaviour 6)
-    lands in the next cycle; this green prints nothing more for it.
+    (behaviour 7). A ``yes`` answer prints the six-step walkthrough
+    (behaviour 6) built by ``picodeowners`` from the resolved repository
+    and the checked ``branch`` - never re-derived here - after the
+    report's "To fix" section and bypass note. A ``CodeownersError`` is
+    reported as one line and never raised, so the run is never masked
+    into success.
     """
     if not picodeowners.wants_walkthrough(branch_findings):
         return
@@ -1651,10 +1656,20 @@ def _free_plan_followup(
             "walkthrough."
         )
         return
-    # behaviour 7: a 'no' keeps the output byte-identical - no
-    # confirmation line. The yes-branch's walkthrough emission (behaviour
-    # 6, and its CodeownersError handling) lands in the next cycle.
-    _ask_free_plan(shared, branch_findings)
+    answer = _ask_free_plan(shared, branch_findings)
+    if not answer:
+        # behaviour 7: a 'no' keeps the output byte-identical - no
+        # confirmation line, no walkthrough.
+        return
+    owner, repo = repository
+    try:
+        body = picodeowners.codeowners_body(owner)
+        steps = picodeowners.walkthrough_steps(owner, repo, branch, body)
+    except picodeowners.CodeownersError as exc:
+        shared.echo("could not build the walkthrough: {}".format(exc))
+        return
+    for step in steps:
+        shared.echo(step)
 
 
 def _echo_guard_report(
@@ -1891,7 +1906,7 @@ def verify_guards(
     # lines and no report line exceeds 80 characters.
     shared.echo("")
     _echo_guard_report(shared, findings, token_findings)
-    _free_plan_followup(shared, findings, repository)
+    _free_plan_followup(shared, findings, repository, branch)
     shared.echo(_SEPARATOR)
 
     raise typer.Exit(piguard.summarize(findings + token_findings))
