@@ -12089,3 +12089,308 @@ class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
             (target / ".github" / "CODEOWNERS").exists(),
             ".github/CODEOWNERS is written by behaviour 18, not here",
         )
+
+
+class TestCodeownersFlowSelfApproval(unittest.TestCase):
+    """RED pins for behaviour 15 of
+    plans/file-path-codeowners-interactive.md: the self-approval warning
+    fires only for the repo owner.
+
+    ``cli._codeowners_flow(shared, owner, repo, branch, target, ask=None,
+    confirm=None)`` fires the warning at "the content is shown": AFTER the
+    body is echoed and BEFORE the "Use this CODEOWNERS content?" confirm.
+    For each chosen handle it calls
+    ``picodeowners.self_approval_warning(handle, owner)`` (behaviour 13:
+    case-insensitive, ``@`` stripped, a ``/`` team handle -> None); if any
+    returns non-None, the flow echoes that warning line once and
+    ``picodeowners.last_push_step()`` once, and continues - the run is
+    never blocked, the confirm still happens. When none match, neither
+    prints.
+
+    The ``owner`` argument is the repo owner from the origin remote, named
+    in the warning as the proxy it is - Anvil does not know the pushing
+    identity. The ``.env`` token is never compared: it is never a
+    committer.
+
+    Function-level and in isolation (NOT command-level - the command
+    wiring is behaviour 20): reuses behaviour 14's wiring - a fake
+    ``shared`` with an ordered echo log, injected ``ask``/``confirm``
+    seams, an empty temp target. The pins call
+    ``cli._codeowners_flow(fake_shared, "iar3-r8", "Anvil", "main",
+    target, ask=fake_ask, confirm=fake_confirm)``.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    BRANCH = "main"
+
+    # -- fakes (behaviour 14's wiring) ------------------------------------
+
+    def _fakes(self, ask_answer, confirm_answer=True):
+        """One ordered log shared by the echo, ask and confirm fakes."""
+        log = []
+
+        def echo(line):
+            log.append(("echo", line))
+
+        shared = types.SimpleNamespace(echo=echo)
+
+        def ask(prompt, default=None, *args, **kwargs):
+            log.append(("ask", prompt, default))
+            return ask_answer
+
+        def confirm(prompt, default=None, *args, **kwargs):
+            log.append(("confirm", prompt, default))
+            return confirm_answer
+
+        return shared, ask, confirm, log
+
+    def _run_flow(self, target, ask_answer, confirm_answer=True):
+        """One ``_codeowners_flow`` call on an empty temp target."""
+        shared, ask, confirm, log = self._fakes(ask_answer, confirm_answer)
+        cli._codeowners_flow(
+            shared,
+            self.OWNER,
+            self.REPO,
+            self.BRANCH,
+            target,
+            ask=ask,
+            confirm=confirm,
+        )
+        return log
+
+    def _entries(self, log, kind):
+        return [entry for entry in log if entry[0] == kind]
+
+    def _echo_lines(self, log):
+        return [entry[1] for entry in log if entry[0] == "echo"]
+
+    # -- pin 1: fires for the repo owner ----------------------------------
+
+    def test_warning_fires_when_chosen_handle_is_the_repo_owner(self):
+        """The chosen handle is the repo owner: the warning line and the
+        extra step print (behaviour 13's text, compared exactly), each
+        present, and the run is never blocked - the confirm is still
+        called exactly once."""
+        from anvilkit.pi import picodeowners
+
+        warning = picodeowners.self_approval_warning(self.OWNER, self.OWNER)
+        step = picodeowners.last_push_step()
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._run_flow(Path(tmp), ask_answer="@" + self.OWNER)
+
+        echoes = self._echo_lines(log)
+        self.assertIn(
+            warning,
+            echoes,
+            "the warning line must be echoed when a chosen handle is the "
+            "repo owner - {!r} is missing:\n{}".format(warning, echoes),
+        )
+        self.assertIn(
+            step,
+            echoes,
+            "the extra step (last_push_step) must be echoed when a "
+            "chosen handle is the repo owner:\n{}".format(echoes),
+        )
+        self.assertEqual(
+            1,
+            len(self._entries(log, "confirm")),
+            "the warning must never block the run - the confirm is "
+            "still called exactly once:\n{}".format(log),
+        )
+
+    # -- pin 2: does not fire for a different handle ----------------------
+
+    def test_no_warning_when_chosen_handle_is_not_the_repo_owner(self):
+        """A different handle: NEITHER the warning NOR the extra step
+        prints; the body still echoes and the confirm is still called -
+        the flow proceeds."""
+        from anvilkit.pi import picodeowners
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._run_flow(Path(tmp), ask_answer="@alice")
+
+        echoes = self._echo_lines(log)
+        self.assertNotIn(
+            picodeowners.self_approval_warning(self.OWNER, self.OWNER),
+            echoes,
+            "no warning may print when no chosen handle is the repo "
+            "owner:\n{}".format(echoes),
+        )
+        self.assertNotIn(
+            picodeowners.last_push_step(),
+            echoes,
+            "no extra step may print when no chosen handle is the repo "
+            "owner:\n{}".format(echoes),
+        )
+        self.assertIn(
+            "/.github/ @alice",
+            echoes,
+            "the body must still be echoed for a different handle:\n{}".format(
+                echoes
+            ),
+        )
+        self.assertEqual(
+            1,
+            len(self._entries(log, "confirm")),
+            "the flow must still proceed to the confirm:\n{}".format(log),
+        )
+
+    # -- pin 3: case-insensitive with @ stripped ---------------------------
+
+    def test_warning_fires_case_insensitive_with_at_stripped(self):
+        """The chosen handle is the repo owner's upper-cased and without
+        the @: the comparison is case-insensitive with the @ stripped, so
+        the warning fires and names the owner as given."""
+        from anvilkit.pi import picodeowners
+
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._run_flow(Path(tmp), ask_answer="IAR3-R8")
+
+        echoes = self._echo_lines(log)
+        self.assertIn(
+            picodeowners.self_approval_warning("IAR3-R8", self.OWNER),
+            echoes,
+            "the warning must fire case-insensitively with @ stripped - "
+            "the chosen handle 'IAR3-R8' is the repo owner:\n{}".format(echoes),
+        )
+
+    # -- pin 4: a team handle never fires it -------------------------------
+
+    def test_team_handle_never_fires_the_warning(self):
+        """A ``/`` team handle is never a user identity - behaviour 13's
+        ``self_approval_warning`` returns None for it, so no warning and
+        no extra step print."""
+        from anvilkit.pi import picodeowners
+
+        self.assertIsNone(
+            picodeowners.self_approval_warning("@org/team", self.OWNER),
+            "precondition: behaviour 13 returns None for a / team handle",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._run_flow(Path(tmp), ask_answer="@org/team")
+
+        echoes = self._echo_lines(log)
+        self.assertNotIn(
+            picodeowners.self_approval_warning(self.OWNER, self.OWNER),
+            echoes,
+            "no warning may print for a / team handle:\n{}".format(echoes),
+        )
+        self.assertNotIn(
+            picodeowners.last_push_step(),
+            echoes,
+            "no extra step may print for a / team handle:\n{}".format(echoes),
+        )
+
+    # -- pin 5: placement + not-blocking -----------------------------------
+
+    def test_warning_and_step_print_after_the_body_before_the_confirm(self):
+        """Placement, pinned against the ordered log: body echoes ->
+        warning -> extra step -> confirm. And the run is never blocked:
+        the confirm is called exactly once and the function returns
+        normally."""
+        from anvilkit.pi import picodeowners
+
+        warning = picodeowners.self_approval_warning(self.OWNER, self.OWNER)
+        step = picodeowners.last_push_step()
+        with tempfile.TemporaryDirectory() as tmp:
+            log = self._run_flow(Path(tmp), ask_answer="@" + self.OWNER)
+
+        body_lines = set(
+            picodeowners.codeowners_body("@" + self.OWNER).splitlines()
+        )
+        body_indices = [
+            i
+            for i, entry in enumerate(log)
+            if entry[0] == "echo" and entry[1] in body_lines
+        ]
+        warning_indices = [
+            i
+            for i, entry in enumerate(log)
+            if entry[0] == "echo" and entry[1] == warning
+        ]
+        step_indices = [
+            i
+            for i, entry in enumerate(log)
+            if entry[0] == "echo" and entry[1] == step
+        ]
+        confirms = [i for i, entry in enumerate(log) if entry[0] == "confirm"]
+        self.assertTrue(
+            body_indices, "no body line was echoed:\n{}".format(log)
+        )
+        self.assertTrue(
+            warning_indices,
+            "the warning must be echoed after the body:\n{}".format(log),
+        )
+        self.assertTrue(
+            step_indices,
+            "the extra step must be echoed after the warning:\n{}".format(log),
+        )
+        self.assertTrue(
+            confirms, "the confirm was never recorded:\n{}".format(log)
+        )
+        self.assertLess(
+            max(body_indices),
+            min(warning_indices),
+            "the warning must print after the body is echoed:\n{}".format(log),
+        )
+        self.assertLess(
+            min(warning_indices),
+            min(step_indices),
+            "the extra step must print after the warning:\n{}".format(log),
+        )
+        self.assertLess(
+            max(step_indices),
+            confirms[0],
+            "the confirm must still happen after the warning and step:\n{}".format(
+                log
+            ),
+        )
+        self.assertEqual(
+            1,
+            len(confirms),
+            "the warning must never block the run - exactly one confirm:\n{}".format(
+                log
+            ),
+        )
+
+    # -- pin 6: the .env token is never compared ---------------------------
+
+    def test_the_env_token_is_never_compared(self):
+        """The ``.env`` token is never compared - it is never a committer.
+        The firing is driven solely by the chosen handle vs the ``owner``
+        argument (pins 1-4 prove it). This pin booby-traps the
+        ``anvilkit.env`` read/get seams so any token/env lookup in the
+        flow blows up, and asserts the warning still fires with the
+        seams trapped - the only thing the flow may compare is the
+        handle against the repo owner."""
+        from anvilkit.pi import picodeowners
+
+        warning = picodeowners.self_approval_warning(self.OWNER, self.OWNER)
+
+        def explode(*args, **kwargs):
+            raise AssertionError(
+                "the flow must never read the .env token seam - the "
+                "token is never a committer"
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch(
+                "anvilkit.env.read", side_effect=explode
+            ), mock.patch("anvilkit.env.get", side_effect=explode):
+                log = self._run_flow(Path(tmp), ask_answer="@" + self.OWNER)
+
+        self.assertIn(
+            warning,
+            self._echo_lines(log),
+            "the warning must still fire with the env seams booby-"
+            "trapped - the comparison is handle-vs-owner, never token:\n{}".format(
+                log
+            ),
+        )
+        self.assertEqual(
+            1,
+            len(self._entries(log, "confirm")),
+            "the flow must complete normally with the env seams "
+            "trapped:\n{}".format(log),
+        )
