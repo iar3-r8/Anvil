@@ -11773,3 +11773,319 @@ class TestFreePlanQuestionLocates(CliCase):
                 result.output
             ),
         )
+
+
+class TestCodeownersFlowAskShowConfirm(unittest.TestCase):
+    """RED pins for behaviour 14 of
+    plans/file-path-codeowners-interactive.md: the interactive CODEOWNERS
+    flow asks, shows, confirms.
+
+    ``cli._codeowners_flow(shared, owner, repo, branch, target, ask=None,
+    confirm=None)`` asks exactly one ``ask`` for the owner handles (default
+    the pre-filled ``@owner``, editable), then prints the built body
+    verbatim, then asks exactly one ``confirm`` "Use this CODEOWNERS
+    content?" default True - in that order. A no to the content ends the
+    flow with no write and no further prompt; a ``CodeownersError`` prints
+    one line and ends the flow; no exception leaves the function.
+
+    Function-level and in isolation (NOT command-level - the command
+    wiring is behaviour 20): the fake ``shared`` records its ``.echo``
+    calls, and the injected ``ask``/``confirm`` seams record their
+    arguments. All three append to one ordered log, so the ordering pin
+    (ask -> body -> confirm) is checked against a single sequence.
+
+    Pinned tokens: the ask prompt carries ``handle`` (case-insensitive -
+    it is the prompt to enter the CODEOWNERS owner handles); the confirm
+    prompt carries ``Use this CODEOWNERS content?``; the ask default is
+    the pre-filled ``@iar3-r8`` and the confirm default is True; the body
+    is ``picodeowners.codeowners_body``'s output, pinned line by line,
+    the owner line ``/.github/ @alice @bob`` among them.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    BRANCH = "main"
+
+    # The ask prompt's pinned token (case-insensitive): the prompt is
+    # about entering the CODEOWNERS owner handles.
+    ASK_PROMPT_TOKEN = "handle"
+    # The confirm prompt's pinned text, verbatim from the contract.
+    CONFIRM_PROMPT = "Use this CODEOWNERS content?"
+    # The body's owner line the echo must carry (pin 2).
+    OWNER_LINE = "/.github/ @alice @bob"
+
+    # -- fakes ----------------------------------------------------------------
+
+    def _fakes(self, ask_answer="@alice @bob", confirm_answer=True):
+        """One ordered log shared by the echo, ask and confirm fakes."""
+        log = []
+
+        def echo(line):
+            log.append(("echo", line))
+
+        shared = types.SimpleNamespace(echo=echo)
+
+        def ask(prompt, default=None, *args, **kwargs):
+            log.append(("ask", prompt, default))
+            return ask_answer
+
+        def confirm(prompt, default=None, *args, **kwargs):
+            log.append(("confirm", prompt, default))
+            return confirm_answer
+
+        return shared, ask, confirm, log
+
+    def _run_flow(self, target, ask_answer="@alice @bob", confirm_answer=True):
+        """One ``_codeowners_flow`` call on an empty temp target. The
+        attribute reference is unguarded: the function does not exist
+        yet, so the intended red is the AttributeError it raises."""
+        shared, ask, confirm, log = self._fakes(ask_answer, confirm_answer)
+        cli._codeowners_flow(
+            shared,
+            self.OWNER,
+            self.REPO,
+            self.BRANCH,
+            target,
+            ask=ask,
+            confirm=confirm,
+        )
+        return log
+
+    def _entries(self, log, kind):
+        return [entry for entry in log if entry[0] == kind]
+
+    def _echo_lines(self, log):
+        return [entry[1] for entry in log if entry[0] == "echo"]
+
+    def _tree(self, target):
+        """The target's contents as relative paths - unchanged is empty,
+        since the target starts as an empty temp directory."""
+        return sorted(str(path.relative_to(target)) for path in target.rglob("*"))
+
+    # -- pin 1: exactly one ask, default the pre-filled owner ------------------
+
+    def test_asks_once_for_the_handles_with_the_prefilled_owner_default(self):
+        """Exactly one ask, whose default is the pre-filled ``@iar3-r8``
+        and whose prompt mentions the handles."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(target)
+
+        asks = self._entries(log, "ask")
+        self.assertEqual(
+            1,
+            len(asks),
+            "exactly one ask for the handles is expected:\n{}".format(
+                "\n".join(str(entry) for entry in log)
+            ),
+        )
+        prompt, default = asks[0][1], asks[0][2]
+        self.assertEqual(
+            "@" + self.OWNER,
+            default,
+            "the ask must default to the pre-filled @owner, editable",
+        )
+        self.assertIn(
+            self.ASK_PROMPT_TOKEN,
+            prompt.lower(),
+            "the ask prompt must mention the owner handles - {!r} is "
+            "missing:\nprompt={!r}".format(self.ASK_PROMPT_TOKEN, prompt),
+        )
+
+    # -- pin 2: the built body is printed verbatim -----------------------------
+
+    def test_prints_the_built_body_verbatim(self):
+        """After the ask, the body of the answered handles is echoed
+        verbatim - every line of ``codeowners_body``, the owner line
+        among them."""
+        from anvilkit.pi import picodeowners
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(target)
+
+        body = picodeowners.codeowners_body("@alice @bob")
+        echoes = self._echo_lines(log)
+        for line in body.splitlines():
+            self.assertIn(
+                line,
+                echoes,
+                "the body must be printed verbatim - the line {!r} is "
+                "not among the echoed lines:\n{}".format(line, echoes),
+            )
+        self.assertIn(
+            self.OWNER_LINE,
+            echoes,
+            "the body's owner line {!r} must be echoed:\n{}".format(
+                self.OWNER_LINE, echoes
+            ),
+        )
+
+    # -- pin 3: exactly one confirm, the right text and default ----------------
+
+    def test_confirms_once_with_the_content_question_default_true(self):
+        """Exactly one confirm, whose prompt carries the content question
+        and whose default is True."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(target)
+
+        confirms = self._entries(log, "confirm")
+        self.assertEqual(
+            1,
+            len(confirms),
+            "exactly one confirm is expected:\n{}".format(
+                "\n".join(str(entry) for entry in log)
+            ),
+        )
+        prompt, default = confirms[0][1], confirms[0][2]
+        self.assertIn(
+            self.CONFIRM_PROMPT,
+            prompt,
+            "the confirm prompt must carry {!r}:\nprompt={!r}".format(
+                self.CONFIRM_PROMPT, prompt
+            ),
+        )
+        self.assertIs(
+            True,
+            default,
+            "the confirm must default to True - the content is shown as "
+            "what it will be",
+        )
+
+    # -- pin 4: the order - ask, then body, then confirm -----------------------
+
+    def test_asks_then_prints_the_body_then_confirms(self):
+        """The ask precedes the first body line, and the body precedes
+        the confirm - checked against one ordered log."""
+        from anvilkit.pi import picodeowners
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(target)
+
+        body_lines = set(picodeowners.codeowners_body("@alice @bob").splitlines())
+        asks = [i for i, entry in enumerate(log) if entry[0] == "ask"]
+        body_indices = [
+            i
+            for i, entry in enumerate(log)
+            if entry[0] == "echo" and entry[1] in body_lines
+        ]
+        confirms = [i for i, entry in enumerate(log) if entry[0] == "confirm"]
+        self.assertTrue(asks, "the ask was never recorded:\n{}".format(log))
+        self.assertTrue(body_indices, "no body line was echoed:\n{}".format(log))
+        self.assertTrue(
+            confirms,
+            "the confirm was never recorded:\n{}".format(log),
+        )
+        self.assertLess(
+            asks[0],
+            min(body_indices),
+            "the ask must happen before the body is echoed:\n{}".format(log),
+        )
+        self.assertLess(
+            max(body_indices),
+            confirms[0],
+            "the body must be echoed before the confirm:\n{}".format(log),
+        )
+
+    # -- pin 5: a no to the content ends cleanly --------------------------------
+
+    def test_a_declined_content_ends_with_no_write_and_no_further_prompt(self):
+        """A no to the content ends the flow: no exception, the target
+        tree is unchanged (no .github/CODEOWNERS), and no second ask or
+        confirm."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(target, confirm_answer=False)
+
+        self.assertEqual(
+            1,
+            len(self._entries(log, "ask")),
+            "a declined content must not re-ask the handles:\n{}".format(log),
+        )
+        self.assertEqual(
+            1,
+            len(self._entries(log, "confirm")),
+            "a declined content must not ask a further question:\n{}".format(
+                log
+            ),
+        )
+        self.assertEqual(
+            [],
+            self._tree(target),
+            "a declined content must write nothing into the target",
+        )
+        self.assertFalse(
+            (target / ".github" / "CODEOWNERS").exists(),
+            "a declined content must not write .github/CODEOWNERS",
+        )
+
+    # -- pin 6: a CodeownersError is contained ----------------------------------
+
+    def test_a_codeowners_error_prints_one_line_and_ends_the_flow(self):
+        """A lone-@ handle makes ``codeowners_body`` raise
+        ``CodeownersError``: the flow prints exactly one line, calls no
+        confirm, writes nothing, and lets no exception out."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(target, ask_answer="@")
+
+        echoes = self._echo_lines(log)
+        self.assertEqual(
+            1,
+            len(echoes),
+            "a CodeownersError must print exactly one line - got {} "
+            "line(s):\n{}".format(len(echoes), log),
+        )
+        self.assertNotIn(
+            self.OWNER_LINE,
+            echoes,
+            "the error line is the only output - no body line may be "
+            "echoed:\n{}".format(echoes),
+        )
+        self.assertEqual(
+            [],
+            self._entries(log, "confirm"),
+            "a CodeownersError must end the flow before the confirm:\n{}".format(
+                log
+            ),
+        )
+        self.assertEqual(
+            [],
+            self._tree(target),
+            "a CodeownersError must write nothing into the target",
+        )
+
+    # -- pin 7: the confirm-yes path, in this behaviour only --------------------
+
+    def test_a_confirmed_content_returns_without_writing_yet(self):
+        """In THIS behaviour the flow ends after the confirm (the offer
+        is behaviour 18, the commands behaviour 19): it returns without
+        raising and has not yet written .github/CODEOWNERS (the write is
+        behaviour 17/18)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(target, confirm_answer=True)
+
+        self.assertEqual(
+            1,
+            len(self._entries(log, "ask")),
+            "the confirm-yes path still asks exactly once:\n{}".format(log),
+        )
+        self.assertEqual(
+            1,
+            len(self._entries(log, "confirm")),
+            "the confirm-yes path still confirms exactly once:\n{}".format(
+                log
+            ),
+        )
+        self.assertEqual(
+            [],
+            self._tree(target),
+            "the write lands in behaviour 17/18 - not yet",
+        )
+        self.assertFalse(
+            (target / ".github" / "CODEOWNERS").exists(),
+            ".github/CODEOWNERS is written by behaviour 18, not here",
+        )
