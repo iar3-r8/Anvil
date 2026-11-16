@@ -10326,6 +10326,11 @@ class TestFreePlanBoundary(CliCase):
     # output must carry none.
     CONFIRMATION_TOKENS = ("Yes,", "No,")
     CONFIRMATION_WORD = "confirmation"
+    # Behaviour 10's locating line: the single line a yes answer prints,
+    # named by BOTH tokens sharing one line (tick the option in that
+    # ruleset; the report's "To fix" entry names the rule).
+    LOC_LINE_TICK = "tick"
+    LOC_LINE_TO_FIX = "To fix"
     _FALLBACK_PHRASE = re.compile(r"free[-\s]plan", re.IGNORECASE)
 
     # -- fixtures, seams and traps -------------------------------------------
@@ -10483,18 +10488,33 @@ class TestFreePlanBoundary(CliCase):
             "{!r}:\n{}".format(site, self.CONFIRMATION_WORD, output),
         )
 
+    def _locating_lines(self, output):
+        """The lines carrying BOTH of behaviour 10's locating-line tokens
+        - a tick instruction and the "To fix" cross-reference on one
+        line: the single line a yes answer adds (behaviour 10 of
+        plans/file-path-codeowners-interactive.md)."""
+        return [
+            line
+            for line in output.splitlines()
+            if self.LOC_LINE_TICK in line.lower()
+            and self.LOC_LINE_TO_FIX in line
+        ]
+
     # -- behaviour 7: no keeps today's output ---------------------------------
 
     def test_verify_guards_interactive_yes_output_identical_to_run_without_followup(
         self,
     ):
         """Interactive yes (prompts.confirm -> True; the option exists -
-        the "To fix" line is the fix): the output is byte-identical to
-        the same run with ``_free_plan_followup`` disabled - the yes
-        answer adds exactly nothing to the report - and it carries the
-        To fix entry for file_path_restriction and BYPASS_NOTE, none of
-        the six step tokens, no confirmation phrasing and no
-        behaviour-5 fallback line (behaviour 9's inverted polarity)."""
+        the "To fix" line is the fix): the output is the
+        follow-up-disabled baseline plus EXACTLY ONE locating line - a
+        line carrying both ``tick`` (case-insensitive) and ``To fix`` -
+        in order, so removing it leaves the baseline byte-identical
+        (re-pointed from byte-identical by behaviour 10, which makes a
+        yes print that one line) - and it carries the To fix entry for
+        file_path_restriction and BYPASS_NOTE, none of the six step
+        tokens, no confirmation phrasing and no behaviour-5 fallback
+        line (behaviour 9's inverted polarity)."""
         findings = self._file_paths_warn_findings()
         result = self._verify_guards_interactive(True, findings)
         with mock.patch.object(
@@ -10502,13 +10522,30 @@ class TestFreePlanBoundary(CliCase):
         ):
             baseline = self._verify_guards_interactive(True, findings)
 
+        located = self._locating_lines(result.output)
         self.assertEqual(
-            baseline.output,
-            result.output,
-            "the interactive yes output must be byte-identical to the "
-            "same run without the follow-up feature - a 'yes' must add "
-            "exactly nothing:\n--- with follow-up ---\n{}\n--- baseline "
-            "---\n{}".format(result.output, baseline.output),
+            1,
+            len(located),
+            "the yes output must carry exactly ONE locating line - a "
+            "line carrying both {!r} (case-insensitive) and {!r} on the "
+            "same line - {} such line(s) found:\n{}".format(
+                self.LOC_LINE_TICK,
+                self.LOC_LINE_TO_FIX,
+                len(located),
+                result.output,
+            ),
+        )
+        remaining = list(result.output.splitlines())
+        remaining.remove(located[0])
+        self.assertEqual(
+            baseline.output.splitlines(),
+            remaining,
+            "the yes output must be the follow-up-disabled baseline plus "
+            "exactly one locating line, in order - removing the located "
+            "line {!r} must leave the baseline untouched:\n--- with "
+            "follow-up ---\n{}\n--- baseline ---\n{}".format(
+                located[0], result.output, baseline.output
+            ),
         )
         for token in self.STEP_TOKENS:
             self.assertNotIn(
@@ -10928,6 +10965,11 @@ class TestFreePlanQuestionPositive(CliCase):
     # The positive question's pinned tokens.
     PROMPT_OPENING = "Does your GitHub plan offer"
     PROMPT_OPTION = "Restrict file paths"
+    # Behaviour 10's locating line: the single line a yes answer prints,
+    # named by BOTH tokens sharing one line (tick the option in that
+    # ruleset; the report's "To fix" entry names the rule).
+    LOC_LINE_TICK = "tick"
+    LOC_LINE_TO_FIX = "To fix"
     _FALLBACK_PHRASE = re.compile(r"free[-\s]plan", re.IGNORECASE)
 
     # -- fixtures, seams and traps (wiring from the free-plan classes) -------
@@ -11045,6 +11087,18 @@ class TestFreePlanQuestionPositive(CliCase):
             and self._FALLBACK_PHRASE.search(line)
             and "walkthrough" in line.lower()
             and ("without --yes" in line or "interactively" in line.lower())
+        ]
+
+    def _locating_lines(self, output):
+        """The lines carrying BOTH of behaviour 10's locating-line tokens
+        - a tick instruction and the "To fix" cross-reference on one
+        line: the single line a yes answer adds (behaviour 10 of
+        plans/file-path-codeowners-interactive.md)."""
+        return [
+            line
+            for line in output.splitlines()
+            if self.LOC_LINE_TICK in line.lower()
+            and self.LOC_LINE_TO_FIX in line
         ]
 
     def _assert_walkthrough_printed(self, result, site):
@@ -11190,12 +11244,14 @@ class TestFreePlanQuestionPositive(CliCase):
     def test_verify_guards_interactive_yes_answer_output_identical_to_run_without_followup(
         self,
     ):
-        """confirm -> True (the plan offers the option - the "To fix"
-        line is the fix): no steps, no confirmation, and the output is
-        byte-identical to the same run with ``_free_plan_followup``
-        disabled. This fails now: today a True answer prints the
-        walkthrough - the strongest red, the wrong thing currently
-        happens on yes."""
+        """confirm -> True (the plan offers the option): the output is
+        the follow-up-disabled baseline plus EXACTLY ONE locating line -
+        a line carrying both ``tick`` (case-insensitive) and ``To fix``
+        - in order, so removing it leaves the baseline byte-identical
+        (re-pointed from byte-identical by behaviour 10, which makes a
+        yes print that one line); no steps, no confirmation phrasing.
+        This fails now: today a True answer prints nothing, so the
+        locating line is absent."""
         findings = self._file_paths_warn_findings()
         result = self._verify_guards_interactive(True, findings)
         with mock.patch.object(
@@ -11203,13 +11259,30 @@ class TestFreePlanQuestionPositive(CliCase):
         ):
             baseline = self._verify_guards_interactive(True, findings)
 
+        located = self._locating_lines(result.output)
         self.assertEqual(
-            baseline.output,
-            result.output,
-            "the interactive yes output must be byte-identical to the "
-            "same run without the follow-up feature - a 'yes' must add "
-            "exactly nothing:\n--- with follow-up ---\n{}\n--- baseline "
-            "---\n{}".format(result.output, baseline.output),
+            1,
+            len(located),
+            "the yes output must carry exactly ONE locating line - a "
+            "line carrying both {!r} (case-insensitive) and {!r} on the "
+            "same line - {} such line(s) found:\n{}".format(
+                self.LOC_LINE_TICK,
+                self.LOC_LINE_TO_FIX,
+                len(located),
+                result.output,
+            ),
+        )
+        remaining = list(result.output.splitlines())
+        remaining.remove(located[0])
+        self.assertEqual(
+            baseline.output.splitlines(),
+            remaining,
+            "the yes output must be the follow-up-disabled baseline plus "
+            "exactly one locating line, in order - removing the located "
+            "line {!r} must leave the baseline untouched:\n--- with "
+            "follow-up ---\n{}\n--- baseline ---\n{}".format(
+                located[0], result.output, baseline.output
+            ),
         )
         self._assert_no_walkthrough(result, "verify-guards interactive yes")
         self.assertNotIn(
@@ -11303,4 +11376,400 @@ class TestFreePlanQuestionPositive(CliCase):
             result.output,
             "the walkthrough itself must NOT print when the prompt is "
             "skipped:\n{}".format(result.output),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 10 pins (plans/file-path-codeowners-interactive.md): the
+# question names where the option lives, and a yes prints one locating
+# line.
+# ---------------------------------------------------------------------------
+
+
+class TestFreePlanQuestionLocates(CliCase):
+    """Behaviour 10 of plans/file-path-codeowners-interactive.md: the
+    question names where the option lives, and a yes prints one locating
+    line.
+
+    The spec: an interactive run with a ``file_paths`` warn - the prompt
+    is asked and answered yes - then:
+
+    * the question carries the location on its own line,
+      ``(Settings > Rulesets > Rulesets, then your main branch ruleset)``;
+    * a yes prints exactly one line telling the reader to tick it in that
+      ruleset and that the report's "To fix" entry names the rule;
+    * every line at most 80 characters.
+
+    The error clause: a no is unchanged (it proceeds to the six-step
+    walkthrough, behaviour 6/9's pins); no section name is claimed beyond
+    what the saved page states - "Restrict file paths" sits under "Push
+    protections" of a push ruleset, NOT under "Restrictions"
+    (doc/external/github/creating-rulesets-for-a-repository.md, lines 188,
+    118), so the prompt must never carry the word "Restrictions".
+
+    Prompt tokens pinned: behaviour 9's positive form survives
+    (``Does your GitHub plan offer`` + ``Restrict file paths``); the
+    location is pinned by two distinctive tokens,
+    ``Settings > Rulesets > Rulesets`` (the near-exact parenthetical's UI
+    path) and ``main branch ruleset`` (the ruleset it must land in) - the
+    full sentence is NOT pinned verbatim, so the tail wording may vary;
+    ``Restrictions`` must be ABSENT.
+
+    The yes locating line is pinned by BOTH tokens sharing one line:
+    ``tick`` (case-insensitive) and ``To fix`` - the line tells the
+    reader to tick the option in that ruleset and that the report's
+    "To fix" entry names the rule. Exactly one such line, and none of the
+    six walkthrough step tokens on a yes run.
+
+    Wiring reused from ``TestFreePlanQuestionPositive`` (behaviour 9):
+    interactive ``_is_interactive`` forced True, ``prompts.confirm``
+    patched to record its prompt and return the answer, the file_paths
+    warn fixture, the resolved repository iar3-r8/Anvil.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+
+    # The six walkthrough step tokens (behaviour 2's pins), reused from
+    # TestFreePlanQuestionPositive - a yes must print none of them.
+    STEP1 = "1. Create .github/CODEOWNERS"
+    STEP2 = "2. Owners need write access"
+    STEP3 = "3. Commit"
+    STEP4 = "4. In Settings"
+    STEP4_TOKEN = "Require review from Code Owners"
+    STEP5 = "5. Re-run"
+    STEP6 = "6. Public repos only on GitHub Free"
+    STEP_TOKENS = (STEP1, STEP2, STEP3, STEP4, STEP5, STEP6)
+
+    # Behaviour 9's positive form, which must survive the re-phrase.
+    PROMPT_OPENING = "Does your GitHub plan offer"
+    PROMPT_OPTION = "Restrict file paths"
+
+    # The location line's pinned tokens: the near-exact parenthetical's
+    # UI path and the ruleset it must land in - not the full sentence, so
+    # the tail wording may vary.
+    LOC_PATH = "Settings > Rulesets > Rulesets"
+    LOC_RULESET = "main branch ruleset"
+    # The correction: the option sits under "Push protections", NOT under
+    # "Restrictions" - claiming that section would be wrong.
+    LOC_FORBIDDEN_SECTION = "Restrictions"
+
+    # The yes locating line's pinned tokens: both must share ONE line.
+    LOC_LINE_TICK = "tick"
+    LOC_LINE_TO_FIX = "To fix"
+
+    # -- fixtures and seams (wiring from TestFreePlanQuestionPositive) --------
+
+    def _file_paths_warn_findings(self):
+        """The five-rule findings with ``file_paths`` flipped to its warn
+        shape: the other four rules passed, ``wants_walkthrough`` True,
+        ``summarize`` 0 (a warn never fails the summarize)."""
+        findings = cli.piguard.check_all(five_rule_branch_rules())
+        warn = cli.piguard.check_file_paths([])[0]
+        for index, finding in enumerate(findings):
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
+                findings[index] = warn
+        self.assertTrue(
+            cli.picodeowners.wants_walkthrough(findings),
+            "the fixture must carry a file_paths warn finding so the "
+            "walkthrough ask is wanted",
+        )
+        self.assertEqual(
+            0,
+            cli.piguard.summarize(findings),
+            "the fixture must summarize to 0 - a warn is reported, not "
+            "a failure",
+        )
+        return findings
+
+    def _guard_seams(self, findings, repository):
+        """The four piguard seams replaced, so the guard flow runs
+        offline on exactly the fixture this class wants reported."""
+        return (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", return_value=repository
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=findings),
+            mock.patch.object(
+                cli.piguard, "check_token_all", return_value=[]
+            ),
+        )
+
+    def _prompt_traps(self):
+        """Booby-traps over every question seam the runs must not reach
+        apart from the (separately patched) ``confirm``: any prompt read
+        fails the run loudly instead of hanging or eating input."""
+        boom = AssertionError(
+            "a prompt was asked where the free-plan path must not read "
+            "stdin"
+        )
+        return (
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    def _run_interactive(self, confirm_side_effect, findings):
+        """One interactive ``verify-guards`` run on the resolved
+        repository: ``_is_interactive`` forced True, ``prompts.confirm``
+        patched with ``confirm_side_effect`` (a real confirm under
+        CliRunner would hang), the other prompt seams booby-trapped, NO
+        ``input=``. The default branch is ``main``."""
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(
+                cli.prompts, "confirm", side_effect=confirm_side_effect
+            ),
+        ) + self._guard_seams(findings, (self.OWNER, self.REPO)) + self._prompt_traps()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        return self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+
+    def _location_lines(self, prompt):
+        """The prompt's lines carrying the location's UI-path token -
+        the location line(s) the question must carry on its own."""
+        return [
+            line for line in prompt.splitlines() if self.LOC_PATH in line
+        ]
+
+    def _locating_lines(self, output):
+        """The output's lines carrying BOTH of behaviour 10's
+        locating-line tokens - a tick instruction and the "To fix"
+        cross-reference on one line."""
+        return [
+            line
+            for line in output.splitlines()
+            if self.LOC_LINE_TICK in line.lower()
+            and self.LOC_LINE_TO_FIX in line
+        ]
+
+    # -- pin 1: the question carries the location on its own line -------------
+
+    def test_prompt_carries_the_location_on_its_own_line(self):
+        """The recorded prompt carries behaviour 9's positive form AND
+        the location on its own line: the opening clause and the option
+        name survive, the location tokens are present, no section name is
+        claimed beyond the saved page's facts (no "Restrictions" - the
+        option sits under "Push protections"), and the location is not on
+        the question's line. This fails now: today's prompt is one line
+        with no location."""
+        findings = self._file_paths_warn_findings()
+        calls = []
+
+        def recording_confirm(prompt, default=False, *args, **kwargs):
+            calls.append(prompt)
+            return True
+
+        result = self._run_interactive(recording_confirm, findings)
+
+        self.assertEqual(
+            1,
+            len(calls),
+            "exactly one confirm call is expected for the interactive "
+            "file_paths warn:\n{}".format(result.output),
+        )
+        prompt = calls[0]
+        self.assertIn(
+            self.PROMPT_OPENING,
+            prompt,
+            "behaviour 9's positive opening clause must survive - "
+            "{!r} is missing:\nprompt={!r}".format(self.PROMPT_OPENING, prompt),
+        )
+        self.assertIn(
+            self.PROMPT_OPTION,
+            prompt,
+            "the option name {!r} must survive the re-phrase:\n"
+            "prompt={!r}".format(self.PROMPT_OPTION, prompt),
+        )
+        self.assertIn(
+            self.LOC_PATH,
+            prompt,
+            "the question must carry the location's UI path {!r}:\n"
+            "prompt={!r}".format(self.LOC_PATH, prompt),
+        )
+        self.assertIn(
+            self.LOC_RULESET,
+            prompt,
+            "the question must name the ruleset the option lives in - "
+            "{!r} is missing:\nprompt={!r}".format(self.LOC_RULESET, prompt),
+        )
+        self.assertNotIn(
+            self.LOC_FORBIDDEN_SECTION,
+            prompt,
+            "the prompt must not claim a section name beyond the saved "
+            "page's facts - 'Restrict file paths' sits under 'Push "
+            "protections', NOT under {!r} "
+            "(doc/external/github/creating-rulesets-for-a-repository.md, "
+            "lines 188, 118):\nprompt={!r}".format(
+                self.LOC_FORBIDDEN_SECTION, prompt
+            ),
+        )
+        prompt_lines = prompt.splitlines()
+        self.assertGreaterEqual(
+            len(prompt_lines),
+            2,
+            "the prompt must be at least two lines - the question and "
+            "the location on its own line - got {!r}".format(prompt_lines),
+        )
+        opening_lines = [
+            line for line in prompt_lines if self.PROMPT_OPENING in line
+        ]
+        self.assertTrue(
+            opening_lines,
+            "the prompt must still carry the question's opening line:\n"
+            "prompt={!r}".format(prompt),
+        )
+        for line in opening_lines:
+            self.assertNotIn(
+                self.LOC_PATH,
+                line,
+                "the location must sit on its OWN line - {!r} shares the "
+                "question's line".format(line),
+            )
+
+    # -- pin 2: a yes prints exactly one locating line -------------------------
+
+    def test_yes_prints_exactly_one_locating_line(self):
+        """A yes prints exactly ONE locating line - a line carrying both
+        ``tick`` (case-insensitive) and ``To fix``: the reader is told to
+        tick the option in that ruleset and that the report's "To fix"
+        entry names the rule - and none of the six walkthrough step
+        tokens (a yes does not print the walkthrough). This fails now:
+        today a yes prints nothing."""
+        findings = self._file_paths_warn_findings()
+        result = self._run_interactive(lambda *a, **k: True, findings)
+
+        located = self._locating_lines(result.output)
+        self.assertEqual(
+            1,
+            len(located),
+            "a yes must print exactly ONE locating line carrying both "
+            "{!r} (case-insensitive) and {!r} on the same line - {} "
+            "such line(s) found:\n{}".format(
+                self.LOC_LINE_TICK,
+                self.LOC_LINE_TO_FIX,
+                len(located),
+                result.output,
+            ),
+        )
+        for token in self.STEP_TOKENS:
+            self.assertNotIn(
+                token,
+                result.output,
+                "a yes must not print the walkthrough step token "
+                "{!r}:\n{}".format(token, result.output),
+            )
+        self.assertNotIn(
+            self.STEP4_TOKEN,
+            result.output,
+            "a yes must not print step 4's option name:\n{}".format(
+                result.output
+            ),
+        )
+
+    # -- pin 3: every new line stays at most 80 characters ---------------------
+
+    def test_locating_and_location_lines_stay_at_80_characters(self):
+        """Every line behaviour 10 adds is at most 80 characters: the
+        prompt's location line (the line carrying the UI-path token) and
+        the yes locating line. This fails now: neither line exists yet,
+        so the presence checks are the red half and the width checks the
+        green-time half."""
+        findings = self._file_paths_warn_findings()
+        calls = []
+
+        def recording_confirm(prompt, default=False, *args, **kwargs):
+            calls.append(prompt)
+            return True
+
+        result = self._run_interactive(recording_confirm, findings)
+        self.assertEqual(
+            1,
+            len(calls),
+            "exactly one confirm call is expected:\n{}".format(result.output),
+        )
+        prompt = calls[0]
+
+        location_lines = self._location_lines(prompt)
+        self.assertTrue(
+            location_lines,
+            "the prompt must carry the location line (token {!r}) before "
+            "its width can be measured:\nprompt={!r}".format(
+                self.LOC_PATH, prompt
+            ),
+        )
+        for line in location_lines:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "the prompt's location line must stay at most 80 "
+                "characters - found a {}-character line {!r}".format(
+                    len(line), line
+                ),
+            )
+
+        located = self._locating_lines(result.output)
+        self.assertTrue(
+            located,
+            "a yes must print the locating line (a tick instruction and "
+            "'To fix' on one line) before its width can be measured:\n"
+            "{}".format(result.output),
+        )
+        for line in located:
+            self.assertLessEqual(
+                len(line),
+                80,
+                "the locating line must stay at most 80 characters - "
+                "found a {}-character line {!r}:\n{}".format(
+                    len(line), line, result.output
+                ),
+            )
+
+    # -- pin 4: a no is unchanged - the walkthrough proceeds -------------------
+
+    def test_no_answer_proceeds_to_the_walkthrough_unchanged(self):
+        """A no is unchanged (behaviour 10's error clause): the six-step
+        walkthrough proceeds exactly as behaviour 6/9 pin it, and the
+        yes-only locating line (a tick instruction and "To fix" on one
+        line) must NOT appear on the no path. Green now: the no path
+        already prints the walkthrough and prints no locating line."""
+        findings = self._file_paths_warn_findings()
+        result = self._run_interactive(lambda *a, **k: False, findings)
+
+        for token in self.STEP_TOKENS:
+            self.assertIn(
+                token,
+                result.output,
+                "the no answer must still print the walkthrough step "
+                "token {!r} - the no path is unchanged:\n{}".format(
+                    token, result.output
+                ),
+            )
+        self.assertIn(
+            self.STEP4_TOKEN,
+            result.output,
+            "the no answer must still print step 4's option name:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            [],
+            self._locating_lines(result.output),
+            "the no path must not gain the yes-only locating line (a "
+            "tick instruction and 'To fix' on one line):\n{}".format(
+                result.output
+            ),
         )
