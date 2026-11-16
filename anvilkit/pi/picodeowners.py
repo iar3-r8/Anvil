@@ -1,4 +1,5 @@
-"""Build the CODEOWNERS walkthrough text for the free-plan fix.
+"""Build the CODEOWNERS walkthrough text for the free-plan fix, and
+own the one write.
 
 One job: behaviours 1 and 2 of
 plans/file-path-interactive-free-plan.md — ``codeowners_body`` returns
@@ -10,10 +11,16 @@ repository and base branch into the six ordered display steps.
 Behaviour 13 of plans/file-path-codeowners-interactive.md adds the
 last-push rule as ``last_push_step`` (the extra display step) and the
 self-approval advisory as ``self_approval_warning`` (one line, or None).
-The module builds text only — it never writes a file, never makes a
-network call and never prompts; the prompt belongs to the cli layer.
+Behaviour 17 of the same plan adds the write seam:
+``write_codeowners`` writes the body UTF-8 verbatim to
+``.github/CODEOWNERS`` in the target, creating the parent directory if
+absent, on the ``piruleset.write_ruleset`` precedent (one exception
+type: ``CodeownersError``). This is the module's only write — it never
+makes a network call and never prompts; the prompt belongs to the cli
+layer.
 """
 
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 
@@ -210,3 +217,58 @@ def self_approval_warning(owner: str, repo_owner: str) -> Optional[str]:
         "{owner} repo owner: approve own change unless "
         "require_last_push_approval."
     ).format(owner=normalised_owner)
+
+
+def write_codeowners(path: Path, body: str) -> Path:
+    """Write the CODEOWNERS body to ``path`` UTF-8 verbatim and return ``path``.
+
+    Behaviour 17 of plans/file-path-codeowners-interactive.md: the
+    write seam. ``path`` is the full target path (e.g.
+    ``target/.github/CODEOWNERS``) and ``body`` is the pre-built text
+    from ``codeowners_body``. On success the file holds
+    ``body.encode("utf-8")`` exactly, the parent directory is created
+    if absent, and ``path`` is returned as a Path. The target tree is
+    the only thing touched — never Anvil's own tree.
+
+    The seam follows ``piruleset.write_ruleset`` — one exception type
+    per module — but with the one deliberate difference the tester
+    flagged: ``piruleset`` refuses an absent parent, this one creates
+    it. No other exception type may leave the module:
+
+    - ``path`` exists as a file → :class:`CodeownersError` naming
+      ``str(path)``; an existing file is never clobbered and its
+      bytes are untouched;
+    - ``path`` exists as a directory → :class:`CodeownersError` naming
+      ``str(path)``; a write to a directory must never silently
+      succeed;
+    - the parent cannot be created (e.g. a file where a directory is
+      needed) → :class:`CodeownersError` naming ``str(path)``; nothing
+      partial is created;
+    - the write itself fails (e.g. a directory at the path,
+      permissions) → :class:`CodeownersError` naming ``str(path)``.
+    """
+    if path.is_file():
+        raise CodeownersError(
+            "refusing to write CODEOWNERS to {path}: an existing file "
+            "is present and is never clobbered".format(path=path)
+        )
+    if path.is_dir():
+        raise CodeownersError(
+            "refusing to write CODEOWNERS to {path}: it is a "
+            "directory".format(path=path)
+        )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        raise CodeownersError(
+            "cannot write CODEOWNERS to {path}: its parent directory "
+            "could not be created".format(path=path)
+        )
+    try:
+        path.write_bytes(body.encode("utf-8"))
+    except OSError:
+        raise CodeownersError(
+            "cannot write CODEOWNERS to {path}: the write "
+            "failed".format(path=path)
+        )
+    return path

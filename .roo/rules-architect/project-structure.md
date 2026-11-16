@@ -33,4 +33,4 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `pi/picycle.py` | the red/green loop driver — the only module that invokes a git mutation |
 | `pi/pigithub.py` | GitHub interaction surface for the intake loop — issue intake read and quoting, progress comments, push argv, pull-request open, CI read and report, composed by `run` behind an injected `picycle.run_cycle` seam; REST failures return `(None, reason)` and the host-driver token reaches only the `Authorization` header (one exception type: `GitHubError`) |
 | `pi/pitrust.py` | write the project-local `.pi/` fixture for the phase-2 trust probe |
-| `pi/picodeowners.py` | builds the CODEOWNERS walkthrough text for the free-plan fix; never writes, never prompts — `CodeownersError` |
+| `pi/picodeowners.py` | builds the CODEOWNERS walkthrough text for the free-plan fix, and owns the one write: `.github/CODEOWNERS` in the target, via `write_codeowners`; never prompts, no network — `CodeownersError` |
