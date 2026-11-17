@@ -1326,7 +1326,9 @@ def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
-def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def check_file_paths(
+    rules: List[Dict[str, Any]], codeowners_present: bool = False
+) -> List[Dict[str, Any]]:
     """One file-path finding: passed if ``file_path_restriction`` is active, warn if not.
 
     ``rules`` is the parsed body of
@@ -1346,6 +1348,22 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ``.github/workflows/**`` - what CI runs - with no gate) and a concrete
     fix. A duplicated rule type takes the first element, as
     :func:`check_history_rewrite` does.
+
+    The warn finding carries ``fallback_in_place`` (behaviours 2-3 of
+    plans/file-path-fallback-satisfied.md). It is ``False`` by default and
+    ``True`` only when BOTH halves of the CODEOWNERS fallback are in place:
+    the ``codeowners_present`` keyword is True (the caller's
+    ``codeowners_path(target).is_file()``) AND :func:`code_owner_review_on`
+    is True (the review half of the already-fetched ``pull_request`` rule).
+    When both halves are in place the same warn is reworded: ``brief``
+    becomes ``push rule off; CODEOWNERS review gate in place`` and ``remedy``
+    becomes ``nothing to do - the CODEOWNERS review gate covers this; the
+    push rule stays off on your plan``. ``status`` never leaves ``warn`` -
+    the push rule is still off, so the finding is satisfied, not passed -
+    and ``danger`` and ``source`` are unchanged either way. The ``passed``
+    finding gains no key regardless of the halves. ``codeowners_present`` is
+    keyword, defaulted ``False``, so every existing caller keeps working and
+    gets today's warn with the marker ``False``.
     """
     rule = None
     for candidate in rules:
@@ -1356,15 +1374,26 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             break
 
     if rule is None:
+        fallback_in_place = codeowners_present and code_owner_review_on(rules)
+        if fallback_in_place:
+            brief = "push rule off; CODEOWNERS review gate in place"
+            remedy = (
+                "nothing to do - the CODEOWNERS review gate covers this; "
+                "the push rule stays off on your plan"
+            )
+        else:
+            brief = "a push can change .github/workflows/**, what CI runs"
+            remedy = _WARN_REMEDIES["file_path_restriction"]
         return [
             {
                 "status": "warn",
                 "check": CHECK_FILE_PATHS,
                 "rule": "file_path_restriction",
-                "brief": "a push can change .github/workflows/**, what CI runs",
+                "brief": brief,
                 "danger": _DANGERS["file_path_restriction"],
                 "source": None,
-                "remedy": _WARN_REMEDIES["file_path_restriction"],
+                "remedy": remedy,
+                "fallback_in_place": fallback_in_place,
             }
         ]
 
