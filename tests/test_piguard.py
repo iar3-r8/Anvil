@@ -3687,6 +3687,218 @@ class GateVerdictTests(unittest.TestCase):
                 )
 
 
+class GateVerdictSatisfiedWarnTests(unittest.TestCase):
+    """Behaviour 4 of plans/file-path-fallback-satisfied.md -
+    ``gate_verdict`` proceeds past a satisfied warn.
+
+    The exemption is a single case: a finding whose status is ``warn``,
+    whose check is ``file_paths`` and whose ``fallback_in_place`` key is
+    exactly ``True`` (the ``is True`` discipline, matching
+    ``code_owner_review_on``) does NOT block. Everything else still
+    blocks: any other warn, a second ``file_paths`` warn whose marker is
+    False or absent, a non-bool marker value, and any ``fail`` -
+    ``fallback_in_place: True`` on a ``fail`` never exempts it, and the
+    exemption is check-scoped, so a different warn check carrying the
+    marker True is not exempt either. The verdict vocabulary is
+    unchanged: ``"clean"`` or ``"blocked"``.
+    """
+
+    def _finding(self, status: str, check: str, rule: Any, **extra: Any) -> Dict[str, Any]:
+        """One finding in the module's own shape, plus ``extra`` keys."""
+        finding: Dict[str, Any] = {
+            "status": status,
+            "check": check,
+            "rule": rule,
+            "brief": "a guard is unmet",
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+        finding.update(extra)
+        return finding
+
+    def _satisfied_warn(self) -> Dict[str, Any]:
+        """The warn finding the gate must proceed past: the ``file_paths``
+        warn with ``fallback_in_place`` exactly True, in the shape the
+        check emits when both fallback halves are in place."""
+        return self._finding(
+            "warn",
+            "file_paths",
+            "file_path_restriction",
+            brief="push rule off; CODEOWNERS review gate in place",
+            remedy=(
+                "nothing to do - the CODEOWNERS review gate covers this; "
+                "the push rule stays off on your plan"
+            ),
+            fallback_in_place=True,
+        )
+
+    def test_satisfied_file_paths_warn_alone_is_clean(self):
+        verdict = piguard.gate_verdict
+        satisfied = self._satisfied_warn()
+        self.assertIs(
+            satisfied["fallback_in_place"],
+            True,
+            "fixture sanity: the warn carries the marker exactly True",
+        )
+
+        self.assertEqual(
+            verdict([satisfied]),
+            "clean",
+            "a file_paths warn whose fallback_in_place is exactly True is "
+            "satisfied - the gate must proceed past it on its own",
+        )
+
+    def test_satisfied_warn_plus_passed_findings_is_clean(self):
+        verdict = piguard.gate_verdict
+        findings = (
+            [self._satisfied_warn()]
+            + [
+                self._finding("passed", "history_rewrite", "non_fast_forward"),
+                self._finding("passed", "review", "pull_request"),
+                self._finding("passed", "update_restriction", "non_fast_forward"),
+            ]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "warn"],
+            [findings[0]],
+            "fixture sanity: exactly one warn, and it is the satisfied one",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "clean",
+            "nothing else failing or warning - the satisfied warn plus "
+            "passed findings must be clean",
+        )
+
+    def test_satisfied_warn_plus_another_warn_still_blocks(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._satisfied_warn(),
+            self._finding("warn", "update_restriction", "non_fast_forward"),
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "the exemption is one specific warn: a second warn (a "
+            "different check, no marker) must still block",
+        )
+
+    def test_satisfied_warn_plus_a_fail_still_blocks(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._satisfied_warn(),
+            self._finding("fail", "administration", None),
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "any fail still blocks, even beside a satisfied warn",
+        )
+
+    def test_satisfied_warn_plus_marker_false_file_paths_warn_still_blocks(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._satisfied_warn(),
+            self._finding(
+                "warn",
+                "file_paths",
+                "file_path_restriction",
+                fallback_in_place=False,
+            ),
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "another file_paths warn whose fallback_in_place is False is "
+            "not satisfied and must still block",
+        )
+
+    def test_satisfied_warn_plus_markerless_file_paths_warn_still_blocks(self):
+        verdict = piguard.gate_verdict
+        markerless = self._finding("warn", "file_paths", "file_path_restriction")
+        findings = [self._satisfied_warn(), markerless]
+        self.assertNotIn(
+            "fallback_in_place",
+            markerless,
+            "fixture sanity: the second warn carries no marker key",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "a file_paths warn with the marker key absent is not satisfied "
+            "(absent is not True) and must still block",
+        )
+
+    def test_marker_true_on_a_fail_never_exempts_it(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._finding(
+                "fail",
+                "administration",
+                None,
+                fallback_in_place=True,
+            )
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "fallback_in_place True on a fail finding never exempts it - "
+            "the exemption keys on the warn status as well",
+        )
+
+    def test_non_bool_marker_does_not_exempt(self):
+        verdict = piguard.gate_verdict
+        for label, value in (
+            ("the string 'true'", "true"),
+            ("the int 1", 1),
+            ("None", None),
+        ):
+            with self.subTest(value=value):
+                finding = self._finding(
+                    "warn",
+                    "file_paths",
+                    "file_path_restriction",
+                    fallback_in_place=value,
+                )
+                self.assertIsNot(
+                    finding["fallback_in_place"],
+                    True,
+                    "fixture sanity: {} is not exactly True".format(label),
+                )
+                self.assertEqual(
+                    verdict([finding]),
+                    "blocked",
+                    "a non-bool marker ({}) is not True under the is-True "
+                    "discipline, so the warn still blocks".format(label),
+                )
+
+    def test_marker_true_on_a_different_check_does_not_exempt(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._finding(
+                "warn",
+                "update_restriction",
+                "non_fast_forward",
+                fallback_in_place=True,
+            )
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "the exemption is check-scoped to file_paths: a different warn "
+            "check carrying fallback_in_place True is not exempt",
+        )
+
+
 class GateRemediationTests(unittest.TestCase):
     """Behaviour 2 of plans/setup-repo-guards.md - ``gate_remediation``.
 
