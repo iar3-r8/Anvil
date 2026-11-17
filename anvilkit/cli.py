@@ -90,6 +90,11 @@ BANNER = r"""
 
 _SEPARATOR = "-" * 60
 
+# Behaviour 8 (plans/file-path-fallback-satisfied.md): the partial-state arm
+# line, printed after #109's skip line with the checked branch interpolated.
+# At most 80 characters for the pinned branch spellings (main: 64, release: 67).
+_ARM_LINE_TEMPLATE = 'Tick "Require review from Code Owners" for {} to arm the gate.'
+
 # Section headings for .env, mapping keys to comment headings.
 _ENV_SECTIONS = {
     "HF_HOME": "--- Host Storage Paths ---",
@@ -1688,6 +1693,16 @@ def _free_plan_followup(
         # the exit code untouched.
         if picodeowners.codeowners_path(target).is_file():
             shared.echo(".github/CODEOWNERS already exists - nothing to do.")
+            # Behaviour 8 (plans/file-path-fallback-satisfied.md): the arm
+            # line names the missing half. It prints UNCONDITIONALLY here
+            # because reaching the skip line forces the state:
+            # wants_walkthrough True means the file_paths warn carries
+            # fallback_in_place False (NOT present-AND-review-on), and the
+            # skip predicate is_file() is True (present), so the review half
+            # is necessarily the missing half - and with the review half on,
+            # behaviour 6 means this follow-up never runs. No parameter, no
+            # fetch: the checked branch is all the line needs.
+            shared.echo(_ARM_LINE_TEMPLATE.format(branch))
         else:
             shared.echo(
                 "Your plan may not offer \"Restrict file paths\" - the "
@@ -1724,6 +1739,15 @@ def _free_plan_followup(
     # offer, no git commands, and the exit code is untouched.
     if picodeowners.codeowners_path(target).is_file():
         shared.echo(".github/CODEOWNERS already exists - nothing to do.")
+        # Behaviour 8 (plans/file-path-fallback-satisfied.md): the arm line
+        # names the missing half. It prints UNCONDITIONALLY here for the
+        # same invariant as the fallback: the skip line is only reached when
+        # wants_walkthrough is True (the file_paths warn's marker False, so
+        # NOT present-AND-review-on) and is_file() is True (present), which
+        # forces the review half off. When the review half IS on, behaviour
+        # 6 keeps this follow-up from running at all, so the arm line can
+        # never mis-name a state in which both halves are armed.
+        shared.echo(_ARM_LINE_TEMPLATE.format(branch))
         return
     # Behaviour 20 (plans/file-path-codeowners-interactive.md): the no
     # branch ends in the interactive CODEOWNERS flow, using the SAME
