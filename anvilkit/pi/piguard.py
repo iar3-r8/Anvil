@@ -1803,6 +1803,19 @@ def gate_remediation(
     gets the recipe. A token warn still blocks the gate via its sibling
     :func:`gate_verdict`; it simply prints no recipe.
 
+    One exemption (behaviour 5 of
+    plans/file-path-fallback-satisfied.md): a branch ``file_paths`` warn
+    whose ``fallback_in_place`` marker is exactly ``True`` is satisfied by
+    the CODEOWNERS review gate and does not set ``needs_ruleset`` - the
+    review gate IS the fix, so the ruleset block must not print. The
+    exemption is check-scoped - a ``warn`` on any other check still sets
+    ``needs_ruleset`` - and marker-exact: ``False`` and an absent key are
+    not True, and neither is a non-bool such as ``"true"``, ``1`` or
+    ``None`` (hence the ``is True`` and ``get`` discipline). It also keys
+    on the ``warn`` status: a ``fail`` carrying the marker True is never
+    exempted. ``needs_token_recipe`` is untouched, still computed from the
+    token list alone.
+
     A ``skipped`` triggers neither - it is an honest "could not verify" - and
     an unknown status triggers neither, the same discipline as
     :func:`gate_verdict`. Pure: two positional findings lists, a
@@ -1811,7 +1824,15 @@ def gate_remediation(
     (behaviour 2 of plans/setup-repo-guards.md).
     """
     needs_ruleset = any(
-        finding.get("status") in ("fail", "warn") for finding in branch_findings
+        finding.get("status") == "fail"
+        or (
+            finding.get("status") == "warn"
+            and not (
+                finding.get("check") == CHECK_FILE_PATHS
+                and finding.get("fallback_in_place") is True
+            )
+        )
+        for finding in branch_findings
     )
     needs_token_recipe = any(
         finding.get("status") == "fail" for finding in token_findings
