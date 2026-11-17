@@ -32,7 +32,7 @@ from . import compose, config, env, health, prompts, provision, render, smoke
 from .compose import Compose, ComposeError
 from .pi import pibakeoff
 from .config import ConfigError
-from .pi import piguard, pitokenrecipe, piruleset
+from .pi import picodeowners, piguard, pitokenrecipe, piruleset
 from .pi.piruleset import RulesetError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
@@ -1360,6 +1360,9 @@ def setup_repo(
                 # verify-guards prints - never re-derived. The findings
                 # carry no token value, so nothing secret is echoed.
                 _echo_guard_report(shared, branch_findings, token_findings)
+                _free_plan_followup(
+                    shared, branch_findings, repository, "main", Path(path)
+                )
                 shared.echo("")
                 remediation = piguard.gate_remediation(
                     branch_findings, token_findings
@@ -1589,6 +1592,213 @@ def _report_config_health(shared: Context) -> None:
                     MODELS_FILENAME + " parse", "{} {}".format(_mark(False), exc)
                 )
             )
+
+
+def _ask_free_plan(
+    shared: Context,
+    findings: List[Dict[str, Any]],
+    asker: Optional[Callable[..., bool]] = None,
+) -> bool:
+    """Ask the free-plan question once when a file_paths warn is present
+    (behaviour 4 of plans/file-path-interactive-free-plan.md): one
+    ``prompts.confirm`` with default False whose text asks whether the plan
+    offers "Restrict file paths" - the positive form, re-asked after the
+    double negative read as confusing (behaviour 9): the question is
+    positive and the caller inverts - a ``no`` answer means the plan lacks
+    the option, which is exactly when the walkthrough applies. The asker is
+    injectable for tests. ``shared`` is unused here: the gating
+    (non-interactive / ``assume_yes`` / ``dry_run``) and the printing happen
+    in the caller, ``_free_plan_followup``."""
+    if asker is None:
+        asker = prompts.confirm
+    if not picodeowners.wants_walkthrough(findings):
+        return False
+    # Behaviour 10 (plans/file-path-codeowners-interactive.md): the question
+    # names where the option lives, on its OWN line - the near-exact
+    # parenthetical from the saved rulesets page. The option sits under
+    # "Push protections" of a push ruleset, NOT under "Restrictions", so no
+    # section name is claimed beyond the UI path and the ruleset it lands in.
+    return asker(
+        'Does your GitHub plan offer "Restrict file paths" in the ruleset UI?\n'
+        "(Settings > Rulesets > Rulesets, then your main branch ruleset)",
+        default=False,
+    )
+
+
+def _free_plan_followup(
+    shared: Context,
+    branch_findings: List[Dict[str, Any]],
+    repository: Optional[Tuple[str, str]],
+    branch: str,
+    target: Path,
+) -> None:
+    """The free-plan follow-up, printed after the guard report at the two
+    call sites that prompt (behaviour 5 of
+    plans/file-path-interactive-free-plan.md; doctor reports and never
+    prompts, so it calls this nowhere).
+
+    Gated on a ``file_paths`` warn (behaviour 3's predicate) and on a
+    resolved repository: with neither, or an unresolvable repository, the
+    report is byte-identical to before the wiring - no line, no prompt,
+    no walkthrough (behaviour 6's error clause, landed early because the
+    follow-up needs the repository anyway).
+
+    Non-interactive, ``--yes`` and ``--dry-run`` runs never ask: they print
+    exactly one line naming the free-plan fallback and how to see the
+    walkthrough, then return - no prompt, no stdin read, and the exit code
+    is untouched (behaviour 5). The line is a report line, one sentence,
+    built here, not in a module.
+
+    An interactive run asks the behaviour-4 unit exactly once: the question
+    is positive (behaviour 9) and the caller inverts - a ``no`` answer means
+    the plan lacks the option, so it prints the six-step walkthrough
+    (behaviour 6) built by ``picodeowners`` from the resolved repository
+    and the checked ``branch`` - never re-derived here - after the
+    report's "To fix" section and bypass note, then ends in the
+    interactive CODEOWNERS flow (behaviour 20). A ``yes`` answer keeps the
+    output byte-identical - no confirmation line (behaviour 7's polarity
+    under the positive question): the plan offers the option, and the
+    report's "To fix" line is the fix. A ``CodeownersError`` is
+    reported as one line and never raised, so the run is never masked
+    into success.
+    """
+    if not picodeowners.wants_walkthrough(branch_findings):
+        return
+    if repository is None:
+        return
+    if shared.dry_run or shared.assume_yes or not shared.interactive():
+        shared.echo(
+            "Your plan may not offer \"Restrict file paths\" - the "
+            "free-plan CODEOWNERS fix: re-run without --yes to see the "
+            "walkthrough."
+        )
+        return
+    answer = _ask_free_plan(shared, branch_findings)
+    if answer:
+        # A 'yes' means the plan offers the option: no walkthrough (the
+        # caller inverts, behaviour 9), but behaviour 10 of
+        # plans/file-path-codeowners-interactive.md replaces the silent
+        # return with exactly one locating line - tell the reader to tick
+        # it in that ruleset and that the report's "To fix" entry names
+        # the rule. One sentence, at most 80 characters.
+        shared.echo(
+            'Tick it in that ruleset; the "To fix" entry above names the rule.'
+        )
+        return
+    owner, repo = repository
+    try:
+        body = picodeowners.codeowners_body(owner)
+        steps = picodeowners.walkthrough_steps(owner, repo, branch, body)
+    except picodeowners.CodeownersError as exc:
+        shared.echo("could not build the walkthrough: {}".format(exc))
+        return
+    for step in steps:
+        shared.echo(step)
+    # Behaviour 20 (plans/file-path-codeowners-interactive.md): the no
+    # branch ends in the interactive CODEOWNERS flow, using the SAME
+    # default seams (``prompts.ask`` / ``prompts.confirm``) the rest of
+    # the command uses - so both call sites (verify-guards, the blocked
+    # setup-repo gate) reach it with no per-site wiring, and it changes
+    # no exit code and never raises.
+    _codeowners_flow(shared, owner, repo, branch, target)
+
+
+def _codeowners_flow(
+    shared: Context,
+    owner: str,
+    repo: str,
+    branch: str,
+    target: Path,
+    ask: Optional[Callable[..., str]] = None,
+    confirm: Optional[Callable[..., bool]] = None,
+) -> None:
+    """The interactive CODEOWNERS follow-up for a free plan (behaviour 14
+    of plans/file-path-codeowners-interactive.md): ask the owner handles,
+    show the built content, confirm it.
+
+    One ``ask`` for the handles, defaulting to the pre-filled ``@owner``
+    (editable); the body ``picodeowners.codeowners_body`` builds from the
+    answered handles is echoed verbatim, line by line; then one
+    ``confirm`` "Use this CODEOWNERS content?" default True. A no ends the
+    flow with no write and no further prompt. A ``CodeownersError`` prints
+    exactly one line and ends the flow; no exception leaves the function
+    and no exit code changes.
+
+    Behaviour 15: between the body echoes and the confirm, each answered
+    handle token is checked with
+    ``picodeowners.self_approval_warning(token, owner)`` (behaviour 13:
+    case-insensitive, ``@`` stripped, a ``/`` team handle -> None); if any
+    is non-None, the first warning line and
+    ``picodeowners.last_push_step()`` are echoed once each, then the flow
+    continues to the confirm - the run is never blocked, and the token is
+    never compared: only handle-vs-``owner``, no env lookup.
+
+    Behaviour 18: after the content confirm passes, the flow makes the
+    write offer - one more ``confirm`` "Write .github/CODEOWNERS into
+    {target}?" default False. A yes writes through
+    ``picodeowners.write_codeowners`` (behaviour 17's seam) and echoes
+    the written path; a no echoes exactly one line saying nothing was
+    written; a ``CodeownersError`` from the seam echoes exactly one line
+    and lets no exception out.
+
+    Behaviour 19: all three write outcomes - written, write-failed and
+    offer-declined - fall through to one shared ending: one intro line
+    saying to run the git commands yourself, then each of
+    ``picodeowners.commit_commands()`` (behaviour 12) echoed in order.
+    The commands print identically in all three cases, and Anvil never
+    runs them; a declined CONTENT (behaviour 14) ends before the offer
+    and prints none.
+
+    ``ask``/``confirm`` are injected seams (the ``_ask_free_plan``
+    precedent) defaulting to ``prompts.ask``/``prompts.confirm``.
+    ``branch`` names the branch the commit step lands on - behaviour 20
+    added it to the intro line.
+    """
+    if ask is None:
+        ask = prompts.ask
+    if confirm is None:
+        confirm = prompts.confirm
+    handles = ask("CODEOWNERS owner handle(s), space-separated:", default="@" + owner)
+    try:
+        body = picodeowners.codeowners_body(handles)
+    except picodeowners.CodeownersError as exc:
+        shared.echo("could not build the CODEOWNERS content: {}".format(exc))
+        return
+    for line in body.splitlines():
+        shared.echo(line)
+    for token in handles.split():
+        warning = picodeowners.self_approval_warning(token, owner)
+        if warning is not None:
+            shared.echo(warning)
+            shared.echo(picodeowners.last_push_step())
+            break
+    if not confirm("Use this CODEOWNERS content?", default=True):
+        return
+    # behaviour 18: the write offer - explicit, default no.
+    if not confirm(
+        "Write .github/CODEOWNERS into {}?".format(target), default=False
+    ):
+        shared.echo(
+            "Nothing written: the offer was declined; .github/CODEOWNERS "
+            "is not written."
+        )
+    else:
+        try:
+            path = target / ".github" / "CODEOWNERS"
+            written = picodeowners.write_codeowners(path, body)
+            shared.echo(str(written))
+        except picodeowners.CodeownersError as exc:
+            shared.echo("could not write .github/CODEOWNERS: {}".format(exc))
+    # behaviour 19: the commands always print - after the written,
+    # failed and declined outcomes alike; Anvil never runs them.
+    # Behaviour 20: the intro line names the branch the commit lands on.
+    shared.echo(
+        "Run these yourself in the target repository (branch {}):".format(
+            branch
+        )
+    )
+    for command in picodeowners.commit_commands():
+        shared.echo(command)
 
 
 def _echo_guard_report(
@@ -1825,6 +2035,7 @@ def verify_guards(
     # lines and no report line exceeds 80 characters.
     shared.echo("")
     _echo_guard_report(shared, findings, token_findings)
+    _free_plan_followup(shared, findings, repository, branch, target)
     shared.echo(_SEPARATOR)
 
     raise typer.Exit(piguard.summarize(findings + token_findings))
