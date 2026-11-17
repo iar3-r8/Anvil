@@ -1423,7 +1423,9 @@ def check_file_paths(
     ]
 
 
-def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def check_all(
+    rules: List[Dict[str, Any]], codeowners_present: bool = False
+) -> List[Dict[str, Any]]:
     """The concatenation of every defined check, in fixed report order.
 
     Runs :func:`check_history_rewrite`, :func:`check_review`,
@@ -1436,15 +1438,21 @@ def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     plans/verify-guards-five-rules.md). The function fetches nothing and
     never calls ``sys.exit``: an empty array yields five ``warn``
     findings and raises nothing.
+
+    ``codeowners_present`` is forwarded to :func:`check_file_paths` as
+    the file half of the CODEOWNERS fallback marker (behaviour 7 of
+    plans/file-path-fallback-satisfied.md): the caller computes it once
+    as ``codeowners_path(target).is_file()`` and passes it through, so
+    both call sites inherit the verdict with no per-site wiring. It is
+    keyword, defaulted ``False``, so every existing caller keeps
+    working and gets today's warn with the marker ``False``.
     """
     findings: List[Dict[str, Any]] = []
-    for check in (
-        check_history_rewrite,
-        check_review,
-        check_update,
-        check_file_paths,
-    ):
+    for check in (check_history_rewrite, check_review, check_update):
         findings.extend(check(rules))
+    findings.extend(
+        check_file_paths(rules, codeowners_present=codeowners_present)
+    )
     return findings
 
 

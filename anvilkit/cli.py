@@ -1970,6 +1970,15 @@ def _collect_guard_findings(
     whenever the repository resolves - even when the fetch failed. ``noun`` is
     the word the unresolvable reason uses: "target" (verify-guards) or
     "project" (doctor).
+
+    Once the repository resolves, the CODEOWNERS file's presence is
+    computed once - ``picodeowners.codeowners_path(target).is_file()``
+    - and passed through ``check_all`` to the file_paths check as its
+    fallback marker's file half (behaviour 7 of
+    plans/file-path-fallback-satisfied.md). That is the same predicate
+    the #109 skip uses, so the skip and the verdict cannot disagree. It
+    is computed after the repository check, so an unresolvable
+    repository yields ``skipped_findings`` before any of it.
     """
     repository = piguard.resolve_repository(target)
     if repository is None:
@@ -1982,13 +1991,16 @@ def _collect_guard_findings(
         token_findings: List[Dict[str, Any]] = []
     else:
         owner, repo = repository
+        codeowners_present = picodeowners.codeowners_path(target).is_file()
         rules, fetch_reason = piguard.fetch_branch_rules(
             owner, repo, branch, token
         )
         if rules is None:
             branch_findings = piguard.skipped_findings(fetch_reason)
         else:
-            branch_findings = piguard.check_all(rules)
+            branch_findings = piguard.check_all(
+                rules, codeowners_present=codeowners_present
+            )
         # The token probes run whenever the repository resolves, even when the
         # branch-rules fetch failed.
         token_findings = piguard.check_token_all(
