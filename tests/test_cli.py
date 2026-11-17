@@ -9954,13 +9954,20 @@ class TestFreePlanYesWalkthrough(CliCase):
     def _prompt_traps(self):
         """Booby-traps over every question function the free-plan path
         must not reach: any prompt read fails the run loudly instead of
-        hanging or eating input."""
+        hanging or eating input.
+
+        Behaviour 20 re-point: ``prompts.ask`` is NO LONGER trapped here -
+        the no answer now ends in ``cli._codeowners_flow`` (behaviour 20
+        wires it into ``_free_plan_followup``'s no branch), whose handles
+        ask is the free-plan path's own. The seam is patched separately in
+        each interactive helper (a fixed ``@alice`` handle, so the flow's
+        body and warning are deterministic); ``ask`` was trapped before
+        the flow existed, so the trap is gone, not weakened."""
         boom = AssertionError(
             "a prompt was asked where the free-plan path must not read "
             "stdin"
         )
         return (
-            mock.patch.object(cli.prompts, "ask", side_effect=boom),
             mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
             mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
             mock.patch.object(cli.prompts, "choose", side_effect=boom),
@@ -9983,6 +9990,10 @@ class TestFreePlanYesWalkthrough(CliCase):
             mock.patch.object(
                 cli.prompts, "confirm", side_effect=confirm_side_effect
             ),
+            # Behaviour 20 re-point: the no answer ends in
+            # cli._codeowners_flow's handles ask - answer it with a fixed
+            # handle so the no-path output is deterministic.
+            mock.patch.object(cli.prompts, "ask", return_value="@alice"),
         ) + self._guard_seams(findings, repository) + self._prompt_traps()
         for patcher in patchers:
             patcher.start()
@@ -10209,6 +10220,9 @@ class TestFreePlanYesWalkthrough(CliCase):
             (
                 mock.patch.object(cli, "_is_interactive", return_value=True),
                 mock.patch.object(cli.prompts, "confirm", return_value=False),
+                # Behaviour 20 re-point: the no answer ends in
+                # cli._codeowners_flow's handles ask - fixed handle.
+                mock.patch.object(cli.prompts, "ask", return_value="@alice"),
             )
             + self._guard_seams(findings, (self.OWNER, self.REPO))
             + self._prompt_traps()
@@ -10389,13 +10403,18 @@ class TestFreePlanBoundary(CliCase):
         """Booby-traps over every question seam the interactive runs must
         not reach apart from the (separately patched) ``confirm``: any
         prompt read fails the run loudly instead of hanging or eating
-        input."""
+        input.
+
+        Behaviour 20 re-point: ``prompts.ask`` is no longer trapped - the
+        no answer now ends in ``cli._codeowners_flow`` (behaviour 20 wires
+        the flow into ``_free_plan_followup``'s no branch), whose handles
+        ask is the free-plan path's own. The seam is patched separately in
+        each interactive helper (a fixed ``@alice`` handle)."""
         boom = AssertionError(
             "a prompt was asked where the free-plan path must not read "
             "stdin"
         )
         return (
-            mock.patch.object(cli.prompts, "ask", side_effect=boom),
             mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
             mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
             mock.patch.object(cli.prompts, "choose", side_effect=boom),
@@ -10413,6 +10432,9 @@ class TestFreePlanBoundary(CliCase):
         patchers = (
             mock.patch.object(cli, "_is_interactive", return_value=True),
             mock.patch.object(cli.prompts, "confirm", return_value=confirm_value),
+            # Behaviour 20 re-point: the no answer ends in
+            # cli._codeowners_flow's handles ask - fixed handle.
+            mock.patch.object(cli.prompts, "ask", return_value="@alice"),
         ) + self._guard_seams(findings, (self.OWNER, self.REPO)) + self._prompt_traps()
         for patcher in patchers:
             patcher.start()
@@ -10440,6 +10462,9 @@ class TestFreePlanBoundary(CliCase):
                 mock.patch.object(
                     cli.prompts, "confirm", return_value=confirm_value
                 ),
+                # Behaviour 20 re-point: the no answer ends in
+                # cli._codeowners_flow's handles ask - fixed handle.
+                mock.patch.object(cli.prompts, "ask", return_value="@alice"),
             )
             + self._guard_seams(findings, (self.OWNER, self.REPO))
             + self._prompt_traps()
@@ -11042,13 +11067,18 @@ class TestFreePlanQuestionPositive(CliCase):
     def _prompt_traps(self):
         """Booby-traps over every question seam the runs must not reach
         apart from the (separately patched) ``confirm``: any prompt read
-        fails the run loudly instead of hanging or eating input."""
+        fails the run loudly instead of hanging or eating input.
+
+        Behaviour 20 re-point: ``prompts.ask`` is no longer trapped - the
+        no answer now ends in ``cli._codeowners_flow`` (behaviour 20 wires
+        the flow into ``_free_plan_followup``'s no branch), whose handles
+        ask is the free-plan path's own. The seam is patched separately in
+        each interactive helper (a fixed ``@alice`` handle)."""
         boom = AssertionError(
             "a prompt was asked where the free-plan path must not read "
             "stdin"
         )
         return (
-            mock.patch.object(cli.prompts, "ask", side_effect=boom),
             mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
             mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
             mock.patch.object(cli.prompts, "choose", side_effect=boom),
@@ -11068,6 +11098,9 @@ class TestFreePlanQuestionPositive(CliCase):
             mock.patch.object(
                 cli.prompts, "confirm", return_value=confirm_value
             ),
+            # Behaviour 20 re-point: the no answer ends in
+            # cli._codeowners_flow's handles ask - fixed handle.
+            mock.patch.object(cli.prompts, "ask", return_value="@alice"),
         ) + self._guard_seams(findings, (self.OWNER, self.REPO)) + self._prompt_traps()
         for patcher in patchers:
             patcher.start()
@@ -11092,6 +11125,9 @@ class TestFreePlanQuestionPositive(CliCase):
                 mock.patch.object(
                     cli.prompts, "confirm", return_value=confirm_value
                 ),
+                # Behaviour 20 re-point: the no answer ends in
+                # cli._codeowners_flow's handles ask - fixed handle.
+                mock.patch.object(cli.prompts, "ask", return_value="@alice"),
             )
             + self._guard_seams(findings, (self.OWNER, self.REPO))
             + self._prompt_traps()
@@ -11197,7 +11233,15 @@ class TestFreePlanQuestionPositive(CliCase):
         clause ``"Does your GitHub plan offer"``, the option name
         ``"Restrict file paths"``, the word ``offer`` in the positive
         sense, and NO ``"not offer"`` - the double negative is gone.
-        This fails now: today's prompt is the double negative."""
+        This fails now: today's prompt is the double negative.
+
+        Behaviour 20 re-point: the no answer now ends in
+        ``cli._codeowners_flow`` (behaviour 20), whose content confirm is a
+        SECOND ``prompts.confirm`` call after the question - so the pin
+        counts the QUESTION's calls (the prompt carrying the opening
+        clause), not all confirm calls: the question is still asked
+        exactly once, and the flow's confirms come after it, never a
+        second question."""
         findings = self._file_paths_warn_findings()
         calls = []
 
@@ -11210,6 +11254,7 @@ class TestFreePlanQuestionPositive(CliCase):
             mock.patch.object(
                 cli.prompts, "confirm", side_effect=recording_confirm
             ),
+            mock.patch.object(cli.prompts, "ask", return_value="@alice"),
         ) + self._guard_seams(findings, (self.OWNER, self.REPO)) + self._prompt_traps()
         for patcher in patchers:
             patcher.start()
@@ -11218,13 +11263,19 @@ class TestFreePlanQuestionPositive(CliCase):
             ["verify-guards", str(self.project), "--branch", "main"]
         )
 
+        question_calls = [
+            entry for entry in calls if self.PROMPT_OPENING in entry[0]
+        ]
         self.assertEqual(
             1,
-            len(calls),
-            "exactly one confirm call is expected for the interactive "
-            "file_paths warn:\n{}".format(result.output),
+            len(question_calls),
+            "the free-plan question is asked exactly once (the no answer's "
+            "follow-up confirms come after it, never a second question) - "
+            "{} such call(s) recorded:\n{}\noutput:\n{}".format(
+                len(question_calls), calls, result.output
+            ),
         )
-        prompt = calls[0][0]
+        prompt = question_calls[0][0]
         self.assertIn(
             self.PROMPT_OPTION,
             prompt,
@@ -11533,8 +11584,11 @@ class TestFreePlanQuestionLocates(CliCase):
             "a prompt was asked where the free-plan path must not read "
             "stdin"
         )
+        # Behaviour 20 re-point: ``prompts.ask`` is no longer trapped -
+        # the no answer now ends in cli._codeowners_flow (behaviour 20),
+        # whose handles ask is the free-plan path's own; the seam is
+        # patched separately in _run_interactive (a fixed handle).
         return (
-            mock.patch.object(cli.prompts, "ask", side_effect=boom),
             mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
             mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
             mock.patch.object(cli.prompts, "choose", side_effect=boom),
@@ -11555,6 +11609,9 @@ class TestFreePlanQuestionLocates(CliCase):
             mock.patch.object(
                 cli.prompts, "confirm", side_effect=confirm_side_effect
             ),
+            # Behaviour 20 re-point: the no answer (pin 4) ends in
+            # cli._codeowners_flow's handles ask - fixed handle.
+            mock.patch.object(cli.prompts, "ask", return_value="@alice"),
         ) + self._guard_seams(findings, (self.OWNER, self.REPO)) + self._prompt_traps()
         for patcher in patchers:
             patcher.start()
@@ -13283,4 +13340,688 @@ class TestCodeownersFlowCommands(unittest.TestCase):
                 [],
                 self._tree(target),
                 "the declined case must leave nothing under the target",
+            )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 20 (plans/file-path-codeowners-interactive.md): the flow is
+# wired into _free_plan_followup's NO branch (the walkthrough) and reaches
+# BOTH call sites - verify-guards and the blocked setup-repo gate - with
+# the SAME default seams the rest of the command uses. The flow changes
+# no exit code and no fallback: verify-guards still exits
+# piguard.summarize(...) and the blocked gate still exits
+# EXIT_GUARDS_BLOCKED (9); the non-interactive one-line fallback is
+# byte-identical to behaviour 5's; --no-github skips the gate so nothing
+# is asked or written; a --branch release run names release in the commit
+# step; PromptError is never raised - every new answer has a safe default.
+#
+# RED: the no path ends at the six steps today - no ask, no body echo
+# beyond the walkthrough, no commands, no release naming - so pins 1, 2,
+# 5 and 6 fail now; pins 3 and 4 are green now (the skip and the fallback
+# already hold).
+# ---------------------------------------------------------------------------
+
+
+class TestCodeownersFlowWiring(CliCase):
+    """Command-level wiring pins for behaviour 20 of
+    plans/file-path-codeowners-interactive.md.
+
+    ``_free_plan_followup``'s NO branch (the walkthrough) ends by calling
+    ``cli._codeowners_flow(shared, owner, repo, branch, target)`` - the
+    SAME default seams (``prompts.ask`` / ``prompts.confirm``) the rest of
+    the command uses - so BOTH call sites (``verify-guards``, the blocked
+    ``setup-repo`` gate) reach the flow automatically. The YES branch
+    (behaviour 10's locating line) is untouched. Non-interactive runs
+    return at behaviour 5's fallback before any of this.
+
+    Wiring: interactive (``_is_interactive`` forced True), the
+    file_paths warn fixture (summarize 0), the resolved repository
+    iar3-r8/Anvil, ``prompts.confirm`` patched to a per-call queue - the
+    free-plan question FIRST, then the flow's content confirm, then the
+    offer confirm - and ``prompts.ask`` patched to the flow's handles ask
+    (a fixed handle, default ``@<owner>``, its arguments recorded).
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    GATE_TOKEN = "ghp_flow_wiring"
+
+    # The six walkthrough step tokens (behaviour 2's pins), reused.
+    STEP1 = "1. Create .github/CODEOWNERS"
+    STEP2 = "2. Owners need write access"
+    STEP3 = "3. Commit"
+    STEP4 = "4. In Settings"
+    STEP5 = "5. Re-run"
+    STEP6 = "6. Public repos only on GitHub Free"
+    STEP_TOKENS = (STEP1, STEP2, STEP3, STEP4, STEP5, STEP6)
+    _FALLBACK_PHRASE = re.compile(r"free[-\s]plan", re.IGNORECASE)
+
+    # -- fixtures, seams and fakes ---------------------------------------------
+
+    def _file_paths_warn_findings(self):
+        """The five-rule findings with ``file_paths`` flipped to its warn
+        shape: the other four rules passed, ``wants_walkthrough`` True,
+        ``summarize`` 0 (a warn never fails the summarize)."""
+        findings = cli.piguard.check_all(five_rule_branch_rules())
+        warn = cli.piguard.check_file_paths([])[0]
+        for index, finding in enumerate(findings):
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
+                findings[index] = warn
+        self.assertTrue(
+            cli.picodeowners.wants_walkthrough(findings),
+            "the fixture must carry a file_paths warn finding so the "
+            "walkthrough ask is wanted",
+        )
+        self.assertEqual(
+            0,
+            cli.piguard.summarize(findings),
+            "the fixture must summarize to 0 - a warn is reported, not "
+            "a failure",
+        )
+        return findings
+
+    def _guard_seams(self, findings, repository):
+        """The four piguard seams replaced, so the guard flow runs
+        offline on exactly the fixture this class wants reported."""
+        return (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", return_value=repository
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=findings),
+            mock.patch.object(
+                cli.piguard, "check_token_all", return_value=[]
+            ),
+        )
+
+    def _confirm_queue_fake(self, queue):
+        """A per-call ``prompts.confirm`` fake: the free-plan question
+        first, then the flow's content confirm, then the offer confirm -
+        answers consumed from ``queue`` in call order, arguments
+        recorded."""
+        confirms = []
+
+        def confirm(prompt, default=False, *args, **kwargs):
+            confirms.append((prompt, default))
+            return queue.pop(0) if queue else False
+
+        return confirm, confirms
+
+    def _ask_fake(self, answer):
+        """A ``prompts.ask`` fake for the flow's handles ask: records its
+        (prompt, default) arguments and returns the fixed handle."""
+        asks = []
+
+        def ask(prompt, default=None, *args, **kwargs):
+            asks.append((prompt, default))
+            return answer
+
+        return ask, asks
+
+    def _spy_provision(self):
+        """A recorder over ``provision.setup_repo`` that provisions
+        nothing and returns the target, so the run stops at the seam."""
+        calls = []
+
+        def spy(target, repo_plan, **kwargs):
+            calls.append((str(target), repo_plan, kwargs))
+            return str(target)
+
+        patcher = mock.patch.object(cli.provision, "setup_repo", spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
+
+    def _fallback_lines(self, output):
+        """The lines carrying ALL the non-interactive fallback line's
+        tokens (behaviour 5's line): CODEOWNERS + a free-plan phrasing +
+        walkthrough + without --yes / interactively on ONE line."""
+        return [
+            line
+            for line in output.splitlines()
+            if "CODEOWNERS" in line
+            and self._FALLBACK_PHRASE.search(line)
+            and "walkthrough" in line.lower()
+            and ("without --yes" in line or "interactively" in line.lower())
+        ]
+
+    def _run_verify_guards_flow(self, queue, ask_answer="@alice", branch="main"):
+        """One interactive ``verify-guards`` no-path run through the
+        flow: the question answered no, the content confirm accepted,
+        the offer declined. Returns ``(result, asks, confirms,
+        findings)``; ``self.invoke`` re-raises any non-exit exception, so
+        the run must complete normally."""
+        findings = self._file_paths_warn_findings()
+        confirm_fake, confirms = self._confirm_queue_fake(list(queue))
+        ask_fake, asks = self._ask_fake(ask_answer)
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "confirm", side_effect=confirm_fake),
+            mock.patch.object(cli.prompts, "ask", side_effect=ask_fake),
+        ) + self._guard_seams(findings, (self.OWNER, self.REPO))
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", branch]
+        )
+        return result, asks, confirms, findings
+
+    def _run_gate_flow(self, queue, ask_answer="@alice"):
+        """One interactive blocked ``setup-repo`` no-path run through
+        the flow: a stored token (reused without prompting), the same
+        per-call fakes. Returns ``(result, asks, confirms, findings,
+        target)``."""
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN=self.GATE_TOKEN)
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        findings = self._file_paths_warn_findings()
+        confirm_fake, confirms = self._confirm_queue_fake(list(queue))
+        ask_fake, asks = self._ask_fake(ask_answer)
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "confirm", side_effect=confirm_fake),
+            mock.patch.object(cli.prompts, "ask", side_effect=ask_fake),
+        ) + self._guard_seams(findings, (self.OWNER, self.REPO))
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(["setup-repo", target.name])
+        return result, asks, confirms, findings, Path(target.name)
+
+    def _baseline_verify_guards(self, branch="main"):
+        """The same ``verify-guards`` run with the WHOLE follow-up
+        disabled (question + flow): the exit-code baseline the no-path
+        run must equal - the wiring changes no exit code."""
+        findings = self._file_paths_warn_findings()
+        for patcher in self._guard_seams(findings, (self.OWNER, self.REPO)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+            result = self.invoke(
+                ["verify-guards", str(self.project), "--branch", branch]
+            )
+        return result, findings
+
+    def _assert_flow_output(self, result, asks, confirms, site, ask_answer):
+        """The flow reached and completed on the no path: the six steps,
+        the recorded handles ask (prompt names the handle, default the
+        pre-filled ``@owner``), the built body echoed verbatim, the
+        declined-offer line, and the three commands - in that order."""
+        for token in self.STEP_TOKENS:
+            self.assertIn(
+                token,
+                result.output,
+                "{}: the six-step walkthrough must still print - step "
+                "token {!r} is missing:\n{}".format(site, token, result.output),
+            )
+        self.assertEqual(
+            1,
+            len(asks),
+            "{}: the no path must reach the flow's handles ask exactly "
+            "once - {} ask(s) recorded:\n{}".format(site, len(asks), result.output),
+        )
+        prompt, default = asks[0]
+        self.assertIn(
+            "handle",
+            prompt.lower(),
+            "{}: the handles ask prompt must name the handle - "
+            "{!r} is missing:\nprompt={!r}".format(site, prompt),
+        )
+        self.assertEqual(
+            "@" + self.OWNER,
+            default,
+            "{}: the handles ask must default to the pre-filled "
+            "@owner (editable) - default={!r}".format(site, default),
+        )
+        body = cli.picodeowners.codeowners_body(ask_answer)
+        for line in body.splitlines():
+            self.assertIn(
+                line,
+                result.output,
+                "{}: the built body must be echoed verbatim - the line "
+                "{!r} is missing:\n{}".format(site, line, result.output),
+            )
+        self.assertIn(
+            "Nothing written",
+            result.output,
+            "{}: the declined offer must print its one line saying "
+            "nothing was written:\n{}".format(site, result.output),
+        )
+        self.assertIn(
+            "is not written",
+            result.output,
+            "{}: the declined-offer line must say the file is not "
+            "written:\n{}".format(site, result.output),
+        )
+        commands = cli.picodeowners.commit_commands()
+        self.assertEqual(
+            3,
+            len(commands),
+            "the fixture sanity: commit_commands returns the three "
+            "pinned commands",
+        )
+        for command in commands:
+            self.assertIn(
+                command,
+                result.output,
+                "{}: the three commands must print in order - the command "
+                "{!r} is missing:\n{}".format(site, command, result.output),
+            )
+        # The confirms arrive in call order: the free-plan question first
+        # (its prompt names the option), then the content confirm, then
+        # the offer confirm (naming the target).
+        self.assertEqual(
+            3,
+            len(confirms),
+            "{}: three confirms are expected - the free-plan question, "
+            "the flow's content confirm and the offer confirm - {} "
+            "recorded: {}\n{}".format(site, len(confirms), confirms, result.output),
+        )
+        self.assertIn(
+            "Restrict file paths",
+            confirms[0][0],
+            "{}: the FIRST confirm must be the free-plan question:\n"
+            "prompt={!r}".format(site, confirms[0][0]),
+        )
+        self.assertIn(
+            "Use this CODEOWNERS content?",
+            confirms[1][0],
+            "{}: the SECOND confirm must be the content confirm:\n"
+            "prompt={!r}".format(site, confirms[1][0]),
+        )
+        self.assertIn(
+            "Write .github/CODEOWNERS",
+            confirms[2][0],
+            "{}: the THIRD confirm must be the write offer:\n"
+            "prompt={!r}".format(site, confirms[2][0]),
+        )
+
+    # -- pin 1: verify-guards no path reaches the flow, exit unchanged --------
+
+    def test_verify_guards_no_path_reaches_the_flow_and_keeps_its_exit(self):
+        """verify-guards no path: the six steps still print, the flow
+        (ask, body echo, declined offer, commands) runs, and the exit
+        equals the same run with the follow-up wiring disabled - the
+        exit baseline is computed from the existing verify-guards warn
+        fixture, never hardcoded.
+
+        RED: the no path ends at the six steps today - no ask, no body
+        echo, no not-written line, no commands."""
+        result, asks, confirms, findings = self._run_verify_guards_flow(
+            (False, True, False), "@alice"
+        )
+        baseline, _ = self._baseline_verify_guards("main")
+        self.assertEqual(
+            baseline.exit_code,
+            result.exit_code,
+            "verify-guards still exits the baseline run's exit (the "
+            "piguard.summarize of the findings, computed from the same "
+            "fixture) - the flow changes no exit code: baseline {} vs "
+            "got {}\n{}".format(
+                baseline.exit_code, result.exit_code, result.output
+            ),
+        )
+        self._assert_flow_output(result, asks, confirms, "verify-guards no path", "@alice")
+
+    # -- pin 2: the blocked gate no path reaches the flow, exit 9 --------------
+
+    def test_blocked_gate_no_path_reaches_the_flow_and_still_exits_blocked(self):
+        """The gate no path: the flow runs (the three commands print)
+        and the blocked run still exits ``EXIT_GUARDS_BLOCKED`` (9) -
+        the flow never changes the block's exit code.
+
+        RED: the gate's no path ends at the six steps today - the
+        commands are absent."""
+        result, asks, confirms, findings, _target = self._run_gate_flow(
+            (False, True, False), "@alice"
+        )
+        self.assertEqual(
+            9,
+            cli.EXIT_GUARDS_BLOCKED,
+            "EXIT_GUARDS_BLOCKED is literally 9, got {}".format(
+                cli.EXIT_GUARDS_BLOCKED
+            ),
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "a blocked gate still exits blocked (9) - the flow changes "
+            "no exit code:\n{}".format(result.output),
+        )
+        self._assert_flow_output(result, asks, confirms, "blocked gate no path", "@alice")
+
+    # -- pin 3: --no-github skips the gate - nothing asked or written ----------
+
+    def test_no_github_skips_the_gate_so_nothing_is_asked_or_written(self):
+        """``--no-github`` skips the gate entirely: both prompt seams
+        are booby-trapped (a call fails the run loudly), nothing is
+        written (the target tree stays byte-identical - empty), and the
+        exit equals the baseline ``--no-github`` run.
+
+        ``--no-anthropic --no-oxylabs`` keep the normal provision path's
+        own resolvers from confirming (their questions are not the
+        gate's - the trap must pin the gate's seams, not the
+        provision's), matching the existing ``--no-github`` pin's
+        convention. Green now: the gate skip already holds."""
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        calls = self._spy_provision()
+        baseline_argv = [
+            "setup-repo",
+            target.name,
+            "--yes",
+            "--no-github",
+            "--no-anthropic",
+            "--no-oxylabs",
+        ]
+        baseline = self.invoke(baseline_argv)
+        # The baseline run provisions once; the spy's record is now the
+        # baseline's, so clear it - the trapped run below must add exactly
+        # one more (the gate is skipped, not failed).
+        calls.clear()
+        boom_ask = AssertionError(
+            "a prompt was asked under --no-github - the gate must be "
+            "skipped so nothing is asked"
+        )
+        boom_confirm = AssertionError(
+            "a confirm was asked under --no-github - the gate must be "
+            "skipped so nothing is asked"
+        )
+        with mock.patch.object(cli.prompts, "ask", side_effect=boom_ask), mock.patch.object(
+            cli.prompts, "confirm", side_effect=boom_confirm
+        ):
+            result = self.invoke(baseline_argv)
+
+        self.assertEqual(
+            baseline.exit_code,
+            result.exit_code,
+            "--no-github must exit the baseline --no-github run's exit "
+            "(the gate is skipped, not failed): baseline {} vs got "
+            "{}\n{}".format(baseline.exit_code, result.exit_code, result.output),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "--no-github provisions with the normal provision path's "
+            "exit:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            1,
+            len(calls),
+            "--no-github must provision (the gate is skipped, not "
+            "failed):\n{}".format(result.output),
+        )
+        self.assertEqual(
+            "",
+            calls[-1][1].github_token,
+            "--no-github provisions with an empty token",
+        )
+        self.assertEqual(
+            [],
+            [
+                str(path.relative_to(Path(target.name)))
+                for path in sorted(Path(target.name).rglob("*"))
+                if path.is_file()
+            ],
+            "--no-github writes nothing into the target - the tree must "
+            "stay byte-identical (empty)",
+        )
+        for token in self.STEP_TOKENS:
+            self.assertNotIn(
+                token,
+                result.output,
+                "--no-github prints no walkthrough (the gate is skipped "
+                "entirely); step token {!r} present:\n{}".format(
+                    token, result.output
+                ),
+            )
+        self.assertEqual(
+            [],
+            self._fallback_lines(result.output),
+            "--no-github prints no fallback line (no gate, no ask):\n"
+            "{}".format(result.output),
+        )
+
+    # -- pin 4: the non-interactive fallback is byte-identical -----------------
+
+    def test_non_interactive_fallback_is_byte_identical_to_the_baseline(self):
+        """A non-interactive run (no ``input=``; the prompt seams
+        booby-trapped so no prompt is asked) prints behaviour 5's
+        one-line fallback, and the output minus that one line is
+        byte-identical to the same run with the follow-up wiring
+        disabled - the fallback line itself is unchanged by the wiring.
+
+        Green now: the fallback already prints and the skip already
+        holds."""
+        findings = self._file_paths_warn_findings()
+        boom = AssertionError(
+            "a prompt was asked on a non-interactive run - behaviour 5 "
+            "returns at the fallback before any prompt"
+        )
+        for patcher in (
+            self._guard_seams(findings, (self.OWNER, self.REPO))
+            + (
+                mock.patch.object(cli.prompts, "confirm", side_effect=boom),
+                mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            )
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "verify-guards (non-interactive) still exits summarize of "
+            "its findings:\n{}".format(result.output),
+        )
+        fallback = self._fallback_lines(result.output)
+        self.assertEqual(
+            1,
+            len(fallback),
+            "exactly one fallback line must print - {} such line(s) "
+            "found:\n{}".format(len(fallback), result.output),
+        )
+        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+            baseline = self.invoke(
+                ["verify-guards", str(self.project), "--branch", "main"]
+            )
+        remaining = list(result.output.splitlines())
+        remaining.remove(fallback[0])
+        self.assertEqual(
+            baseline.output.splitlines(),
+            remaining,
+            "the non-interactive output must be the follow-up-disabled "
+            "baseline plus EXACTLY the one fallback line - removing it "
+            "must leave the baseline byte-identical:\n--- with follow-up "
+            "---\n{}\n--- baseline ---\n{}".format(
+                result.output, baseline.output
+            ),
+        )
+
+    # -- pin 5: --branch release names release in the commit step --------------
+
+    def test_branch_release_names_release_in_the_commit_step(self):
+        """Interactive no path with ``--branch release``: the flow runs
+        and ``release`` is named in the commit step - the line that
+        introduces the commands (the run-yourself intro) or the line
+        immediately before the three commands - and the exit equals the
+        baseline.
+
+        Placement pinned: ``release`` on the intro line (a line carrying
+        ``yourself``) OR on the line immediately before the first
+        command (``git add .github/CODEOWNERS``) - the commit step is the
+        intro line plus the three commands, and the branch must be named
+        inside it, not only in the walkthrough's step 3.
+
+        RED: the commands do not print at all today, so the commit-step
+        region is absent."""
+        result, asks, confirms, findings = self._run_verify_guards_flow(
+            (False, True, False), "@alice", branch="release"
+        )
+        baseline, _ = self._baseline_verify_guards("release")
+        self.assertEqual(
+            baseline.exit_code,
+            result.exit_code,
+            "--branch release still exits the baseline run's exit (the "
+            "piguard.summarize of the findings, computed from the same "
+            "fixture) - the branch changes no exit code: baseline {} vs "
+            "got {}\n{}".format(
+                baseline.exit_code, result.exit_code, result.output
+            ),
+        )
+        lines = result.output.splitlines()
+        first_command = "git add .github/CODEOWNERS"
+        self.assertIn(
+            first_command,
+            lines,
+            "the flow's first command must print - the commit step is "
+            "absent:\n{}".format(result.output),
+        )
+        intro_indices = [
+            index
+            for index, line in enumerate(lines)
+            if "yourself" in line
+        ]
+        release_on_intro = any(
+            "release" in lines[index] for index in intro_indices
+        )
+        command_index = lines.index(first_command)
+        release_before_commands = (
+            command_index > 0 and "release" in lines[command_index - 1]
+        )
+        self.assertTrue(
+            release_on_intro or release_before_commands,
+            "--branch release must name release in the commit step - on "
+            "the line introducing the commands (a line carrying "
+            "'yourself') or on the line immediately before the three "
+            "commands; the intro line(s) and the line before the first "
+            "command are:\n{}".format(
+                [lines[i] for i in intro_indices]
+                + ([lines[command_index - 1]] if command_index else [])
+                + lines[command_index : command_index + 3]
+            ),
+        )
+        self._assert_flow_output(result, asks, confirms, "verify-guards --branch release no path", "@alice")
+
+    # -- pin 6: every new answer has a safe default - no PromptError ------------
+
+    def test_every_new_answer_has_a_safe_default_and_no_prompt_error_leaves(self):
+        """Interactive no path with fakes that return the DEFAULTS as if
+        the user pressed Enter: ``ask`` returns its ``default`` argument
+        (the pre-filled ``@owner``), ``confirm`` returns its ``default``
+        argument - the question (default False) takes the no path, the
+        content (default True) is accepted, the offer (default False) is
+        declined. No exception (no PromptError, no Abort) may leave the
+        command, the run completes at the summarize exit, nothing is
+        written (the offer default is False) and the commands print.
+
+        RED: the no path ends at the six steps today - the ask is never
+        recorded and only one confirm (the question) is reached."""
+        findings = self._file_paths_warn_findings()
+
+        asks = []
+        confirms = []
+
+        def default_ask(prompt, default=None, *args, **kwargs):
+            asks.append((prompt, default))
+            return default
+
+        def default_confirm(prompt, default=False, *args, **kwargs):
+            confirms.append((prompt, default))
+            return default
+
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(
+                cli.prompts, "confirm", side_effect=default_confirm
+            ),
+            mock.patch.object(cli.prompts, "ask", side_effect=default_ask),
+        ) + self._guard_seams(findings, (self.OWNER, self.REPO))
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        before = self.snapshot()
+        # self.invoke re-raises any non-exit exception: a PromptError or
+        # click.Abort leaving the command fails the run here.
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+        after = self.snapshot()
+
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "the default-driven run completes at summarize of its "
+            "findings - no prompt error leaves the command:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "the warn-only fixture summarizes to 0 - the defaults never "
+            "turn the run into a failure:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            1,
+            len(asks),
+            "the default-driven no path must reach the flow's handles "
+            "ask exactly once - {} ask(s) recorded".format(len(asks)),
+        )
+        prompt, default = asks[0]
+        self.assertIn(
+            "handle",
+            prompt.lower(),
+            "the handles ask prompt must name the handle:\nprompt={!r}".format(
+                prompt
+            ),
+        )
+        self.assertEqual(
+            "@" + self.OWNER,
+            default,
+            "the handles ask must default to the pre-filled @owner",
+        )
+        # The asks consumed the default; the confirms consumed their
+        # defaults: the question (False), the content (True), the offer
+        # (False).
+        self.assertEqual(
+            [False, True, False],
+            [entry[1] for entry in confirms],
+            "every new answer must have a safe default - the confirms "
+            "arrive as the question (default False), the content "
+            "confirm (default True) and the offer (default False); the "
+            "recorded defaults are {}".format(
+                [entry[1] for entry in confirms]
+            ),
+        )
+        self.assertIn(
+            "/.github/ @" + self.OWNER,
+            result.output,
+            "the body built from the DEFAULT handle (the pre-filled "
+            "@owner) must be echoed:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            before,
+            after,
+            "the offer default is False - nothing is written; the "
+            "project tree must be byte-identical; changed: {}".format(
+                sorted(set(before) ^ set(after))
+                + [k for k in set(before) & set(after) if before[k] != after[k]]
+            ),
+        )
+        for command in cli.picodeowners.commit_commands():
+            self.assertIn(
+                command,
+                result.output,
+                "the commands must print when the defaults are consumed "
+                "- the command {!r} is missing:\n{}".format(
+                    command, result.output
+                ),
             )
