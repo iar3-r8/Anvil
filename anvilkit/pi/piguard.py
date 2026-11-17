@@ -1746,6 +1746,17 @@ def gate_verdict(findings: List[Dict[str, Any]]) -> str:
     repo is called guarded. An unknown status is neither a fail nor a
     warn, so it neither blocks nor crashes the gate.
 
+    One exemption (behaviour 4 of
+    plans/file-path-fallback-satisfied.md): a ``file_paths`` warn whose
+    ``fallback_in_place`` marker is exactly ``True`` is satisfied by the
+    CODEOWNERS review gate and does not block. The exemption is
+    check-scoped - a ``warn`` on any other check still blocks - and
+    marker-exact: ``False`` and an absent key are not True, and neither
+    is a non-bool such as ``"true"``, ``1`` or ``None`` (hence the ``is
+    True`` and ``get`` discipline). It also keys on the ``warn`` status:
+    a ``fail`` carrying the marker True is never exempted. Only this one
+    case proceeds; every other ``fail`` and ``warn`` blocks.
+
     This is a sibling of :func:`summarize`, not a replacement:
     ``verify-guards`` keeps its ``1``-iff-any-``fail`` contract, with a
     ``warn`` still exiting ``0``, while the gate needs a fail OR a warn to
@@ -1754,7 +1765,16 @@ def gate_verdict(findings: List[Dict[str, Any]]) -> str:
     plans/setup-repo-guards.md).
     """
     for finding in findings:
-        if finding.get("status") in ("fail", "warn"):
+        status = finding.get("status")
+        if status == "fail":
+            return "blocked"
+        if (
+            status == "warn"
+            and not (
+                finding.get("check") == CHECK_FILE_PATHS
+                and finding.get("fallback_in_place") is True
+            )
+        ):
             return "blocked"
     return "clean"
 
