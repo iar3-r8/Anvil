@@ -1644,10 +1644,15 @@ def _free_plan_followup(
     follow-up needs the repository anyway).
 
     Non-interactive, ``--yes`` and ``--dry-run`` runs never ask: they print
-    exactly one line naming the free-plan fallback and how to see the
-    walkthrough, then return - no prompt, no stdin read, and the exit code
-    is untouched (behaviour 5). The line is a report line, one sentence,
-    built here, not in a module.
+    exactly one line, then return - no prompt, no stdin read, and the exit
+    code is untouched (behaviour 5). The line is a report line, one
+    sentence, built here, not in a module - and the fallback is
+    skip-aware (behaviour 5 of
+    plans/codeowners-flow-skip-existing-file.md): on the SAME predicate
+    the interactive skip uses (``is_file()`` on
+    ``codeowners_path(target)``), a file present at the path prints
+    behaviour 2's skip line, while an absent path (a directory at the
+    path counts as absent) prints the free-plan line, byte-identical.
 
     An interactive run asks the behaviour-4 unit exactly once: the question
     is positive (behaviour 9) and the caller inverts - a ``no`` answer means
@@ -1672,11 +1677,23 @@ def _free_plan_followup(
     if repository is None:
         return
     if shared.dry_run or shared.assume_yes or not shared.interactive():
-        shared.echo(
-            "Your plan may not offer \"Restrict file paths\" - the "
-            "free-plan CODEOWNERS fix: re-run without --yes to see the "
-            "walkthrough."
-        )
+        # Behaviour 5 (plans/codeowners-flow-skip-existing-file.md): the
+        # fallback is skip-aware - it picks the same one line the
+        # interactive skip does, on the SAME predicate
+        # (``is_file()`` on ``codeowners_path(target)``), so the two
+        # paths cannot disagree about what "present" means. File present
+        # -> behaviour 2's skip line; absent (a directory at the path
+        # counts as absent, like the interactive half) -> the free-plan
+        # line, byte-identical. Either way: no prompt, no stdin read,
+        # the exit code untouched.
+        if picodeowners.codeowners_path(target).is_file():
+            shared.echo(".github/CODEOWNERS already exists - nothing to do.")
+        else:
+            shared.echo(
+                "Your plan may not offer \"Restrict file paths\" - the "
+                "free-plan CODEOWNERS fix: re-run without --yes to see the "
+                "walkthrough."
+            )
         return
     answer = _ask_free_plan(shared, branch_findings)
     if answer:
