@@ -17,7 +17,10 @@ Behaviour 17 of the same plan adds the write seam:
 absent, on the ``piruleset.write_ruleset`` precedent (one exception
 type: ``CodeownersError``). This is the module's only write — it never
 makes a network call and never prompts; the prompt belongs to the cli
-layer.
+layer. Behaviour 1 of
+plans/codeowners-flow-skip-existing-file.md adds the pure path builder
+``codeowners_path``: the one path the skip checks and the write uses,
+so the two cannot drift.
 """
 
 from pathlib import Path
@@ -217,6 +220,19 @@ def self_approval_warning(owner: str, repo_owner: str) -> Optional[str]:
         "{owner} repo owner: approve own change unless "
         "require_last_push_approval."
     ).format(owner=normalised_owner)
+
+
+def codeowners_path(target: Path) -> Path:
+    """Return the one CODEOWNERS path the skip checks and the write uses.
+
+    Behaviour 1 of plans/codeowners-flow-skip-existing-file.md: the single
+    path ``target/.github/CODEOWNERS``, so the presence check and the write
+    use the same path and cannot drift. Pure: no filesystem touch, no
+    resolution — a relative or absolute ``target`` is joined as given.
+    Deterministic: two calls with the same ``target`` return equal paths.
+    Raises nothing.
+    """
+    return target / ".github" / "CODEOWNERS"
 
 
 def write_codeowners(path: Path, body: str) -> Path:

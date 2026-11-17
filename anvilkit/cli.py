@@ -1784,7 +1784,7 @@ def _codeowners_flow(
         )
     else:
         try:
-            path = target / ".github" / "CODEOWNERS"
+            path = picodeowners.codeowners_path(target)
             written = picodeowners.write_codeowners(path, body)
             shared.echo(str(written))
         except picodeowners.CodeownersError as exc:
