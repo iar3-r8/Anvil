@@ -16478,3 +16478,490 @@ class TestPartialStateArmLine(CliCase):
                 result.output
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 9 of plans/file-path-fallback-satisfied.md - the acceptance run:
+# the user's own transcript state (four rules ok, no file_path_restriction,
+# review gate on, CODEOWNERS on disk, token ok), end to end through the real
+# commands. The state is BUILT, not faked: the fetched rules are the C7
+# fixture at the fetch seam, the file is a real file at codeowners_path,
+# and the findings come out of the REAL check_all.
+# ---------------------------------------------------------------------------
+
+
+class TestAcceptanceSatisfiedFallback(CliCase):
+    """Behaviour 9: the acceptance run, end to end.
+
+    The user's own transcript state: the fetched rules are the five-rule
+    fixture minus ``file_path_restriction`` with the ``pull_request``
+    rule's ``require_code_owner_review`` True, a real file sits at
+    ``codeowners_path(target)``, and the token findings are all passed -
+    so the real ``check_all`` yields four ``passed`` findings and one
+    ``file_paths`` warn carrying ``fallback_in_place`` True (the
+    satisfied warn of behaviours 2-3), and ``gate_verdict`` is clean
+    (behaviour 4).
+
+    The acceptance pins:
+
+    * the ``setup-repo`` gate proceeds past the satisfied warn: no
+      free-plan question (behaviour 6), no six steps, no skip line, no
+      arm line, no ruleset block (behaviour 5), no ``⛔`` line, the
+      provision seam is called with the real provision's artifacts and
+      the stored token, and the exit is 0 - the rest of the run, with
+      the token ok, blocks nothing else. The report the user's
+      transcript shows must carry the reworded warn (status still
+      ``warn``, never ``passed``).
+    * ``verify-guards`` on the same state: the reworded warn prints,
+      the free-plan question is absent, and the exit is ``summarize``
+      of the findings - 0, because a warn is not a fail.
+    * the "To fix" section: ``render_fixes`` selects by status - the
+      satisfied warn is still a ``warn`` - so its reworded "nothing to
+      do" remedy renders as the section's single numbered entry.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    TOKEN = "ghp_acceptance_satisfied"
+
+    SATISFIED_BRIEF = "push rule off; CODEOWNERS review gate in place"
+    SKIP_LINE = ".github/CODEOWNERS already exists - nothing to do."
+    ARM_LINE = ARM_LINE_TEMPLATE.format("main")
+    FREE_PLAN_QUESTION = (
+        'Does your GitHub plan offer "Restrict file paths" in the ruleset UI?'
+    )
+    STEP_TOKENS = (
+        "Owners need write access",
+        "Public repos only on GitHub Free",
+    )
+    BLOCK_LINE = "Fix the branch rules and token scope above, then re-run setup-repo."
+
+    # -- fixture -------------------------------------------------------------
+
+    def _fetch_rules(self):
+        """The acceptance state's fetched rules (the C7 fixture): the
+        five-rule fixture minus ``file_path_restriction`` (the warn half),
+        the ``pull_request`` rule's ``require_code_owner_review`` True
+        (the review half, faked at the fetch seam - never on the
+        finding)."""
+        rules = [
+            rule
+            for rule in five_rule_branch_rules()
+            if rule.get("type") != "file_path_restriction"
+        ]
+        updated = []
+        for rule in rules:
+            if rule.get("type") == "pull_request":
+                parameters = dict(rule.get("parameters") or {})
+                parameters["require_code_owner_review"] = True
+                rule = dict(rule, parameters=parameters)
+            updated.append(rule)
+        self.assertFalse(
+            any(r.get("type") == "file_path_restriction" for r in updated),
+            "fixture sanity: the acceptance state has no "
+            "file_path_restriction rule",
+        )
+        self.assertTrue(
+            cli.piguard.code_owner_review_on(updated),
+            "fixture sanity: the pull_request rule must carry "
+            "require_code_owner_review True",
+        )
+        return updated
+
+    def _token_ok_findings(self):
+        """The acceptance state's token findings: every probe passed
+        (the constant workflows-withheld skip included - an unprovable
+        withholding, never a fail)."""
+        return [
+            token_finding("target_access", "passed"),
+            token_finding("administration", "passed"),
+            token_finding("classic_token", "passed"),
+            cli.piguard.workflows_withheld_finding()[0],
+            token_finding("named_repo", "passed"),
+        ]
+
+    # -- seams ---------------------------------------------------------------
+
+    def _prompt_traps(self):
+        """Booby-traps over every question function the acceptance run
+        must not reach: a prompt asked here fails the run loudly instead
+        of hanging or eating input (the TestFreePlanNonInteractiveSkip
+        convention)."""
+        boom = AssertionError(
+            "a prompt was asked on the non-interactive acceptance run - "
+            "behaviour 9's pins ask nothing"
+        )
+        return (
+            mock.patch.object(cli.prompts, "confirm", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    def _start_acceptance_seams(self):
+        """The piguard seams replaced so the guard flow runs offline
+        through the REAL ``check_all``: the repository resolves, the
+        fetched rules are the acceptance fixture, the token findings are
+        the all-passed fixture, and every prompt seam is booby-trapped.
+        No finding or verdict is faked - ``check_all`` and
+        ``gate_verdict`` run for real on the fetched rules and the
+        planted file."""
+        patchers = (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(self._fetch_rules(), None),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "check_token_all",
+                return_value=self._token_ok_findings(),
+            ),
+        ) + self._prompt_traps()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    # -- planters and runners -------------------------------------------------
+
+    def _plant_present_file(self, target):
+        """A real file at ``codeowners_path(target)``: the file half of
+        the acceptance state, on the exact ``is_file()`` predicate the
+        verdict and the skip share."""
+        path = cli.picodeowners.codeowners_path(Path(target))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"/.github/ @iar3-r8\n")
+        return path
+
+    def _spy_provision(self):
+        """A recorder over ``provision.setup_repo`` that delegates to the
+        real provision (the same seam the existing provisioning tests
+        assert on): a run that should not provision actually provisions -
+        the target then gains the usual artifacts and the exit is the
+        real one."""
+        self._provision_calls = []
+        real = cli.provision.setup_repo
+
+        def spy(target, repo_plan, **kwargs):
+            self._provision_calls.append((str(target), repo_plan, kwargs))
+            return real(target, repo_plan, **kwargs)
+
+        patcher = mock.patch.object(cli.provision, "setup_repo", spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run_acceptance_gate(self, target):
+        """One non-interactive ``setup-repo`` in the acceptance state: a
+        stored token (reused without prompting), the acceptance seams,
+        the real file planted in the target, and the real provision
+        under the spy."""
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN=self.TOKEN)
+        self._plant_present_file(target)
+        self._start_acceptance_seams()
+        self._spy_provision()
+        return self.invoke(
+            [
+                "setup-repo",
+                target,
+                "--yes",
+                "--no-anthropic",
+                "--no-oxylabs",
+            ]
+        )
+
+    def _run_acceptance_verify(self):
+        """One non-interactive ``verify-guards`` in the acceptance state:
+        the same seams, the real file planted in the project
+        (verify-guards' target)."""
+        self.write_env(GITHUB_TOKEN=self.TOKEN)
+        self._plant_present_file(self.project)
+        self._start_acceptance_seams()
+        return self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+
+    # -- pin 1: the gate proceeds ---------------------------------------------
+
+    def test_setup_repo_gate_proceeds_past_the_satisfied_warn_and_provisions(self):
+        """The acceptance run end to end: the gate's verdict on the
+        satisfied warn is clean (behaviour 4), so ``setup-repo``
+        proceeds past the guard: no free-plan question (behaviour 6), no
+        six steps, no skip line, no arm line, no ruleset block
+        (behaviour 5), no ``⛔`` line - and the provision seam is called
+        with the real provision's artifacts and the stored token, and
+        the exit is 0 (the rest of the run, with the token ok, blocks
+        nothing else). The report the user's transcript shows must
+        carry the reworded warn.
+
+        RED on the report: a clean gate today prints no report at all
+        (the report lives inside the blocked branch), so the reworded
+        brief is absent from the output - the gate must show the report
+        it now proceeds past, so the user sees why the warn stands."""
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+
+        result = self._run_acceptance_gate(target.name)
+        out = result.output
+
+        # (a) the report shows the reworded warn.
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            out,
+            "the acceptance run must show the reworded warn brief - the "
+            "user sees why the warn stands:\n{}".format(out),
+        )
+        # (b) no free-plan question.
+        self.assertNotIn(
+            self.FREE_PLAN_QUESTION,
+            out,
+            "the satisfied warn must not ask the free-plan question - "
+            "behaviour 6:\n{}".format(out),
+        )
+        # (c) no six steps.
+        for token in self.STEP_TOKENS:
+            self.assertNotIn(
+                token,
+                out,
+                "the walkthrough steps must be absent - the follow-up "
+                "never fires; step token {!r} present:\n{}".format(token, out),
+            )
+        # (d) no skip line.
+        self.assertEqual(
+            0,
+            out.count(self.SKIP_LINE),
+            "the skip line must be absent - the follow-up never runs:\n{}".format(
+                out
+            ),
+        )
+        # (e) no arm line.
+        self.assertEqual(
+            0,
+            out.count(self.ARM_LINE),
+            "the arm line must be absent - it belongs to the partial "
+            "state's follow-up, which never runs:\n{}".format(out),
+        )
+        # (f) no ruleset block.
+        self.assertNotIn(
+            "the ruleset is already prepared at",
+            out,
+            "needs_ruleset is False for a satisfied warn (behaviour 5) - "
+            "the ruleset block must not print:\n{}".format(out),
+        )
+        self.assertNotIn(
+            ".github-ruleset.json",
+            out,
+            "needs_ruleset is False for a satisfied warn (behaviour 5) - "
+            "the ruleset path must not be named:\n{}".format(out),
+        )
+        self.assertFalse(
+            Path(target.name, ".github-ruleset.json").exists(),
+            "needs_ruleset is False for a satisfied warn (behaviour 5) - "
+            "the gate must not write the ruleset",
+        )
+        # no token recipe either: the token findings are all passed.
+        self.assertNotIn(
+            "personal-access-tokens/new",
+            out,
+            "the token ok must earn no recipe:\n{}".format(out),
+        )
+        # (g) no ⛔ line.
+        self.assertNotIn(
+            self.BLOCK_LINE,
+            out,
+            "the gate proceeds past the satisfied warn - the block line "
+            "must be absent:\n{}".format(out),
+        )
+        # (h) the provision seam was called (provisioning proceeded).
+        self.assertEqual(
+            1,
+            len(self._provision_calls),
+            "a clean gate must provision - the seam was called {} "
+            "time(s):\n{}".format(len(self._provision_calls), out),
+        )
+        self.assertEqual(
+            target.name,
+            self._provision_calls[0][0],
+            "the provision seam must receive the target",
+        )
+        self.assertEqual(
+            self.TOKEN,
+            self._provision_calls[0][1].github_token,
+            "the provisioned plan must carry the stored token",
+        )
+        self.assertTrue(
+            (Path(target.name) / "zoo-code-settings.json").is_file(),
+            "the real provision must write its usual artifacts:\n{}".format(
+                out
+            ),
+        )
+        self.assertTrue(
+            (Path(target.name) / ".roo" / "mcp.json").is_file(),
+            "the real provision must write its usual artifacts:\n{}".format(
+                out
+            ),
+        )
+        # (i) exit 0, not 9: the gate's 9 is the blocked path's code, and
+        # with the token ok and every other check passed the rest of the
+        # run blocks nothing.
+        self.assertNotEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "the gate proceeds past the satisfied warn - exit 9 is the "
+            "blocked path's code:\n{}".format(out),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "with the token ok and every other check passed, the "
+            "acceptance run ends 0:\n{}".format(out),
+        )
+
+    # -- pin 2: the warn is still a warn ----------------------------------------
+
+    def test_setup_repo_gate_report_renders_the_satisfied_warn_as_warn_not_ok(self):
+        """The satisfied warn is still a warn: the gate's report renders
+        the file_paths finding as the ``⚠️ warn:`` line carrying the
+        reworded brief - never the ``✅ ok:`` line (the push rule stays
+        off, so the finding is satisfied, not passed).
+
+        RED on the report: a clean gate today prints no report at all,
+        so the warn line is absent from the output."""
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+
+        result = self._run_acceptance_gate(target.name)
+        lines = result.output.splitlines()
+        warn_lines = [
+            line
+            for line in lines
+            if line.lstrip().startswith("⚠️ warn: file_path_restriction")
+        ]
+        self.assertEqual(
+            1,
+            len(warn_lines),
+            "the acceptance run's report must carry exactly one warn "
+            "line for the file_paths check - found {}:\n{}".format(
+                len(warn_lines), result.output
+            ),
+        )
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            warn_lines[0],
+            "the warn line must carry the reworded brief:\n{}".format(
+                warn_lines[0]
+            ),
+        )
+        self.assertNotIn(
+            "✅ ok: file_path_restriction",
+            result.output,
+            "the satisfied warn must never render as ok - the push rule "
+            "stays off:\n{}".format(result.output),
+        )
+
+    # -- pin 3: verify-guards on the same state ----------------------------------
+
+    def test_verify_guards_on_the_acceptance_state_prints_the_reworded_warn_and_exits_zero(self):
+        """The verify-guards half of the acceptance run: the same state,
+        no gate - the report prints the reworded warn (status still
+        warn, never ok), the free-plan question is absent (behaviour
+        6), and the exit is ``summarize`` of the findings - 0, because
+        ``summarize`` is 1-iff-any-fail and a warn is not a fail."""
+        result = self._run_acceptance_verify()
+        out = result.output
+
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            out,
+            "verify-guards must print the reworded warn brief:\n{}".format(
+                out
+            ),
+        )
+        lines = out.splitlines()
+        warn_lines = [
+            line
+            for line in lines
+            if line.lstrip().startswith("⚠️ warn: file_path_restriction")
+        ]
+        self.assertEqual(
+            1,
+            len(warn_lines),
+            "verify-guards must render the file_paths finding as the "
+            "warn line - found {}:\n{}".format(len(warn_lines), out),
+        )
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            warn_lines[0],
+            "the warn line must carry the reworded brief:\n{}".format(
+                warn_lines[0]
+            ),
+        )
+        self.assertNotIn(
+            "✅ ok: file_path_restriction",
+            out,
+            "the satisfied warn must never render as ok - the push rule "
+            "stays off:\n{}".format(out),
+        )
+        self.assertNotIn(
+            self.FREE_PLAN_QUESTION,
+            out,
+            "the satisfied warn must not ask the free-plan question - "
+            "behaviour 6:\n{}".format(out),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "summarize is 1-iff-any-fail; the satisfied warn is a warn, "
+            "not a fail, and the token findings are all passed:\n{}".format(
+                out
+            ),
+        )
+
+    # -- pin 4: the "To fix" section ----------------------------------------------
+
+    def test_verify_guards_to_fix_section_renders_the_nothing_to_do_remedy(self):
+        """The "To fix" section with the satisfied warn: ``render_fixes``
+        selects by status only - "one entry per such [warn or fail]
+        finding in list order" - and the satisfied warn is still a
+        ``warn``, so its reworded "nothing to do" remedy renders as the
+        section's single numbered entry, labelled by the rule. The
+        section is NOT suppressed for a satisfied warn: this is the
+        honest pin of the selection rule."""
+        result = self._run_acceptance_verify()
+        lines = result.output.splitlines()
+
+        self.assertIn(
+            "To fix",
+            lines,
+            "a warn (satisfied or not) still earns the \"To fix\" "
+            "header - the selection rule is status-only:\n{}".format(
+                result.output
+            ),
+        )
+        fix_index = lines.index("To fix")
+        entries = [
+            line
+            for line in lines[fix_index + 1:]
+            if line and line[0].isdigit() and line[1:2] == "." and line[2:3] == " "
+        ]
+        self.assertEqual(
+            1,
+            len(entries),
+            "the satisfied warn is the only warn/fail finding, so the "
+            "\"To fix\" section carries exactly one entry - found "
+            "{}:\n{}".format(len(entries), result.output),
+        )
+        self.assertTrue(
+            entries[0].startswith("1. file_path_restriction: nothing to do"),
+            "the entry must be the reworded remedy, labelled by the "
+            "rule:\n{}".format(entries[0]),
+        )
