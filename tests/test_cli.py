@@ -15422,3 +15422,415 @@ class TestCodeownersFallbackSkipAware(CliCase):
         # (and ``_read_line``) was booby-trapped and ``self.invoke``
         # re-raises any non-exit exception, so reaching this point is
         # the assertion.
+
+
+class TestGuardFindingsCodeownersPresence(CliCase):
+    """Behaviour 7 of plans/file-path-fallback-satisfied.md: both call
+    sites pass the file's presence through ``check_all``.
+
+    The command-level threading pin: the finding that comes OUT of a real
+    command run carries the ``fallback_in_place`` marker according to the
+    target tree, not a faked finding. ``piguard.check_all`` is the seam
+    under the spy - it is NOT replaced (a spy over the real ``check_all``
+    records the call and its kwargs and delegates to the real function),
+    so the marker asserted on the returned finding is the one the real
+    ``check_file_paths`` produced from whatever presence the command
+    passed. The rules-fetch seam (``piguard.fetch_branch_rules``) fakes
+    the fetched rules - a ``pull_request`` rule carrying
+    ``require_code_owner_review`` True, no ``file_path_restriction`` - so
+    the review half of the marker comes from the fetched array exactly as
+    in production, and the file half comes from a real file (or directory,
+    or absence) at ``codeowners_path(target)``.
+
+    Pins 1 and 3 are RED: today ``_collect_guard_findings`` does not pass
+    ``codeowners_present``, so the marker is always False at the command
+    level. Pins 2, 4 and 5 are green now: marker False is today's
+    behaviour, and the unresvable-repository path yields
+    ``skipped_findings`` before any of the presence computation.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+
+    SATISFIED_BRIEF = "push rule off; CODEOWNERS review gate in place"
+    TODAY_BRIEF = "a push can change .github/workflows/**, what CI runs"
+
+    # -- fixture -----------------------------------------------------------------
+
+    def _fetch_rules(self):
+        """The fetched rules the command-level run sees: the five-rule
+        fixture with the ``file_path_restriction`` element removed (the
+        warn half) and its ``pull_request`` element's
+        ``require_code_owner_review`` set True (the review half, faked at
+        the fetch seam - never on the finding)."""
+        rules = [
+            rule
+            for rule in five_rule_branch_rules()
+            if rule.get("type") != "file_path_restriction"
+        ]
+        updated = []
+        for rule in rules:
+            if rule.get("type") == "pull_request":
+                parameters = dict(rule.get("parameters") or {})
+                parameters["require_code_owner_review"] = True
+                rule = dict(rule, parameters=parameters)
+            updated.append(rule)
+        self.assertFalse(
+            any(r.get("type") == "file_path_restriction" for r in updated),
+            "the fixture must lack file_path_restriction - the warn half",
+        )
+        self.assertTrue(
+            cli.piguard.code_owner_review_on(updated),
+            "the fixture's pull_request rule must carry "
+            "require_code_owner_review True - the review half",
+        )
+        return updated
+
+    # -- traps ---------------------------------------------------------------------
+
+    def _prompt_traps(self):
+        """Booby-traps over every question function the guard flow must not
+        reach on a non-interactive run: a prompt asked here fails the run
+        loudly instead of hanging or eating input (the
+        TestFreePlanNonInteractiveSkip convention)."""
+        boom = AssertionError(
+            "a prompt was asked on a non-interactive guard run - "
+            "behaviour 7's pins ask nothing"
+        )
+        return (
+            mock.patch.object(cli.prompts, "confirm", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    # -- runner ----------------------------------------------------------------------
+
+    def _guard_seams(self, rules, resolve_value, trap_rest=False):
+        """The piguard seams replaced so the guard flow runs offline through
+        the REAL ``check_all``. ``resolve_repository`` returns
+        ``resolve_value``; ``fetch_branch_rules`` returns the fixture
+        (or raises if called, with ``trap_rest``); ``check_token_all``
+        returns no findings (or raises if called, with ``trap_rest``);
+        ``check_all`` is a spy over the real function that records each
+        call's arguments and delegates. Returns the ``check_all`` mock."""
+        self._check_all_returns = []
+        real_check_all = cli.piguard.check_all
+
+        def spy(*args, **kwargs):
+            result = real_check_all(*args, **kwargs)
+            self._check_all_returns.append(result)
+            return result
+
+        patchers = [
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=resolve_value,
+            ),
+        ]
+        if trap_rest:
+            boom = AssertionError(
+                "the unresolvable-repository path must not fetch the "
+                "branch rules or probe the token - skipped_findings come "
+                "first"
+            )
+            patchers.append(
+                mock.patch.object(
+                    cli.piguard, "fetch_branch_rules", side_effect=boom
+                )
+            )
+            patchers.append(
+                mock.patch.object(
+                    cli.piguard, "check_token_all", side_effect=boom
+                )
+            )
+        else:
+            patchers.append(
+                mock.patch.object(
+                    cli.piguard,
+                    "fetch_branch_rules",
+                    return_value=(rules, None),
+                )
+            )
+            patchers.append(
+                mock.patch.object(
+                    cli.piguard, "check_token_all", return_value=[]
+                )
+            )
+        check_all_patcher = mock.patch.object(
+            cli.piguard, "check_all", side_effect=spy
+        )
+        patchers.extend(self._prompt_traps())
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        check_all_mock = check_all_patcher.start()
+        self.addCleanup(check_all_patcher.stop)
+        return check_all_mock
+
+    def _file_paths_finding(self, check_all_mock):
+        """The one ``file_paths`` finding in the REAL check_all's return
+        value for the recorded call."""
+        self.assertEqual(
+            1,
+            check_all_mock.call_count,
+            "check_all must run exactly once for the guard report",
+        )
+        findings = self._check_all_returns[0]
+        matches = [
+            finding for finding in findings
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS
+        ]
+        self.assertEqual(
+            1,
+            len(matches),
+            "expected exactly one file_paths finding, got:\n{}".format(
+                findings
+            ),
+        )
+        return matches[0]
+
+    # -- planters ---------------------------------------------------------------------
+
+    def _plant_present_file(self, target):
+        """A real file at ``codeowners_path(target)``: ``is_file()`` True."""
+        path = cli.picodeowners.codeowners_path(Path(target))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"/.github/ @iar3-r8\n")
+        return path
+
+    def _plant_directory(self, target):
+        """A DIRECTORY at ``codeowners_path(target)``: ``is_file()`` False
+        - the same edge the skip takes for absent."""
+        path = cli.picodeowners.codeowners_path(Path(target))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir()
+        return path
+
+    # -- pin 1: file present -> marker True + reworded brief (RED) -------------------
+
+    def test_verify_guards_with_codeowners_present_carries_marker_and_reworded_brief(
+        self,
+    ):
+        """RED: today ``_collect_guard_findings`` never passes
+        ``codeowners_present`` to ``check_all``, so the marker is always
+        False and the brief is today's at the command level - the full
+        satisfied-warn shape (marker True + reworded brief) is absent."""
+        self._plant_present_file(self.project)
+        check_all = self._guard_seams(
+            self._fetch_rules(), (self.OWNER, self.REPO)
+        )
+
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+
+        finding = self._file_paths_finding(check_all)
+        self.assertEqual(
+            "warn",
+            finding.get("status"),
+            "the finding stays a warn - satisfied, not passed:\n{}".format(
+                finding
+            ),
+        )
+        self.assertIs(
+            True,
+            finding.get("fallback_in_place"),
+            "with the CODEOWNERS file present and the review gate on in "
+            "the fetched rules, the file_paths warn must carry "
+            "fallback_in_place True:\n{}".format(finding),
+        )
+        self.assertEqual(
+            self.SATISFIED_BRIEF,
+            finding.get("brief"),
+            "the satisfied warn must carry the reworded brief:\n{}".format(
+                finding
+            ),
+        )
+        # End to end at the command level: the reworded brief renders in
+        # the report.
+        self.assertIn(self.SATISFIED_BRIEF, result.output)
+
+    # -- pin 2: file absent -> marker False + today's brief (green now) --------------
+
+    def test_verify_guards_with_codeowners_absent_keeps_marker_false_and_todays_brief(
+        self,
+    ):
+        """Green now: the empty target has no CODEOWNERS file, so
+        ``is_file()`` is False and the marker stays False with today's
+        brief - unchanged by the wiring."""
+        check_all = self._guard_seams(
+            self._fetch_rules(), (self.OWNER, self.REPO)
+        )
+
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+
+        finding = self._file_paths_finding(check_all)
+        self.assertIs(
+            False,
+            finding.get("fallback_in_place"),
+            "with the file absent the marker must be False - the review "
+            "half alone does not satisfy the fallback:\n{}".format(finding),
+        )
+        self.assertEqual(
+            self.TODAY_BRIEF,
+            finding.get("brief"),
+            "with the file absent the brief must be today's, unchanged:\n{}".format(
+                finding
+            ),
+        )
+        self.assertNotIn(self.SATISFIED_BRIEF, result.output)
+
+    # -- pin 3: the blocked gate inherits the marker too (RED) ------------------------
+
+    def test_setup_repo_gate_with_codeowners_present_carries_marker_on_its_finding(
+        self,
+    ):
+        """RED: the setup-repo gate reports through the same
+        ``_collect_guard_findings`` seam, so its file_paths finding must
+        inherit the marker as well. Only the finding's marker and brief
+        are asserted - whether the gate proceeds past the satisfied warn
+        is behaviour 9's pin, not this cycle's."""
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN="ghp_guard_gate")
+        self._plant_present_file(target.name)
+        check_all = self._guard_seams(
+            self._fetch_rules(), (self.OWNER, self.REPO)
+        )
+
+        result = self.invoke(
+            [
+                "setup-repo",
+                target.name,
+                "--yes",
+                "--no-anthropic",
+                "--no-oxylabs",
+            ]
+        )
+        self.assertIsNotNone(
+            result,
+            "the gate run must complete (blocked today, proceeding "
+            "afterwards - the exit is behaviour 9's pin, not here)",
+        )
+
+        finding = self._file_paths_finding(check_all)
+        self.assertIs(
+            True,
+            finding.get("fallback_in_place"),
+            "the setup-repo gate's file_paths finding must carry "
+            "fallback_in_place True when the file is present and the "
+            "review gate is on - the same seam as verify-guards:\n{}".format(
+                finding
+            ),
+        )
+        self.assertEqual(
+            self.SATISFIED_BRIEF,
+            finding.get("brief"),
+            "the gate's file_paths finding must carry the reworded "
+            "brief:\n{}".format(finding),
+        )
+
+    # -- pin 4: a directory at the path -> marker False (green now) --------------------
+
+    def test_verify_guards_with_directory_at_codeowners_path_keeps_marker_false(
+        self,
+    ):
+        """Green now: ``is_file()`` is False for a directory, so the
+        marker stays False with today's brief - the same edge the skip
+        treats as absent, and the verdict and the skip cannot disagree."""
+        path = self._plant_directory(self.project)
+        self.assertTrue(
+            path.is_dir() and not path.is_file(),
+            "sanity: the planted path must be a directory (is_file() "
+            "False) - the absent half's premise",
+        )
+        check_all = self._guard_seams(
+            self._fetch_rules(), (self.OWNER, self.REPO)
+        )
+
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+
+        finding = self._file_paths_finding(check_all)
+        self.assertIs(
+            False,
+            finding.get("fallback_in_place"),
+            "a directory at the path (is_file() False) must keep the "
+            "marker False:\n{}".format(finding),
+        )
+        self.assertEqual(
+            self.TODAY_BRIEF,
+            finding.get("brief"),
+            "a directory at the path must keep today's brief:\n{}".format(
+                finding
+            ),
+        )
+        self.assertNotIn(self.SATISFIED_BRIEF, result.output)
+
+    # -- pin 5: the unresolvable repository path is untouched (green now) --------------
+
+    def test_unresolvable_repository_yields_skipped_findings_before_presence(
+        self,
+    ):
+        """Green now: with the repository unresolvable, the run yields
+        ``skipped_findings`` before any of the presence computation -
+        fetch, token and check_all are all booby-trapped to prove they
+        never run, and the report carries the skipped file_paths finding
+        (byte-identical to the repository-None baseline the existing pins
+        cover), not the warn, whether the file is present or not."""
+        self._plant_present_file(self.project)
+        check_all = self._guard_seams(
+            self._fetch_rules(), None, trap_rest=True
+        )
+
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+
+        check_all.assert_not_called()
+        lines = result.output.splitlines()
+        skipped_headline = _finding_headline(
+            {"status": "skipped", "check": "file_paths", "rule": None}
+        )
+        self.assertEqual(
+            1,
+            sum(
+                1
+                for line in lines
+                if line.lstrip().startswith(skipped_headline)
+            ),
+            "the unresolvable-repository report must carry exactly one "
+            "skipped file_paths block (headline {!r}):\n{}".format(
+                skipped_headline, result.output
+            ),
+        )
+        self.assertNotIn(
+            self.TODAY_BRIEF,
+            result.output,
+            "the skipped path must not yield the warn's brief:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotIn(
+            self.SATISFIED_BRIEF,
+            result.output,
+            "the skipped path must not yield the reworded brief:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "skipped findings summarize to 0 - the planted file changes "
+            "nothing on the skipped path:\n{}".format(result.output),
+        )
