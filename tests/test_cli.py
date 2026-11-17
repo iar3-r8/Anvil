@@ -13570,7 +13570,7 @@ class TestCodeownersFlowWiring(CliCase):
             "handle",
             prompt.lower(),
             "{}: the handles ask prompt must name the handle - "
-            "{!r} is missing:\nprompt={!r}".format(site, prompt),
+            "{!r} is missing:\nprompt={!r}".format(site, "handle", prompt),
         )
         self.assertEqual(
             "@" + self.OWNER,

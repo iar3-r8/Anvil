@@ -1360,7 +1360,9 @@ def setup_repo(
                 # verify-guards prints - never re-derived. The findings
                 # carry no token value, so nothing secret is echoed.
                 _echo_guard_report(shared, branch_findings, token_findings)
-                _free_plan_followup(shared, branch_findings, repository, "main")
+                _free_plan_followup(
+                    shared, branch_findings, repository, "main", Path(path)
+                )
                 shared.echo("")
                 remediation = piguard.gate_remediation(
                     branch_findings, token_findings
@@ -1628,6 +1630,7 @@ def _free_plan_followup(
     branch_findings: List[Dict[str, Any]],
     repository: Optional[Tuple[str, str]],
     branch: str,
+    target: Path,
 ) -> None:
     """The free-plan follow-up, printed after the guard report at the two
     call sites that prompt (behaviour 5 of
@@ -1651,7 +1654,8 @@ def _free_plan_followup(
     the plan lacks the option, so it prints the six-step walkthrough
     (behaviour 6) built by ``picodeowners`` from the resolved repository
     and the checked ``branch`` - never re-derived here - after the
-    report's "To fix" section and bypass note. A ``yes`` answer keeps the
+    report's "To fix" section and bypass note, then ends in the
+    interactive CODEOWNERS flow (behaviour 20). A ``yes`` answer keeps the
     output byte-identical - no confirmation line (behaviour 7's polarity
     under the positive question): the plan offers the option, and the
     report's "To fix" line is the fix. A ``CodeownersError`` is
@@ -1690,6 +1694,13 @@ def _free_plan_followup(
         return
     for step in steps:
         shared.echo(step)
+    # Behaviour 20 (plans/file-path-codeowners-interactive.md): the no
+    # branch ends in the interactive CODEOWNERS flow, using the SAME
+    # default seams (``prompts.ask`` / ``prompts.confirm``) the rest of
+    # the command uses - so both call sites (verify-guards, the blocked
+    # setup-repo gate) reach it with no per-site wiring, and it changes
+    # no exit code and never raises.
+    _codeowners_flow(shared, owner, repo, branch, target)
 
 
 def _codeowners_flow(
@@ -1740,9 +1751,8 @@ def _codeowners_flow(
 
     ``ask``/``confirm`` are injected seams (the ``_ask_free_plan``
     precedent) defaulting to ``prompts.ask``/``prompts.confirm``.
-    ``branch`` is unused in these behaviours: it feeds the behaviour-20
-    commit step, which extends this function, so the signature is fixed
-    now.
+    ``branch`` names the branch the commit step lands on - behaviour 20
+    added it to the intro line.
     """
     if ask is None:
         ask = prompts.ask
@@ -1781,7 +1791,12 @@ def _codeowners_flow(
             shared.echo("could not write .github/CODEOWNERS: {}".format(exc))
     # behaviour 19: the commands always print - after the written,
     # failed and declined outcomes alike; Anvil never runs them.
-    shared.echo("Run these yourself in the target repository:")
+    # Behaviour 20: the intro line names the branch the commit lands on.
+    shared.echo(
+        "Run these yourself in the target repository (branch {}):".format(
+            branch
+        )
+    )
     for command in picodeowners.commit_commands():
         shared.echo(command)
 
@@ -2020,7 +2035,7 @@ def verify_guards(
     # lines and no report line exceeds 80 characters.
     shared.echo("")
     _echo_guard_report(shared, findings, token_findings)
-    _free_plan_followup(shared, findings, repository, branch)
+    _free_plan_followup(shared, findings, repository, branch, target)
     shared.echo(_SEPARATOR)
 
     raise typer.Exit(piguard.summarize(findings + token_findings))
