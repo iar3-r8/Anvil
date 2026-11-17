@@ -12486,9 +12486,11 @@ class TestCodeownersFlowOffer(unittest.TestCase):
     calls. The offer's prompt carries ``Write .github/CODEOWNERS into
     {target}?`` and defaults to False; a yes writes through
     ``picodeowners.write_codeowners`` (behaviour 17's seam) and echoes
-    the written path; a no writes nothing and says so in one line; a
-    ``CodeownersError`` from the seam prints one line and lets no
-    exception out.
+    the written path; a no writes nothing and says so in one line (the
+    commands that follow it are behaviour 19's, pinned in
+    TestCodeownersFlowCommands); a ``CodeownersError`` from the seam
+    prints one line, leaves the pre-existing bytes untouched and lets
+    no exception out.
 
     The ``--dry-run``/``--yes``/non-TTY "never reach the offer" half is
     the command wiring (behaviour 5's early return, pinned at command
@@ -12687,8 +12689,16 @@ class TestCodeownersFlowOffer(unittest.TestCase):
     # -- pin 4: a no writes nothing and says so in one line ---------------
 
     def test_a_declined_offer_writes_nothing_and_says_so_in_one_line(self):
-        """A no to the offer writes nothing and says so in exactly one
-        line - the "not written" outcome line."""
+        """A no to the offer writes nothing and says so - the "not
+        written" outcome line is present, and the three git commands
+        (behaviour 19) print after it. (Re-pointed by behaviour 19,
+        which makes the commands print after the declined outcome too -
+        the "exactly one line after the offer" total no longer holds:
+        the not-written line is followed by the intro line and the
+        three commands, in that order.)"""
+        from anvilkit.pi import picodeowners
+
+        commands = picodeowners.commit_commands()
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
             log = self._run_flow(
@@ -12709,18 +12719,62 @@ class TestCodeownersFlowOffer(unittest.TestCase):
         after = [
             entry for entry in log[offer_index + 1:] if entry[0] == "echo"
         ]
-        self.assertEqual(
-            1,
-            len(after),
-            "a declined offer must say so in exactly one line - got "
-            "{} line(s):\n{}".format(len(after), log),
+        after_lines = [line for _, line in after]
+        outcome_indices = [
+            i
+            for i, line in enumerate(after_lines)
+            if self.NOT_WRITTEN_TOKEN in line
+        ]
+        self.assertTrue(
+            outcome_indices,
+            "a declined offer must say nothing was written - a line "
+            "carrying {!r} is missing:\nlines={}".format(
+                self.NOT_WRITTEN_TOKEN, after_lines
+            ),
         )
-        self.assertIn(
-            self.NOT_WRITTEN_TOKEN,
-            after[0][1],
-            "the outcome line must say nothing was written - token "
-            "{!r} missing:\nline={!r}".format(self.NOT_WRITTEN_TOKEN,
-                                              after[0][1]),
+        for command in commands:
+            self.assertIn(
+                command,
+                after_lines,
+                "the behaviour-19 command {!r} must print after the "
+                "declined outcome:\n{}".format(command, log),
+            )
+        intro_indices = [
+            i
+            for i, line in enumerate(after_lines)
+            if "run" in line.lower() and "yourself" in line.lower()
+        ]
+        command_indices = [
+            i for i, line in enumerate(after_lines) if line in commands
+        ]
+        self.assertTrue(
+            intro_indices,
+            "an intro line telling the reader to run the commands "
+            "themselves must precede them:\n{}".format(log),
+        )
+        self.assertEqual(
+            3,
+            len(command_indices),
+            "each of the three commands must print on its own line - "
+            "exactly three command lines, none folded into another "
+            "line, none missing:\n{}".format(log),
+        )
+        self.assertEqual(
+            [after_lines[i] for i in command_indices],
+            commands,
+            "the three commands must print in order, once each, after "
+            "the declined outcome:\n{}".format(log),
+        )
+        self.assertGreater(
+            min(command_indices),
+            outcome_indices[0],
+            "the commands must print AFTER the declined-outcome line "
+            "{!r}:\n{}".format(after_lines[outcome_indices[0]], log),
+        )
+        self.assertLess(
+            min(intro_indices),
+            min(command_indices),
+            "the intro line must precede the commands:\n{}".format(log),
         )
 
     # -- pin 5: a CodeownersError from the seam ---------------------------
@@ -12728,9 +12782,16 @@ class TestCodeownersFlowOffer(unittest.TestCase):
     def test_a_codeowners_error_from_the_seam_prints_one_line_no_raise(self):
         """A pre-existing ``.github/CODEOWNERS`` makes the seam raise
         ``CodeownersError`` (an existing file is never clobbered): the
-        flow prints exactly one line after the offer, leaves the file's
-        bytes untouched, and lets no exception out. (The "continues to
-        the commands" half is behaviour 19 - not pinned here.)"""
+        flow prints an error line after the offer, leaves the file's
+        bytes untouched, and lets no exception out - and the three git
+        commands (behaviour 19) print after the error line. (Re-pointed
+        by behaviour 19, which makes the commands print after the
+        failed outcome too - the "exactly one line after the offer"
+        total no longer holds: the error line is followed by the intro
+        line and the three commands, in that order.)"""
+        from anvilkit.pi import picodeowners
+
+        commands = picodeowners.commit_commands()
         known = b"# pre-existing - must never be clobbered\n/.github/ @bob\n"
         with tempfile.TemporaryDirectory() as tmp:
             target = Path(tmp)
@@ -12756,9 +12817,470 @@ class TestCodeownersFlowOffer(unittest.TestCase):
         after = [
             entry for entry in log[offer_index + 1:] if entry[0] == "echo"
         ]
+        after_lines = [line for _, line in after]
+        outcome_indices = [
+            i
+            for i, line in enumerate(after_lines)
+            if "could not write" in line and ".github/CODEOWNERS" in line
+        ]
+        self.assertTrue(
+            outcome_indices,
+            "a CodeownersError from the seam must print an error line "
+            "after the offer:\n{}".format(log),
+        )
+        for command in commands:
+            self.assertIn(
+                command,
+                after_lines,
+                "the behaviour-19 command {!r} must print after the "
+                "failed write outcome:\n{}".format(command, log),
+            )
+        intro_indices = [
+            i
+            for i, line in enumerate(after_lines)
+            if "run" in line.lower() and "yourself" in line.lower()
+        ]
+        command_indices = [
+            i for i, line in enumerate(after_lines) if line in commands
+        ]
+        self.assertTrue(
+            intro_indices,
+            "an intro line telling the reader to run the commands "
+            "themselves must precede them:\n{}".format(log),
+        )
+        self.assertEqual(
+            3,
+            len(command_indices),
+            "each of the three commands must print on its own line - "
+            "exactly three command lines, none folded into another "
+            "line, none missing:\n{}".format(log),
+        )
+        self.assertEqual(
+            [after_lines[i] for i in command_indices],
+            commands,
+            "the three commands must print in order, once each, after "
+            "the failed write outcome:\n{}".format(log),
+        )
+        self.assertGreater(
+            min(command_indices),
+            outcome_indices[0],
+            "the commands must print AFTER the error line "
+            "{!r}:\n{}".format(after_lines[outcome_indices[0]], log),
+        )
+        self.assertLess(
+            min(intro_indices),
+            min(command_indices),
+            "the intro line must precede the commands:\n{}".format(log),
+        )
+
+
+class TestCodeownersFlowCommands(unittest.TestCase):
+    """RED pins for behaviour 19 of
+    plans/file-path-codeowners-interactive.md: the commands always print.
+
+    ``cli._codeowners_flow(shared, owner, repo, branch, target, ask=None,
+    confirm=None)`` - when the flow reaches the end, written or not -
+    must finish by printing the three ``picodeowners.commit_commands()``
+    strings (behaviour 12) in order, AFTER the write outcome, introduced
+    by one line telling the reader to run them themselves. They print
+    IDENTICALLY whether the file was written, the write failed
+    (``CodeownersError`` from the seam) or the offer was declined -
+    Anvil never runs them. A DECLINED CONTENT (behaviour 14) ends
+    before this point and prints no commands at all. Nothing is
+    persisted outside the one offered file: the target tree gains only
+    ``.github/CODEOWNERS`` (written case) and Anvil's own tree /
+    ``.env`` are untouched.
+
+    Function-level and in isolation (NOT command-level - the command
+    wiring is behaviour 20), reusing behaviour 14/15/18's wiring: a
+    fake ``shared`` with an ordered echo log, an injected ``ask``
+    returning a fixed handle, an injected ``confirm`` driven per call
+    (content first, then the offer), an empty temp target. The pins
+    call ``cli._codeowners_flow(fake_shared, "iar3-r8", "Anvil",
+    "main", target, ask=fake_ask, confirm=fake_confirm)``.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    BRANCH = "main"
+
+    # The three behaviour-12 command strings, pinned exactly - the
+    # contract names them verbatim, so the pins import
+    # ``picodeowners.commit_commands()`` and compare against its
+    # output, not a re-spelling (module-level import of the module,
+    # never re-derivation, so the two suites cannot drift).
+    COMMANDS = [
+        "git add .github/CODEOWNERS",
+        'git commit -m "Add CODEOWNERS for the review gate"',
+        "git push",
+    ]
+    # The intro line's pinned tokens, both required on the ONE line
+    # that introduces the commands: the reader runs them "run"
+    # "yourself" (the contract: "one line saying to run them
+    # yourself"). Both are matched case-insensitively on the same
+    # line, so a one-liner like "Run these yourself:" passes and a
+    # two-liner or a line missing either token fails.
+    INTRO_TOKEN_A = "run"
+    INTRO_TOKEN_B = "yourself"
+
+    # -- fakes (behaviour 14/15/18's wiring, confirm driven per call) -----
+
+    def _fakes(self, ask_answer="@alice", confirm_answers=(True, False)):
+        """One ordered log shared by the echo, ask and confirm fakes.
+
+        ``confirm_answers`` is consumed per confirm call - the content
+        confirm first, then the write offer; a confirm the list has not
+        covered declines, so a run reaching an unoffered confirm never
+        accepts a write."""
+        log = []
+        confirm_queue = list(confirm_answers)
+
+        def echo(line):
+            log.append(("echo", line))
+
+        shared = types.SimpleNamespace(echo=echo)
+
+        def ask(prompt, default=None, *args, **kwargs):
+            log.append(("ask", prompt, default))
+            return ask_answer
+
+        def confirm(prompt, default=None, *args, **kwargs):
+            log.append(("confirm", prompt, default))
+            return confirm_queue.pop(0) if confirm_queue else False
+
+        return shared, ask, confirm, log
+
+    def _run_flow(
+        self, target, ask_answer="@alice", confirm_answers=(True, False)
+    ):
+        """One ``_codeowners_flow`` call on an empty temp target."""
+        shared, ask, confirm, log = self._fakes(ask_answer, confirm_answers)
+        cli._codeowners_flow(
+            shared,
+            self.OWNER,
+            self.REPO,
+            self.BRANCH,
+            target,
+            ask=ask,
+            confirm=confirm,
+        )
+        return log
+
+    def _entries(self, log, kind):
+        return [entry for entry in log if entry[0] == kind]
+
+    def _echo_lines(self, log):
+        return [entry[1] for entry in log if entry[0] == "echo"]
+
+    def _tree(self, target):
+        """The target's contents as relative paths - unchanged is
+        empty, since the target starts as an empty temp directory."""
+        return sorted(str(path.relative_to(target)) for path in target.rglob("*"))
+
+    def _intro_lines(self, lines):
+        """The indices of lines carrying BOTH intro tokens - the one
+        line that tells the reader to run the commands themselves."""
+        return [
+            i
+            for i, line in enumerate(lines)
+            if self.INTRO_TOKEN_A in line.lower()
+            and self.INTRO_TOKEN_B in line.lower()
+        ]
+
+    def _command_indices(self, lines):
+        """The indices of lines that ARE one of the three command
+        strings - exact match, so a line merely containing a command
+        (folded into other text) is not counted."""
+        return [
+            i for i, line in enumerate(lines) if line in self.COMMANDS
+        ]
+
+    def _assert_commands_after(
+        self, lines, log, where, outcome_indices
+    ):
+        """The three commands print in order, once each, after the
+        outcome line(s) at ``outcome_indices``, introduced by the one
+        intro line. ``where`` names the case for the failure message."""
+        from anvilkit.pi import picodeowners
+
+        self.assertEqual(
+            self.COMMANDS,
+            list(picodeowners.commit_commands()),
+            "precondition: the pinned command strings must equal "
+            "picodeowners.commit_commands() - behaviour 12 drifted",
+        )
+        for command in self.COMMANDS:
+            self.assertIn(
+                command,
+                lines,
+                "the behaviour-12 command {!r} must print ({}):\n"
+                "{}".format(command, where, log),
+            )
+        command_indices = self._command_indices(lines)
+        self.assertEqual(
+            3,
+            len(command_indices),
+            "exactly three command lines are expected ({}), none "
+            "folded into another line, none missing:\n{}".format(
+                where, log
+            ),
+        )
+        self.assertEqual(
+            [lines[i] for i in command_indices],
+            self.COMMANDS,
+            "the three commands must print in behaviour-12 order, "
+            "once each ({}):\n{}".format(where, log),
+        )
+        for outcome in outcome_indices:
+            self.assertGreater(
+                min(command_indices),
+                outcome,
+                "the commands must print AFTER the {} outcome line "
+                "{!r}:\n{}".format(where, lines[outcome], log),
+            )
+        intro_indices = self._intro_lines(lines)
+        self.assertTrue(
+            intro_indices,
+            "an intro line saying to run the commands yourself (tokens "
+            "{!r} + {!r} on one line) must precede the commands "
+            "({}):\n{}".format(
+                self.INTRO_TOKEN_A, self.INTRO_TOKEN_B, where, log
+            ),
+        )
+        self.assertLess(
+            min(intro_indices),
+            min(command_indices),
+            "the intro line must precede the commands ({}):\n{}".format(
+                where, log
+            ),
+        )
+
+    # -- pin 1: written -> the commands print ------------------------------
+
+    def test_a_written_file_is_followed_by_the_commands(self):
+        """A confirmed content with an ACCEPTED offer writes the file,
+        echoes the written path, and then prints the three commands in
+        order after the written-path echo, introduced by the one intro
+        line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(True, True)
+            )
+            written = target / ".github" / "CODEOWNERS"
+            self.assertTrue(
+                written.exists(),
+                "an accepted offer must write .github/CODEOWNERS "
+                "before the commands print",
+            )
+            lines = self._echo_lines(log)
+        outcome_indices = [i for i, line in enumerate(lines) if line == str(written)]
+        self.assertTrue(
+            outcome_indices,
+            "the written-path echo must be present so the commands "
+            "can be checked after it:\n{}".format(log),
+        )
+        self._assert_commands_after(lines, log, "written", outcome_indices)
+
+    # -- pin 2: write-failed -> the commands STILL print -------------------
+
+    def test_a_failed_write_is_followed_by_the_commands(self):
+        """A pre-existing ``.github/CODEOWNERS`` makes the seam raise
+        ``CodeownersError`` (never clobbered): the error line prints
+        and the three commands STILL print after it, introduced by the
+        one intro line."""
+        known = b"# pre-existing - must never be clobbered\n/.github/ @bob\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            existing = target / ".github" / "CODEOWNERS"
+            existing.parent.mkdir(parents=True)
+            existing.write_bytes(known)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(True, True)
+            )
+            self.assertEqual(
+                known,
+                existing.read_bytes(),
+                "a failed write must leave the pre-existing file's "
+                "bytes untouched",
+            )
+            lines = self._echo_lines(log)
+        outcome_indices = [
+            i
+            for i, line in enumerate(lines)
+            if ".github/CODEOWNERS" in line and "could not write" in line
+        ]
+        self.assertTrue(
+            outcome_indices,
+            "the failed-write outcome line must be present so the "
+            "commands can be checked after it:\n{}".format(log),
+        )
+        self._assert_commands_after(lines, log, "failed-write", outcome_indices)
+
+    # -- pin 3: offer-declined -> the commands STILL print -----------------
+
+    def test_a_declined_offer_is_followed_by_the_commands(self):
+        """A confirmed content with a DECLINED offer prints the
+        "not written" line and the three commands STILL print after
+        it, introduced by the one intro line."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(True, False)
+            )
+            self.assertFalse(
+                (target / ".github" / "CODEOWNERS").exists(),
+                "a declined offer must not write .github/CODEOWNERS",
+            )
+            lines = self._echo_lines(log)
+        outcome_indices = [
+            i
+            for i, line in enumerate(lines)
+            if "not written" in line
+        ]
+        self.assertTrue(
+            outcome_indices,
+            "the declined-offer outcome line must be present so the "
+            "commands can be checked after it:\n{}".format(log),
+        )
+        self._assert_commands_after(lines, log, "declined-offer", outcome_indices)
+
+    # -- pin 4: the commands print IDENTICALLY in all three cases ----------
+
+    def test_the_commands_print_identically_written_failed_and_declined(self):
+        """The "print identically" half of the contract: across the
+        written, write-failed and offer-declined runs the command lines
+        are byte-identical - the same three strings, in the same
+        order, in each run."""
+        command_lines = []
+        for scenario in ("written", "failed", "declined"):
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp)
+                if scenario == "failed":
+                    existing = target / ".github" / "CODEOWNERS"
+                    existing.parent.mkdir(parents=True)
+                    existing.write_bytes(b"# pre-existing\n")
+                    confirm_answers = (True, True)
+                else:
+                    confirm_answers = (True, scenario == "written")
+                log = self._run_flow(
+                    target, ask_answer="@alice", confirm_answers=confirm_answers
+                )
+                lines = self._echo_lines(log)
+            indices = self._command_indices(lines)
+            self.assertEqual(
+                3,
+                len(indices),
+                "{}: exactly three command lines are expected "
+                "byte-identical to behaviour 12:\n{}".format(scenario, log),
+            )
+            command_lines.append(
+                (scenario, [lines[i] for i in indices])
+            )
+        written = command_lines[0][1]
+        failed = command_lines[1][1]
+        declined = command_lines[2][1]
+        self.assertEqual(
+            self.COMMANDS,
+            written,
+            "written: the command lines must be the behaviour-12 "
+            "strings in order",
+        )
+        self.assertEqual(
+            written,
+            failed,
+            "the command lines must be byte-identical between the "
+            "written and the failed run",
+        )
+        self.assertEqual(
+            written,
+            declined,
+            "the command lines must be byte-identical between the "
+            "written and the declined run",
+        )
+
+    # -- pin 5: a declined CONTENT prints NO commands ----------------------
+
+    def test_a_declined_content_prints_no_commands(self):
+        """A no to the CONTENT ends the flow before the commands
+        (behaviour 14): NONE of the three command strings appear and
+        no intro line does - the flow ends there."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            log = self._run_flow(
+                target, ask_answer="@alice", confirm_answers=(False,)
+            )
+
+        lines = self._echo_lines(log)
+        for command in self.COMMANDS:
+            self.assertNotIn(
+                command,
+                lines,
+                "a declined content ends the flow before the commands - "
+                "the command {!r} must not print:\n{}".format(command, log),
+            )
+        self.assertFalse(
+            self._intro_lines(lines),
+            "a declined content ends the flow before the commands - "
+            "no intro line may print:\n{}".format(log),
+        )
         self.assertEqual(
             1,
-            len(after),
-            "a CodeownersError from the seam must print exactly one "
-            "line - got {} line(s):\n{}".format(len(after), log),
+            len(self._entries(log, "confirm")),
+            "a declined content must not ask a further question - the "
+            "flow ends before the offer:\n{}".format(log),
         )
+
+    # -- pin 6: Anvil never runs them; nothing persisted outside the file --
+
+    def test_the_flow_never_runs_the_commands_and_writes_nothing_else(self):
+        """Anvil never runs the commands - it only prints them: no
+        subprocess is driven by the flow. And nothing is persisted
+        outside the one offered file: in the written case the only new
+        entry under the target is ``.github/CODEOWNERS``, in the
+        declined case nothing at all, and Anvil's own tree and
+        ``.env`` are untouched (the env seams are booby-trapped).
+
+        The subprocess half is pinned honestly as a patch on
+        ``subprocess.run``: the flow must complete normally with it
+        trapped, proving no ``git`` (or anything) is executed."""
+        def explode(*args, **kwargs):
+            raise AssertionError(
+                "the flow must never run a subprocess - Anvil prints "
+                "the git commands, it never runs them"
+            )
+
+        # written case: the only new entry under the target is the
+        # offered file itself; the env seams stay cold.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            with mock.patch(
+                "anvilkit.env.read", side_effect=explode
+            ), mock.patch("anvilkit.env.get", side_effect=explode), mock.patch(
+                "subprocess.run", side_effect=explode
+            ):
+                log = self._run_flow(
+                    target, ask_answer="@alice", confirm_answers=(True, True)
+                )
+            self.assertEqual(
+                [".github", ".github/CODEOWNERS"],
+                self._tree(target),
+                "the written case must leave nothing under the target "
+                "besides the offered .github/CODEOWNERS",
+            )
+        # declined case: nothing at all is persisted under the target.
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+            with mock.patch(
+                "anvilkit.env.read", side_effect=explode
+            ), mock.patch("anvilkit.env.get", side_effect=explode), mock.patch(
+                "subprocess.run", side_effect=explode
+            ):
+                log = self._run_flow(
+                    target, ask_answer="@alice", confirm_answers=(True, False)
+                )
+            self.assertEqual(
+                [],
+                self._tree(target),
+                "the declined case must leave nothing under the target",
+            )
