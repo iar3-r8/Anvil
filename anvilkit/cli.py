@@ -1655,7 +1655,12 @@ def _free_plan_followup(
     (behaviour 6) built by ``picodeowners`` from the resolved repository
     and the checked ``branch`` - never re-derived here - after the
     report's "To fix" section and bypass note, then ends in the
-    interactive CODEOWNERS flow (behaviour 20). A ``yes`` answer keeps the
+    interactive CODEOWNERS flow (behaviour 20) - unless the file is
+    already present at ``codeowners_path(target)``, in which case
+    behaviour 2 of
+    plans/codeowners-flow-skip-existing-file.md prints exactly one fixed
+    skip line and returns: the ask and confirm seams are never called,
+    and the exit code is untouched. A ``yes`` answer keeps the
     output byte-identical - no confirmation line (behaviour 7's polarity
     under the positive question): the plan offers the option, and the
     report's "To fix" line is the fix. A ``CodeownersError`` is
@@ -1694,6 +1699,15 @@ def _free_plan_followup(
         return
     for step in steps:
         shared.echo(step)
+    # Behaviour 2 (plans/codeowners-flow-skip-existing-file.md): the no
+    # branch skips the CODEOWNERS flow when the file is already present
+    # - the predicate is ``is_file()`` on ``codeowners_path(target)``,
+    # the exact path the flow would write, so the check and the write
+    # cannot drift. One fixed line, then return: no ask, no echo, no
+    # offer, no git commands, and the exit code is untouched.
+    if picodeowners.codeowners_path(target).is_file():
+        shared.echo(".github/CODEOWNERS already exists - nothing to do.")
+        return
     # Behaviour 20 (plans/file-path-codeowners-interactive.md): the no
     # branch ends in the interactive CODEOWNERS flow, using the SAME
     # default seams (``prompts.ask`` / ``prompts.confirm``) the rest of
