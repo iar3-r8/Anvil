@@ -4261,6 +4261,261 @@ class GateRemediationTests(unittest.TestCase):
                 )
 
 
+class GateRemediationSatisfiedWarnTests(unittest.TestCase):
+    """Behaviour 5 of plans/file-path-fallback-satisfied.md -
+    ``gate_remediation`` needs no ruleset fix for a satisfied warn.
+
+    The same exemption as :class:`GateVerdictSatisfiedWarnTests`, one seam
+    over: a branch finding whose status is ``warn``, whose check is
+    ``file_paths`` and whose ``fallback_in_place`` key is exactly ``True``
+    (the ``is True`` discipline) does NOT set ``needs_ruleset`` - the
+    CODEOWNERS review gate IS the fix, so the "ruleset is already prepared"
+    block must not print. Everything else still sets it: a second branch
+    warn without the marker, a second ``file_paths`` warn whose marker is
+    False or absent, a non-bool marker value, and any branch ``fail`` -
+    the marker True on a fail never suppresses it. ``needs_token_recipe``
+    is computed from the token list exactly as today and is untouched by
+    the exemption; the returned dict keeps exactly the keys
+    ``needs_ruleset`` and ``needs_token_recipe``.
+    """
+
+    def _finding(self, status: str, check: str, rule: Any, **extra: Any) -> Dict[str, Any]:
+        """One finding in the module's own shape, plus ``extra`` keys."""
+        finding: Dict[str, Any] = {
+            "status": status,
+            "check": check,
+            "rule": rule,
+            "brief": "a guard is unmet",
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+        finding.update(extra)
+        return finding
+
+    def _satisfied_warn(self) -> Dict[str, Any]:
+        """The warn finding the ruleset fix must not chase: the
+        ``file_paths`` warn with ``fallback_in_place`` exactly True, in
+        the shape the check emits when both fallback halves are in place."""
+        return self._finding(
+            "warn",
+            "file_paths",
+            "file_path_restriction",
+            brief="push rule off; CODEOWNERS review gate in place",
+            remedy=(
+                "nothing to do - the CODEOWNERS review gate covers this; "
+                "the push rule stays off on your plan"
+            ),
+            fallback_in_place=True,
+        )
+
+    def test_satisfied_warn_alone_needs_no_ruleset(self):
+        remediation = piguard.gate_remediation
+        satisfied = self._satisfied_warn()
+        self.assertIs(
+            satisfied["fallback_in_place"],
+            True,
+            "fixture sanity: the warn carries the marker exactly True",
+        )
+
+        result = remediation([satisfied], [])
+
+        self.assertFalse(
+            result["needs_ruleset"],
+            "a lone satisfied file_paths warn needs no ruleset fix - the "
+            "CODEOWNERS review gate covers it, so the 'ruleset is already "
+            "prepared' block must not print",
+        )
+        self.assertFalse(
+            result["needs_token_recipe"],
+            "an empty token list needs no token recipe",
+        )
+        self.assertEqual(
+            set(result),
+            {"needs_ruleset", "needs_token_recipe"},
+            "the satisfied warn changes values, not shape: the result "
+            "still carries exactly the two pinned keys, no more and no "
+            "fewer: got {!r}".format(sorted(result)),
+        )
+
+    def test_satisfied_warn_plus_passed_findings_needs_no_ruleset(self):
+        remediation = piguard.gate_remediation
+        branch = (
+            [self._satisfied_warn()]
+            + [
+                self._finding("passed", "history_rewrite", "non_fast_forward"),
+                self._finding("passed", "review", "pull_request"),
+                self._finding("passed", "update_restriction", "non_fast_forward"),
+            ]
+        )
+        self.assertEqual(
+            [f for f in branch if _field(f, "status") == "warn"],
+            [branch[0]],
+            "fixture sanity: exactly one warn, and it is the satisfied one",
+        )
+
+        result = remediation(branch, [])
+
+        self.assertFalse(
+            result["needs_ruleset"],
+            "passed findings beside the satisfied warn need no ruleset "
+            "fix - the satisfied warn is the only non-passed element",
+        )
+
+    def test_satisfied_warn_plus_another_branch_warn_needs_ruleset(self):
+        remediation = piguard.gate_remediation
+        branch = [
+            self._satisfied_warn(),
+            self._finding("warn", "history_rewrite", "non_fast_forward"),
+        ]
+
+        result = remediation(branch, [])
+
+        self.assertTrue(
+            result["needs_ruleset"],
+            "a second branch warn without the marker (a history_rewrite "
+            "warn) sets needs_ruleset True again - the exemption is one "
+            "specific warn, not a blanket pass",
+        )
+
+    def test_satisfied_warn_plus_marker_false_file_paths_warn_needs_ruleset(self):
+        remediation = piguard.gate_remediation
+        branch = [
+            self._satisfied_warn(),
+            self._finding(
+                "warn",
+                "file_paths",
+                "file_path_restriction",
+                fallback_in_place=False,
+            ),
+        ]
+
+        result = remediation(branch, [])
+
+        self.assertTrue(
+            result["needs_ruleset"],
+            "a second file_paths warn whose fallback_in_place is False is "
+            "not satisfied and still needs the ruleset fix",
+        )
+
+    def test_satisfied_warn_plus_markerless_file_paths_warn_needs_ruleset(self):
+        remediation = piguard.gate_remediation
+        markerless = self._finding("warn", "file_paths", "file_path_restriction")
+        branch = [self._satisfied_warn(), markerless]
+        self.assertNotIn(
+            "fallback_in_place",
+            markerless,
+            "fixture sanity: the second warn carries no marker key",
+        )
+
+        result = remediation(branch, [])
+
+        self.assertTrue(
+            result["needs_ruleset"],
+            "a file_paths warn with the marker key absent is not satisfied "
+            "(absent is not True) and still needs the ruleset fix",
+        )
+
+    def test_branch_fail_with_marker_true_still_needs_ruleset(self):
+        remediation = piguard.gate_remediation
+        fail = self._finding(
+            "fail",
+            "history_rewrite",
+            "non_fast_forward",
+            fallback_in_place=True,
+        )
+        self.assertIs(
+            fail["fallback_in_place"],
+            True,
+            "fixture sanity: the fail carries the marker exactly True",
+        )
+
+        result = remediation([self._satisfied_warn(), fail], [])
+
+        self.assertTrue(
+            result["needs_ruleset"],
+            "a branch fail still demands the ruleset fix even beside a "
+            "satisfied warn - the marker True on a fail never suppresses "
+            "it, the exemption keys on the warn status",
+        )
+
+    def test_non_bool_marker_does_not_suppress(self):
+        remediation = piguard.gate_remediation
+        for label, value in (
+            ("the string 'true'", "true"),
+            ("the int 1", 1),
+            ("None", None),
+        ):
+            with self.subTest(value=value):
+                finding = self._finding(
+                    "warn",
+                    "file_paths",
+                    "file_path_restriction",
+                    fallback_in_place=value,
+                )
+                self.assertIsNot(
+                    finding["fallback_in_place"],
+                    True,
+                    "fixture sanity: {} is not exactly True".format(label),
+                )
+
+                result = remediation([finding], [])
+
+                self.assertTrue(
+                    result["needs_ruleset"],
+                    "a non-bool marker ({}) is not True under the is-True "
+                    "discipline, so the warn still needs the ruleset "
+                    "fix".format(label),
+                )
+                self.assertEqual(
+                    set(result),
+                    {"needs_ruleset", "needs_token_recipe"},
+                    "the result still carries exactly the two pinned "
+                    "keys: got {!r}".format(sorted(result)),
+                )
+
+    def test_token_fail_still_needs_recipe_beside_satisfied_warn(self):
+        remediation = piguard.gate_remediation
+        token_fail = piguard.probe_administration(
+            "owner",
+            "repo",
+            token="token-xyz",
+            opener=_opener(_FakeResponse(b"{}", 200)),
+        )[0]
+        self.assertEqual(
+            _field(token_fail, "status"),
+            "fail",
+            "fixture sanity: a 200 on the administration endpoint is a fail",
+        )
+
+        result = remediation([self._satisfied_warn()], [token_fail])
+
+        self.assertTrue(
+            result["needs_token_recipe"],
+            "a token fail still needs the token recipe even when the "
+            "branch side is a satisfied warn alone - the exemption "
+            "touches needs_ruleset only, not the token half, which is "
+            "computed from the token list exactly as today",
+        )
+
+    def test_token_passed_findings_need_no_recipe_beside_satisfied_warn(self):
+        remediation = piguard.gate_remediation
+        token = [
+            self._finding("passed", "administration", None),
+            self._finding("passed", "named_repo", None),
+        ]
+
+        result = remediation([self._satisfied_warn()], token)
+
+        self.assertFalse(
+            result["needs_token_recipe"],
+            "all-passed token findings need no token recipe even with the "
+            "satisfied warn on the branch side - the token half is "
+            "computed from the token list exactly as today",
+        )
+
+
 class GateInvariantSweep(unittest.TestCase):
     """Behaviour 14 of plans/setup-repo-guards.md - the gate invariants,
     one sweep over EVERY status the probes can emit.
