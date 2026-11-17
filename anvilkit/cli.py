@@ -1728,12 +1728,19 @@ def _codeowners_flow(
     ``picodeowners.write_codeowners`` (behaviour 17's seam) and echoes
     the written path; a no echoes exactly one line saying nothing was
     written; a ``CodeownersError`` from the seam echoes exactly one line
-    and lets no exception out - the flow ends here for now (behaviour
-    19 will make it continue to the git commands).
+    and lets no exception out.
+
+    Behaviour 19: all three write outcomes - written, write-failed and
+    offer-declined - fall through to one shared ending: one intro line
+    saying to run the git commands yourself, then each of
+    ``picodeowners.commit_commands()`` (behaviour 12) echoed in order.
+    The commands print identically in all three cases, and Anvil never
+    runs them; a declined CONTENT (behaviour 14) ends before the offer
+    and prints none.
 
     ``ask``/``confirm`` are injected seams (the ``_ask_free_plan``
     precedent) defaulting to ``prompts.ask``/``prompts.confirm``.
-    ``branch`` is unused in these behaviours: it feeds the behaviour-19
+    ``branch`` is unused in these behaviours: it feeds the behaviour-20
     commit step, which extends this function, so the signature is fixed
     now.
     """
@@ -1765,16 +1772,18 @@ def _codeowners_flow(
             "Nothing written: the offer was declined; .github/CODEOWNERS "
             "is not written."
         )
-        return
-    try:
-        path = target / ".github" / "CODEOWNERS"
-        written = picodeowners.write_codeowners(path, body)
-        shared.echo(str(written))
-    except picodeowners.CodeownersError as exc:
-        shared.echo("could not write .github/CODEOWNERS: {}".format(exc))
-        return
-    # behaviour 19: the git commands.
-    return
+    else:
+        try:
+            path = target / ".github" / "CODEOWNERS"
+            written = picodeowners.write_codeowners(path, body)
+            shared.echo(str(written))
+        except picodeowners.CodeownersError as exc:
+            shared.echo("could not write .github/CODEOWNERS: {}".format(exc))
+    # behaviour 19: the commands always print - after the written,
+    # failed and declined outcomes alike; Anvil never runs them.
+    shared.echo("Run these yourself in the target repository:")
+    for command in picodeowners.commit_commands():
+        shared.echo(command)
 
 
 def _echo_guard_report(
