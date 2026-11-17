@@ -140,10 +140,26 @@ def walkthrough_steps(owner: str, repo: str, branch: str, body: str) -> List[str
 
 
 def wants_walkthrough(findings: List[Dict[str, Any]]) -> bool:
-    """True iff a warn file_paths finding is present; the ask happens at the cli layer, behaviour 4."""
+    """True iff a warn file_paths finding is present; the ask happens at
+    the cli layer, behaviour 4.
+
+    One exemption (behaviour 6 of
+    plans/file-path-fallback-satisfied.md): a ``file_paths`` warn whose
+    ``fallback_in_place`` marker is exactly ``True`` is satisfied by the
+    CODEOWNERS review gate and does not count: no free-plan question, no
+    six steps, no skip line, no flow. The exemption is check-scoped and
+    marker-exact, the same discipline as the gate seams (behaviours
+    4-5): the marker ``False``, an absent key and a non-bool value are
+    not ``True``, so they do not exempt; a different check's warn never
+    matches because its check is not ``file_paths``.
+    """
     for finding in findings:
         if isinstance(finding, dict):
-            if finding.get("check") == "file_paths" and finding.get("status") == "warn":
+            if (
+                finding.get("check") == "file_paths"
+                and finding.get("status") == "warn"
+                and finding.get("fallback_in_place") is not True
+            ):
                 return True
     return False
 
