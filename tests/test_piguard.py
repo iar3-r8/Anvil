@@ -12714,5 +12714,278 @@ class NoInventedWordTests(unittest.TestCase):
         )
 
 
+class FallbackBoundaryPinTests(unittest.TestCase):
+    """Behaviour 10 of plans/file-path-fallback-satisfied.md - the boundary
+    pins: a no-production-change regression pin.
+
+    The ``fallback_in_place`` marker is read only by the gate seams
+    (``gate_verdict`` and ``gate_remediation``) and never rendered:
+    ``summarize``, ``render_finding`` and ``render_fixes`` are marker-blind,
+    ``check_all``'s ordering and the ``passed`` finding shape are unchanged,
+    and an unknown status neither blocks nor crashes. Every pin below runs
+    today's fixtures with the marker present, stripped or falsified and
+    requires byte-identical results.
+    """
+
+    ABSENT = object()
+
+    def _satisfied_warn(self, marker: Any) -> Dict[str, Any]:
+        """The satisfied warn as ``check_file_paths`` emits it when both
+        halves are in place, with the marker forced to ``marker``: the value
+        ``True``, ``False`` or the sentinel ``ABSENT`` (key deleted)."""
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": True},
+            ),
+        ]
+        finding = piguard.check_file_paths(rules, codeowners_present=True)[0]
+        if marker is self.ABSENT:
+            finding.pop("fallback_in_place", None)
+        else:
+            finding["fallback_in_place"] = marker
+        return finding
+
+    def _variants(self) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        """The satisfied warn in its three marker forms: True, False, absent."""
+        return (
+            self._satisfied_warn(True),
+            self._satisfied_warn(False),
+            self._satisfied_warn(self.ABSENT),
+        )
+
+    def test_summarize_is_marker_blind(self):
+        summarize = piguard.summarize
+        passed = piguard.check_history_rewrite(
+            [rule("non_fast_forward", "main-protected")]
+        )[0]
+        warn_true, warn_false, warn_absent = self._variants()
+        self.assertEqual(
+            _field(passed, "status"),
+            "passed",
+            "fixture sanity: the list's only non-passed element is the "
+            "satisfied warn",
+        )
+
+        summary_true = summarize([passed, warn_true])
+        summary_false = summarize([passed, warn_false])
+        summary_absent = summarize([passed, warn_absent])
+        summary_lone = summarize([warn_true])
+
+        self.assertEqual(summary_true, 0, "pinned: a satisfied warn exits 0")
+        self.assertEqual(
+            summary_false,
+            summary_true,
+            "summarize is marker-blind: the marker False variant must agree",
+        )
+        self.assertEqual(
+            summary_absent,
+            summary_true,
+            "summarize is marker-blind: the marker-absent variant must "
+            "agree",
+        )
+        self.assertEqual(
+            summary_lone,
+            summary_true,
+            "summarize is 1-iff-any-fail, so the satisfied warn (a warn) "
+            "yields the same value alone as inside the passed list",
+        )
+
+    def test_render_finding_is_marker_blind(self):
+        render_finding = piguard.render_finding
+        warn_true, warn_false, warn_absent = self._variants()
+
+        line_true = render_finding(warn_true)
+        line_false = render_finding(warn_false)
+        line_absent = render_finding(warn_absent)
+
+        self.assertEqual(
+            line_true,
+            "warn: file_path_restriction - push rule off; CODEOWNERS review "
+            "gate in place",
+            "pinned: the satisfied warn renders as its status, label and "
+            "brief only",
+        )
+        self.assertEqual(
+            line_false,
+            line_true,
+            "render_finding is marker-blind: the marker False variant "
+            "renders byte-identical",
+        )
+        self.assertEqual(
+            line_absent,
+            line_true,
+            "render_finding is marker-blind: the marker-absent variant "
+            "renders byte-identical",
+        )
+        self.assertNotIn(
+            "fallback",
+            line_true,
+            "the marker never appears in the rendered text",
+        )
+        self.assertNotIn(
+            "in_place",
+            line_true,
+            "the marker never appears in the rendered text",
+        )
+
+    def test_render_fixes_is_marker_blind(self):
+        render_fixes = piguard.render_fixes
+        warn_true, warn_false, warn_absent = self._variants()
+
+        lines_true = render_fixes([warn_true])
+        lines_false = render_fixes([warn_false])
+        lines_absent = render_fixes([warn_absent])
+
+        self.assertEqual(
+            lines_true,
+            [
+                "To fix",
+                "1. file_path_restriction: nothing to do - the CODEOWNERS "
+                "review gate covers",
+                "  this; the push rule stays off on your plan",
+            ],
+            "pinned: the entry is the numbered remedy text",
+        )
+        self.assertEqual(
+            lines_false,
+            lines_true,
+            "render_fixes is marker-blind: the marker False variant "
+            "renders byte-identical",
+        )
+        self.assertEqual(
+            lines_absent,
+            lines_true,
+            "render_fixes is marker-blind: the marker-absent variant "
+            "renders byte-identical",
+        )
+        self.assertNotIn(
+            "fallback",
+            "\n".join(lines_true),
+            "the marker never appears in the rendered fixes",
+        )
+        self.assertNotIn(
+            "in_place",
+            "\n".join(lines_true),
+            "the marker never appears in the rendered fixes",
+        )
+
+    def test_check_all_ordering_is_unchanged(self):
+        fixture = [
+            rule("non_fast_forward", "main-protected"),
+            rule("deletion", "main-protected"),
+            pull_request_rule("main-protected", 2),
+            update_rule(
+                "main-protected",
+                {"update_allows_fetch_and_merge": False},
+            ),
+            file_path_rule(
+                "main-protected",
+                {"restricted_file_paths": [".github/workflows/**"]},
+            ),
+        ]
+
+        findings = piguard.check_all(fixture)
+
+        self.assertEqual(
+            [(_field(f, "status"), _field(f, "check")) for f in findings],
+            [
+                ("passed", "history_rewrite"),
+                ("passed", "history_rewrite"),
+                ("passed", "review"),
+                ("passed", "update_restriction"),
+                ("passed", "file_paths"),
+            ],
+            "pinned: check_all reports the five findings in today's exact "
+            "order, the file_paths finding last",
+        )
+        self.assertEqual(
+            _field(findings[4], "rule"),
+            "file_path_restriction",
+            "pinned: the last finding is the file_path_restriction one",
+        )
+
+    def test_passed_finding_gains_no_key(self):
+        rules = [
+            file_path_rule(
+                "main-protected",
+                {"restricted_file_paths": [".github/workflows/**"]},
+            ),
+        ]
+
+        finding_default = piguard.check_file_paths(rules)[0]
+        finding_present = piguard.check_file_paths(
+            rules, codeowners_present=True
+        )[0]
+
+        for finding in (finding_default, finding_present):
+            with self.subTest(finding=finding):
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "passed",
+                    "fixture sanity: a present rule passes",
+                )
+                self.assertNotIn(
+                    "fallback_in_place",
+                    finding,
+                    "the passed finding gains no marker key, regardless of "
+                    "the codeowners_present keyword",
+                )
+                self.assertEqual(
+                    sorted(finding),
+                    [
+                        "brief",
+                        "check",
+                        "danger",
+                        "remedy",
+                        "restricted_file_paths",
+                        "rule",
+                        "source",
+                        "status",
+                    ],
+                    "pinned: the passed finding keeps exactly today's "
+                    "eight keys",
+                )
+        self.assertEqual(
+            finding_present,
+            finding_default,
+            "the passed finding is byte-identical with the file half "
+            "present or absent",
+        )
+
+    def test_unknown_status_neither_blocks_nor_crashes(self):
+        unknown = {
+            "status": "weird",
+            "check": "file_paths",
+            "rule": "file_path_restriction",
+            "brief": "an unknown status",
+            "danger": "an unknown status",
+            "source": None,
+            "remedy": "nothing to do",
+        }
+        satisfied = self._satisfied_warn(True)
+
+        verdict = piguard.gate_verdict([unknown, satisfied])
+
+        self.assertEqual(
+            verdict,
+            "clean",
+            "an unknown status is neither a fail nor a warn, so it blocks "
+            "nothing: the satisfied warn alone must not block either",
+        )
+        self.assertEqual(
+            piguard.summarize([unknown, satisfied]),
+            piguard.summarize([satisfied]),
+            "summarize is 1-iff-any-fail: an unknown status changes "
+            "nothing, both sides pinned at 0",
+        )
+        self.assertEqual(
+            piguard.summarize([satisfied]),
+            0,
+            "pinned: the satisfied warn alone yields 0",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
