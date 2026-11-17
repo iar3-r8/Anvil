@@ -672,6 +672,213 @@ class WantsWalkthroughTests(WantsWalkthroughTestCase):
        )
 
 
+class WantsWalkthroughSatisfiedWarnTests(WantsWalkthroughTestCase):
+   """Behaviour 6 of plans/file-path-fallback-satisfied.md: the
+   follow-up does not fire for a satisfied warn.
+
+   A ``file_paths`` warn whose ``fallback_in_place`` marker is exactly
+   ``True`` is satisfied by the CODEOWNERS review gate and does not count:
+   no free-plan question, no six steps, no skip line, no flow. The
+   exemption is check-scoped and marker-exact, the same discipline as the
+   gate seams (behaviours 4-5): a ``file_paths`` warn with the marker
+   ``False`` or absent still returns True, a non-bool marker value is not
+   ``True`` so it does not exempt, and a different check's warn carrying
+   the marker True is False because the check is not ``file_paths``, not
+   because of the marker. Non-dict and key-missing elements are ignored,
+   as today.
+   """
+
+   def _satisfied_warn(self):
+       """The satisfied warn the predicate must not count: the
+       ``file_paths`` warn with ``fallback_in_place`` exactly True, in the
+       shape the check emits when both fallback halves are in place."""
+       return self._finding(
+           "warn",
+           "file_paths",
+           "file_path_restriction",
+           brief="push rule off; CODEOWNERS review gate in place",
+           fallback_in_place=True,
+       )
+
+   def _passed_finding(self, check, rule, brief):
+       return self._finding(
+           "passed",
+           check,
+           rule,
+           brief=brief,
+           danger="",
+           remedy="nothing to do",
+       )
+
+   def test_wants_walkthrough_false_for_a_satisfied_file_paths_warn(self):
+       wants = self._get_wants_walkthrough()
+       findings = [self._satisfied_warn()]
+
+       self.assertIs(
+           wants(findings),
+           False,
+           "a file_paths warn whose fallback_in_place is exactly True is "
+           "satisfied - the follow-up must not fire for it on its own",
+       )
+
+   def test_wants_walkthrough_false_when_only_satisfied_warn_among_passed_findings(self):
+       # The guard report carries the other branch findings; a satisfied
+       # warn among passed findings must still not trigger the
+       # walkthrough - the predicate keys on the file_paths warn
+       # specifically, and this one is exempt.
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._passed_finding(
+               "history_rewrite",
+               "non_fast_forward",
+               "force pushes blocked",
+           ),
+           self._passed_finding(
+               "review",
+               "pull_request",
+               "review required (1 required approval)",
+           ),
+           self._passed_finding(
+               "update_restriction",
+               "non_fast_forward",
+               "fast-forward only",
+           ),
+           self._satisfied_warn(),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           False,
+           "a satisfied file_paths warn among the other passed findings "
+           "must not trigger the walkthrough",
+       )
+
+   def test_wants_walkthrough_true_for_marker_false_file_paths_warn(self):
+       # The check attaches the marker False when only one fallback half
+       # is in place: the warn is not satisfied and the follow-up still
+       # fires.
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding(
+               "warn",
+               "file_paths",
+               "file_path_restriction",
+               fallback_in_place=False,
+           ),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           True,
+           "a file_paths warn whose fallback_in_place is False is not "
+           "satisfied and must still trigger the walkthrough",
+       )
+
+   def test_wants_walkthrough_true_for_marker_absent_file_paths_warn(self):
+       # Today's shape, pre-behaviour 2: the key is absent and the warn
+       # still triggers the walkthrough - absence is not satisfaction.
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding("warn", "file_paths", "file_path_restriction"),
+       ]
+       self.assertNotIn(
+           "fallback_in_place",
+           findings[0],
+           "this pin must use the pre-marker shape with no "
+           "fallback_in_place key at all",
+       )
+
+       self.assertIs(
+           wants(findings),
+           True,
+           "a file_paths warn with no fallback_in_place key at all is not "
+           "satisfied and must still trigger the walkthrough",
+       )
+
+   def test_wants_walkthrough_true_for_non_bool_marker_values(self):
+       # The is-True discipline: only exactly True exempts. A non-bool
+       # marker value - a truthy string, a truthy int, or None - does not
+       # satisfy the warn, so the follow-up still fires.
+       wants = self._get_wants_walkthrough()
+
+       for value in ("true", 1, None):
+           with self.subTest(marker=value):
+               findings = [
+                   self._finding(
+                       "warn",
+                       "file_paths",
+                       "file_path_restriction",
+                       fallback_in_place=value,
+                   ),
+               ]
+
+               self.assertIs(
+                   wants(findings),
+                   True,
+                   "a non-bool fallback_in_place value {!r} is not exactly "
+                   "True, so the warn is not satisfied and the "
+                   "walkthrough must still fire".format(value),
+               )
+
+   def test_wants_walkthrough_false_for_other_check_warn_with_marker_true(self):
+       # The exemption is check-scoped to file_paths, as in behaviours
+       # 4-5: a DIFFERENT check's warn carrying fallback_in_place True is
+       # False because the predicate keys on check == "file_paths" and
+       # this check is not file_paths - not because of the marker. An
+       # over-broad future exemption that exempts any warn carrying the
+       # marker, regardless of check, would return True here.
+       wants = self._get_wants_walkthrough()
+       findings = [
+           self._finding(
+               "warn",
+               "history_rewrite",
+               "deletion",
+               brief="branch deletion not blocked",
+               danger="main can be force-deleted",
+               remedy="turn on the deletion protection rule",
+               fallback_in_place=True,
+           ),
+       ]
+
+       self.assertIs(
+           wants(findings),
+           False,
+           "the exemption is check-scoped to file_paths: a different warn "
+           "check carrying fallback_in_place True is False because its "
+           "check is not file_paths, not because of the marker",
+       )
+
+   def test_wants_walkthrough_ignores_malformed_around_the_satisfied_warn(self):
+       # Non-dict and key-missing elements are ignored as today, around a
+       # satisfied warn: the garbage neither hides the exemption nor
+       # crashes, and the satisfied warn still does not count. A
+       # marker-less file_paths warn among the same garbage is still
+       # seen.
+       wants = self._get_wants_walkthrough()
+       garbage = ["garbage", None, 42]
+
+       with self.subTest(kind="satisfied warn among garbage"):
+           findings = list(garbage) + [self._satisfied_warn()]
+           self.assertIs(
+               wants(findings),
+               False,
+               "non-dict elements must be ignored and the satisfied warn "
+               "still exempt; a crash would mean the contract is unmet",
+           )
+
+       with self.subTest(kind="marker-less warn among garbage"):
+           findings = list(garbage) + [
+               self._finding("warn", "file_paths", "file_path_restriction"),
+           ]
+           self.assertIs(
+               wants(findings),
+               True,
+               "non-dict elements must be ignored and the marker-less "
+               "file_paths warn still seen; the exemption must not have "
+               "swallowed it",
+           )
+
+
 # ---------------------------------------------------------------------------
 # Behaviour 11 of plans/file-path-codeowners-interactive.md: the body
 # accepts the handles the user gave. The same function, the same name, one
