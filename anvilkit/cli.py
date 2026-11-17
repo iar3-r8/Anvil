@@ -1359,12 +1359,25 @@ def setup_repo(
             branch_findings, token_findings, repository = _collect_guard_findings(
                 Path(path), token, "main"
             )
-            if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
+            # Behaviour 11: the report prints whenever ANY finding has
+            # status warn or fail - computed over the branch + token
+            # findings together, the same combined list the verdict and
+            # the renderers see - not only when the gate blocks, so a
+            # proceeding gate shows why the warn stands. The condition
+            # is status-only, piguard.render_fixes' own selection rule,
+            # and NEVER includes skipped: a clean gate of only
+            # passed/skipped findings prints nothing, as today (a plain
+            # target with no git origin is all-skipped).
+            if any(
+                finding.get("status") in ("warn", "fail")
+                for finding in branch_findings + token_findings
+            ):
                 shared.echo("")
                 # Behaviour 6: the sectioned report, the same blocks
                 # verify-guards prints - never re-derived. The findings
                 # carry no token value, so nothing secret is echoed.
                 _echo_guard_report(shared, branch_findings, token_findings)
+            if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
                 _free_plan_followup(
                     shared, branch_findings, repository, "main", Path(path)
                 )
