@@ -1044,6 +1044,147 @@ _OWN_WORD = re.compile(r"\bown\b")
 _OPTION_OFF = "unless"
 
 
+class CodeownersPathTests(unittest.TestCase):
+    """Behaviour 1 of plans/codeowners-flow-skip-existing-file.md: ``codeowners_path(target)`` -> ``target/.github/CODEOWNERS`` as a Path.
+
+    The module imports fine (the other tests in this file prove it); each
+    pin calls the attribute directly so the red state is a verbatim
+    ``AttributeError`` - the builder does not exist yet. No test touches
+    the network; pin 2's "no filesystem touch" is checked with a before/
+    after listing of a temp base whose target subdir does not exist.
+    """
+
+    def _picodeowners(self):
+        """Import anvilkit.pi.picodeowners, failing clearly if the module is absent."""
+        try:
+            from anvilkit.pi import picodeowners
+        except ImportError:
+            self.fail(_ABSENT)
+        return picodeowners
+
+    @staticmethod
+    def _snapshot(root):
+        """Every entry under ``root`` as a sorted list of relative path strings - a listing that ignores nothing."""
+        import os
+
+        entries = []
+        for dirpath, dirnames, filenames in os.walk(str(root)):
+            for name in dirnames + filenames:
+                entries.append(
+                    str((Path(dirpath) / name).relative_to(str(root)))
+                )
+        return sorted(entries)
+
+    def test_codeowners_path_returns_the_joined_path_with_the_exact_components(self):
+        """Pin 1: codeowners_path(target) == target / ".github" / "CODEOWNERS" as a Path, with the case-sensitive components pinned."""
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+
+            result = picodeowners.codeowners_path(target)
+
+            self.assertIsInstance(
+                result,
+                Path,
+                "codeowners_path must return a Path; got: "
+                "{!r}".format(result),
+            )
+            self.assertEqual(
+                result,
+                target / ".github" / "CODEOWNERS",
+                "codeowners_path must return target / .github / "
+                "CODEOWNERS; got: {!r}".format(result),
+            )
+            self.assertEqual(
+                list(result.parts[-2:]),
+                [".github", "CODEOWNERS"],
+                "the last two components must be exactly '.github' and the "
+                "case-sensitive name 'CODEOWNERS' GitHub honours; got: "
+                "{!r}".format(list(result.parts[-2:])),
+            )
+
+    def test_codeowners_path_is_pure_and_touches_nothing(self):
+        """Pin 2: works on a target that does not exist and leaves the temp base listing unchanged - no exception, no write."""
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "no-such-subdir"
+            self.assertFalse(
+                target.exists(),
+                "the fixture must start with the target absent",
+            )
+            before = self._snapshot(Path(tmp))
+
+            result = picodeowners.codeowners_path(target)
+
+            self.assertIsInstance(result, Path)
+            self.assertEqual(
+                self._snapshot(Path(tmp)),
+                before,
+                "codeowners_path must not touch the filesystem: the temp "
+                "base listing changed from {!r} to "
+                "{!r}".format(before, self._snapshot(Path(tmp))),
+            )
+
+    def test_codeowners_path_is_deterministic(self):
+        """Pin 3: two calls with the same target return equal paths."""
+        import tempfile
+
+        picodeowners = self._picodeowners()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp)
+
+            first = picodeowners.codeowners_path(target)
+            second = picodeowners.codeowners_path(target)
+
+            self.assertEqual(
+                first,
+                second,
+                "codeowners_path must be deterministic; got two different "
+                "paths: {!r} vs {!r}".format(first, second),
+            )
+
+    def test_codeowners_path_joins_as_given_and_never_resolves(self):
+        """Pin 4: a relative target yields a relative path with the given prefix parts verbatim; an absolute target yields an absolute path whose given prefix is preserved."""
+        picodeowners = self._picodeowners()
+
+        relative_target = Path("somewhere")
+        relative_result = picodeowners.codeowners_path(relative_target)
+
+        self.assertFalse(
+            relative_result.is_absolute(),
+            "a relative target must be joined as given and never resolved "
+            "to absolute; got: {!r}".format(relative_result),
+        )
+        self.assertEqual(
+            list(relative_result.parts),
+            ["somewhere", ".github", "CODEOWNERS"],
+            "the relative result's parts must be exactly the given "
+            "prefix, '.github' and 'CODEOWNERS'; got: "
+            "{!r}".format(list(relative_result.parts)),
+        )
+
+        absolute_target = Path("/definitely/not/real/abs-target")
+        absolute_result = picodeowners.codeowners_path(absolute_target)
+
+        self.assertTrue(
+            absolute_result.is_absolute(),
+            "an absolute target must stay absolute; got: "
+            "{!r}".format(absolute_result),
+        )
+        self.assertTrue(
+            str(absolute_result).startswith(str(absolute_target)),
+            "the given absolute prefix must be preserved verbatim (never "
+            "resolved or normalised away); got: {!r}".format(absolute_result),
+        )
+
+
 class SelfApprovalTextTests(unittest.TestCase):
     """Behaviour 13: ``last_push_step()`` and ``self_approval_warning(owner, repo_owner)`` as display text.
 
