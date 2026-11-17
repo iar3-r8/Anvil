@@ -1130,6 +1130,247 @@ class CodeOwnerReviewOnTests(unittest.TestCase):
                 )
 
 
+class FilePathFallbackMarkerTests(unittest.TestCase):
+    """Behaviours 2-3 of plans/file-path-fallback-satisfied.md: the
+    ``fallback_in_place`` marker on the ``file_path_restriction`` warn.
+
+    The warn finding gains ``fallback_in_place`` defaulting to ``False``;
+    the new ``codeowners_present`` keyword on ``check_file_paths`` lets the
+    caller name the file half. When the file half is present AND the
+    already-fetched ``pull_request`` rule carries
+    ``require_code_owner_review`` exactly True, the brief and the remedy
+    name the fallback as in place - status stays ``warn``, and danger and
+    source are unchanged. The passed finding gains no key.
+    """
+
+    # The warn finding as emitted today, byte-identical: the six keys at
+    # anvilkit/pi/piguard.py:1358, the danger from _DANGERS and the remedy
+    # from _WARN_REMEDIES.
+    _TODAY_WARN = {
+        "status": "warn",
+        "check": "file_paths",
+        "rule": "file_path_restriction",
+        "brief": "a push can change .github/workflows/**, what CI runs",
+        "danger": "a push can change .github/workflows/**, what CI runs",
+        "source": None,
+        "remedy": (
+            'turn on "Restrict file paths" for main, listing '
+            ".github/workflows/**. If not shown - it is unavailable "
+            "on your plan - use a CODEOWNERS file and turn on "
+            "require_code_owner_review."
+        ),
+    }
+
+    def _warn(self, rules, **kwargs):
+        """Run ``check_file_paths`` and return its one warn finding."""
+        findings = piguard.check_file_paths(rules, **kwargs)
+        warns = [f for f in findings if _field(f, "status") == "warn"]
+        self.assertEqual(
+            len(warns),
+            1,
+            "expected exactly one warn finding, got {!r}".format(findings),
+        )
+        return warns[0]
+
+    def test_warn_finding_carries_fallback_in_place_marker_default_off(self):
+        expected = dict(self._TODAY_WARN)
+        expected["fallback_in_place"] = False
+
+        warn = self._warn([rule("non_fast_forward", "main-protected")])
+
+        self.assertIn(
+            "fallback_in_place",
+            warn,
+            "the warn finding must carry the fallback_in_place marker",
+        )
+        self.assertIs(
+            warn["fallback_in_place"],
+            False,
+            "the marker defaults off: no argument means the fallback is "
+            "not claimed in place",
+        )
+        self.assertEqual(
+            warn,
+            expected,
+            "the warn finding gains the marker and its six existing keys "
+            "stay byte-identical",
+        )
+
+    def test_warn_finding_fallback_in_place_explicit_false_matches_default(self):
+        expected = dict(self._TODAY_WARN)
+        expected["fallback_in_place"] = False
+
+        warn = self._warn(
+            [rule("non_fast_forward", "main-protected")],
+            codeowners_present=False,
+        )
+
+        self.assertIs(
+            warn["fallback_in_place"],
+            False,
+            "an explicit codeowners_present=False must agree with the "
+            "default",
+        )
+        self.assertEqual(
+            warn,
+            expected,
+            "an explicit codeowners_present=False must agree with the "
+            "default",
+        )
+
+    def test_review_on_but_file_absent_keeps_marker_off_and_today_words(self):
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": True},
+            ),
+        ]
+
+        warn = self._warn(rules, codeowners_present=False)
+
+        self.assertIs(
+            warn["fallback_in_place"],
+            False,
+            "the review half alone is not the fallback in place: the "
+            "CODEOWNERS file half is absent",
+        )
+        self.assertEqual(
+            _field(warn, "brief"),
+            self._TODAY_WARN["brief"],
+            "the brief stays today's verbatim when the file half is missing",
+        )
+        self.assertEqual(
+            _field(warn, "remedy"),
+            self._TODAY_WARN["remedy"],
+            "the remedy stays today's verbatim when the file half is missing",
+        )
+
+    def test_file_present_but_review_off_keeps_marker_off_and_today_words(self):
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": False},
+            ),
+        ]
+
+        warn = self._warn(rules, codeowners_present=True)
+
+        self.assertIs(
+            warn["fallback_in_place"],
+            False,
+            "the file half alone is not the fallback in place: the review "
+            "gate is off",
+        )
+        self.assertEqual(
+            _field(warn, "brief"),
+            self._TODAY_WARN["brief"],
+            "the brief stays today's verbatim when the review half is missing",
+        )
+        self.assertEqual(
+            _field(warn, "remedy"),
+            self._TODAY_WARN["remedy"],
+            "the remedy stays today's verbatim when the review half is missing",
+        )
+
+    def test_both_halves_in_place_rewords_warn_brief_and_remedy(self):
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": True},
+            ),
+        ]
+
+        warn = self._warn(rules, codeowners_present=True)
+
+        self.assertIs(
+            warn["fallback_in_place"],
+            True,
+            "both halves in place must set the marker",
+        )
+        self.assertEqual(
+            _field(warn, "status"),
+            "warn",
+            "a satisfied warn stays a warn: the push rule is still off",
+        )
+        self.assertEqual(
+            _field(warn, "danger"),
+            "a push can change .github/workflows/**, what CI runs",
+            "danger is the existing _DANGERS value, verbatim",
+        )
+        self.assertIsNone(
+            _field(warn, "source"),
+            "source stays None on the reworded warn",
+        )
+        self.assertEqual(
+            _field(warn, "brief"),
+            "push rule off; CODEOWNERS review gate in place",
+            "the reworded brief names the fallback as in place",
+        )
+        self.assertEqual(
+            _field(warn, "remedy"),
+            "nothing to do - the CODEOWNERS review gate covers this; "
+            "the push rule stays off on your plan",
+            "the reworded remedy names nothing to do",
+        )
+
+    def test_present_rule_yields_passed_finding_regardless_of_halves(self):
+        rules = [
+            file_path_rule(
+                "main-protected",
+                {"restricted_file_paths": [".github/workflows/**"]},
+            ),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": True},
+            ),
+        ]
+
+        findings = piguard.check_file_paths(rules, codeowners_present=True)
+
+        self.assertEqual(
+            findings,
+            [
+                {
+                    "status": "passed",
+                    "check": "file_paths",
+                    "rule": "file_path_restriction",
+                    "brief": "listed paths protected (.github/workflows/**)",
+                    "danger": "",
+                    "source": "main-protected",
+                    "restricted_file_paths": [".github/workflows/**"],
+                    "remedy": "nothing to do - the listed paths are protected",
+                }
+            ],
+            "a present file_path_restriction yields today's passed finding "
+            "byte-identical regardless of the fallback halves",
+        )
+
+    def test_passed_finding_never_carries_fallback_in_place_key(self):
+        rules = [
+            file_path_rule(
+                "main-protected",
+                {"restricted_file_paths": [".github/workflows/**"]},
+            ),
+        ]
+
+        findings = piguard.check_file_paths(rules)
+
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "fixture sanity: a present rule passes",
+        )
+        self.assertNotIn(
+            "fallback_in_place",
+            finding,
+            "the passed finding gains no marker key",
+        )
+
+
 class RenderFindingTests(unittest.TestCase):
     """Behaviour 3 of plans/guard-finding-compact.md: render_finding is the one vocabulary.
 
