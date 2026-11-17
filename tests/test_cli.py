@@ -14461,3 +14461,667 @@ class TestCodeownersFlowSkipPresent(CliCase):
         self._assert_seams_never_called(
             result, asks, confirms, "no path with a symlink to a real file"
         )
+
+
+class TestCodeownersFlowSkipBoundary(CliCase):
+    """Boundary pins for behaviours 3, 4, 6 and 7 of
+    plans/codeowners-flow-skip-existing-file.md - all no-production-change:
+    the skip (behaviour 2) already landed, these pins prove it holds at its
+    boundaries.
+
+    Behaviour 3 - the absent file changes nothing: an empty target runs the
+    no path in full - no skip line, the handles ask IS recorded, the body
+    echoes, the offer declines, the intro line and the three commands print,
+    and the exit is the follow-up-disabled baseline's exit.
+
+    Behaviour 4 - a directory at the path does not skip: ``is_file()`` is
+    False for a directory, so the flow runs in full; the accepted offer
+    reaches ``write_codeowners``, whose "it is a directory" error prints as
+    one line (the message the write seam already carries, anvilkit/pi/
+    picodeowners.py:273), the git commands still print, no exception leaves
+    the run and the directory is still a directory with no file inside it.
+
+    Behaviour 6 - both call sites inherit the skip: the blocked setup-repo
+    gate with the file present skips with the same one line, still prints
+    its ``⛔`` block line after the follow-up, and still exits
+    ``EXIT_GUARDS_BLOCKED`` (9); an unresolvable repository returns before
+    any of this, so the report is byte-identical to the follow-up-disabled
+    baseline - no prompt, no flow, no skip line.
+
+    Behaviour 7 - the present file is never touched: at the gate the file's
+    bytes are identical after the run and the tree gains no file beyond the
+    one the gate is allowed to prepare (``.github-ruleset.json``, behaviour
+    7 of plans/setup-repo-guards.md); in the directory case the tree stays
+    byte-identical and the directory gains no file.
+
+    Wiring: the same precedent as ``TestCodeownersFlowSkipPresent`` and
+    ``TestCodeownersFlowWiring`` - ``_is_interactive`` forced True, the
+    file_paths warn fixture, the resolved (or, for the unresolvable-repo
+    pin, the absent) repository, ``prompts.confirm`` a per-call queue and
+    ``prompts.ask`` a recorder returning the fixed handle.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    GATE_TOKEN = "ghp_skip_boundary"
+    SKIP_LINE = TestCodeownersFlowSkipPresent.SKIP_LINE
+    STEP_TOKENS = TestCodeownersFlowWiring.STEP_TOKENS
+    CODEOWNERS_BYTES = TestCodeownersFlowSkipPresent.CODEOWNERS_BYTES
+    ASK_ANSWER = "@alice"
+    INTRO_LINE = "Run these yourself in the target repository (branch main):"
+
+    # -- fixtures, seams and fakes ---------------------------------------------
+
+    def _codeowners_path(self, target):
+        """The one path the skip checks and the flow writes:
+        ``target/.github/CODEOWNERS``."""
+        return target / ".github" / "CODEOWNERS"
+
+    def _write_present_file(self, target):
+        """A real file at the path with the known bytes."""
+        path = self._codeowners_path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.CODEOWNERS_BYTES)
+        return path
+
+    def _make_directory_at_path(self, target):
+        """A directory at the path: ``is_file()`` False, so the flow must
+        run and the accepted offer must surface the write seam's directory
+        error."""
+        path = self._codeowners_path(target)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir()
+        return path
+
+    def _file_paths_warn_findings(self):
+        """The five-rule findings with ``file_paths`` flipped to its warn
+        shape: the other four rules passed, ``wants_walkthrough`` True,
+        ``summarize`` 0 (a warn never fails the summarize)."""
+        findings = cli.piguard.check_all(five_rule_branch_rules())
+        warn = cli.piguard.check_file_paths([])[0]
+        for index, finding in enumerate(findings):
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
+                findings[index] = warn
+        self.assertTrue(
+            cli.picodeowners.wants_walkthrough(findings),
+            "the fixture must carry a file_paths warn finding so the "
+            "walkthrough ask is wanted",
+        )
+        self.assertEqual(
+            0,
+            cli.piguard.summarize(findings),
+            "the fixture must summarize to 0 - a warn is reported, not "
+            "a failure",
+        )
+        return findings
+
+    def _guard_seams(self, findings, repository):
+        """The four piguard seams replaced, so the guard flow runs
+        offline on exactly the fixture this class wants reported."""
+        return (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", return_value=repository
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=findings),
+            mock.patch.object(cli.piguard, "check_token_all", return_value=[]),
+        )
+
+    def _confirm_queue_fake(self, queue):
+        """A per-call ``prompts.confirm`` fake: answers consumed from
+        ``queue`` in call order (the free-plan question first, then the
+        flow's content confirm, then the offer confirm), arguments
+        recorded."""
+        confirms = []
+
+        def confirm(prompt, default=False, *args, **kwargs):
+            confirms.append((prompt, default))
+            return queue.pop(0) if queue else False
+
+        return confirm, confirms
+
+    def _ask_fake(self, answer):
+        """A ``prompts.ask`` fake for the flow's handles ask: records its
+        (prompt, default) arguments and returns the fixed handle."""
+        asks = []
+
+        def ask(prompt, default=None, *args, **kwargs):
+            asks.append((prompt, default))
+            return answer
+
+        return ask, asks
+
+    def _tree_snapshot(self, root):
+        """Every file under an arbitrary root (the gate's tempdir target),
+        mapped to its bytes - ``CliCase.snapshot`` is project-only."""
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in sorted(root.rglob("*"))
+            if path.is_file()
+        }
+
+    def _gate_target(self):
+        """A fresh empty target directory for a blocked gate run."""
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+        return Path(target.name)
+
+    def _run_verify_guards(self, queue, ask_answer, repository):
+        """One interactive ``verify-guards`` no-path run on
+        ``self.project``: the question answered no, the flow's two
+        confirms queued from ``queue``. Returns ``(result, asks, confirms,
+        findings)``; ``self.invoke`` re-raises any non-exit exception, so
+        the run must complete normally."""
+        findings = self._file_paths_warn_findings()
+        confirm_fake, confirms = self._confirm_queue_fake(list(queue))
+        ask_fake, asks = self._ask_fake(ask_answer)
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "confirm", side_effect=confirm_fake),
+            mock.patch.object(cli.prompts, "ask", side_effect=ask_fake),
+        ) + self._guard_seams(findings, repository)
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+        return result, asks, confirms, findings
+
+    def _run_blocked_gate(self, queue, ask_answer, repository, target=None):
+        """One interactive blocked ``setup-repo`` gate run on a fresh
+        empty target - or on the caller's pre-made ``target``, for the
+        pins that plant the present file BEFORE the run (the file must
+        live in the directory the gate actually runs on): a stored token
+        (reused without prompting), offline seams, the same per-call
+        fakes. Returns ``(result, asks, confirms, findings, target)``."""
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN=self.GATE_TOKEN)
+        if target is None:
+            target = self._gate_target()
+        findings = self._file_paths_warn_findings()
+        confirm_fake, confirms = self._confirm_queue_fake(list(queue))
+        ask_fake, asks = self._ask_fake(ask_answer)
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "confirm", side_effect=confirm_fake),
+            mock.patch.object(cli.prompts, "ask", side_effect=ask_fake),
+        ) + self._guard_seams(findings, repository)
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(["setup-repo", str(target)])
+        return result, asks, confirms, findings, target
+
+    def _baseline_verify_guards(self):
+        """The same ``verify-guards`` run with the WHOLE follow-up
+        disabled (question + flow): the exit-code and output baseline the
+        no-path runs must equal."""
+        findings = self._file_paths_warn_findings()
+        for patcher in self._guard_seams(findings, (self.OWNER, self.REPO)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+            result = self.invoke(
+                ["verify-guards", str(self.project), "--branch", "main"]
+            )
+        return result, findings
+
+    # -- pin 1: behaviour 3 - the absent file changes nothing -------------------
+
+    def test_absent_file_does_not_skip_so_the_full_flow_runs(self):
+        """An empty target: the skip line is ABSENT and the whole flow
+        runs - the six steps, the handles ask (recorded, default the
+        pre-filled @owner), the body echoed, the declined-offer line, the
+        intro line and the three commit commands - and all three confirms
+        are consumed (question, content, offer), so a run that did skip
+        would be caught. The exit equals the follow-up-disabled baseline's
+        exit and the summarize of the warn fixture - the absent file
+        changes nothing."""
+        self.assertFalse(
+            self._codeowners_path(self.project).exists(),
+            "fixture sanity: the file must be absent for this pin",
+        )
+        result, asks, confirms, findings = self._run_verify_guards(
+            (False, True, False), self.ASK_ANSWER, (self.OWNER, self.REPO)
+        )
+        self.assertEqual(
+            0,
+            result.output.count(self.SKIP_LINE),
+            "the absent file must NOT skip - the skip line is present:\n"
+            "{}".format(result.output),
+        )
+        for token in self.STEP_TOKENS:
+            self.assertIn(
+                token,
+                result.output,
+                "the six-step walkthrough must print - step token {!r} "
+                "is missing:\n{}".format(token, result.output),
+            )
+        self.assertEqual(
+            1,
+            len(asks),
+            "the absent file must reach the flow's handles ask exactly "
+            "once - {} ask(s) recorded:\n{}".format(len(asks), result.output),
+        )
+        prompt, default = asks[0]
+        self.assertIn(
+            "handle",
+            prompt.lower(),
+            "the handles ask prompt must name the handle - prompt={!r}"
+            .format(prompt),
+        )
+        self.assertEqual(
+            "@" + self.OWNER,
+            default,
+            "the handles ask must default to the pre-filled @owner - "
+            "default={!r}".format(default),
+        )
+        body = cli.picodeowners.codeowners_body(self.ASK_ANSWER)
+        for line in body.splitlines():
+            self.assertIn(
+                line,
+                result.output,
+                "the built body must be echoed verbatim - the line {!r} "
+                "is missing:\n{}".format(line, result.output),
+            )
+        self.assertIn(
+            "Nothing written",
+            result.output,
+            "the declined offer must print its one line saying nothing "
+            "was written:\n{}".format(result.output),
+        )
+        self.assertIn(
+            self.INTRO_LINE,
+            result.output,
+            "the intro line naming the branch must print:\n{}".format(
+                result.output
+            ),
+        )
+        for command in cli.picodeowners.commit_commands():
+            self.assertIn(
+                command,
+                result.output,
+                "the three commands must print - the command {!r} is "
+                "missing:\n{}".format(command, result.output),
+            )
+        self.assertEqual(
+            3,
+            len(confirms),
+            "all three confirms must be consumed - the free-plan "
+            "question, the content confirm and the offer confirm - a "
+            "skipped run consumes at most one: {} recorded: "
+            "{}\n{}".format(len(confirms), confirms, result.output),
+        )
+        self.assertIn(
+            "Restrict file paths",
+            confirms[0][0],
+            "the FIRST confirm must be the free-plan question: "
+            "prompt={!r}".format(confirms[0][0]),
+        )
+        baseline, _ = self._baseline_verify_guards()
+        self.assertEqual(
+            baseline.exit_code,
+            result.exit_code,
+            "the absent file must exit the baseline run's exit (the "
+            "follow-up wiring disabled): baseline {} vs got {}\n{}".format(
+                baseline.exit_code, result.exit_code, result.output
+            ),
+        )
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "the exit is the summarize of the findings - got {}\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+
+    # -- pin 2: behaviour 4 - a directory at the path does not skip -------------
+
+    def test_directory_at_the_path_does_not_skip_and_surfaces_the_error(self):
+        """A directory at ``target/.github/CODEOWNERS`` has ``is_file()``
+        False, so the run must NOT skip: no skip line, the handles ask IS
+        recorded, and with the offer accepted the write reaches
+        ``write_codeowners``, whose "it is a directory" error prints as
+        exactly one line - a broken tree is surfaced, never swallowed.
+        The git commands still print (behaviour 19 unchanged), no
+        exception leaves the run (``self.invoke`` re-raises), the exit
+        equals the baseline, and the directory is still a directory with
+        no file created inside it."""
+        path = self._make_directory_at_path(self.project)
+        self.assertTrue(
+            path.is_dir(),
+            "fixture sanity: the path must be a directory",
+        )
+        self.assertFalse(
+            path.is_file(),
+            "fixture sanity: a directory's is_file() is False - the "
+            "skip's stated predicate",
+        )
+        result, asks, confirms, findings = self._run_verify_guards(
+            (False, True, True), self.ASK_ANSWER, (self.OWNER, self.REPO)
+        )
+        self.assertEqual(
+            0,
+            result.output.count(self.SKIP_LINE),
+            "a directory must NOT skip - the skip line is present:\n"
+            "{}".format(result.output),
+        )
+        self.assertEqual(
+            1,
+            len(asks),
+            "a directory must reach the flow's handles ask exactly once "
+            "- {} ask(s) recorded:\n{}".format(len(asks), result.output),
+        )
+        error_lines = [
+            line
+            for line in result.output.splitlines()
+            if "could not write .github/CODEOWNERS" in line
+        ]
+        self.assertEqual(
+            1,
+            len(error_lines),
+            "the write seam's directory error must print as exactly ONE "
+            "line - {} such line(s) found:\n{}".format(
+                len(error_lines), result.output
+            ),
+        )
+        self.assertIn(
+            "it is a directory",
+            error_lines[0],
+            "the error line must carry the write seam's 'it is a "
+            "directory' message (anvilkit/pi/picodeowners.py:273) - got "
+            "{!r}".format(error_lines[0]),
+        )
+        self.assertIn(
+            self.INTRO_LINE,
+            result.output,
+            "the commands' intro line must still print after a failed "
+            "write (behaviour 19 unchanged):\n{}".format(result.output),
+        )
+        for command in cli.picodeowners.commit_commands():
+            self.assertIn(
+                command,
+                result.output,
+                "the three commands must still print after a failed "
+                "write - the command {!r} is missing:\n{}".format(
+                    command, result.output
+                ),
+            )
+        baseline, _ = self._baseline_verify_guards()
+        self.assertEqual(
+            baseline.exit_code,
+            result.exit_code,
+            "the directory case must exit the baseline run's exit - the "
+            "error never changes the exit code: baseline {} vs got {}\n"
+            "{}".format(
+                baseline.exit_code, result.exit_code, result.output
+            ),
+        )
+        self.assertTrue(
+            path.is_dir(),
+            "the directory must still be a directory after the run - "
+            "never replaced by a file",
+        )
+        self.assertEqual(
+            [],
+            list(path.iterdir()),
+            "no file may be created inside the directory - found {}".format(
+                [str(entry) for entry in path.iterdir()]
+            ),
+        )
+
+    # -- pin 3: behaviour 6 - the blocked gate inherits the skip ----------------
+
+    def test_blocked_gate_with_the_file_present_skips_and_still_exits_blocked(
+        self,
+    ):
+        """The blocked setup-repo gate with the file present: the SAME one
+        skip line prints (no per-site wiring), the handles ask is NOT
+        recorded, only the free-plan question is consumed, the gate still
+        prints its ``⛔`` block line AFTER the skip line, and the exit is
+        still ``EXIT_GUARDS_BLOCKED`` (9) - the skip never masks the
+        block."""
+        target = self._gate_target()
+        self._write_present_file(target)
+        result, asks, confirms, _findings, _t = self._run_blocked_gate(
+            (False,), self.ASK_ANSWER, (self.OWNER, self.REPO), target=target
+        )
+        self.assertEqual(
+            1,
+            result.output.count(self.SKIP_LINE),
+            "the blocked gate must skip with the SAME one line - found "
+            "{} time(s):\n{}".format(
+                result.output.count(self.SKIP_LINE), result.output
+            ),
+        )
+        self.assertEqual(
+            0,
+            len(asks),
+            "the gate's skip must never reach the flow's handles ask - "
+            "{} ask(s) recorded:\n{}".format(len(asks), result.output),
+        )
+        self.assertEqual(
+            1,
+            len(confirms),
+            "at most ONE confirm - the free-plan question itself - no "
+            "content confirm and no write offer: {} recorded: "
+            "{}\n{}".format(len(confirms), confirms, result.output),
+        )
+        self.assertIn(
+            "Restrict file paths",
+            confirms[0][0],
+            "the only confirm must be the free-plan question: "
+            "prompt={!r}".format(confirms[0][0]),
+        )
+        block_lines = [
+            line
+            for line in result.output.splitlines()
+            if line.lstrip().startswith("⛔")
+        ]
+        self.assertEqual(
+            1,
+            len(block_lines),
+            "the gate's block line must still print - found {} such "
+            "line(s):\n{}".format(len(block_lines), result.output),
+        )
+        self.assertLess(
+            result.output.index(self.SKIP_LINE),
+            result.output.index(block_lines[0]),
+            "the gate must print its block line AFTER the skip line - "
+            "the order is reversed:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            9,
+            cli.EXIT_GUARDS_BLOCKED,
+            "EXIT_GUARDS_BLOCKED is literally 9, got {}".format(
+                cli.EXIT_GUARDS_BLOCKED
+            ),
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "the blocked gate with the file present still exits blocked "
+            "(9) - the skip never masks the block:\n{}".format(
+                result.output
+            ),
+        )
+
+    # -- pin 4: behaviour 6 - an unresolvable repository returns early ----------
+
+    def test_unresolvable_repository_returns_before_the_skip(self):
+        """A verify-guards run whose repository cannot be resolved (the
+        ``resolve_repository`` seam returns None) returns before any of
+        the follow-up - even with the file present: no skip line, no
+        prompt (both prompt seams booby-trapped), no flow, and the output
+        is byte-identical to the same run with the follow-up wiring
+        disabled (the repository-None baseline) - the report is never
+        disturbed by the skip."""
+        self._write_present_file(self.project)
+        findings = self._file_paths_warn_findings()
+        boom = AssertionError(
+            "a prompt was asked - the unresolvable repository returns "
+            "before any of the follow-up"
+        )
+        for patcher in (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "confirm", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+        ) + self._guard_seams(findings, None):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+            baseline = self.invoke(
+                ["verify-guards", str(self.project), "--branch", "main"]
+            )
+        self.assertIn(
+            "not resolvable from origin",
+            result.output,
+            "fixture sanity: the report must name the unresolvable "
+            "repository:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            result.output.count(self.SKIP_LINE),
+            "an unresolvable repository must return BEFORE the skip - "
+            "the skip line is present:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            baseline.output,
+            result.output,
+            "the report must be byte-identical to the repository-None "
+            "baseline (no prompt, no flow, no skip):\n--- with follow-up "
+            "---\n{}\n--- baseline ---\n{}".format(
+                result.output, baseline.output
+            ),
+        )
+        self.assertEqual(
+            baseline.exit_code,
+            result.exit_code,
+            "the unresolvable-repo exit must be the baseline run's exit: "
+            "baseline {} vs got {}\n{}".format(
+                baseline.exit_code, result.exit_code, result.output
+            ),
+        )
+
+    # -- pin 5: behaviour 7 - the gate never touches the present file -----------
+
+    def test_blocked_gate_with_the_file_present_never_touches_the_file(self):
+        """The blocked gate with the file present: the file's bytes are
+        identical after the run, and the target tree gains no file beyond
+        the one the gate is allowed to prepare (``.github-ruleset.json``,
+        behaviour 7 of plans/setup-repo-guards.md) - the CODEOWNERS flow
+        itself writes nothing: no partial write, no backup file, no new
+        file under ``.github/`` where it would write. The run skips (one
+        skip line, no ask), so nothing after the skip can touch the
+        file."""
+        target = self._gate_target()
+        path = self._write_present_file(target)
+        before = self._tree_snapshot(target)
+        result, asks, _confirms, _findings, _t = self._run_blocked_gate(
+            (False,), self.ASK_ANSWER, (self.OWNER, self.REPO), target=target
+        )
+        self.assertEqual(
+            1,
+            result.output.count(self.SKIP_LINE),
+            "sanity: the gate run must skip (this pin rests on the skip "
+            "holding) - found {} time(s):\n{}".format(
+                result.output.count(self.SKIP_LINE), result.output
+            ),
+        )
+        self.assertEqual(
+            0,
+            len(asks),
+            "sanity: the skip must never reach the flow's handles ask - "
+            "{} ask(s) recorded:\n{}".format(len(asks), result.output),
+        )
+        self.assertEqual(
+            self.CODEOWNERS_BYTES,
+            path.read_bytes(),
+            "the present file's bytes must be identical after the gate "
+            "run - never clobbered",
+        )
+        after = self._tree_snapshot(target)
+        added = sorted(set(after) - set(before))
+        changed = sorted(
+            key
+            for key in set(before) & set(after)
+            if before[key] != after[key]
+        )
+        self.assertEqual(
+            [".github-ruleset.json"],
+            added,
+            "the gate's only allowed write is the prepared ruleset - the "
+            "CODEOWNERS flow itself must write nothing; added: {}".format(
+                added
+            ),
+        )
+        self.assertEqual(
+            [],
+            changed,
+            "no pre-existing file may change bytes; changed: "
+            "{}".format(changed),
+        )
+        self.assertEqual(
+            sorted(key for key in before if key.startswith(".github/")),
+            sorted(key for key in after if key.startswith(".github/")),
+            "no file may be created or removed under .github/ - the "
+            "path the flow would write",
+        )
+
+    # -- pin 6: behaviour 7 - the directory case leaves nothing -------------------
+
+    def test_directory_case_creates_no_file_and_leaves_the_tree_unchanged(self):
+        """The directory case (behaviour 4's run, offer accepted so the
+        write seam is reached and refuses): the target tree is
+        byte-identical afterwards - no file created anywhere - the
+        directory is still a directory, still empty, and still not a
+        file. A broken tree surfaces the error and changes nothing."""
+        path = self._make_directory_at_path(self.project)
+        before = self.snapshot()
+        result, _asks, _confirms, _findings = self._run_verify_guards(
+            (False, True, True), self.ASK_ANSWER, (self.OWNER, self.REPO)
+        )
+        after = self.snapshot()
+        self.assertIn(
+            "it is a directory",
+            result.output,
+            "sanity: the run must reach the write seam's directory error "
+            "- the pin rests on the write being attempted:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            before,
+            after,
+            "the directory case must leave the tree byte-identical - "
+            "no file created anywhere; changed: {}".format(
+                sorted(set(before) ^ set(after))
+                + [
+                    key
+                    for key in set(before) & set(after)
+                    if before[key] != after[key]
+                ]
+            ),
+        )
+        self.assertTrue(
+            path.is_dir(),
+            "the directory must still be a directory after the run",
+        )
+        self.assertFalse(
+            path.is_file(),
+            "the directory must not be replaced by a file",
+        )
+        self.assertEqual(
+            [],
+            list(path.iterdir()),
+            "no file may be created inside the directory - found {}".format(
+                [str(entry) for entry in path.iterdir()]
+            ),
+        )
