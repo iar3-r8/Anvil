@@ -14025,3 +14025,439 @@ class TestCodeownersFlowWiring(CliCase):
                     command, result.output
                 ),
             )
+
+
+class TestCodeownersFlowSkipPresent(CliCase):
+    """Command-level pins for behaviour 2 of
+    plans/codeowners-flow-skip-existing-file.md: the interactive no path
+    skips the CODEOWNERS flow when the file is already present.
+
+    Given an interactive TTY, the file_paths warn fixture (summarize 0),
+    the resolved repository iar3-r8/Anvil and a file at
+    ``target/.github/CODEOWNERS`` (the target is ``self.project``), the
+    no branch must print the six steps, then exactly one more line -
+    the fixed skip string - and end: no handles ask, no body echo, no
+    self-approval warning, no write offer, no git commands, and the
+    exit is the baseline run's exit (the follow-up wiring disabled).
+
+    The skip is keyed on the file's presence alone (``is_file()`` of
+    ``target/.github/CODEOWNERS``) - never a flag - so the empty-target
+    flow pins in ``TestCodeownersFlowWiring`` stay untouched.
+
+    Wiring: the same precedent as ``TestCodeownersFlowWiring`` -
+    ``_is_interactive`` forced True, the file_paths warn fixture, the
+    resolved repository, ``prompts.confirm`` a per-call queue (the
+    free-plan question first, then the flow's content confirm, then the
+    offer confirm - so a run that does NOT skip consumes all three and
+    is caught by the consumption pins) and ``prompts.ask`` a recorder
+    returning the fixed handle.
+
+    Note on "the last non-blank line": at the command level the
+    verify-guards report ends with its own separator line
+    (``shared.echo(_SEPARATOR)`` after the follow-up in verify_guards -
+    out of scope, byte-identical before and after the skip), so
+    "exactly one more line after the steps" is pinned by anchoring at
+    the walkthrough's last line: the next non-blank line must be the
+    skip line, and the one after it the separator.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    SKIP_LINE = ".github/CODEOWNERS already exists - nothing to do."
+    CODEOWNERS_BYTES = b"existing\n"
+    ASK_ANSWER = "@alice"
+    STEP_TOKENS = TestCodeownersFlowWiring.STEP_TOKENS
+
+    # -- fixtures, seams and fakes ---------------------------------------------
+
+    def _codeowners_path(self):
+        """The one path the skip checks and the flow writes:
+        ``target/.github/CODEOWNERS``; the target is ``self.project``."""
+        return self.project / ".github" / "CODEOWNERS"
+
+    def _write_present_file(self):
+        """A real file at the path with the known bytes."""
+        path = self._codeowners_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.CODEOWNERS_BYTES)
+        return path
+
+    def _make_broken_symlink(self):
+        """A symlink at the path pointing at an absent file:
+        ``is_file()`` False - per the plan's assumption the flow must
+        run, not skip."""
+        path = self._codeowners_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(self.project / "absent-codeowners-target"), str(path))
+        return path
+
+    def _make_symlink_to_file(self):
+        """A real file elsewhere plus a symlink at the path pointing at
+        it: ``is_file()`` True (followed) - per the plan's assumption
+        the run must skip."""
+        real = self.project / "elsewhere-CODEOWNERS"
+        real.write_bytes(self.CODEOWNERS_BYTES)
+        path = self._codeowners_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        os.symlink(str(real), str(path))
+        return path
+
+    def _file_paths_warn_findings(self):
+        """The five-rule findings with ``file_paths`` flipped to its warn
+        shape: the other four rules passed, ``wants_walkthrough`` True,
+        ``summarize`` 0 (a warn never fails the summarize)."""
+        findings = cli.piguard.check_all(five_rule_branch_rules())
+        warn = cli.piguard.check_file_paths([])[0]
+        for index, finding in enumerate(findings):
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
+                findings[index] = warn
+        self.assertTrue(
+            cli.picodeowners.wants_walkthrough(findings),
+            "the fixture must carry a file_paths warn finding so the "
+            "walkthrough ask is wanted",
+        )
+        self.assertEqual(
+            0,
+            cli.piguard.summarize(findings),
+            "the fixture must summarize to 0 - a warn is reported, not "
+            "a failure",
+        )
+        return findings
+
+    def _guard_seams(self, findings, repository):
+        """The four piguard seams replaced, so the guard flow runs
+        offline on exactly the fixture this class wants reported."""
+        return (
+            mock.patch.object(
+                cli.piguard, "resolve_repository", return_value=repository
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=findings),
+            mock.patch.object(cli.piguard, "check_token_all", return_value=[]),
+        )
+
+    def _confirm_queue_fake(self, queue):
+        """A per-call ``prompts.confirm`` fake: answers consumed from
+        ``queue`` in call order (free-plan question first, then the
+        flow's content confirm, then the offer confirm), arguments
+        recorded."""
+        confirms = []
+
+        def confirm(prompt, default=False, *args, **kwargs):
+            confirms.append((prompt, default))
+            return queue.pop(0) if queue else False
+
+        return confirm, confirms
+
+    def _ask_fake(self, answer):
+        """A ``prompts.ask`` fake for the flow's handles ask: records its
+        (prompt, default) arguments and returns the fixed handle."""
+        asks = []
+
+        def ask(prompt, default=None, *args, **kwargs):
+            asks.append((prompt, default))
+            return answer
+
+        return ask, asks
+
+    def _run_no_path(self):
+        """One interactive ``verify-guards`` no-path run on the target:
+        the free-plan question answered no, then the flow's two
+        confirms queued - a run that does NOT skip consumes all three
+        and is caught by the consumption pins. Returns ``(result,
+        asks, confirms, findings)``; ``self.invoke`` re-raises any
+        non-exit exception, so the run must complete normally."""
+        findings = self._file_paths_warn_findings()
+        confirm_fake, confirms = self._confirm_queue_fake(
+            [False, True, False]
+        )
+        ask_fake, asks = self._ask_fake(self.ASK_ANSWER)
+        patchers = (
+            mock.patch.object(cli, "_is_interactive", return_value=True),
+            mock.patch.object(cli.prompts, "confirm", side_effect=confirm_fake),
+            mock.patch.object(cli.prompts, "ask", side_effect=ask_fake),
+        ) + self._guard_seams(findings, (self.OWNER, self.REPO))
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self.invoke(
+            ["verify-guards", str(self.project), "--branch", "main"]
+        )
+        return result, asks, confirms, findings
+
+    def _baseline_no_path(self):
+        """The same ``verify-guards`` run with the WHOLE follow-up
+        disabled (question + flow): the exit-code baseline the no-path
+        run must equal - the skip changes no exit code (the
+        ``TestCodeownersFlowWiring`` pin-1 baseline pattern)."""
+        findings = self._file_paths_warn_findings()
+        for patcher in self._guard_seams(findings, (self.OWNER, self.REPO)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+            result = self.invoke(
+                ["verify-guards", str(self.project), "--branch", "main"]
+            )
+        return result, findings
+
+    def _assert_seams_never_called(self, result, asks, confirms, site):
+        """The run ended at the skip line, before the flow: the handles
+        ask was never recorded; at most ONE confirm was consumed (the
+        free-plan question itself) - no content confirm, no write
+        offer; the built body was not echoed; the self-approval
+        warning's last-push step did not print; the declined-offer line
+        did not print; the three git commands are absent."""
+        self.assertEqual(
+            0,
+            len(asks),
+            "{}: the skip must never reach the flow's handles ask - {} "
+            "ask(s) recorded: {}\n{}".format(
+                site, len(asks), asks, result.output
+            ),
+        )
+        self.assertLessEqual(
+            1,
+            len(confirms),
+            "{}: at most ONE confirm - the free-plan question itself - "
+            "no content confirm and no write offer: {} recorded: "
+            "{}\n{}".format(site, len(confirms), confirms, result.output),
+        )
+        if confirms:
+            self.assertIn(
+                "Restrict file paths",
+                confirms[0][0],
+                "{}: the only confirm must be the free-plan question: "
+                "{!r}".format(site, confirms[0][0]),
+            )
+        body = cli.picodeowners.codeowners_body(self.ASK_ANSWER)
+        for line in body.splitlines():
+            self.assertNotIn(
+                line,
+                result.output,
+                "{}: the built body must not be echoed - the line {!r} "
+                "is present:\n{}".format(site, line, result.output),
+            )
+        self.assertNotIn(
+            cli.picodeowners.last_push_step(),
+            result.output,
+            "{}: no self-approval warning - its last-push step must "
+            "not print:\n{}".format(site, result.output),
+        )
+        self.assertNotIn(
+            "Nothing written",
+            result.output,
+            "{}: no write offer - the declined-offer line must not "
+            "print:\n{}".format(site, result.output),
+        )
+        for command in cli.picodeowners.commit_commands():
+            self.assertNotIn(
+                command,
+                result.output,
+                "{}: no git commands - the command {!r} is present:\n"
+                "{}".format(site, command, result.output),
+            )
+
+    # -- pin 1: the skip line, exactly one, exactly after the six steps --------
+
+    def test_present_file_prints_exactly_the_one_skip_line_after_the_steps(self):
+        """The six steps still print, then exactly one more line - the
+        fixed skip string, no interpolation, under 80 chars - and the
+        run ends. RED: the no path today always runs the flow, so the
+        skip line is absent and the line after the steps is the
+        body's first line."""
+        self._write_present_file()
+        self.assertLess(
+            len(self.SKIP_LINE),
+            80,
+            "fixture sanity: the skip line must stay under 80 characters",
+        )
+        result, asks, confirms, _ = self._run_no_path()
+        for token in self.STEP_TOKENS:
+            self.assertIn(
+                token,
+                result.output,
+                "the six-step walkthrough must still print - step token "
+                "{!r} is missing:\n{}".format(token, result.output),
+            )
+        self.assertEqual(
+            1,
+            result.output.count(self.SKIP_LINE),
+            "the skip line must print exactly once (a fixed string, no "
+            "interpolation) - found {} time(s):\n{}".format(
+                result.output.count(self.SKIP_LINE), result.output
+            ),
+        )
+        # "Exactly one more line after the steps": anchor at the
+        # walkthrough's last line - the next non-blank line must be the
+        # skip line, and the one after it the command's own separator
+        # (out of scope, byte-identical).
+        body = cli.picodeowners.codeowners_body(self.OWNER)
+        steps = cli.picodeowners.walkthrough_steps(
+            self.OWNER, self.REPO, "main", body
+        )
+        last_step_line = steps[-1].splitlines()[-1]
+        lines = result.output.splitlines()
+        self.assertIn(
+            last_step_line,
+            lines,
+            "fixture sanity: the walkthrough's last line must print: "
+            "{!r}\n{}".format(last_step_line, result.output),
+        )
+        after = [
+            line
+            for line in lines[lines.index(last_step_line) + 1:]
+            if line.strip()
+        ]
+        self.assertEqual(
+            [self.SKIP_LINE, cli._SEPARATOR],
+            after[:2],
+            "exactly ONE more line must print after the six steps - the "
+            "skip line - then the command's own separator; got {}\n"
+            "{}".format(after[:4], result.output),
+        )
+
+    # -- pin 2: the seams are never called --------------------------------------
+
+    def test_present_file_never_calls_the_ask_or_confirm_seams(self):
+        """The run ends at the skip line: the ``prompts.ask`` fake was
+        called ZERO times; the confirm queue consumed at most ONE
+        answer (the free-plan question itself) - no content confirm,
+        no write offer; the body was not echoed; no self-approval
+        warning; no git commands. RED: today the no path always runs
+        the flow - the ask is recorded, all three confirms are
+        consumed, the body echoes and the commands print."""
+        self._write_present_file()
+        result, asks, confirms, _ = self._run_no_path()
+        self._assert_seams_never_called(
+            result, asks, confirms, "no path with the file present"
+        )
+
+    # -- pin 3: the file is never touched ----------------------------------------
+
+    def test_present_file_is_never_touched_and_the_tree_gains_no_file(self):
+        """Known bytes before the run - identical bytes after, and the
+        target tree gains no file (the boundary pin re-pointing the
+        flow's no-write pins at the already-exists case). Green now:
+        with the queued defaults (content yes, offer no) today's run
+        declines the write, so nothing lands either way."""
+        path = self._write_present_file()
+        before = self.snapshot()
+        result, asks, confirms, _ = self._run_no_path()
+        after = self.snapshot()
+        self.assertEqual(
+            self.CODEOWNERS_BYTES,
+            path.read_bytes(),
+            "the present file's bytes must be identical after the run - "
+            "never clobbered",
+        )
+        self.assertEqual(
+            before,
+            after,
+            "the tree must gain no file and change no bytes; added: {} "
+            "changed: {}".format(
+                sorted(set(after) - set(before)),
+                sorted(
+                    k
+                    for k in set(before) & set(after)
+                    if before[k] != after[k]
+                ),
+            ),
+        )
+
+    # -- pin 4: the exit code is untouched ---------------------------------------
+
+    def test_present_file_keeps_the_baseline_exit(self):
+        """The run's exit equals the same run with
+        ``cli._free_plan_followup`` disabled (the
+        ``TestCodeownersFlowWiring`` pin-1 baseline pattern) and equals
+        the summarize of the warn fixture - the skip changes no exit
+        code. Green now: today's run (the flow) also leaves the exit
+        untouched."""
+        self._write_present_file()
+        result, asks, confirms, findings = self._run_no_path()
+        baseline, _ = self._baseline_no_path()
+        self.assertEqual(
+            baseline.exit_code,
+            result.exit_code,
+            "the no path with the file present must exit the baseline "
+            "run's exit (the follow-up wiring disabled): baseline {} vs "
+            "got {}\n{}".format(
+                baseline.exit_code, result.exit_code, result.output
+            ),
+        )
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "the exit is the summarize of the findings (a warn never "
+            "fails it) - got {}\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+
+    # -- pin 5: a broken symlink does NOT skip ------------------------------------
+
+    def test_broken_symlink_does_not_skip_so_the_flow_runs(self):
+        """A broken symlink at the path has ``is_file()`` False (the
+        plan's stated assumption, pinned as fixture sanity), so the
+        run must NOT skip: no skip line, and the flow's handles ask IS
+        recorded - the flow ran as it does today. Green now: today
+        there is no skip at all, and a broken symlink's ``is_file()``
+        is already False."""
+        path = self._make_broken_symlink()
+        self.assertTrue(
+            path.is_symlink(),
+            "fixture sanity: the path must be a symlink",
+        )
+        self.assertFalse(
+            path.is_file(),
+            "fixture sanity: a broken symlink's is_file() is False - "
+            "the plan's stated assumption; if this environment cannot "
+            "make broken symlinks, the assumption is what the pin "
+            "rests on",
+        )
+        result, asks, confirms, _ = self._run_no_path()
+        self.assertEqual(
+            0,
+            result.output.count(self.SKIP_LINE),
+            "a broken symlink must NOT skip - the flow runs; the skip "
+            "line is present:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            1,
+            len(asks),
+            "the flow's handles ask must be recorded - the flow ran: "
+            "{}".format(asks),
+        )
+
+    # -- pin 6: a symlink to a real file DOES skip --------------------------------
+
+    def test_symlink_to_a_real_file_skips(self):
+        """A symlink at the path pointing at a real file elsewhere has
+        ``is_file()`` True (followed), so the run must skip with the
+        one line and the seams never called - same shape as pin 2.
+        RED: today there is no skip - the skip line is absent and the
+        ask IS recorded."""
+        path = self._make_symlink_to_file()
+        self.assertTrue(
+            path.is_symlink(),
+            "fixture sanity: the path must be a symlink",
+        )
+        self.assertTrue(
+            path.is_file(),
+            "fixture sanity: a symlink to a real file's is_file() is "
+            "True",
+        )
+        result, asks, confirms, _ = self._run_no_path()
+        self.assertEqual(
+            1,
+            result.output.count(self.SKIP_LINE),
+            "a symlink to a real file must skip with the one line - the "
+            "skip line is absent:\n{}".format(result.output),
+        )
+        self._assert_seams_never_called(
+            result, asks, confirms, "no path with a symlink to a real file"
+        )
