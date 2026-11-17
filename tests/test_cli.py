@@ -15125,3 +15125,300 @@ class TestCodeownersFlowSkipBoundary(CliCase):
                 [str(entry) for entry in path.iterdir()]
             ),
         )
+
+
+class TestCodeownersFallbackSkipAware(CliCase):
+    """Command-level pins for behaviour 5 of
+    plans/codeowners-flow-skip-existing-file.md: the non-interactive
+    fallback is skip-aware.
+
+    Given ``--dry-run`` (the cleanest of the three skip modes -
+    ``--yes`` and the non-TTY mode are pinned by
+    ``TestFreePlanNonInteractiveSkip``), the ``file_paths`` warn fixture
+    (summarize 0) and the resolved repository iar3-r8/Anvil, the
+    one-line fallback in ``_free_plan_followup`` must be chosen on the
+    SAME predicate the interactive skip uses -
+    ``picodeowners.codeowners_path(target).is_file()`` - so the two
+    paths cannot disagree about what "present" means:
+
+    * file PRESENT at ``target/.github/CODEOWNERS`` -> behaviour 2's
+      skip line, not the free-plan line;
+    * file ABSENT (and a DIRECTORY at the path, where ``is_file()`` is
+      False) -> today's free-plan line, byte-identical.
+
+    Either way the run returns before any prompt (every prompt seam is
+    booby-trapped, including ``_read_line``, so any prompt or stdin read
+    fails the run loudly) and the exit is the non-interactive baseline -
+    the ``summarize`` of the findings - untouched.
+
+    The existing behaviour-5 absent-case pins in
+    ``TestFreePlanNonInteractiveSkip`` (and the byte-identical pin in
+    ``TestCodeownersFlowWiring``) drive an EMPTY target and are NOT
+    re-pointed here: they are the regression guard for the absent half.
+    """
+
+    OWNER = "iar3-r8"
+    REPO = "Anvil"
+    SKIP_LINE = ".github/CODEOWNERS already exists - nothing to do."
+    FREE_PLAN_LINE = (
+        'Your plan may not offer "Restrict file paths" - the '
+        "free-plan CODEOWNERS fix: re-run without --yes to see the "
+        "walkthrough."
+    )
+    # The distinctive tail of the free-plan line: it detects "the
+    # free-plan line is present" in the present-half pins, while the
+    # absent half pins the full line byte-identical.
+    FREE_PLAN_MARKER = "re-run without --yes to see the walkthrough"
+    CODEOWNERS_BYTES = b"existing\n"
+
+    # -- fixtures and seams ------------------------------------------------------
+
+    def _file_paths_warn_findings(self):
+        """The five-rule findings with ``file_paths`` flipped to its warn
+        shape: the other four rules passed, ``wants_walkthrough`` True,
+        ``summarize`` 0 (a warn never fails the summarize)."""
+        findings = cli.piguard.check_all(five_rule_branch_rules())
+        warn = cli.piguard.check_file_paths([])[0]
+        for index, finding in enumerate(findings):
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
+                findings[index] = warn
+        self.assertTrue(
+            cli.picodeowners.wants_walkthrough(findings),
+            "the fixture must carry a file_paths warn finding so the "
+            "walkthrough ask is wanted",
+        )
+        self.assertEqual(
+            0,
+            cli.piguard.summarize(findings),
+            "the fixture must summarize to 0 - a warn is reported, not "
+            "a failure",
+        )
+        return findings
+
+    def _guard_seams(self, findings):
+        """The four piguard seams replaced, so the guard flow runs
+        offline on exactly the fixture this class wants reported."""
+        return (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(five_rule_branch_rules(), None),
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=findings),
+            mock.patch.object(
+                cli.piguard, "check_token_all", return_value=[]
+            ),
+        )
+
+    def _prompt_traps(self):
+        """Booby-traps over every prompt seam the fallback must not
+        reach - ``_read_line`` included, so a stdin read fails the run
+        as loudly as a prompt (the ``TestFreePlanNonInteractiveSkip``
+        convention)."""
+        boom = AssertionError(
+            "a prompt (or a stdin read) happened on a --dry-run run - "
+            "the non-interactive fallback returns before any prompt"
+        )
+        return (
+            mock.patch.object(cli.prompts, "confirm", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_required", side_effect=boom),
+            mock.patch.object(cli.prompts, "ask_port", side_effect=boom),
+            mock.patch.object(cli.prompts, "choose", side_effect=boom),
+            mock.patch.object(cli.prompts, "_read_line", side_effect=boom),
+            mock.patch.object(
+                cli.prompts, "_read_confirmation", side_effect=boom
+            ),
+        )
+
+    def _run_dry_run(self):
+        """One ``--dry-run`` ``verify-guards`` run on the target
+        (``self.project``): the fallback branch is reached through
+        ``shared.dry_run``, and ``self.invoke`` re-raises any non-exit
+        exception, so a booby-trapped prompt fails the run loudly."""
+        return self.invoke(
+            ["--dry-run", "verify-guards", str(self.project), "--branch", "main"]
+        )
+
+    def _run_fallback(self):
+        """One ``--dry-run`` run with the guard seams replaced and the
+        prompt seams booby-trapped. Returns ``(result, findings)``."""
+        findings = self._file_paths_warn_findings()
+        for patcher in self._guard_seams(findings) + self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self._run_dry_run()
+        return result, findings
+
+    def _plant_present_file(self):
+        """A real file at ``codeowners_path(target)`` with the known
+        bytes: ``is_file()`` True."""
+        path = cli.picodeowners.codeowners_path(self.project)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(self.CODEOWNERS_BYTES)
+        return path
+
+    def _plant_directory(self):
+        """A DIRECTORY at ``codeowners_path(target)``: ``is_file()``
+        False - the same edge the interactive path takes the absent half
+        for (behaviour 4)."""
+        path = cli.picodeowners.codeowners_path(self.project)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.mkdir()
+        return path
+
+    # -- pin 1: file present -> the skip line, not the free-plan line ----------
+
+    def test_fallback_with_file_present_prints_skip_line_not_free_plan_line(
+        self,
+    ):
+        """RED: today the fallback always prints the free-plan line, so
+        the skip line is absent and the free-plan line is present - the
+        opposite of this pin."""
+        self._plant_present_file()
+        result, findings = self._run_fallback()
+        lines = result.output.splitlines()
+        self.assertEqual(
+            1,
+            lines.count(self.SKIP_LINE),
+            "with the file present the fallback must print behaviour 2's "
+            "skip line exactly once:\n{}".format(result.output),
+        )
+        self.assertNotIn(
+            self.FREE_PLAN_MARKER,
+            result.output,
+            "with the file present the free-plan line must NOT print - "
+            "the marker {!r} is present:\n{}".format(
+                self.FREE_PLAN_MARKER, result.output
+            ),
+        )
+        self.assertEqual(
+            0,
+            lines.count(self.FREE_PLAN_LINE),
+            "exactly one of the two fallback lines must be present - "
+            "with the file present that is the skip line, and the "
+            "free-plan line must be the one absent:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            cli.piguard.summarize(findings),
+            result.exit_code,
+            "the skip-aware fallback changes no exit code - it is the "
+            "non-interactive baseline (summarize of the findings):\n{}".format(
+                result.output
+            ),
+        )
+
+    # -- pin 2: file absent -> today's free-plan line, byte-identical -----------
+
+    def test_fallback_with_file_absent_prints_free_plan_line_byte_identical(
+        self,
+    ):
+        """Green now: the empty-target fallback is unchanged today -
+        this pin is the byte-identity guard for the absent half."""
+        result, _findings = self._run_fallback()
+        lines = result.output.splitlines()
+        self.assertEqual(
+            1,
+            lines.count(self.FREE_PLAN_LINE),
+            "with the file absent the fallback must print today's "
+            "free-plan line exactly once - byte-identical:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotIn(
+            self.SKIP_LINE,
+            lines,
+            "with the file absent the skip line must NOT print:\n{}".format(
+                result.output
+            ),
+        )
+        # Byte-identical to today: removing that one line must leave the
+        # same run with the follow-up wiring disabled (the
+        # ``TestCodeownersFlowWiring`` byte-identity pattern).
+        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+            baseline = self._run_dry_run()
+        remaining = list(lines)
+        remaining.remove(self.FREE_PLAN_LINE)
+        self.assertEqual(
+            baseline.output.splitlines(),
+            remaining,
+            "the free-plan line must be the ONLY difference from the "
+            "follow-up-disabled baseline - it is byte-identical to "
+            "today:\nresult:\n{}\nbaseline:\n{}".format(
+                result.output, baseline.output
+            ),
+        )
+
+    # -- pin 3: a directory at the path takes the ABSENT half -------------------
+
+    def test_fallback_with_directory_at_path_takes_absent_half(self):
+        """Green now (for the wrong reason - today the free-plan line
+        always prints); it stays green after the fix because a
+        directory is ``is_file()`` False, so the two halves agree on
+        what "present" means."""
+        path = self._plant_directory()
+        result, _findings = self._run_fallback()
+        lines = result.output.splitlines()
+        self.assertTrue(
+            path.is_dir() and not path.is_file(),
+            "sanity: the planted path must be a directory (is_file() "
+            "False) - the absent half's premise",
+        )
+        self.assertEqual(
+            1,
+            lines.count(self.FREE_PLAN_LINE),
+            "a directory at the path (is_file() False) must take the "
+            "ABSENT half - the free-plan line - not the skip line:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertNotIn(
+            self.SKIP_LINE,
+            lines,
+            "a directory must never make the fallback claim the file "
+            "exists - the skip line is present:\n{}".format(result.output),
+        )
+
+    # -- pin 4: no prompt, no stdin, no exit change in BOTH halves --------------
+
+    def test_fallback_reads_no_prompt_and_changes_no_exit_in_both_halves(self):
+        """Green now: the fallback already returns before any prompt and
+        changes no exit code; it must still hold for the present half
+        once it prints the skip line."""
+        findings = self._file_paths_warn_findings()
+        for patcher in self._guard_seams(findings) + self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        baseline_exit = cli.piguard.summarize(findings)
+        # Absent half.
+        result = self._run_dry_run()
+        self.assertEqual(
+            baseline_exit,
+            result.exit_code,
+            "absent half: the fallback changes no exit code - it is the "
+            "non-interactive baseline ({}):\n{}".format(
+                baseline_exit, result.output
+            ),
+        )
+        # Present half: the same baseline, the skip-aware line.
+        self._plant_present_file()
+        result = self._run_dry_run()
+        self.assertEqual(
+            baseline_exit,
+            result.exit_code,
+            "present half: the skip-aware fallback changes no exit code "
+            "- it is the non-interactive baseline ({}):\n{}".format(
+                baseline_exit, result.output
+            ),
+        )
+        # No prompt and no stdin read in either half: every prompt seam
+        # (and ``_read_line``) was booby-trapped and ``self.invoke``
+        # re-raises any non-exit exception, so reaching this point is
+        # the assertion.
