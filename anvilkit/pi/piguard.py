@@ -1349,13 +1349,13 @@ def check_file_paths(
     fix. A duplicated rule type takes the first element, as
     :func:`check_history_rewrite` does.
 
-    The warn finding carries ``fallback_in_place`` (behaviours 2-3 of
-    plans/file-path-fallback-satisfied.md). It is ``False`` by default and
-    ``True`` only when BOTH halves of the CODEOWNERS fallback are in place:
+    The warn finding carries ``fallback_in_place`` (behaviour 2 of
+    plans/file-path-fallback-file-only.md). It is ``False`` by default and
+    ``True`` only when the file half of the CODEOWNERS fallback is in place:
     the ``codeowners_present`` keyword is True (the caller's
-    ``codeowners_path(target).is_file()``) AND :func:`code_owner_review_on`
-    is True (the review half of the already-fetched ``pull_request`` rule).
-    When both halves are in place the same warn is reworded: ``brief``
+    ``codeowners_path(target).is_file()``), whatever the fetched
+    ``pull_request`` element says.
+    When the marker is True the same warn is reworded: ``brief``
     becomes ``push rule off; CODEOWNERS review gate in place`` and ``remedy``
     becomes ``nothing to do - the CODEOWNERS review gate covers this; the
     push rule stays off on your plan``. ``status`` never leaves ``warn`` -
@@ -1374,7 +1374,7 @@ def check_file_paths(
             break
 
     if rule is None:
-        fallback_in_place = codeowners_present and code_owner_review_on(rules)
+        fallback_in_place = codeowners_present is True
         if fallback_in_place:
             brief = "push rule off; CODEOWNERS review gate in place"
             remedy = (
