@@ -14093,9 +14093,11 @@ class TestFilePresentNoFollowup(CliCase):
     for them exactly as for the absent file (kept green).
 
     Wiring: the same precedent as ``TestCodeownersFlowWiring`` -
-    ``_is_interactive`` forced True, the file_paths warn fixture, the
-    resolved repository, ``prompts.confirm`` a per-call queue and
-    ``prompts.ask`` a recorder returning the fixed handle.
+    ``_is_interactive`` forced True, the review-OFF rules at the fetch
+    seam with the REAL ``check_all`` (the marker built, not faked, the
+    ``TestGuardFindingsCodeownersPresence`` precedent), the resolved
+    repository, ``prompts.confirm`` a per-call queue and ``prompts.ask``
+    a recorder returning the fixed handle.
     """
 
     OWNER = "iar3-r8"
@@ -14112,6 +14114,13 @@ class TestFilePresentNoFollowup(CliCase):
     CODEOWNERS_BYTES = b"existing\n"
     ASK_ANSWER = "@alice"
     STEP_TOKENS = TestCodeownersFlowWiring.STEP_TOKENS
+    # The two briefs the real ``check_file_paths`` picks for the same
+    # warn, keyed by the marker - byte-identical to behaviour 2's
+    # reworded-strings contract (plans/file-path-fallback-file-only.md):
+    # the reworded satisfied brief (file present) and the unsatisfied
+    # brief (file absent, directory, broken symlink).
+    SATISFIED_BRIEF = "push rule off; CODEOWNERS review gate in place"
+    UNSATISFIED_BRIEF = "a push can change .github/workflows/**, what CI runs"
 
     # -- fixtures, seams and fakes ---------------------------------------------
 
@@ -14149,23 +14158,66 @@ class TestFilePresentNoFollowup(CliCase):
         os.symlink(str(real), str(path))
         return path
 
-    def _file_paths_warn_findings(self):
-        """The findings the command reports: the other four rules
-        passed (the fetch seam carries the review-OFF fixture
-        ``five_rules_review_off`` - under behaviour 2 the review half is
-        irrelevant), ``file_paths`` flipped to its warn shape with
-        ``fallback_in_place`` False (the file is absent for the pins
-        that run the flow), ``wants_walkthrough`` True, ``summarize`` 0
-        (a warn never fails the summarize)."""
-        findings = cli.piguard.check_all(five_rules_review_off())
-        warn = cli.piguard.check_file_paths([])[0]
-        for index, finding in enumerate(findings):
-            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
-                findings[index] = warn
-        self.assertTrue(
+    def _findings_for(self, marker):
+        """The findings the REAL ``check_all`` produces from the fetch
+        seam's review-OFF rules (``five_rules_review_off`` - under
+        behaviour 2 the fetched ``pull_request`` element is irrelevant)
+        and the on-disk state at ``codeowners_path(self.project)``: the
+        other four rules passed, ``file_paths`` in its warn shape with
+        ``fallback_in_place`` exactly what the on-disk file dictates,
+        and the brief reworded iff the marker is True. ``marker`` is the
+        pin's intent, sanity-checked against the on-disk file the pins
+        plant (or leave absent) BEFORE calling this, so the fixture can
+        never silently report the other half. ``wants_walkthrough`` is
+        True exactly when the marker is False (the marker-exact
+        exemption), ``summarize`` 0 (a warn never fails the summarize).
+        The marker is built, not faked: the same precedent as
+        ``TestGuardFindingsCodeownersPresence`` - the ``check_all`` mock
+        that stubbed this seam made the production marker
+        unreachable, and the file-present pins' intent ("no follow-up")
+        is unreachable while the fixture carries marker False."""
+        on_disk = cli.picodeowners.codeowners_path(self.project).is_file()
+        self.assertIs(
+            marker,
+            on_disk,
+            "the pin must plant (or leave absent) the on-disk state the "
+            "marker claims - codeowners_path(target).is_file() is "
+            "{}".format(on_disk),
+        )
+        findings = cli.piguard.check_all(
+            five_rules_review_off(),
+            codeowners_present=marker,
+        )
+        matches = [
+            finding for finding in findings
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS
+        ]
+        self.assertEqual(
+            1,
+            len(matches),
+            "the fixture must carry exactly one file_paths finding, "
+            "got:\n{}".format(findings),
+        )
+        warn = matches[0]
+        self.assertIs(
+            marker,
+            warn.get("fallback_in_place"),
+            "the file_paths warn must carry fallback_in_place {} - the "
+            "marker the on-disk file dictates - got {}\n{}".format(
+                marker, warn.get("fallback_in_place"), warn
+            ),
+        )
+        self.assertEqual(
+            self.UNSATISFIED_BRIEF if marker is False else self.SATISFIED_BRIEF,
+            warn.get("brief"),
+            "the fixture's brief must be the one the marker picks - got "
+            "{!r}\n{}".format(warn.get("brief"), warn),
+        )
+        self.assertEqual(
+            marker is False,
             cli.picodeowners.wants_walkthrough(findings),
-            "the fixture must carry a file_paths warn finding so the "
-            "walkthrough ask is wanted",
+            "wants_walkthrough must be True exactly when the marker is "
+            "False (the marker-exact exemption)",
         )
         self.assertEqual(
             0,
@@ -14175,10 +14227,16 @@ class TestFilePresentNoFollowup(CliCase):
         )
         return findings
 
-    def _guard_seams(self, findings, repository):
-        """The four piguard seams replaced, so the guard flow runs
-        offline on exactly the fixture this class wants reported; the
-        fetch seam carries the review-OFF fixture."""
+    def _guard_seams(self, repository):
+        """The three piguard seams replaced, so the guard flow runs
+        offline: the repository resolves, the fetch seam carries the
+        review-OFF fixture, the token probes come back clean - and
+        ``check_all`` runs for REAL, so the file_paths finding's
+        ``fallback_in_place`` marker (and the brief it picks) is what
+        the production presence computation threads from
+        ``codeowners_path(target)`` (the
+        ``TestGuardFindingsCodeownersPresence`` precedent: the marker is
+        built, not faked)."""
         return (
             mock.patch.object(
                 cli.piguard, "resolve_repository", return_value=repository
@@ -14188,7 +14246,6 @@ class TestFilePresentNoFollowup(CliCase):
                 "fetch_branch_rules",
                 return_value=(five_rules_review_off(), None),
             ),
-            mock.patch.object(cli.piguard, "check_all", return_value=findings),
             mock.patch.object(cli.piguard, "check_token_all", return_value=[]),
         )
 
@@ -14223,23 +14280,25 @@ class TestFilePresentNoFollowup(CliCase):
         ``(result, asks, confirms, findings)``; ``self.invoke``
         re-raises any non-exit exception, so the run must complete
         normally."""
-        return self._run_no_path_queue([False, True, False])
+        return self._run_no_path_queue([False, True, False], False)
 
-    def _run_no_path_queue(self, queue):
+    def _run_no_path_queue(self, queue, marker):
         """One interactive ``verify-guards`` no-path run with the
         confirm answers queued from ``queue`` in call order (the
         free-plan question first, then the flow's content confirm,
-        then the write offer). Returns ``(result, asks, confirms,
-        findings)``; ``self.invoke`` re-raises any non-exit
+        then the write offer) and the marker the pin's planted state
+        dictates (the on-disk file the pin wrote, or left absent or a
+        directory or a broken symlink). Returns ``(result, asks,
+        confirms, findings)``; ``self.invoke`` re-raises any non-exit
         exception, so the run must complete normally."""
-        findings = self._file_paths_warn_findings()
+        findings = self._findings_for(marker)
         confirm_fake, confirms = self._confirm_queue_fake(list(queue))
         ask_fake, asks = self._ask_fake(self.ASK_ANSWER)
         patchers = (
             mock.patch.object(cli, "_is_interactive", return_value=True),
             mock.patch.object(cli.prompts, "confirm", side_effect=confirm_fake),
             mock.patch.object(cli.prompts, "ask", side_effect=ask_fake),
-        ) + self._guard_seams(findings, (self.OWNER, self.REPO))
+        ) + self._guard_seams((self.OWNER, self.REPO))
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -14254,10 +14313,12 @@ class TestFilePresentNoFollowup(CliCase):
         booby-trapped (the ``TestCodeownersFallbackSkipAware``
         convention): any prompt or stdin read fails the run loudly.
         Returns ``(result, findings)``."""
-        findings = self._file_paths_warn_findings()
+        findings = self._findings_for(True)
         boom = AssertionError(
             "a prompt (or a stdin read) happened on a --dry-run run - "
-            "the non-interactive fallback returns before any prompt"
+            "the marker is True, so the follow-up returns before any "
+            "prompt (or the non-interactive fallback would have "
+            "returned before any prompt)"
         )
         patchers = (
             mock.patch.object(cli.prompts, "confirm", side_effect=boom),
@@ -14269,7 +14330,7 @@ class TestFilePresentNoFollowup(CliCase):
             mock.patch.object(
                 cli.prompts, "_read_confirmation", side_effect=boom
             ),
-        ) + self._guard_seams(findings, (self.OWNER, self.REPO))
+        ) + self._guard_seams((self.OWNER, self.REPO))
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -14358,9 +14419,12 @@ class TestFilePresentNoFollowup(CliCase):
         """The same ``verify-guards`` run with the WHOLE follow-up
         disabled (question + flow): the exit-code baseline the no-path
         run must equal - the skip changes no exit code (the
-        ``TestCodeownersFlowWiring`` pin-1 baseline pattern)."""
-        findings = self._file_paths_warn_findings()
-        for patcher in self._guard_seams(findings, (self.OWNER, self.REPO)):
+        ``TestCodeownersFlowWiring`` pin-1 baseline pattern). The
+        marker is the on-disk state the pin has already planted, so
+        the baseline reports exactly what the run under test reports."""
+        marker = cli.picodeowners.codeowners_path(self.project).is_file()
+        findings = self._findings_for(marker)
+        for patcher in self._guard_seams((self.OWNER, self.REPO)):
             patcher.start()
             self.addCleanup(patcher.stop)
         with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
@@ -14381,7 +14445,9 @@ class TestFilePresentNoFollowup(CliCase):
         FULL flow, whose premise (file present, marker not True) the
         file-alone marker makes unreachable."""
         self._write_present_file()
-        result, asks, confirms, _ = self._run_no_path()
+        result, asks, confirms, _ = self._run_no_path_queue(
+            [False, True, False], True
+        )
         self._assert_no_skip_or_arm(result, "file present")
 
     # -- pin 2: no prompt is consumed at all ------------------------------------
@@ -14399,7 +14465,9 @@ class TestFilePresentNoFollowup(CliCase):
         review off (the fetch seam is review-OFF), so the follow-up
         still asks and consumes the flow's prompts."""
         self._write_present_file()
-        result, asks, confirms, _ = self._run_no_path()
+        result, asks, confirms, _ = self._run_no_path_queue(
+            [False, True, False], True
+        )
         self.assertEqual(
             0,
             len(asks),
@@ -14415,6 +14483,13 @@ class TestFilePresentNoFollowup(CliCase):
             ),
         )
         self._assert_no_skip_or_arm(result, "file present")
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            result.output,
+            "the report must carry the reworded satisfied brief - the "
+            "real check_all saw the on-disk file, so the warn it "
+            "reported is the satisfied one:\n{}".format(result.output),
+        )
 
     # -- pin 3: the file is never touched ----------------------------------------
 
@@ -14427,7 +14502,9 @@ class TestFilePresentNoFollowup(CliCase):
         green after the green."""
         path = self._write_present_file()
         before = self.snapshot()
-        result, asks, confirms, _ = self._run_no_path()
+        result, asks, confirms, _ = self._run_no_path_queue(
+            [False, True, False], True
+        )
         after = self.snapshot()
         self.assertEqual(
             self.CODEOWNERS_BYTES,
@@ -14462,7 +14539,9 @@ class TestFilePresentNoFollowup(CliCase):
         baseline's - summarize 0 for the warn fixture and the passed
         tokens)."""
         self._write_present_file()
-        result, asks, confirms, findings = self._run_no_path()
+        result, asks, confirms, findings = self._run_no_path_queue(
+            [False, True, False], True
+        )
         baseline, _ = self._baseline_no_path()
         self.assertEqual(
             baseline.exit_code,
@@ -14503,7 +14582,9 @@ class TestFilePresentNoFollowup(CliCase):
             "this environment cannot make broken symlinks, the pin "
             "cannot run here",
         )
-        result, asks, confirms, _ = self._run_no_path()
+        result, asks, confirms, _ = self._run_no_path_queue(
+            [False, True, False], False
+        )
         self._assert_flow_ran(result, asks, confirms, "broken symlink")
         self._assert_no_skip_or_arm(result, "broken symlink")
 
@@ -14533,7 +14614,7 @@ class TestFilePresentNoFollowup(CliCase):
             "fixture sanity: a symlink to a real file's is_file() is "
             "True",
         )
-        result, findings = self._run_no_path_trapped()
+        result, findings = self._run_no_path_trapped(True)
         asks, confirms = [], []
         self._assert_no_followup(result, asks, confirms, "symlink to a real file")
         self.assertEqual(
@@ -14541,6 +14622,15 @@ class TestFilePresentNoFollowup(CliCase):
             result.exit_code,
             "the no-follow-up run changes no exit code - it is the "
             "summarize of the findings (0):\n{}".format(result.output),
+        )
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            result.output,
+            "the report must carry the reworded satisfied brief - the "
+            "real check_all followed the symlink and saw the file, so "
+            "the warn it reported is the satisfied one:\n{}".format(
+                result.output
+            ),
         )
 
     # -- pin 7: the flow never runs, so no write offer, no refusal ----------------
@@ -14559,7 +14649,7 @@ class TestFilePresentNoFollowup(CliCase):
         the write seam still refuses."""
         path = self._write_present_file()
         result, asks, confirms, _ = self._run_no_path_queue(
-            [False, True, True]
+            [False, True, True], True
         )
         self.assertEqual(
             0,
@@ -14594,6 +14684,13 @@ class TestFilePresentNoFollowup(CliCase):
             "the present file's bytes must be untouched - the flow "
             "never ran and nothing was clobbered",
         )
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            result.output,
+            "the report must carry the reworded satisfied brief - the "
+            "real check_all saw the on-disk file, so the warn it "
+            "reported is the satisfied one:\n{}".format(result.output),
+        )
 
     # -- pin 8: a directory takes the ABSENT half - the flow runs -----------------
 
@@ -14621,7 +14718,7 @@ class TestFilePresentNoFollowup(CliCase):
             "fixture sanity: a directory's is_file() is False",
         )
         result, asks, confirms, _ = self._run_no_path_queue(
-            [False, True, True]
+            [False, True, True], False
         )
         self._assert_flow_ran(result, asks, confirms, "directory at path")
         self._assert_no_skip_or_arm(result, "directory at path")
@@ -14691,6 +14788,19 @@ class TestFilePresentNoFollowup(CliCase):
             "free-plan line - no follow-up at all:\n{}".format(result.output),
         )
         self._assert_no_skip_or_arm(result, "fallback, file present")
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            result.output,
+            "the report must carry the reworded satisfied brief - the "
+            "real check_all saw the on-disk file, so the warn it "
+            "reported is the satisfied one:\n{}".format(result.output),
+        )
+        self.assertNotIn(
+            self.UNSATISFIED_BRIEF,
+            result.output,
+            "the unsatisfied brief must be ABSENT - the marker is True, "
+            "so the real warn is the reworded one:\n{}".format(result.output),
+        )
         self.assertEqual(
             cli.piguard.summarize(findings),
             result.exit_code,
@@ -14707,11 +14817,12 @@ class TestFilePresentNoFollowup(CliCase):
         path.write_bytes(self.CODEOWNERS_BYTES)
         return path
 
-    def _run_no_path_trapped(self):
+    def _run_no_path_trapped(self, marker):
         """One interactive ``verify-guards`` no-path run with EVERY
-        prompt seam booby-trapped: any prompt or stdin read fails the
-        run loudly. Returns ``(result, findings)``."""
-        findings = self._file_paths_warn_findings()
+        prompt seam booby-trapped for the marker the pin's planted
+        state dictates: any prompt or stdin read fails the run
+        loudly. Returns ``(result, findings)``."""
+        findings = self._findings_for(marker)
         boom = AssertionError(
             "a prompt (or a stdin read) happened with the file present - "
             "the marker is True, so the follow-up must return before "
@@ -14728,7 +14839,7 @@ class TestFilePresentNoFollowup(CliCase):
             mock.patch.object(
                 cli.prompts, "_read_confirmation", side_effect=boom
             ),
-        ) + self._guard_seams(findings, (self.OWNER, self.REPO))
+        ) + self._guard_seams((self.OWNER, self.REPO))
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -15817,26 +15928,75 @@ class TestCodeownersFallbackSkipAware(CliCase):
     # absent half pins the full line byte-identical.
     FREE_PLAN_MARKER = "re-run without --yes to see the walkthrough"
     CODEOWNERS_BYTES = b"existing\n"
+    # The two briefs the real ``check_file_paths`` picks for the same
+    # warn, keyed by the marker - byte-identical to behaviour 2's
+    # reworded-strings contract (plans/file-path-fallback-file-only.md):
+    # the reworded satisfied brief (file present) and the unsatisfied
+    # brief (file absent / directory).
+    SATISFIED_BRIEF = "push rule off; CODEOWNERS review gate in place"
+    UNSATISFIED_BRIEF = "a push can change .github/workflows/**, what CI runs"
 
     # -- fixtures and seams ------------------------------------------------------
 
-    def _file_paths_warn_findings(self):
-        """The findings the command reports: the other four rules passed
-        (the fetch seam carries the review-OFF fixture
-        ``five_rules_review_off`` - under behaviour 2 the review half is
-        irrelevant), ``file_paths`` flipped to its warn shape with
-        ``fallback_in_place`` False (the file is absent for the pins
-        that print the free-plan line), ``wants_walkthrough`` True,
-        ``summarize`` 0 (a warn never fails the summarize)."""
-        findings = cli.piguard.check_all(five_rules_review_off())
-        warn = cli.piguard.check_file_paths([])[0]
-        for index, finding in enumerate(findings):
-            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS:
-                findings[index] = warn
-        self.assertTrue(
+    def _findings_for(self, marker):
+        """The findings the REAL ``check_all`` produces from the fetch
+        seam's review-OFF rules (``five_rules_review_off`` - under
+        behaviour 2 the fetched ``pull_request`` element is irrelevant)
+        and the on-disk state at ``codeowners_path(self.project)``: the
+        other four rules passed, ``file_paths`` in its warn shape with
+        ``fallback_in_place`` exactly what the on-disk file dictates,
+        and the brief reworded iff the marker is True. ``marker`` is the
+        pin's intent, sanity-checked against the on-disk file the pins
+        plant (or leave absent) BEFORE calling this, so the fixture can
+        never silently report the other half. ``wants_walkthrough`` is
+        True exactly when the marker is False (the marker-exact
+        exemption), ``summarize`` 0 (a warn never fails the summarize).
+        The marker is built, not faked: the ``check_all`` mock that
+        stubbed this seam made the production marker unreachable, and
+        the present-half pin's intent ("no follow-up line") is
+        unreachable while the fixture carries marker False."""
+        on_disk = cli.picodeowners.codeowners_path(self.project).is_file()
+        self.assertIs(
+            marker,
+            on_disk,
+            "the pin must plant (or leave absent) the on-disk state the "
+            "marker claims - codeowners_path(target).is_file() is "
+            "{}".format(on_disk),
+        )
+        findings = cli.piguard.check_all(
+            five_rules_review_off(),
+            codeowners_present=marker,
+        )
+        matches = [
+            finding for finding in findings
+            if finding.get("check") == cli.piguard.CHECK_FILE_PATHS
+        ]
+        self.assertEqual(
+            1,
+            len(matches),
+            "the fixture must carry exactly one file_paths finding, "
+            "got:\n{}".format(findings),
+        )
+        warn = matches[0]
+        self.assertIs(
+            marker,
+            warn.get("fallback_in_place"),
+            "the file_paths warn must carry fallback_in_place {} - the "
+            "marker the on-disk file dictates - got {}\n{}".format(
+                marker, warn.get("fallback_in_place"), warn
+            ),
+        )
+        self.assertEqual(
+            self.UNSATISFIED_BRIEF if marker is False else self.SATISFIED_BRIEF,
+            warn.get("brief"),
+            "the fixture's brief must be the one the marker picks - got "
+            "{!r}\n{}".format(warn.get("brief"), warn),
+        )
+        self.assertEqual(
+            marker is False,
             cli.picodeowners.wants_walkthrough(findings),
-            "the fixture must carry a file_paths warn finding so the "
-            "walkthrough ask is wanted",
+            "wants_walkthrough must be True exactly when the marker is "
+            "False (the marker-exact exemption)",
         )
         self.assertEqual(
             0,
@@ -15846,10 +16006,16 @@ class TestCodeownersFallbackSkipAware(CliCase):
         )
         return findings
 
-    def _guard_seams(self, findings):
-        """The four piguard seams replaced, so the guard flow runs
-        offline on exactly the fixture this class wants reported; the
-        fetch seam carries the review-OFF fixture."""
+    def _guard_seams(self):
+        """The three piguard seams replaced, so the guard flow runs
+        offline: the repository resolves, the fetch seam carries the
+        review-OFF fixture, the token probes come back clean - and
+        ``check_all`` runs for REAL, so the file_paths finding's
+        ``fallback_in_place`` marker (and the brief it picks) is what
+        the production presence computation threads from
+        ``codeowners_path(target)`` (the
+        ``TestGuardFindingsCodeownersPresence`` precedent: the marker is
+        built, not faked)."""
         return (
             mock.patch.object(
                 cli.piguard,
@@ -15861,7 +16027,6 @@ class TestCodeownersFallbackSkipAware(CliCase):
                 "fetch_branch_rules",
                 return_value=(five_rules_review_off(), None),
             ),
-            mock.patch.object(cli.piguard, "check_all", return_value=findings),
             mock.patch.object(
                 cli.piguard, "check_token_all", return_value=[]
             ),
@@ -15897,11 +16062,25 @@ class TestCodeownersFallbackSkipAware(CliCase):
             ["--dry-run", "verify-guards", str(self.project), "--branch", "main"]
         )
 
-    def _run_fallback(self):
-        """One ``--dry-run`` run with the guard seams replaced and the
-        prompt seams booby-trapped. Returns ``(result, findings)``."""
-        findings = self._file_paths_warn_findings()
-        for patcher in self._guard_seams(findings) + self._prompt_traps():
+    def _run_fallback_present(self):
+        """One ``--dry-run`` run for the PRESENT half: the marker is
+        True (the file is already planted by the pin), so the
+        follow-up returns before any line or prompt. Returns
+        ``(result, findings)``."""
+        findings = self._findings_for(True)
+        for patcher in self._guard_seams() + self._prompt_traps():
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        result = self._run_dry_run()
+        return result, findings
+
+    def _run_fallback_absent(self):
+        """One ``--dry-run`` run for the ABSENT half: the marker is
+        False (the target's CODEOWNERS path is absent or a directory),
+        so the fallback prints the free-plan line. Returns
+        ``(result, findings)``."""
+        findings = self._findings_for(False)
+        for patcher in self._guard_seams() + self._prompt_traps():
             patcher.start()
             self.addCleanup(patcher.stop)
         result = self._run_dry_run()
@@ -15939,7 +16118,7 @@ class TestCodeownersFallbackSkipAware(CliCase):
         review off (the fetch seam is review-OFF), so the fallback
         still fires and prints the free-plan line."""
         self._plant_present_file()
-        result, findings = self._run_fallback()
+        result, findings = self._run_fallback_present()
         lines = result.output.splitlines()
         self.assertEqual(
             0,
@@ -15970,6 +16149,19 @@ class TestCodeownersFallbackSkipAware(CliCase):
                 result.output
             ),
         )
+        self.assertIn(
+            self.SATISFIED_BRIEF,
+            result.output,
+            "the report must carry the reworded satisfied brief - the "
+            "real check_all saw the on-disk file, so the warn it "
+            "reported is the satisfied one:\n{}".format(result.output),
+        )
+        self.assertNotIn(
+            self.UNSATISFIED_BRIEF,
+            result.output,
+            "the unsatisfied brief must be ABSENT - the marker is True, "
+            "so the real warn is the reworded one:\n{}".format(result.output),
+        )
 
     # -- pin 2: file absent -> today's free-plan line, byte-identical -----------
 
@@ -15978,7 +16170,7 @@ class TestCodeownersFallbackSkipAware(CliCase):
     ):
         """Green now: the empty-target fallback is unchanged today -
         this pin is the byte-identity guard for the absent half."""
-        result, _findings = self._run_fallback()
+        result, _findings = self._run_fallback_absent()
         lines = result.output.splitlines()
         self.assertEqual(
             1,
@@ -16020,7 +16212,7 @@ class TestCodeownersFallbackSkipAware(CliCase):
         directory is ``is_file()`` False, so the two halves agree on
         what "present" means."""
         path = self._plant_directory()
-        result, _findings = self._run_fallback()
+        result, _findings = self._run_fallback_absent()
         lines = result.output.splitlines()
         self.assertTrue(
             path.is_dir() and not path.is_file(),
@@ -16051,12 +16243,15 @@ class TestCodeownersFallbackSkipAware(CliCase):
         plans/file-path-fallback-file-only.md: with the file present the
         marker is True and the follow-up never reaches the fallback).
         The pin is exit-only, so it stays green through the re-point."""
-        findings = self._file_paths_warn_findings()
-        for patcher in self._guard_seams(findings) + self._prompt_traps():
+        # The seam is booby-trapped across BOTH halves; the marker for
+        # each half comes from the on-disk state, sanity-checked in
+        # _findings_for.
+        for patcher in self._guard_seams() + self._prompt_traps():
             patcher.start()
             self.addCleanup(patcher.stop)
-        baseline_exit = cli.piguard.summarize(findings)
         # Absent half.
+        findings = self._findings_for(False)
+        baseline_exit = cli.piguard.summarize(findings)
         result = self._run_dry_run()
         self.assertEqual(
             baseline_exit,
@@ -16066,13 +16261,14 @@ class TestCodeownersFallbackSkipAware(CliCase):
                 baseline_exit, result.output
             ),
         )
-        # Present half: the same baseline, the same free-plan line.
+        # Present half: the same baseline, no follow-up line at all.
         self._plant_present_file()
+        findings = self._findings_for(True)
         result = self._run_dry_run()
         self.assertEqual(
-            baseline_exit,
+            cli.piguard.summarize(findings),
             result.exit_code,
-            "present half: the skip-aware fallback changes no exit code "
+            "present half: the no-follow-up run changes no exit code "
             "- it is the non-interactive baseline ({}):\n{}".format(
                 baseline_exit, result.output
             ),
