@@ -3782,6 +3782,78 @@ class GateVerdictSatisfiedWarnTests(unittest.TestCase):
             "check carrying fallback_in_place True is not exempt",
         )
 
+    def test_real_producer_satisfied_warn_is_clean_and_unsatisfied_blocks(self):
+        """Behaviour 5 of plans/file-path-fallback-file-only.md - the
+        gate exemption pinned on the REAL producer's output, not a
+        hand-built dict: ``check_file_paths`` with no
+        ``file_path_restriction`` element and ``codeowners_present=True``
+        emits the marker True (the file alone), and that exact finding
+        must not block; with the file absent (``codeowners_present``
+        False or defaulted) the same producer's warn still blocks - so
+        the pin dies if the marker stops being produced."""
+        verdict = piguard.gate_verdict
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            rule("deletion", "main-protected"),
+            pull_request_rule("main-protected", 1),
+            update_rule(
+                "main-protected", {"update_allows_fetch_and_merge": False}
+            ),
+        ]
+        self.assertFalse(
+            any(r.get("type") == "file_path_restriction" for r in rules),
+            "fixture sanity: no file_path_restriction element - the "
+            "warn half of the check",
+        )
+
+        satisfied = piguard.check_file_paths(rules, codeowners_present=True)[0]
+        self.assertIs(
+            satisfied["fallback_in_place"],
+            True,
+            "fixture sanity: the real producer emits the marker True "
+            "with the file present - the exemption must be pinned on "
+            "the finding the producer really builds",
+        )
+        self.assertEqual(
+            verdict([satisfied]),
+            "clean",
+            "the producer's satisfied warn must not block the gate - "
+            "a hand-built dict could be one field away from what the "
+            "producer really emits",
+        )
+        for label, kwargs in (
+            ("codeowners_present False", {"codeowners_present": False}),
+            ("the default keyword", {}),
+        ):
+            with self.subTest(kwargs=kwargs):
+                unsatisfied = piguard.check_file_paths(rules, **kwargs)[0]
+                self.assertIs(
+                    unsatisfied["fallback_in_place"],
+                    False,
+                    "fixture sanity: the real producer keeps the marker "
+                    "False without the file ({})".format(label),
+                )
+                self.assertEqual(
+                    verdict([unsatisfied]),
+                    "blocked",
+                    "the producer's unsatisfied warn ({}) still blocks - "
+                    "the exemption is marker-exact on the real "
+                    "finding".format(label),
+                )
+        other_warn = piguard.check_review([])[0]
+        self.assertEqual(
+            _field(other_warn, "status"),
+            "warn",
+            "fixture sanity: the review warn is a genuine second warn",
+        )
+        self.assertEqual(
+            verdict([satisfied, other_warn]),
+            "blocked",
+            "the exemption is check-scoped on the real producer's "
+            "output: a different check's warn still blocks beside the "
+            "satisfied file_paths warn",
+        )
+
 
 class GateRemediationTests(unittest.TestCase):
     """Behaviour 2 of plans/setup-repo-guards.md - ``gate_remediation``.
@@ -4398,6 +4470,77 @@ class GateRemediationSatisfiedWarnTests(unittest.TestCase):
             "satisfied warn on the branch side - the token half is "
             "computed from the token list exactly as today",
         )
+
+    def test_real_producer_satisfied_warn_needs_no_ruleset_and_unsatisfied_does(self):
+        """Behaviour 5 of plans/file-path-fallback-file-only.md - the
+        remediation exemption pinned on the REAL producer's output, not
+        a hand-built dict: ``check_file_paths`` with no
+        ``file_path_restriction`` element and
+        ``codeowners_present=True`` emits the marker True (the file
+        alone), and that exact finding must not set ``needs_ruleset``;
+        with the file absent the same producer's warn still sets it -
+        so the pin dies if the marker stops being produced."""
+        remediation = piguard.gate_remediation
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            rule("deletion", "main-protected"),
+            pull_request_rule("main-protected", 1),
+            update_rule(
+                "main-protected", {"update_allows_fetch_and_merge": False}
+            ),
+        ]
+        self.assertFalse(
+            any(r.get("type") == "file_path_restriction" for r in rules),
+            "fixture sanity: no file_path_restriction element - the "
+            "warn half of the check",
+        )
+
+        satisfied = piguard.check_file_paths(rules, codeowners_present=True)[0]
+        self.assertIs(
+            satisfied["fallback_in_place"],
+            True,
+            "fixture sanity: the real producer emits the marker True "
+            "with the file present - the exemption must be pinned on "
+            "the finding the producer really builds",
+        )
+
+        result = remediation([satisfied], [])
+
+        self.assertFalse(
+            result["needs_ruleset"],
+            "the producer's satisfied warn needs no ruleset fix - the "
+            "CODEOWNERS review gate IS the fix, so the 'ruleset is "
+            "already prepared' block must not print",
+        )
+        self.assertFalse(
+            result["needs_token_recipe"],
+            "an empty token list needs no token recipe",
+        )
+        self.assertEqual(
+            set(result),
+            {"needs_ruleset", "needs_token_recipe"},
+            "the producer's finding changes values, not shape: the "
+            "result still carries exactly the two pinned keys: "
+            "got {!r}".format(sorted(result)),
+        )
+        for label, kwargs in (
+            ("codeowners_present False", {"codeowners_present": False}),
+            ("the default keyword", {}),
+        ):
+            with self.subTest(kwargs=kwargs):
+                unsatisfied = piguard.check_file_paths(rules, **kwargs)[0]
+                self.assertIs(
+                    unsatisfied["fallback_in_place"],
+                    False,
+                    "fixture sanity: the real producer keeps the marker "
+                    "False without the file ({})".format(label),
+                )
+                self.assertTrue(
+                    remediation([unsatisfied], [])["needs_ruleset"],
+                    "the producer's unsatisfied warn ({}) still needs "
+                    "the ruleset fix - the exemption is marker-exact "
+                    "on the real finding".format(label),
+                )
 
 
 class GateInvariantSweep(unittest.TestCase):

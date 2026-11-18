@@ -870,6 +870,7 @@ class WantsWalkthroughSatisfiedWarnTests(WantsWalkthroughTestCase):
            findings = list(garbage) + [
                self._finding("warn", "file_paths", "file_path_restriction"),
            ]
+
            self.assertIs(
                wants(findings),
                True,
@@ -878,6 +879,104 @@ class WantsWalkthroughSatisfiedWarnTests(WantsWalkthroughTestCase):
                "swallowed it",
            )
 
+   def test_real_producer_satisfied_warn_is_exempt_and_unsatisfied_fires(self):
+       # Behaviour 5 of plans/file-path-fallback-file-only.md: the
+       # exemption pinned on the REAL producer's output, not a
+       # hand-built dict. ``piguard.check_file_paths`` with no
+       # ``file_path_restriction`` element and
+       # ``codeowners_present=True`` emits the marker True (the file
+       # alone), and that exact finding must not fire the walkthrough
+       # - whatever the other findings say; with the file absent
+       # (``codeowners_present`` False or defaulted) the same
+       # producer's warn still fires, even with the rest of the
+       # ruleset satisfied.
+       from anvilkit.pi import piguard
+
+       wants = self._get_wants_walkthrough()
+       rules = [
+           {"type": "non_fast_forward", "ruleset_source": "main-protected"},
+           {"type": "deletion", "ruleset_source": "main-protected"},
+           {
+               "type": "pull_request",
+               "ruleset_source": "main-protected",
+               "parameters": {"required_approving_review_count": 1},
+           },
+           {
+               "type": "update",
+               "ruleset_source": "main-protected",
+               "parameters": {"update_allows_fetch_and_merge": False},
+           },
+       ]
+       self.assertFalse(
+           any(r.get("type") == "file_path_restriction" for r in rules),
+           "fixture sanity: no file_path_restriction element - the "
+           "warn half of the check",
+       )
+       passed = [
+           self._finding(
+               "passed",
+               "history_rewrite",
+               "non_fast_forward",
+               brief="force pushes blocked",
+               danger="",
+               remedy="nothing to do",
+           ),
+           self._finding(
+               "passed",
+               "review",
+               "pull_request",
+               brief="review required (1 required approval)",
+               danger="",
+               remedy="nothing to do",
+           ),
+           self._finding(
+               "passed",
+               "update_restriction",
+               "non_fast_forward",
+               brief="fast-forward only",
+               danger="",
+               remedy="nothing to do",
+           ),
+       ]
+
+       satisfied = piguard.check_file_paths(rules, codeowners_present=True)[0]
+       self.assertIs(
+           satisfied["fallback_in_place"],
+           True,
+           "fixture sanity: the real producer emits the marker True "
+           "with the file present - the exemption must be pinned on "
+           "the finding the producer really builds",
+       )
+
+       self.assertIs(
+           wants(passed + [satisfied]),
+           False,
+           "the producer's satisfied warn must not fire the "
+           "walkthrough whatever the other findings say - a "
+           "hand-built dict could be one field away from what the "
+           "producer really emits",
+       )
+
+       for label, kwargs in (
+           ("codeowners_present False", {"codeowners_present": False}),
+           ("the default keyword", {}),
+       ):
+           with self.subTest(kwargs=kwargs):
+               unsatisfied = piguard.check_file_paths(rules, **kwargs)[0]
+               self.assertIs(
+                   unsatisfied["fallback_in_place"],
+                   False,
+                   "fixture sanity: the real producer keeps the marker "
+                   "False without the file ({})".format(label),
+               )
+               self.assertIs(
+                   wants(passed + [unsatisfied]),
+                   True,
+                   "the producer's unsatisfied warn ({}) still fires "
+                   "the walkthrough, even with the rest of the "
+                   "ruleset satisfied - the exemption is "
+                   "marker-exact on the real finding".format(label),
+               )
 
 # ---------------------------------------------------------------------------
 # Behaviour 11 of plans/file-path-codeowners-interactive.md: the body
