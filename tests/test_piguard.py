@@ -1131,16 +1131,24 @@ class CodeOwnerReviewOnTests(unittest.TestCase):
 
 
 class FilePathFallbackMarkerTests(unittest.TestCase):
-    """Behaviours 2-3 of plans/file-path-fallback-satisfied.md: the
-    ``fallback_in_place`` marker on the ``file_path_restriction`` warn.
+    """Behaviour 2 of plans/file-path-fallback-file-only.md: the
+    ``fallback_in_place`` marker is the file alone.
 
-    The warn finding gains ``fallback_in_place`` defaulting to ``False``;
-    the new ``codeowners_present`` keyword on ``check_file_paths`` lets the
-    caller name the file half. When the file half is present AND the
-    already-fetched ``pull_request`` rule carries
-    ``require_code_owner_review`` exactly True, the brief and the remedy
-    name the fallback as in place - status stays ``warn``, and danger and
-    source are unchanged. The passed finding gains no key.
+    The warn finding carries ``fallback_in_place`` defaulting to ``False``;
+    the ``codeowners_present`` keyword on ``check_file_paths`` names the
+    file half, and the marker is exactly that value - True with the file
+    present whatever the fetched ``pull_request`` element says (review on,
+    off, absent, unreadable), False with it absent. When the marker is
+    True the brief and the remedy are reworded (byte-identical to
+    #110's, chosen on the marker alone); status stays ``warn``, and
+    danger and source are unchanged either way. A non-bool
+    ``codeowners_present`` is not True, so it does not satisfy, and the
+    call never raises. The passed finding gains no key.
+
+    Re-pointed in the red for behaviour 2: the review-half cases now
+    assert the file alone decides - file present + review off satisfies
+    (inverse re-point, green today / red now), and the absent/unreadable
+    pull_request element no longer keeps the marker off.
     """
 
     # The warn finding as emitted today, byte-identical: the six keys at
@@ -1246,7 +1254,12 @@ class FilePathFallbackMarkerTests(unittest.TestCase):
             "the remedy stays today's verbatim when the file half is missing",
         )
 
-    def test_file_present_but_review_off_keeps_marker_off_and_today_words(self):
+    def test_file_present_with_review_off_satisfies_with_reworded_words(self):
+        """Inverse re-point (green today, red now): the marker is the file
+        alone, so with the file present and the review gate off the marker
+        is True - the reworded brief and remedy (byte-identical to
+        #110's) are chosen on the marker alone, whatever the fetched
+        ``pull_request`` element says."""
         rules = [
             rule("non_fast_forward", "main-protected"),
             code_owner_review_rule(
@@ -1259,19 +1272,23 @@ class FilePathFallbackMarkerTests(unittest.TestCase):
 
         self.assertIs(
             warn["fallback_in_place"],
-            False,
-            "the file half alone is not the fallback in place: the review "
-            "gate is off",
+            True,
+            "the marker is the file alone: with the file present it is "
+            "True whatever the fetched pull_request element says - here "
+            "the review gate is off",
         )
         self.assertEqual(
             _field(warn, "brief"),
-            self._TODAY_WARN["brief"],
-            "the brief stays today's verbatim when the review half is missing",
+            "push rule off; CODEOWNERS review gate in place",
+            "the reworded brief is chosen on the marker alone, "
+            "byte-identical to #110's",
         )
         self.assertEqual(
             _field(warn, "remedy"),
-            self._TODAY_WARN["remedy"],
-            "the remedy stays today's verbatim when the review half is missing",
+            "nothing to do - the CODEOWNERS review gate covers this; "
+            "the push rule stays off on your plan",
+            "the reworded remedy is chosen on the marker alone, "
+            "byte-identical to #110's",
         )
 
     def test_both_halves_in_place_rewords_warn_brief_and_remedy(self):
@@ -1369,6 +1386,124 @@ class FilePathFallbackMarkerTests(unittest.TestCase):
             finding,
             "the passed finding gains no marker key",
         )
+
+    def test_file_present_satisfies_whatever_the_pull_request_element_says(
+        self,
+    ):
+        """The file alone satisfies - red now (today the AND with the
+        review reader keeps the marker False when the element is absent,
+        unreadable, or off): with the file present the marker is True and
+        the reworded brief and remedy (byte-identical to #110's, chosen
+        on the marker alone) appear for every state of the fetched
+        ``pull_request`` element."""
+        for label, rules in (
+            (
+                "review off",
+                [
+                    rule("non_fast_forward", "main-protected"),
+                    code_owner_review_rule(
+                        "main-protected",
+                        {"require_code_owner_review": False},
+                    ),
+                ],
+            ),
+            (
+                "no pull_request element at all",
+                [
+                    rule("non_fast_forward", "main-protected"),
+                    rule("deletion", "main-protected"),
+                    rule("update", "main-protected"),
+                    rule("commit_message_pattern", "main-protected"),
+                ],
+            ),
+            (
+                "parameters is a string",
+                [
+                    {
+                        "type": "pull_request",
+                        "ruleset_source": "main-protected",
+                        "parameters": "require_code_owner_review",
+                    },
+                ],
+            ),
+            (
+                "parameters is None",
+                [
+                    {
+                        "type": "pull_request",
+                        "ruleset_source": "main-protected",
+                        "parameters": None,
+                    },
+                ],
+            ),
+            (
+                "non-bool review parameter",
+                [
+                    code_owner_review_rule(
+                        "main-protected",
+                        {"require_code_owner_review": "true"},
+                    ),
+                ],
+            ),
+        ):
+            with self.subTest(element=label):
+                warn = self._warn(rules, codeowners_present=True)
+                self.assertIs(
+                    warn["fallback_in_place"],
+                    True,
+                    "with the file present the marker is True whatever "
+                    "the fetched pull_request element says ({})".format(
+                        label
+                    ),
+                )
+                self.assertEqual(
+                    _field(warn, "brief"),
+                    "push rule off; CODEOWNERS review gate in place",
+                    "the reworded brief is chosen on the marker alone "
+                    "({})".format(label),
+                )
+                self.assertEqual(
+                    _field(warn, "remedy"),
+                    "nothing to do - the CODEOWNERS review gate covers "
+                    "this; the push rule stays off on your plan",
+                    "the reworded remedy is chosen on the marker alone "
+                    "({})".format(label),
+                )
+
+    def test_non_bool_codeowners_present_does_not_satisfy_and_never_raises(
+        self,
+    ):
+        """A non-bool ``codeowners_present`` is not True, so it does not
+        satisfy - the ``is True`` discipline on the parameter itself:
+        the marker is not True for a string, an int or None, whatever
+        the fetched ``pull_request`` element says (here review on), and
+        the call never raises. Red now for the truthy values: today the
+        marker line ANDs the truthy value with the review reader, so a
+        truthy non-bool with the review on yields the marker exactly
+        True."""
+        for label, value in (
+            ("string 'true'", "true"),
+            ("int 1", 1),
+            ("None", None),
+        ):
+            with self.subTest(codeowners_present=label):
+                warn = self._warn(
+                    [
+                        rule("non_fast_forward", "main-protected"),
+                        code_owner_review_rule(
+                            "main-protected",
+                            {"require_code_owner_review": True},
+                        ),
+                    ],
+                    codeowners_present=value,
+                )
+                self.assertIsNot(
+                    warn["fallback_in_place"],
+                    True,
+                    "codeowners_present {} is not True, so the marker "
+                    "does not satisfy - a non-bool must not set the "
+                    "marker".format(label),
+                )
 
 
 class RenderFindingTests(unittest.TestCase):
