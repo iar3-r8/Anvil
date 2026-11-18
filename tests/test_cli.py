@@ -16687,26 +16687,36 @@ class TestGuardFindingsCodeownersPresence(CliCase):
 
 
 # ---------------------------------------------------------------------------
-# Behaviour 9 of plans/file-path-fallback-satisfied.md - the acceptance run:
-# the user's own transcript state (four rules ok, no file_path_restriction,
-# review gate on, CODEOWNERS on disk, token ok), end to end through the real
-# commands. The state is BUILT, not faked: the fetched rules are the C7
-# fixture at the fetch seam, the file is a real file at codeowners_path,
-# and the findings come out of the REAL check_all.
+# Behaviour 4 of plans/file-path-fallback-file-only.md - the acceptance
+# run, review OFF: the user's own transcript state with the review half
+# DELIBERATELY off (four rules ok, no file_path_restriction,
+# require_code_owner_review False, CODEOWNERS on disk, token ok), end to
+# end through the real commands. The state is BUILT, not faked: the
+# fetched rules are the five-rule fixture minus file_path_restriction at
+# the fetch seam, the pull_request element's require_code_owner_review
+# set False (the deliberate flip - the element stays, a real ruleset
+# carries it), the file is a real file at codeowners_path, and the
+# findings come out of the REAL check_all.
 # ---------------------------------------------------------------------------
 
 
 class TestAcceptanceSatisfiedFallback(CliCase):
-    """Behaviour 9: the acceptance run, end to end.
+    """Behaviour 4: the acceptance run, review OFF - the review half
+    deliberately off, proving its irrelevance, end to end.
 
-    The user's own transcript state: the fetched rules are the five-rule
-    fixture minus ``file_path_restriction`` with the ``pull_request``
-    rule's ``require_code_owner_review`` True, a real file sits at
+    The user's own transcript state with the review half DELIBERATELY
+    off: the fetched rules are the five-rule fixture minus
+    ``file_path_restriction`` with the ``pull_request`` element's
+    ``require_code_owner_review`` flipped to False (the element STAYS -
+    a real ruleset carries it - and the code now ignores the value; the
+    flip is what proves the irrelevance, because under the file-alone
+    marker any path still reading the parameter would sink the marker
+    and every pin below would fail), a real file sits at
     ``codeowners_path(target)``, and the token findings are all passed -
     so the real ``check_all`` yields four ``passed`` findings and one
-    ``file_paths`` warn carrying ``fallback_in_place`` True (the
-    satisfied warn of behaviours 2-3), and ``gate_verdict`` is clean
-    (behaviour 4).
+    ``file_paths`` warn carrying ``fallback_in_place`` True on the file
+    alone (behaviour 2's marker), and ``gate_verdict`` is clean (the
+    check-scoped, marker-exact exemption).
 
     The acceptance pins:
 
@@ -16745,11 +16755,16 @@ class TestAcceptanceSatisfiedFallback(CliCase):
     # -- fixture -------------------------------------------------------------
 
     def _fetch_rules(self):
-        """The acceptance state's fetched rules (the C7 fixture): the
-        five-rule fixture minus ``file_path_restriction`` (the warn half),
-        the ``pull_request`` rule's ``require_code_owner_review`` True
-        (the review half, faked at the fetch seam - never on the
-        finding)."""
+        """The acceptance state's fetched rules: the five-rule fixture
+        minus ``file_path_restriction`` (the warn half) with the
+        ``pull_request`` element's ``require_code_owner_review``
+        DELIBERATELY flipped to False - the review half off, behaviour
+        4's new truth. The element STAYS in the fixture (a real ruleset
+        carries it); only its value is flipped, and the value is now
+        irrelevant to the file-alone marker - this fixture is the proof
+        of that irrelevance: any code path still reading the parameter
+        would sink ``fallback_in_place`` to False and every pin in this
+        class would fail."""
         rules = [
             rule
             for rule in five_rule_branch_rules()
@@ -16759,13 +16774,28 @@ class TestAcceptanceSatisfiedFallback(CliCase):
         for rule in rules:
             if rule.get("type") == "pull_request":
                 parameters = dict(rule.get("parameters") or {})
-                parameters["require_code_owner_review"] = True
+                parameters["require_code_owner_review"] = False
                 rule = dict(rule, parameters=parameters)
             updated.append(rule)
         self.assertFalse(
             any(r.get("type") == "file_path_restriction" for r in updated),
             "fixture sanity: the acceptance state has no "
             "file_path_restriction rule",
+        )
+        # Fixture sanity pinning the DELIBERATE flip: the fetched
+        # pull_request element's parameter IS False - the review half off.
+        # This is what makes the class meaningful: with the file present
+        # on disk, the run below can only proceed if the marker is the
+        # file ALONE; any surviving reader of the parameter would flip
+        # the marker to False and turn the gate blocked.
+        pull_request = [r for r in updated if r.get("type") == "pull_request"]
+        self.assertTrue(
+            pull_request
+            and pull_request[0]["parameters"]["require_code_owner_review"]
+            is False,
+            "fixture sanity: the review half is DELIBERATELY off - the "
+            "fetched pull_request element's require_code_owner_review "
+            "is False (the value the code must now ignore)",
         )
         return updated
 
@@ -17165,4 +17195,263 @@ class TestAcceptanceSatisfiedFallback(CliCase):
             entries[0].startswith("1. file_path_restriction: nothing to do"),
             "the entry must be the reworded remedy, labelled by the "
             "rule:\n{}".format(entries[0]),
+        )
+
+    # -- pin 5: the error half - file ABSENT, review ON blocks ------------------
+
+    UNSATISFIED_BRIEF = "a push can change .github/workflows/**, what CI runs"
+    FREE_PLAN_LINE = (
+        'Your plan may not offer "Restrict file paths" - the '
+        "free-plan CODEOWNERS fix: re-run without --yes to see the "
+        "walkthrough."
+    )
+
+    def _start_blocked_seams(self):
+        """The guard seams over the REAL ``check_all`` for the error half:
+        the SAME acceptance fixture (the review half ON - the
+        ``pull_request`` element's ``require_code_owner_review`` True,
+        faked at the fetch seam), the token findings all passed, every
+        prompt seam booby-trapped. No file is planted: the on-disk
+        state at ``codeowners_path(target)`` is ABSENT, so the real
+        ``check_all`` yields the unsatisfied warn (the file-alone
+        marker False) exactly as an ordinary warn."""
+        patchers = (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "fetch_branch_rules",
+                return_value=(self._fetch_rules_review_on(), None),
+            ),
+            mock.patch.object(
+                cli.piguard,
+                "check_token_all",
+                return_value=self._token_ok_findings(),
+            ),
+        ) + self._prompt_traps()
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _fetch_rules_review_on(self):
+        """The error half's fetched rules: the five-rule fixture minus
+        ``file_path_restriction`` (the warn half) with the
+        ``pull_request`` element's ``require_code_owner_review`` True -
+        the review half ON. With the file ABSENT this state must block
+        exactly as an ordinary warn does: the review gate alone does
+        nothing without the file."""
+        rules = [
+            rule
+            for rule in five_rule_branch_rules()
+            if rule.get("type") != "file_path_restriction"
+        ]
+        updated = []
+        for rule in rules:
+            if rule.get("type") == "pull_request":
+                parameters = dict(rule.get("parameters") or {})
+                parameters["require_code_owner_review"] = True
+                rule = dict(rule, parameters=parameters)
+            updated.append(rule)
+        pull_request = [r for r in updated if r.get("type") == "pull_request"]
+        self.assertTrue(
+            pull_request
+            and pull_request[0]["parameters"]["require_code_owner_review"]
+            is True,
+            "fixture sanity: the error half's review half is ON - the "
+            "fetched pull_request element's require_code_owner_review "
+            "is True",
+        )
+        return updated
+
+    def _run_blocked_gate(self, target):
+        """One non-interactive, booby-trapped ``setup-repo`` in the
+        error-half state: a stored token (reused without prompting),
+        the blocked seams over the REAL ``check_all`` with the file
+        ABSENT at ``codeowners_path(target)``, and the real provision
+        under the spy - a blocked run must never reach it."""
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN=self.TOKEN)
+        self.assertFalse(
+            cli.picodeowners.codeowners_path(Path(target)).is_file(),
+            "the error half's precondition - no file at "
+            "codeowners_path(target) (the on-disk state is ABSENT)",
+        )
+        self._start_blocked_seams()
+        self._spy_provision()
+        return self.invoke(
+            [
+                "setup-repo",
+                target,
+                "--yes",
+                "--no-anthropic",
+                "--no-oxylabs",
+            ]
+        )
+
+    def test_file_absent_review_on_blocks_exactly_as_an_ordinary_warn(self):
+        """The error half of behaviour 4: the file ABSENT with the
+        review half ON. The unsatisfied warn (the file-alone marker
+        False) blocks the gate EXACTLY as an ordinary warn does -
+        the report prints the UNSATISFIED brief, the follow-up fires
+        (wants_walkthrough True - non-interactive, booby-trapped, so
+        the one-line free-plan fallback; no walkthrough, no skip
+        line, no arm line, no prompt), the ruleset block prints and
+        writes ``.github-ruleset.json``, the ``⛔`` line is the last
+        non-blank line, the exit is 9, and NOTHING is provisioned
+        (the provision seam is NOT called). This pins that the
+        satisfaction is not "review on": without the file, the review
+        gate alone does nothing.
+
+        Expected GREEN now: F2's file-alone marker already blocks on
+        the absent file whatever the review half says - this pin is
+        the error-half half of behaviour 4's contract, the regression
+        guard that the block survives on the file's absence alone."""
+        target = tempfile.TemporaryDirectory()
+        self.addCleanup(target.cleanup)
+
+        result = self._run_blocked_gate(target.name)
+        out = result.output
+
+        # (a) the report prints the warn with the UNSATISFIED brief.
+        lines = out.splitlines()
+        warn_lines = [
+            line
+            for line in lines
+            if line.lstrip().startswith("⚠️ warn: file_path_restriction")
+        ]
+        self.assertEqual(
+            1,
+            len(warn_lines),
+            "the blocked report must carry exactly one warn line for "
+            "the file_paths check - found {}:\n{}".format(
+                len(warn_lines), out
+            ),
+        )
+        # The full brief wraps at 80 columns on the rendered warn line
+        # (the report wraps at word boundaries), so pin the stable
+        # prefix on the warn line - the brief IS the unsatisfied one.
+        self.assertIn(
+            "a push can change .github/workflows/**",
+            warn_lines[0],
+            "the unsatisfied warn must carry the unsatisfied brief - "
+            "not the reworded one - on the warn line:\n{}".format(
+                warn_lines[0]
+            ),
+        )
+        self.assertNotIn(
+            self.SATISFIED_BRIEF,
+            out,
+            "with the file absent the reworded satisfied brief must "
+            "not print anywhere:\n{}".format(out),
+        )
+        # (b) the follow-up fired: exactly one non-interactive
+        # free-plan fallback line (the booby-trapped prompts prove no
+        # prompt was asked), no walkthrough, no skip line, no arm line.
+        self.assertEqual(
+            1,
+            out.count(self.FREE_PLAN_LINE),
+            "the unsatisfied warn must fire the follow-up - the "
+            "non-interactive free-plan fallback line exactly once:\n"
+            "{}".format(out),
+        )
+        for token in self.STEP_TOKENS:
+            self.assertNotIn(
+                token,
+                out,
+                "the non-interactive follow-up must not print the "
+                "walkthrough steps; step token {!r} present:\n{}".format(
+                    token, out
+                ),
+            )
+        self.assertNotIn(
+            "Require review from Code Owners",
+            out,
+            "the non-interactive follow-up must not print the "
+            "walkthrough - step 4's option name is present:\n{}".format(
+                out
+            ),
+        )
+        self.assertEqual(
+            0,
+            out.count(self.SKIP_LINE),
+            "the skip line must be absent - it belongs to the "
+            "file-present state, which this is not:\n{}".format(out),
+        )
+        self.assertEqual(
+            0,
+            out.count(self.ARM_LINE),
+            "the arm line must be absent - it belongs to the partial "
+            "state's follow-up, which no longer exists:\n{}".format(out),
+        )
+        # (c) the ruleset block printed and wrote the file.
+        self.assertIn(
+            "Wrote the ruleset to",
+            out,
+            "needs_ruleset is True for an unsatisfied warn (the "
+            "marker-exact exemption does not apply) - the ruleset "
+            "block must print:\n{}".format(out),
+        )
+        self.assertTrue(
+            Path(target.name, ".github-ruleset.json").is_file(),
+            "the blocked gate must write .github-ruleset.json - the "
+            "importable ruleset is the fix the gate prepares:\n{}".format(
+                out
+            ),
+        )
+        # No token recipe: the token findings are all passed.
+        self.assertNotIn(
+            "personal-access-tokens/new",
+            out,
+            "the token ok must earn no recipe:\n{}".format(out),
+        )
+        # (d) the ⛔ line, and it is the last non-blank line.
+        self.assertIn(
+            self.BLOCK_LINE,
+            out,
+            "the blocked gate must print the ⛔ re-run line:\n{}".format(
+                out
+            ),
+        )
+        non_blank = [line for line in lines if line.strip()]
+        self.assertTrue(
+            non_blank and non_blank[-1].lstrip().startswith("⛔"),
+            "the last non-blank line of a blocked run must be the ⛔ "
+            "re-run line - got {!r}:\n{}".format(
+                non_blank[-1] if non_blank else "", out
+            ),
+        )
+        # (e) NO provisioning: the provision seam was never called.
+        self.assertEqual(
+            0,
+            len(self._provision_calls),
+            "a blocked gate must not provision - the seam was called "
+            "{} time(s):\n{}".format(len(self._provision_calls), out),
+        )
+        self.assertFalse(
+            (Path(target.name) / "zoo-code-settings.json").is_file(),
+            "a blocked gate must not write the provision's artifacts:\n"
+            "{}".format(out),
+        )
+        # (f) exit 9, not 6: the block is the gate's verdict, not a
+        # prompt failure from the skipped follow-up.
+        self.assertEqual(
+            9,
+            cli.EXIT_GUARDS_BLOCKED,
+            "EXIT_GUARDS_BLOCKED is literally 9, got {}".format(
+                cli.EXIT_GUARDS_BLOCKED
+            ),
+        )
+        self.assertNotEqual(
+            cli.EXIT_PROMPT,
+            result.exit_code,
+            "a blocked gate must not surface a prompt error (6) from "
+            "the skipped follow-up:\n{}".format(out),
+        )
+        self.assertEqual(
+            cli.EXIT_GUARDS_BLOCKED,
+            result.exit_code,
+            "the file-absent warn blocks exactly as an ordinary warn "
+            "does - exit 9:\n{}".format(out),
         )
