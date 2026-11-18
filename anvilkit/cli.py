@@ -1354,12 +1354,25 @@ def setup_repo(
             branch_findings, token_findings, repository = _collect_guard_findings(
                 Path(path), token, "main"
             )
-            if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
+            # Behaviour 11: the report prints whenever ANY finding has
+            # status warn or fail - computed over the branch + token
+            # findings together, the same combined list the verdict and
+            # the renderers see - not only when the gate blocks, so a
+            # proceeding gate shows why the warn stands. The condition
+            # is status-only, piguard.render_fixes' own selection rule,
+            # and NEVER includes skipped: a clean gate of only
+            # passed/skipped findings prints nothing, as today (a plain
+            # target with no git origin is all-skipped).
+            if any(
+                finding.get("status") in ("warn", "fail")
+                for finding in branch_findings + token_findings
+            ):
                 shared.echo("")
                 # Behaviour 6: the sectioned report, the same blocks
                 # verify-guards prints - never re-derived. The findings
                 # carry no token value, so nothing secret is echoed.
                 _echo_guard_report(shared, branch_findings, token_findings)
+            if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
                 _free_plan_followup(
                     shared, branch_findings, repository, "main", Path(path)
                 )
@@ -1644,10 +1657,12 @@ def _free_plan_followup(
     follow-up needs the repository anyway).
 
     Non-interactive, ``--yes`` and ``--dry-run`` runs never ask: they print
-    exactly one line naming the free-plan fallback and how to see the
-    walkthrough, then return - no prompt, no stdin read, and the exit code
-    is untouched (behaviour 5). The line is a report line, one sentence,
-    built here, not in a module.
+    exactly one line, then return - no prompt, no stdin read, and the exit
+    code is untouched (behaviour 5). The line is a report line, one
+    sentence, built here, not in a module - and it is unconditional: the
+    file-present skip branches are gone (behaviour 1 of
+    plans/file-path-fallback-file-only.md), so a file at the path prints
+    the same free-plan line as an absent one.
 
     An interactive run asks the behaviour-4 unit exactly once: the question
     is positive (behaviour 9) and the caller inverts - a ``no`` answer means
@@ -1655,7 +1670,13 @@ def _free_plan_followup(
     (behaviour 6) built by ``picodeowners`` from the resolved repository
     and the checked ``branch`` - never re-derived here - after the
     report's "To fix" section and bypass note, then ends in the
-    interactive CODEOWNERS flow (behaviour 20). A ``yes`` answer keeps the
+    interactive CODEOWNERS flow (behaviour 20), the file present or
+    not: the file-present skip branches are gone (behaviour 1 of
+    plans/file-path-fallback-file-only.md), and it is safe because the
+    clobber guard is the write seam's ``CodeownersError``, never a skip
+    - and once the marker is the file alone (that plan's behaviour 2), a
+    file-present run never reaches this follow-up at all
+    (``wants_walkthrough`` is False). A ``yes`` answer keeps the
     output byte-identical - no confirmation line (behaviour 7's polarity
     under the positive question): the plan offers the option, and the
     report's "To fix" line is the fix. A ``CodeownersError`` is
@@ -1667,6 +1688,11 @@ def _free_plan_followup(
     if repository is None:
         return
     if shared.dry_run or shared.assume_yes or not shared.interactive():
+        # Behaviour 5: the fallback prints the free-plan line
+        # unconditionally - the file-present skip branch is gone
+        # (behaviour 1 of plans/file-path-fallback-file-only.md), so a
+        # file at the path counts no different from an absent one.
+        # No prompt, no stdin read, the exit code untouched.
         shared.echo(
             "Your plan may not offer \"Restrict file paths\" - the "
             "free-plan CODEOWNERS fix: re-run without --yes to see the "
@@ -1694,6 +1720,9 @@ def _free_plan_followup(
         return
     for step in steps:
         shared.echo(step)
+    # The file-present skip is gone (behaviour 1 of
+    # plans/file-path-fallback-file-only.md): a present file falls through
+    # to the flow and is refused at the write seam, never at a skip.
     # Behaviour 20 (plans/file-path-codeowners-interactive.md): the no
     # branch ends in the interactive CODEOWNERS flow, using the SAME
     # default seams (``prompts.ask`` / ``prompts.confirm``) the rest of
@@ -1784,7 +1813,7 @@ def _codeowners_flow(
         )
     else:
         try:
-            path = target / ".github" / "CODEOWNERS"
+            path = picodeowners.codeowners_path(target)
             written = picodeowners.write_codeowners(path, body)
             shared.echo(str(written))
         except picodeowners.CodeownersError as exc:
@@ -1939,6 +1968,15 @@ def _collect_guard_findings(
     whenever the repository resolves - even when the fetch failed. ``noun`` is
     the word the unresolvable reason uses: "target" (verify-guards) or
     "project" (doctor).
+
+    Once the repository resolves, the CODEOWNERS file's presence is
+    computed once - ``picodeowners.codeowners_path(target).is_file()``
+    - and passed through ``check_all`` to the file_paths check as its
+    fallback marker's file half (behaviour 7 of
+    plans/file-path-fallback-satisfied.md). That is the same predicate
+    the #109 skip uses, so the skip and the verdict cannot disagree. It
+    is computed after the repository check, so an unresolvable
+    repository yields ``skipped_findings`` before any of it.
     """
     repository = piguard.resolve_repository(target)
     if repository is None:
@@ -1951,13 +1989,16 @@ def _collect_guard_findings(
         token_findings: List[Dict[str, Any]] = []
     else:
         owner, repo = repository
+        codeowners_present = picodeowners.codeowners_path(target).is_file()
         rules, fetch_reason = piguard.fetch_branch_rules(
             owner, repo, branch, token
         )
         if rules is None:
             branch_findings = piguard.skipped_findings(fetch_reason)
         else:
-            branch_findings = piguard.check_all(rules)
+            branch_findings = piguard.check_all(
+                rules, codeowners_present=codeowners_present
+            )
         # The token probes run whenever the repository resolves, even when the
         # branch-rules fetch failed.
         token_findings = piguard.check_token_all(
