@@ -205,7 +205,9 @@ _WARN_REMEDIES = {
     "update": 'turn on "Restrict updates" for main',
     "file_path_restriction": (
         'turn on "Restrict file paths" for main, listing '
-        ".github/workflows/**"
+        ".github/workflows/**. If not shown - it is unavailable "
+        "on your plan - use a CODEOWNERS file and turn on "
+        "require_code_owner_review."
     ),
 }
 
@@ -1236,6 +1238,8 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
+
+
 def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """One update finding: passed if ``update`` is active, warn if not.
 
@@ -1294,7 +1298,9 @@ def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
-def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def check_file_paths(
+    rules: List[Dict[str, Any]], codeowners_present: bool = False
+) -> List[Dict[str, Any]]:
     """One file-path finding: passed if ``file_path_restriction`` is active, warn if not.
 
     ``rules`` is the parsed body of
@@ -1314,6 +1320,22 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ``.github/workflows/**`` - what CI runs - with no gate) and a concrete
     fix. A duplicated rule type takes the first element, as
     :func:`check_history_rewrite` does.
+
+    The warn finding carries ``fallback_in_place`` (behaviour 2 of
+    plans/file-path-fallback-file-only.md). It is ``False`` by default and
+    ``True`` only when the file half of the CODEOWNERS fallback is in place:
+    the ``codeowners_present`` keyword is True (the caller's
+    ``codeowners_path(target).is_file()``), whatever the fetched
+    ``pull_request`` element says.
+    When the marker is True the same warn is reworded: ``brief``
+    becomes ``push rule off; CODEOWNERS review gate in place`` and ``remedy``
+    becomes ``nothing to do - the CODEOWNERS review gate covers this; the
+    push rule stays off on your plan``. ``status`` never leaves ``warn`` -
+    the push rule is still off, so the finding is satisfied, not passed -
+    and ``danger`` and ``source`` are unchanged either way. The ``passed``
+    finding gains no key regardless of the halves. ``codeowners_present`` is
+    keyword, defaulted ``False``, so every existing caller keeps working and
+    gets today's warn with the marker ``False``.
     """
     rule = None
     for candidate in rules:
@@ -1324,15 +1346,26 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             break
 
     if rule is None:
+        fallback_in_place = codeowners_present is True
+        if fallback_in_place:
+            brief = "push rule off; CODEOWNERS review gate in place"
+            remedy = (
+                "nothing to do - the CODEOWNERS review gate covers this; "
+                "the push rule stays off on your plan"
+            )
+        else:
+            brief = "a push can change .github/workflows/**, what CI runs"
+            remedy = _WARN_REMEDIES["file_path_restriction"]
         return [
             {
                 "status": "warn",
                 "check": CHECK_FILE_PATHS,
                 "rule": "file_path_restriction",
-                "brief": "a push can change .github/workflows/**, what CI runs",
+                "brief": brief,
                 "danger": _DANGERS["file_path_restriction"],
                 "source": None,
-                "remedy": _WARN_REMEDIES["file_path_restriction"],
+                "remedy": remedy,
+                "fallback_in_place": fallback_in_place,
             }
         ]
 
@@ -1362,7 +1395,9 @@ def check_file_paths(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
-def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def check_all(
+    rules: List[Dict[str, Any]], codeowners_present: bool = False
+) -> List[Dict[str, Any]]:
     """The concatenation of every defined check, in fixed report order.
 
     Runs :func:`check_history_rewrite`, :func:`check_review`,
@@ -1375,15 +1410,21 @@ def check_all(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     plans/verify-guards-five-rules.md). The function fetches nothing and
     never calls ``sys.exit``: an empty array yields five ``warn``
     findings and raises nothing.
+
+    ``codeowners_present`` is forwarded to :func:`check_file_paths` as
+    the file half of the CODEOWNERS fallback marker (behaviour 7 of
+    plans/file-path-fallback-satisfied.md): the caller computes it once
+    as ``codeowners_path(target).is_file()`` and passes it through, so
+    both call sites inherit the verdict with no per-site wiring. It is
+    keyword, defaulted ``False``, so every existing caller keeps
+    working and gets today's warn with the marker ``False``.
     """
     findings: List[Dict[str, Any]] = []
-    for check in (
-        check_history_rewrite,
-        check_review,
-        check_update,
-        check_file_paths,
-    ):
+    for check in (check_history_rewrite, check_review, check_update):
         findings.extend(check(rules))
+    findings.extend(
+        check_file_paths(rules, codeowners_present=codeowners_present)
+    )
     return findings
 
 
@@ -1685,6 +1726,17 @@ def gate_verdict(findings: List[Dict[str, Any]]) -> str:
     repo is called guarded. An unknown status is neither a fail nor a
     warn, so it neither blocks nor crashes the gate.
 
+    One exemption (behaviour 4 of
+    plans/file-path-fallback-satisfied.md): a ``file_paths`` warn whose
+    ``fallback_in_place`` marker is exactly ``True`` is satisfied by the
+    CODEOWNERS review gate and does not block. The exemption is
+    check-scoped - a ``warn`` on any other check still blocks - and
+    marker-exact: ``False`` and an absent key are not True, and neither
+    is a non-bool such as ``"true"``, ``1`` or ``None`` (hence the ``is
+    True`` and ``get`` discipline). It also keys on the ``warn`` status:
+    a ``fail`` carrying the marker True is never exempted. Only this one
+    case proceeds; every other ``fail`` and ``warn`` blocks.
+
     This is a sibling of :func:`summarize`, not a replacement:
     ``verify-guards`` keeps its ``1``-iff-any-``fail`` contract, with a
     ``warn`` still exiting ``0``, while the gate needs a fail OR a warn to
@@ -1693,7 +1745,16 @@ def gate_verdict(findings: List[Dict[str, Any]]) -> str:
     plans/setup-repo-guards.md).
     """
     for finding in findings:
-        if finding.get("status") in ("fail", "warn"):
+        status = finding.get("status")
+        if status == "fail":
+            return "blocked"
+        if (
+            status == "warn"
+            and not (
+                finding.get("check") == CHECK_FILE_PATHS
+                and finding.get("fallback_in_place") is True
+            )
+        ):
             return "blocked"
     return "clean"
 
@@ -1722,6 +1783,19 @@ def gate_remediation(
     gets the recipe. A token warn still blocks the gate via its sibling
     :func:`gate_verdict`; it simply prints no recipe.
 
+    One exemption (behaviour 5 of
+    plans/file-path-fallback-satisfied.md): a branch ``file_paths`` warn
+    whose ``fallback_in_place`` marker is exactly ``True`` is satisfied by
+    the CODEOWNERS review gate and does not set ``needs_ruleset`` - the
+    review gate IS the fix, so the ruleset block must not print. The
+    exemption is check-scoped - a ``warn`` on any other check still sets
+    ``needs_ruleset`` - and marker-exact: ``False`` and an absent key are
+    not True, and neither is a non-bool such as ``"true"``, ``1`` or
+    ``None`` (hence the ``is True`` and ``get`` discipline). It also keys
+    on the ``warn`` status: a ``fail`` carrying the marker True is never
+    exempted. ``needs_token_recipe`` is untouched, still computed from the
+    token list alone.
+
     A ``skipped`` triggers neither - it is an honest "could not verify" - and
     an unknown status triggers neither, the same discipline as
     :func:`gate_verdict`. Pure: two positional findings lists, a
@@ -1730,7 +1804,15 @@ def gate_remediation(
     (behaviour 2 of plans/setup-repo-guards.md).
     """
     needs_ruleset = any(
-        finding.get("status") in ("fail", "warn") for finding in branch_findings
+        finding.get("status") == "fail"
+        or (
+            finding.get("status") == "warn"
+            and not (
+                finding.get("check") == CHECK_FILE_PATHS
+                and finding.get("fallback_in_place") is True
+            )
+        )
+        for finding in branch_findings
     )
     needs_token_recipe = any(
         finding.get("status") == "fail" for finding in token_findings

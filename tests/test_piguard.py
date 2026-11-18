@@ -636,6 +636,95 @@ class CheckFilePathsTests(unittest.TestCase):
                     "no passed file-path finding when the rule is absent",
                 )
 
+    def test_file_paths_warn_remedy_keeps_first_clause_turning_on_restrict_file_paths(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        remedy = _field(warn, "remedy") or ""
+        self.assertIn(
+            'turn on "Restrict file paths" for main',
+            remedy,
+            "the warn remedy must keep its first clause: the GitHub UI "
+            "label to turn on for main",
+        )
+        self.assertIn(
+            ".github/workflows/**",
+            remedy,
+            "the warn remedy must keep naming the paths to list",
+        )
+
+    def test_file_paths_warn_remedy_names_plan_availability_fallback(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        remedy = _field(warn, "remedy") or ""
+        self.assertIn(
+            "CODEOWNERS",
+            remedy,
+            "the warn remedy must name the CODEOWNERS file fallback for "
+            "the paths",
+        )
+        self.assertIn(
+            "require_code_owner_review",
+            remedy,
+            "the warn remedy must name require_code_owner_review turned "
+            "on for the branch as the fallback",
+        )
+        self.assertIn(
+            "plan",
+            remedy.lower(),
+            "the warn remedy must say the option is not shown when the "
+            "plan does not offer file-path restrictions",
+        )
+
+    def test_file_paths_warn_remedy_stays_plain_words_with_no_doc_path(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        self.assertNotIn(
+            "doc/external/",
+            _field(warn, "remedy") or "",
+            "the warn remedy must stay plain words - no doc path and no "
+            "invented UI step",
+        )
+
+    def test_file_paths_passed_finding_remedy_unchanged_when_rule_present(self):
+        findings = piguard.check_file_paths(
+            [
+                file_path_rule(
+                    "main-protected",
+                    {"restricted_file_paths": [".github/workflows/**"]},
+                )
+            ]
+        )
+
+        finding = findings[0]
+        self.assertEqual(_field(finding, "status"), "passed")
+        self.assertEqual(
+            _field(finding, "remedy"),
+            "nothing to do - the listed paths are protected",
+            "the passed finding's remedy is untouched by the warn remedy "
+            "fallback",
+        )
+
+    def test_file_paths_warn_finding_danger_brief_and_labels_unchanged(self):
+        findings = piguard.check_file_paths([])
+
+        warn = findings[0]
+        self.assertEqual(_field(warn, "status"), "warn")
+        self.assertEqual(_field(warn, "check"), "file_paths")
+        self.assertEqual(_field(warn, "rule"), "file_path_restriction")
+        self.assertEqual(
+            _field(warn, "brief"),
+            "a push can change .github/workflows/**, what CI runs",
+            "the warn's brief is untouched by the remedy fallback",
+        )
+        self.assertEqual(
+            _field(warn, "danger"),
+            "a push can change .github/workflows/**, what CI runs",
+            "the warn's danger is untouched by the remedy fallback",
+        )
+
     def test_missing_or_non_dict_parameters_records_empty_list_and_never_raises(self):
         cases = (
             ("parameters key absent", file_path_rule("main-protected")),
@@ -771,6 +860,397 @@ class CheckFilePathsTests(unittest.TestCase):
                     "unknown",
                     "an absent or blank ruleset_source must be named "
                     "'unknown' on the finding",
+                )
+
+
+def code_owner_review_rule(
+    ruleset_source: str, parameters: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    """A ``pull_request`` element; ``parameters=None`` omits the key entirely."""
+    element: Dict[str, Any] = {
+        "type": "pull_request",
+        "ruleset_source_type": "repository",
+        "ruleset_source": ruleset_source,
+        "ruleset_id": 1,
+    }
+    if parameters is not None:
+        element["parameters"] = parameters
+    return element
+
+
+class FilePathFallbackMarkerTests(unittest.TestCase):
+    """Behaviour 2 of plans/file-path-fallback-file-only.md: the
+    ``fallback_in_place`` marker is the file alone.
+
+    The warn finding carries ``fallback_in_place`` defaulting to ``False``;
+    the ``codeowners_present`` keyword on ``check_file_paths`` names the
+    file half, and the marker is exactly that value - True with the file
+    present whatever the fetched ``pull_request`` element says (review on,
+    off, absent, unreadable), False with it absent. When the marker is
+    True the brief and the remedy are reworded (byte-identical to
+    #110's, chosen on the marker alone); status stays ``warn``, and
+    danger and source are unchanged either way. A non-bool
+    ``codeowners_present`` is not True, so it does not satisfy, and the
+    call never raises. The passed finding gains no key.
+
+    Re-pointed in the red for behaviour 2: the review-half cases now
+    assert the file alone decides - file present + review off satisfies
+    (inverse re-point, green today / red now), and the absent/unreadable
+    pull_request element no longer keeps the marker off.
+    """
+
+    # The warn finding as emitted today, byte-identical: the six keys at
+    # anvilkit/pi/piguard.py:1358, the danger from _DANGERS and the remedy
+    # from _WARN_REMEDIES.
+    _TODAY_WARN = {
+        "status": "warn",
+        "check": "file_paths",
+        "rule": "file_path_restriction",
+        "brief": "a push can change .github/workflows/**, what CI runs",
+        "danger": "a push can change .github/workflows/**, what CI runs",
+        "source": None,
+        "remedy": (
+            'turn on "Restrict file paths" for main, listing '
+            ".github/workflows/**. If not shown - it is unavailable "
+            "on your plan - use a CODEOWNERS file and turn on "
+            "require_code_owner_review."
+        ),
+    }
+
+    def _warn(self, rules, **kwargs):
+        """Run ``check_file_paths`` and return its one warn finding."""
+        findings = piguard.check_file_paths(rules, **kwargs)
+        warns = [f for f in findings if _field(f, "status") == "warn"]
+        self.assertEqual(
+            len(warns),
+            1,
+            "expected exactly one warn finding, got {!r}".format(findings),
+        )
+        return warns[0]
+
+    def test_warn_finding_carries_fallback_in_place_marker_default_off(self):
+        expected = dict(self._TODAY_WARN)
+        expected["fallback_in_place"] = False
+
+        warn = self._warn([rule("non_fast_forward", "main-protected")])
+
+        self.assertIn(
+            "fallback_in_place",
+            warn,
+            "the warn finding must carry the fallback_in_place marker",
+        )
+        self.assertIs(
+            warn["fallback_in_place"],
+            False,
+            "the marker defaults off: no argument means the fallback is "
+            "not claimed in place",
+        )
+        self.assertEqual(
+            warn,
+            expected,
+            "the warn finding gains the marker and its six existing keys "
+            "stay byte-identical",
+        )
+
+    def test_warn_finding_fallback_in_place_explicit_false_matches_default(self):
+        expected = dict(self._TODAY_WARN)
+        expected["fallback_in_place"] = False
+
+        warn = self._warn(
+            [rule("non_fast_forward", "main-protected")],
+            codeowners_present=False,
+        )
+
+        self.assertIs(
+            warn["fallback_in_place"],
+            False,
+            "an explicit codeowners_present=False must agree with the "
+            "default",
+        )
+        self.assertEqual(
+            warn,
+            expected,
+            "an explicit codeowners_present=False must agree with the "
+            "default",
+        )
+
+    def test_review_on_but_file_absent_keeps_marker_off_and_today_words(self):
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": True},
+            ),
+        ]
+
+        warn = self._warn(rules, codeowners_present=False)
+
+        self.assertIs(
+            warn["fallback_in_place"],
+            False,
+            "the review half alone is not the fallback in place: the "
+            "CODEOWNERS file half is absent",
+        )
+        self.assertEqual(
+            _field(warn, "brief"),
+            self._TODAY_WARN["brief"],
+            "the brief stays today's verbatim when the file half is missing",
+        )
+        self.assertEqual(
+            _field(warn, "remedy"),
+            self._TODAY_WARN["remedy"],
+            "the remedy stays today's verbatim when the file half is missing",
+        )
+
+    def test_file_present_with_review_off_satisfies_with_reworded_words(self):
+        """Inverse re-point (green today, red now): the marker is the file
+        alone, so with the file present and the review gate off the marker
+        is True - the reworded brief and remedy (byte-identical to
+        #110's) are chosen on the marker alone, whatever the fetched
+        ``pull_request`` element says."""
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": False},
+            ),
+        ]
+
+        warn = self._warn(rules, codeowners_present=True)
+
+        self.assertIs(
+            warn["fallback_in_place"],
+            True,
+            "the marker is the file alone: with the file present it is "
+            "True whatever the fetched pull_request element says - here "
+            "the review gate is off",
+        )
+        self.assertEqual(
+            _field(warn, "brief"),
+            "push rule off; CODEOWNERS review gate in place",
+            "the reworded brief is chosen on the marker alone, "
+            "byte-identical to #110's",
+        )
+        self.assertEqual(
+            _field(warn, "remedy"),
+            "nothing to do - the CODEOWNERS review gate covers this; "
+            "the push rule stays off on your plan",
+            "the reworded remedy is chosen on the marker alone, "
+            "byte-identical to #110's",
+        )
+
+    def test_both_halves_in_place_rewords_warn_brief_and_remedy(self):
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": True},
+            ),
+        ]
+
+        warn = self._warn(rules, codeowners_present=True)
+
+        self.assertIs(
+            warn["fallback_in_place"],
+            True,
+            "both halves in place must set the marker",
+        )
+        self.assertEqual(
+            _field(warn, "status"),
+            "warn",
+            "a satisfied warn stays a warn: the push rule is still off",
+        )
+        self.assertEqual(
+            _field(warn, "danger"),
+            "a push can change .github/workflows/**, what CI runs",
+            "danger is the existing _DANGERS value, verbatim",
+        )
+        self.assertIsNone(
+            _field(warn, "source"),
+            "source stays None on the reworded warn",
+        )
+        self.assertEqual(
+            _field(warn, "brief"),
+            "push rule off; CODEOWNERS review gate in place",
+            "the reworded brief names the fallback as in place",
+        )
+        self.assertEqual(
+            _field(warn, "remedy"),
+            "nothing to do - the CODEOWNERS review gate covers this; "
+            "the push rule stays off on your plan",
+            "the reworded remedy names nothing to do",
+        )
+
+    def test_present_rule_yields_passed_finding_regardless_of_halves(self):
+        rules = [
+            file_path_rule(
+                "main-protected",
+                {"restricted_file_paths": [".github/workflows/**"]},
+            ),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": True},
+            ),
+        ]
+
+        findings = piguard.check_file_paths(rules, codeowners_present=True)
+
+        self.assertEqual(
+            findings,
+            [
+                {
+                    "status": "passed",
+                    "check": "file_paths",
+                    "rule": "file_path_restriction",
+                    "brief": "listed paths protected (.github/workflows/**)",
+                    "danger": "",
+                    "source": "main-protected",
+                    "restricted_file_paths": [".github/workflows/**"],
+                    "remedy": "nothing to do - the listed paths are protected",
+                }
+            ],
+            "a present file_path_restriction yields today's passed finding "
+            "byte-identical regardless of the fallback halves",
+        )
+
+    def test_passed_finding_never_carries_fallback_in_place_key(self):
+        rules = [
+            file_path_rule(
+                "main-protected",
+                {"restricted_file_paths": [".github/workflows/**"]},
+            ),
+        ]
+
+        findings = piguard.check_file_paths(rules)
+
+        finding = findings[0]
+        self.assertEqual(
+            _field(finding, "status"),
+            "passed",
+            "fixture sanity: a present rule passes",
+        )
+        self.assertNotIn(
+            "fallback_in_place",
+            finding,
+            "the passed finding gains no marker key",
+        )
+
+    def test_file_present_satisfies_whatever_the_pull_request_element_says(
+        self,
+    ):
+        """The file alone satisfies - red now (today the AND with the
+        review reader keeps the marker False when the element is absent,
+        unreadable, or off): with the file present the marker is True and
+        the reworded brief and remedy (byte-identical to #110's, chosen
+        on the marker alone) appear for every state of the fetched
+        ``pull_request`` element."""
+        for label, rules in (
+            (
+                "review off",
+                [
+                    rule("non_fast_forward", "main-protected"),
+                    code_owner_review_rule(
+                        "main-protected",
+                        {"require_code_owner_review": False},
+                    ),
+                ],
+            ),
+            (
+                "no pull_request element at all",
+                [
+                    rule("non_fast_forward", "main-protected"),
+                    rule("deletion", "main-protected"),
+                    rule("update", "main-protected"),
+                    rule("commit_message_pattern", "main-protected"),
+                ],
+            ),
+            (
+                "parameters is a string",
+                [
+                    {
+                        "type": "pull_request",
+                        "ruleset_source": "main-protected",
+                        "parameters": "require_code_owner_review",
+                    },
+                ],
+            ),
+            (
+                "parameters is None",
+                [
+                    {
+                        "type": "pull_request",
+                        "ruleset_source": "main-protected",
+                        "parameters": None,
+                    },
+                ],
+            ),
+            (
+                "non-bool review parameter",
+                [
+                    code_owner_review_rule(
+                        "main-protected",
+                        {"require_code_owner_review": "true"},
+                    ),
+                ],
+            ),
+        ):
+            with self.subTest(element=label):
+                warn = self._warn(rules, codeowners_present=True)
+                self.assertIs(
+                    warn["fallback_in_place"],
+                    True,
+                    "with the file present the marker is True whatever "
+                    "the fetched pull_request element says ({})".format(
+                        label
+                    ),
+                )
+                self.assertEqual(
+                    _field(warn, "brief"),
+                    "push rule off; CODEOWNERS review gate in place",
+                    "the reworded brief is chosen on the marker alone "
+                    "({})".format(label),
+                )
+                self.assertEqual(
+                    _field(warn, "remedy"),
+                    "nothing to do - the CODEOWNERS review gate covers "
+                    "this; the push rule stays off on your plan",
+                    "the reworded remedy is chosen on the marker alone "
+                    "({})".format(label),
+                )
+
+    def test_non_bool_codeowners_present_does_not_satisfy_and_never_raises(
+        self,
+    ):
+        """A non-bool ``codeowners_present`` is not True, so it does not
+        satisfy - the ``is True`` discipline on the parameter itself:
+        the marker is not True for a string, an int or None, whatever
+        the fetched ``pull_request`` element says (here review on), and
+        the call never raises. Red now for the truthy values: today the
+        marker line ANDs the truthy value with the review reader, so a
+        truthy non-bool with the review on yields the marker exactly
+        True."""
+        for label, value in (
+            ("string 'true'", "true"),
+            ("int 1", 1),
+            ("None", None),
+        ):
+            with self.subTest(codeowners_present=label):
+                warn = self._warn(
+                    [
+                        rule("non_fast_forward", "main-protected"),
+                        code_owner_review_rule(
+                            "main-protected",
+                            {"require_code_owner_review": True},
+                        ),
+                    ],
+                    codeowners_present=value,
+                )
+                self.assertIsNot(
+                    warn["fallback_in_place"],
+                    True,
+                    "codeowners_present {} is not True, so the marker "
+                    "does not satisfy - a non-bool must not set the "
+                    "marker".format(label),
                 )
 
 
@@ -2400,20 +2880,40 @@ class FindingInvariantsTests(unittest.TestCase):
                 continue
             checked += 1
             with self.subTest(finding=label):
+                rule = _field(finding, "rule")
                 remedy = _field(finding, "remedy") or ""
-                self.assertLessEqual(
-                    len(remedy),
-                    100,
-                    "the {} finding on rule {!r} remedy must be a single "
-                    "sentence of at most 100 characters, got {}: "
-                    "{!r}".format(status, _field(finding, "rule"), len(remedy), remedy),
-                )
-                self.assertNotIn(
-                    ". ",
-                    remedy,
-                    "the {} finding on rule {!r} remedy must be a single "
-                    "sentence: {!r}".format(status, _field(finding, "rule"), remedy),
-                )
+                if rule == "file_path_restriction":
+                    # Behaviour 1 of plans/file-path-remedy-plan-fallback.md:
+                    # this remedy is two clauses by requirement - the UI
+                    # fix, then the plan-availability fallback - because
+                    # Anvil cannot detect whether the plan offers the rule,
+                    # so the remedy must carry both. It gets its own 180-
+                    # char bound (two short sentences, not a paragraph)
+                    # and is the only remedy allowed a second sentence;
+                    # every other remedy keeps the 100-char, single-
+                    # sentence pin. The no-doc-path and no-'see:' bounds
+                    # below apply to it without exemption.
+                    self.assertLessEqual(
+                        len(remedy),
+                        180,
+                        "the {} finding on rule {!r} remedy must be two "
+                        "short sentences of at most 180 characters, got "
+                        "{}: {!r}".format(status, rule, len(remedy), remedy),
+                    )
+                else:
+                    self.assertLessEqual(
+                        len(remedy),
+                        100,
+                        "the {} finding on rule {!r} remedy must be a single "
+                        "sentence of at most 100 characters, got {}: "
+                        "{!r}".format(status, rule, len(remedy), remedy),
+                    )
+                    self.assertNotIn(
+                        ". ",
+                        remedy,
+                        "the {} finding on rule {!r} remedy must be a single "
+                        "sentence: {!r}".format(status, rule, remedy),
+                    )
                 self.assertNotIn(
                     "doc/external/",
                     remedy,
@@ -3070,6 +3570,291 @@ class GateVerdictTests(unittest.TestCase):
                 )
 
 
+class GateVerdictSatisfiedWarnTests(unittest.TestCase):
+    """Behaviour 4 of plans/file-path-fallback-satisfied.md -
+    ``gate_verdict`` proceeds past a satisfied warn.
+
+    The exemption is a single case: a finding whose status is ``warn``,
+    whose check is ``file_paths`` and whose ``fallback_in_place`` key is
+    exactly ``True`` (hence the ``is True`` discipline, so that ``False``,
+    an absent key and a non-bool such as ``"true"``, ``1`` or ``None``
+    are not True) does NOT block. Everything else still
+    blocks: any other warn, a second ``file_paths`` warn whose marker is
+    False or absent, a non-bool marker value, and any ``fail`` -
+    ``fallback_in_place: True`` on a ``fail`` never exempts it, and the
+    exemption is check-scoped, so a different warn check carrying the
+    marker True is not exempt either. The verdict vocabulary is
+    unchanged: ``"clean"`` or ``"blocked"``.
+    """
+
+    def _finding(self, status: str, check: str, rule: Any, **extra: Any) -> Dict[str, Any]:
+        """One finding in the module's own shape, plus ``extra`` keys."""
+        finding: Dict[str, Any] = {
+            "status": status,
+            "check": check,
+            "rule": rule,
+            "brief": "a guard is unmet",
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+        finding.update(extra)
+        return finding
+
+    def _satisfied_warn(self) -> Dict[str, Any]:
+        """The warn finding the gate must proceed past: the ``file_paths``
+        warn with ``fallback_in_place`` exactly True, in the shape the
+        check emits when both fallback halves are in place."""
+        return self._finding(
+            "warn",
+            "file_paths",
+            "file_path_restriction",
+            brief="push rule off; CODEOWNERS review gate in place",
+            remedy=(
+                "nothing to do - the CODEOWNERS review gate covers this; "
+                "the push rule stays off on your plan"
+            ),
+            fallback_in_place=True,
+        )
+
+    def test_satisfied_file_paths_warn_alone_is_clean(self):
+        verdict = piguard.gate_verdict
+        satisfied = self._satisfied_warn()
+        self.assertIs(
+            satisfied["fallback_in_place"],
+            True,
+            "fixture sanity: the warn carries the marker exactly True",
+        )
+
+        self.assertEqual(
+            verdict([satisfied]),
+            "clean",
+            "a file_paths warn whose fallback_in_place is exactly True is "
+            "satisfied - the gate must proceed past it on its own",
+        )
+
+    def test_satisfied_warn_plus_passed_findings_is_clean(self):
+        verdict = piguard.gate_verdict
+        findings = (
+            [self._satisfied_warn()]
+            + [
+                self._finding("passed", "history_rewrite", "non_fast_forward"),
+                self._finding("passed", "review", "pull_request"),
+                self._finding("passed", "update_restriction", "non_fast_forward"),
+            ]
+        )
+        self.assertEqual(
+            [f for f in findings if _field(f, "status") == "warn"],
+            [findings[0]],
+            "fixture sanity: exactly one warn, and it is the satisfied one",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "clean",
+            "nothing else failing or warning - the satisfied warn plus "
+            "passed findings must be clean",
+        )
+
+    def test_satisfied_warn_plus_another_warn_still_blocks(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._satisfied_warn(),
+            self._finding("warn", "update_restriction", "non_fast_forward"),
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "the exemption is one specific warn: a second warn (a "
+            "different check, no marker) must still block",
+        )
+
+    def test_satisfied_warn_plus_a_fail_still_blocks(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._satisfied_warn(),
+            self._finding("fail", "administration", None),
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "any fail still blocks, even beside a satisfied warn",
+        )
+
+    def test_satisfied_warn_plus_marker_false_file_paths_warn_still_blocks(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._satisfied_warn(),
+            self._finding(
+                "warn",
+                "file_paths",
+                "file_path_restriction",
+                fallback_in_place=False,
+            ),
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "another file_paths warn whose fallback_in_place is False is "
+            "not satisfied and must still block",
+        )
+
+    def test_satisfied_warn_plus_markerless_file_paths_warn_still_blocks(self):
+        verdict = piguard.gate_verdict
+        markerless = self._finding("warn", "file_paths", "file_path_restriction")
+        findings = [self._satisfied_warn(), markerless]
+        self.assertNotIn(
+            "fallback_in_place",
+            markerless,
+            "fixture sanity: the second warn carries no marker key",
+        )
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "a file_paths warn with the marker key absent is not satisfied "
+            "(absent is not True) and must still block",
+        )
+
+    def test_marker_true_on_a_fail_never_exempts_it(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._finding(
+                "fail",
+                "administration",
+                None,
+                fallback_in_place=True,
+            )
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "fallback_in_place True on a fail finding never exempts it - "
+            "the exemption keys on the warn status as well",
+        )
+
+    def test_non_bool_marker_does_not_exempt(self):
+        verdict = piguard.gate_verdict
+        for label, value in (
+            ("the string 'true'", "true"),
+            ("the int 1", 1),
+            ("None", None),
+        ):
+            with self.subTest(value=value):
+                finding = self._finding(
+                    "warn",
+                    "file_paths",
+                    "file_path_restriction",
+                    fallback_in_place=value,
+                )
+                self.assertIsNot(
+                    finding["fallback_in_place"],
+                    True,
+                    "fixture sanity: {} is not exactly True".format(label),
+                )
+                self.assertEqual(
+                    verdict([finding]),
+                    "blocked",
+                    "a non-bool marker ({}) is not True under the is-True "
+                    "discipline, so the warn still blocks".format(label),
+                )
+
+    def test_marker_true_on_a_different_check_does_not_exempt(self):
+        verdict = piguard.gate_verdict
+        findings = [
+            self._finding(
+                "warn",
+                "update_restriction",
+                "non_fast_forward",
+                fallback_in_place=True,
+            )
+        ]
+
+        self.assertEqual(
+            verdict(findings),
+            "blocked",
+            "the exemption is check-scoped to file_paths: a different warn "
+            "check carrying fallback_in_place True is not exempt",
+        )
+
+    def test_real_producer_satisfied_warn_is_clean_and_unsatisfied_blocks(self):
+        """Behaviour 5 of plans/file-path-fallback-file-only.md - the
+        gate exemption pinned on the REAL producer's output, not a
+        hand-built dict: ``check_file_paths`` with no
+        ``file_path_restriction`` element and ``codeowners_present=True``
+        emits the marker True (the file alone), and that exact finding
+        must not block; with the file absent (``codeowners_present``
+        False or defaulted) the same producer's warn still blocks - so
+        the pin dies if the marker stops being produced."""
+        verdict = piguard.gate_verdict
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            rule("deletion", "main-protected"),
+            pull_request_rule("main-protected", 1),
+            update_rule(
+                "main-protected", {"update_allows_fetch_and_merge": False}
+            ),
+        ]
+        self.assertFalse(
+            any(r.get("type") == "file_path_restriction" for r in rules),
+            "fixture sanity: no file_path_restriction element - the "
+            "warn half of the check",
+        )
+
+        satisfied = piguard.check_file_paths(rules, codeowners_present=True)[0]
+        self.assertIs(
+            satisfied["fallback_in_place"],
+            True,
+            "fixture sanity: the real producer emits the marker True "
+            "with the file present - the exemption must be pinned on "
+            "the finding the producer really builds",
+        )
+        self.assertEqual(
+            verdict([satisfied]),
+            "clean",
+            "the producer's satisfied warn must not block the gate - "
+            "a hand-built dict could be one field away from what the "
+            "producer really emits",
+        )
+        for label, kwargs in (
+            ("codeowners_present False", {"codeowners_present": False}),
+            ("the default keyword", {}),
+        ):
+            with self.subTest(kwargs=kwargs):
+                unsatisfied = piguard.check_file_paths(rules, **kwargs)[0]
+                self.assertIs(
+                    unsatisfied["fallback_in_place"],
+                    False,
+                    "fixture sanity: the real producer keeps the marker "
+                    "False without the file ({})".format(label),
+                )
+                self.assertEqual(
+                    verdict([unsatisfied]),
+                    "blocked",
+                    "the producer's unsatisfied warn ({}) still blocks - "
+                    "the exemption is marker-exact on the real "
+                    "finding".format(label),
+                )
+        other_warn = piguard.check_review([])[0]
+        self.assertEqual(
+            _field(other_warn, "status"),
+            "warn",
+            "fixture sanity: the review warn is a genuine second warn",
+        )
+        self.assertEqual(
+            verdict([satisfied, other_warn]),
+            "blocked",
+            "the exemption is check-scoped on the real producer's "
+            "output: a different check's warn still blocks beside the "
+            "satisfied file_paths warn",
+        )
+
+
 class GateRemediationTests(unittest.TestCase):
     """Behaviour 2 of plans/setup-repo-guards.md - ``gate_remediation``.
 
@@ -3429,6 +4214,332 @@ class GateRemediationTests(unittest.TestCase):
                     result,
                     "gate_remediation is pure: the same inputs yield the "
                     "same mapping on every call",
+                )
+
+
+class GateRemediationSatisfiedWarnTests(unittest.TestCase):
+    """Behaviour 5 of plans/file-path-fallback-satisfied.md -
+    ``gate_remediation`` needs no ruleset fix for a satisfied warn.
+
+    The same exemption as :class:`GateVerdictSatisfiedWarnTests`, one seam
+    over: a branch finding whose status is ``warn``, whose check is
+    ``file_paths`` and whose ``fallback_in_place`` key is exactly ``True``
+    (the ``is True`` discipline) does NOT set ``needs_ruleset`` - the
+    CODEOWNERS review gate IS the fix, so the "ruleset is already prepared"
+    block must not print. Everything else still sets it: a second branch
+    warn without the marker, a second ``file_paths`` warn whose marker is
+    False or absent, a non-bool marker value, and any branch ``fail`` -
+    the marker True on a fail never suppresses it. ``needs_token_recipe``
+    is computed from the token list exactly as today and is untouched by
+    the exemption; the returned dict keeps exactly the keys
+    ``needs_ruleset`` and ``needs_token_recipe``.
+    """
+
+    def _finding(self, status: str, check: str, rule: Any, **extra: Any) -> Dict[str, Any]:
+        """One finding in the module's own shape, plus ``extra`` keys."""
+        finding: Dict[str, Any] = {
+            "status": status,
+            "check": check,
+            "rule": rule,
+            "brief": "a guard is unmet",
+            "danger": "the guard is unmet",
+            "source": None,
+            "remedy": "see "
+            + "doc/external/github/available-rules-for-rulesets.md",
+        }
+        finding.update(extra)
+        return finding
+
+    def _satisfied_warn(self) -> Dict[str, Any]:
+        """The warn finding the ruleset fix must not chase: the
+        ``file_paths`` warn with ``fallback_in_place`` exactly True, in
+        the shape the check emits when both fallback halves are in place."""
+        return self._finding(
+            "warn",
+            "file_paths",
+            "file_path_restriction",
+            brief="push rule off; CODEOWNERS review gate in place",
+            remedy=(
+                "nothing to do - the CODEOWNERS review gate covers this; "
+                "the push rule stays off on your plan"
+            ),
+            fallback_in_place=True,
+        )
+
+    def test_satisfied_warn_alone_needs_no_ruleset(self):
+        remediation = piguard.gate_remediation
+        satisfied = self._satisfied_warn()
+        self.assertIs(
+            satisfied["fallback_in_place"],
+            True,
+            "fixture sanity: the warn carries the marker exactly True",
+        )
+
+        result = remediation([satisfied], [])
+
+        self.assertFalse(
+            result["needs_ruleset"],
+            "a lone satisfied file_paths warn needs no ruleset fix - the "
+            "CODEOWNERS review gate covers it, so the 'ruleset is already "
+            "prepared' block must not print",
+        )
+        self.assertFalse(
+            result["needs_token_recipe"],
+            "an empty token list needs no token recipe",
+        )
+        self.assertEqual(
+            set(result),
+            {"needs_ruleset", "needs_token_recipe"},
+            "the satisfied warn changes values, not shape: the result "
+            "still carries exactly the two pinned keys, no more and no "
+            "fewer: got {!r}".format(sorted(result)),
+        )
+
+    def test_satisfied_warn_plus_passed_findings_needs_no_ruleset(self):
+        remediation = piguard.gate_remediation
+        branch = (
+            [self._satisfied_warn()]
+            + [
+                self._finding("passed", "history_rewrite", "non_fast_forward"),
+                self._finding("passed", "review", "pull_request"),
+                self._finding("passed", "update_restriction", "non_fast_forward"),
+            ]
+        )
+        self.assertEqual(
+            [f for f in branch if _field(f, "status") == "warn"],
+            [branch[0]],
+            "fixture sanity: exactly one warn, and it is the satisfied one",
+        )
+
+        result = remediation(branch, [])
+
+        self.assertFalse(
+            result["needs_ruleset"],
+            "passed findings beside the satisfied warn need no ruleset "
+            "fix - the satisfied warn is the only non-passed element",
+        )
+
+    def test_satisfied_warn_plus_another_branch_warn_needs_ruleset(self):
+        remediation = piguard.gate_remediation
+        branch = [
+            self._satisfied_warn(),
+            self._finding("warn", "history_rewrite", "non_fast_forward"),
+        ]
+
+        result = remediation(branch, [])
+
+        self.assertTrue(
+            result["needs_ruleset"],
+            "a second branch warn without the marker (a history_rewrite "
+            "warn) sets needs_ruleset True again - the exemption is one "
+            "specific warn, not a blanket pass",
+        )
+
+    def test_satisfied_warn_plus_marker_false_file_paths_warn_needs_ruleset(self):
+        remediation = piguard.gate_remediation
+        branch = [
+            self._satisfied_warn(),
+            self._finding(
+                "warn",
+                "file_paths",
+                "file_path_restriction",
+                fallback_in_place=False,
+            ),
+        ]
+
+        result = remediation(branch, [])
+
+        self.assertTrue(
+            result["needs_ruleset"],
+            "a second file_paths warn whose fallback_in_place is False is "
+            "not satisfied and still needs the ruleset fix",
+        )
+
+    def test_satisfied_warn_plus_markerless_file_paths_warn_needs_ruleset(self):
+        remediation = piguard.gate_remediation
+        markerless = self._finding("warn", "file_paths", "file_path_restriction")
+        branch = [self._satisfied_warn(), markerless]
+        self.assertNotIn(
+            "fallback_in_place",
+            markerless,
+            "fixture sanity: the second warn carries no marker key",
+        )
+
+        result = remediation(branch, [])
+
+        self.assertTrue(
+            result["needs_ruleset"],
+            "a file_paths warn with the marker key absent is not satisfied "
+            "(absent is not True) and still needs the ruleset fix",
+        )
+
+    def test_branch_fail_with_marker_true_still_needs_ruleset(self):
+        remediation = piguard.gate_remediation
+        fail = self._finding(
+            "fail",
+            "history_rewrite",
+            "non_fast_forward",
+            fallback_in_place=True,
+        )
+        self.assertIs(
+            fail["fallback_in_place"],
+            True,
+            "fixture sanity: the fail carries the marker exactly True",
+        )
+
+        result = remediation([self._satisfied_warn(), fail], [])
+
+        self.assertTrue(
+            result["needs_ruleset"],
+            "a branch fail still demands the ruleset fix even beside a "
+            "satisfied warn - the marker True on a fail never suppresses "
+            "it, the exemption keys on the warn status",
+        )
+
+    def test_non_bool_marker_does_not_suppress(self):
+        remediation = piguard.gate_remediation
+        for label, value in (
+            ("the string 'true'", "true"),
+            ("the int 1", 1),
+            ("None", None),
+        ):
+            with self.subTest(value=value):
+                finding = self._finding(
+                    "warn",
+                    "file_paths",
+                    "file_path_restriction",
+                    fallback_in_place=value,
+                )
+                self.assertIsNot(
+                    finding["fallback_in_place"],
+                    True,
+                    "fixture sanity: {} is not exactly True".format(label),
+                )
+
+                result = remediation([finding], [])
+
+                self.assertTrue(
+                    result["needs_ruleset"],
+                    "a non-bool marker ({}) is not True under the is-True "
+                    "discipline, so the warn still needs the ruleset "
+                    "fix".format(label),
+                )
+                self.assertEqual(
+                    set(result),
+                    {"needs_ruleset", "needs_token_recipe"},
+                    "the result still carries exactly the two pinned "
+                    "keys: got {!r}".format(sorted(result)),
+                )
+
+    def test_token_fail_still_needs_recipe_beside_satisfied_warn(self):
+        remediation = piguard.gate_remediation
+        token_fail = piguard.probe_administration(
+            "owner",
+            "repo",
+            token="token-xyz",
+            opener=_opener(_FakeResponse(b"{}", 200)),
+        )[0]
+        self.assertEqual(
+            _field(token_fail, "status"),
+            "fail",
+            "fixture sanity: a 200 on the administration endpoint is a fail",
+        )
+
+        result = remediation([self._satisfied_warn()], [token_fail])
+
+        self.assertTrue(
+            result["needs_token_recipe"],
+            "a token fail still needs the token recipe even when the "
+            "branch side is a satisfied warn alone - the exemption "
+            "touches needs_ruleset only, not the token half, which is "
+            "computed from the token list exactly as today",
+        )
+
+    def test_token_passed_findings_need_no_recipe_beside_satisfied_warn(self):
+        remediation = piguard.gate_remediation
+        token = [
+            self._finding("passed", "administration", None),
+            self._finding("passed", "named_repo", None),
+        ]
+
+        result = remediation([self._satisfied_warn()], token)
+
+        self.assertFalse(
+            result["needs_token_recipe"],
+            "all-passed token findings need no token recipe even with the "
+            "satisfied warn on the branch side - the token half is "
+            "computed from the token list exactly as today",
+        )
+
+    def test_real_producer_satisfied_warn_needs_no_ruleset_and_unsatisfied_does(self):
+        """Behaviour 5 of plans/file-path-fallback-file-only.md - the
+        remediation exemption pinned on the REAL producer's output, not
+        a hand-built dict: ``check_file_paths`` with no
+        ``file_path_restriction`` element and
+        ``codeowners_present=True`` emits the marker True (the file
+        alone), and that exact finding must not set ``needs_ruleset``;
+        with the file absent the same producer's warn still sets it -
+        so the pin dies if the marker stops being produced."""
+        remediation = piguard.gate_remediation
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            rule("deletion", "main-protected"),
+            pull_request_rule("main-protected", 1),
+            update_rule(
+                "main-protected", {"update_allows_fetch_and_merge": False}
+            ),
+        ]
+        self.assertFalse(
+            any(r.get("type") == "file_path_restriction" for r in rules),
+            "fixture sanity: no file_path_restriction element - the "
+            "warn half of the check",
+        )
+
+        satisfied = piguard.check_file_paths(rules, codeowners_present=True)[0]
+        self.assertIs(
+            satisfied["fallback_in_place"],
+            True,
+            "fixture sanity: the real producer emits the marker True "
+            "with the file present - the exemption must be pinned on "
+            "the finding the producer really builds",
+        )
+
+        result = remediation([satisfied], [])
+
+        self.assertFalse(
+            result["needs_ruleset"],
+            "the producer's satisfied warn needs no ruleset fix - the "
+            "CODEOWNERS review gate IS the fix, so the 'ruleset is "
+            "already prepared' block must not print",
+        )
+        self.assertFalse(
+            result["needs_token_recipe"],
+            "an empty token list needs no token recipe",
+        )
+        self.assertEqual(
+            set(result),
+            {"needs_ruleset", "needs_token_recipe"},
+            "the producer's finding changes values, not shape: the "
+            "result still carries exactly the two pinned keys: "
+            "got {!r}".format(sorted(result)),
+        )
+        for label, kwargs in (
+            ("codeowners_present False", {"codeowners_present": False}),
+            ("the default keyword", {}),
+        ):
+            with self.subTest(kwargs=kwargs):
+                unsatisfied = piguard.check_file_paths(rules, **kwargs)[0]
+                self.assertIs(
+                    unsatisfied["fallback_in_place"],
+                    False,
+                    "fixture sanity: the real producer keeps the marker "
+                    "False without the file ({})".format(label),
+                )
+                self.assertTrue(
+                    remediation([unsatisfied], [])["needs_ruleset"],
+                    "the producer's unsatisfied warn ({}) still needs "
+                    "the ruleset fix - the exemption is marker-exact "
+                    "on the real finding".format(label),
                 )
 
 
@@ -10727,6 +11838,14 @@ class FindingBriefTests(unittest.TestCase):
         and the full resolution failure. It is never printed inside a finding
         block (the headline carries the brief), so the 100-char bound - which
         exists to keep a block line short - does not apply to it.
+
+        The one remedy this helper is NOT called with is the
+        ``file_path_restriction`` warn remedy (see
+        ``test_every_emittable_finding_danger_reason_and_remedy_are_short``):
+        it is two clauses by requirement (behaviour 1 of
+        plans/file-path-remedy-plan-fallback.md), so the 100-char and
+        single-sentence bounds are lifted there by an explicit branch,
+        while the no-doc-path and no-'see:' pins are re-asserted.
         """
         self.assertIsInstance(
             value,
@@ -10764,7 +11883,7 @@ class FindingBriefTests(unittest.TestCase):
         """Behaviour 2: every emittable danger/reason/remedy is one short
         sentence with no doc path and no 'see:' clause.
 
-        One documented exemption: the no-origin *reason* is exempt from the
+        Two documented exemptions. The no-origin *reason* is exempt from the
         100-char length bound only (see _assert_short_field_shape). It is
         built and pinned verbatim in
         anvilkit.cli._collect_guard_findings / tests/test_cli.py - including
@@ -10774,6 +11893,18 @@ class FindingBriefTests(unittest.TestCase):
         block line short does not apply to it. Every other assertion on that
         subtest (no doc path, no 'see:' clause, single sentence) still
         applies, and the remedy is still pinned.
+
+        The ``file_path_restriction`` warn *remedy* is exempt from the 100-char
+        length bound and the single-sentence bound by requirement: behaviour 1
+        of plans/file-path-remedy-plan-fallback.md makes it two clauses - the
+        UI fix, then the plan-availability fallback - because Anvil cannot
+        detect whether the plan offers the rule, so the remedy must carry
+        both. It gets its own 180-char bound (two short sentences, not a
+        paragraph) and is the only remedy allowed a second sentence; the
+        no-doc-path and no-'see:' pins apply to it without exemption, exactly
+        as the sibling sweep's branch
+        (test_non_passing_findings_remedy_is_short_and_carries_no_doc_path)
+        treats it.
         """
         findings = self._every_brief_finding()
         for label, finding in findings:
@@ -10822,9 +11953,43 @@ class FindingBriefTests(unittest.TestCase):
                 # and may be empty on a passed one now that nothing prints
                 # it.
                 if isinstance(remedy, str) and remedy:
-                    self._assert_short_field_shape(
-                        remedy, "{}: remedy".format(label)
-                    )
+                    rule = _field(finding, "rule")
+                    if rule == "file_path_restriction":
+                        # Behaviour 1 of plans/file-path-remedy-plan-fallback.md:
+                        # this remedy is two clauses by requirement - the UI
+                        # fix, then the plan-availability fallback - because
+                        # Anvil cannot detect whether the plan offers the rule,
+                        # so the remedy must carry both. It gets its own 180-
+                        # char bound (two short sentences, not a paragraph)
+                        # and is the only remedy allowed a second sentence;
+                        # every other remedy keeps the 100-char, single-
+                        # sentence pin. The no-doc-path and no-'see:' bounds
+                        # below apply to it without exemption.
+                        self.assertLessEqual(
+                            len(remedy),
+                            180,
+                            "{}: the {} finding on rule {!r} remedy must be "
+                            "two short sentences of at most 180 characters, "
+                            "got {}: {!r}".format(
+                                label, status, rule, len(remedy), remedy
+                            ),
+                        )
+                        self.assertNotIn(
+                            "doc/external/",
+                            remedy,
+                            "{}: the field must carry no doc path: "
+                            "{!r}".format(label, remedy),
+                        )
+                        self.assertNotIn(
+                            "see:",
+                            remedy,
+                            "{}: the field must carry no 'see:' clause: "
+                            "{!r}".format(label, remedy),
+                        )
+                    else:
+                        self._assert_short_field_shape(
+                            remedy, "{}: remedy".format(label)
+                        )
                 if status != "passed":
                     self.assertTrue(
                         remedy,
@@ -11573,6 +12738,279 @@ class NoInventedWordTests(unittest.TestCase):
             "({!r} lines): {!r}".format(
                 len(wide), wide, len(narrow), narrow
             ),
+        )
+
+
+class FallbackBoundaryPinTests(unittest.TestCase):
+    """Behaviour 10 of plans/file-path-fallback-satisfied.md - the boundary
+    pins: a no-production-change regression pin.
+
+    The ``fallback_in_place`` marker is read only by the gate seams
+    (``gate_verdict`` and ``gate_remediation``) and never rendered:
+    ``summarize``, ``render_finding`` and ``render_fixes`` are marker-blind,
+    ``check_all``'s ordering and the ``passed`` finding shape are unchanged,
+    and an unknown status neither blocks nor crashes. Every pin below runs
+    today's fixtures with the marker present, stripped or falsified and
+    requires byte-identical results.
+    """
+
+    ABSENT = object()
+
+    def _satisfied_warn(self, marker: Any) -> Dict[str, Any]:
+        """The satisfied warn as ``check_file_paths`` emits it when both
+        halves are in place, with the marker forced to ``marker``: the value
+        ``True``, ``False`` or the sentinel ``ABSENT`` (key deleted)."""
+        rules = [
+            rule("non_fast_forward", "main-protected"),
+            code_owner_review_rule(
+                "main-protected",
+                {"require_code_owner_review": True},
+            ),
+        ]
+        finding = piguard.check_file_paths(rules, codeowners_present=True)[0]
+        if marker is self.ABSENT:
+            finding.pop("fallback_in_place", None)
+        else:
+            finding["fallback_in_place"] = marker
+        return finding
+
+    def _variants(self) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
+        """The satisfied warn in its three marker forms: True, False, absent."""
+        return (
+            self._satisfied_warn(True),
+            self._satisfied_warn(False),
+            self._satisfied_warn(self.ABSENT),
+        )
+
+    def test_summarize_is_marker_blind(self):
+        summarize = piguard.summarize
+        passed = piguard.check_history_rewrite(
+            [rule("non_fast_forward", "main-protected")]
+        )[0]
+        warn_true, warn_false, warn_absent = self._variants()
+        self.assertEqual(
+            _field(passed, "status"),
+            "passed",
+            "fixture sanity: the list's only non-passed element is the "
+            "satisfied warn",
+        )
+
+        summary_true = summarize([passed, warn_true])
+        summary_false = summarize([passed, warn_false])
+        summary_absent = summarize([passed, warn_absent])
+        summary_lone = summarize([warn_true])
+
+        self.assertEqual(summary_true, 0, "pinned: a satisfied warn exits 0")
+        self.assertEqual(
+            summary_false,
+            summary_true,
+            "summarize is marker-blind: the marker False variant must agree",
+        )
+        self.assertEqual(
+            summary_absent,
+            summary_true,
+            "summarize is marker-blind: the marker-absent variant must "
+            "agree",
+        )
+        self.assertEqual(
+            summary_lone,
+            summary_true,
+            "summarize is 1-iff-any-fail, so the satisfied warn (a warn) "
+            "yields the same value alone as inside the passed list",
+        )
+
+    def test_render_finding_is_marker_blind(self):
+        render_finding = piguard.render_finding
+        warn_true, warn_false, warn_absent = self._variants()
+
+        line_true = render_finding(warn_true)
+        line_false = render_finding(warn_false)
+        line_absent = render_finding(warn_absent)
+
+        self.assertEqual(
+            line_true,
+            "warn: file_path_restriction - push rule off; CODEOWNERS review "
+            "gate in place",
+            "pinned: the satisfied warn renders as its status, label and "
+            "brief only",
+        )
+        self.assertEqual(
+            line_false,
+            line_true,
+            "render_finding is marker-blind: the marker False variant "
+            "renders byte-identical",
+        )
+        self.assertEqual(
+            line_absent,
+            line_true,
+            "render_finding is marker-blind: the marker-absent variant "
+            "renders byte-identical",
+        )
+        self.assertNotIn(
+            "fallback",
+            line_true,
+            "the marker never appears in the rendered text",
+        )
+        self.assertNotIn(
+            "in_place",
+            line_true,
+            "the marker never appears in the rendered text",
+        )
+
+    def test_render_fixes_is_marker_blind(self):
+        render_fixes = piguard.render_fixes
+        warn_true, warn_false, warn_absent = self._variants()
+
+        lines_true = render_fixes([warn_true])
+        lines_false = render_fixes([warn_false])
+        lines_absent = render_fixes([warn_absent])
+
+        self.assertEqual(
+            lines_true,
+            [
+                "To fix",
+                "1. file_path_restriction: nothing to do - the CODEOWNERS "
+                "review gate covers",
+                "  this; the push rule stays off on your plan",
+            ],
+            "pinned: the entry is the numbered remedy text",
+        )
+        self.assertEqual(
+            lines_false,
+            lines_true,
+            "render_fixes is marker-blind: the marker False variant "
+            "renders byte-identical",
+        )
+        self.assertEqual(
+            lines_absent,
+            lines_true,
+            "render_fixes is marker-blind: the marker-absent variant "
+            "renders byte-identical",
+        )
+        self.assertNotIn(
+            "fallback",
+            "\n".join(lines_true),
+            "the marker never appears in the rendered fixes",
+        )
+        self.assertNotIn(
+            "in_place",
+            "\n".join(lines_true),
+            "the marker never appears in the rendered fixes",
+        )
+
+    def test_check_all_ordering_is_unchanged(self):
+        fixture = [
+            rule("non_fast_forward", "main-protected"),
+            rule("deletion", "main-protected"),
+            pull_request_rule("main-protected", 2),
+            update_rule(
+                "main-protected",
+                {"update_allows_fetch_and_merge": False},
+            ),
+            file_path_rule(
+                "main-protected",
+                {"restricted_file_paths": [".github/workflows/**"]},
+            ),
+        ]
+
+        findings = piguard.check_all(fixture)
+
+        self.assertEqual(
+            [(_field(f, "status"), _field(f, "check")) for f in findings],
+            [
+                ("passed", "history_rewrite"),
+                ("passed", "history_rewrite"),
+                ("passed", "review"),
+                ("passed", "update_restriction"),
+                ("passed", "file_paths"),
+            ],
+            "pinned: check_all reports the five findings in today's exact "
+            "order, the file_paths finding last",
+        )
+        self.assertEqual(
+            _field(findings[4], "rule"),
+            "file_path_restriction",
+            "pinned: the last finding is the file_path_restriction one",
+        )
+
+    def test_passed_finding_gains_no_key(self):
+        rules = [
+            file_path_rule(
+                "main-protected",
+                {"restricted_file_paths": [".github/workflows/**"]},
+            ),
+        ]
+
+        finding_default = piguard.check_file_paths(rules)[0]
+        finding_present = piguard.check_file_paths(
+            rules, codeowners_present=True
+        )[0]
+
+        for finding in (finding_default, finding_present):
+            with self.subTest(finding=finding):
+                self.assertEqual(
+                    _field(finding, "status"),
+                    "passed",
+                    "fixture sanity: a present rule passes",
+                )
+                self.assertNotIn(
+                    "fallback_in_place",
+                    finding,
+                    "the passed finding gains no marker key, regardless of "
+                    "the codeowners_present keyword",
+                )
+                self.assertEqual(
+                    sorted(finding),
+                    [
+                        "brief",
+                        "check",
+                        "danger",
+                        "remedy",
+                        "restricted_file_paths",
+                        "rule",
+                        "source",
+                        "status",
+                    ],
+                    "pinned: the passed finding keeps exactly today's "
+                    "eight keys",
+                )
+        self.assertEqual(
+            finding_present,
+            finding_default,
+            "the passed finding is byte-identical with the file half "
+            "present or absent",
+        )
+
+    def test_unknown_status_neither_blocks_nor_crashes(self):
+        unknown = {
+            "status": "weird",
+            "check": "file_paths",
+            "rule": "file_path_restriction",
+            "brief": "an unknown status",
+            "danger": "an unknown status",
+            "source": None,
+            "remedy": "nothing to do",
+        }
+        satisfied = self._satisfied_warn(True)
+
+        verdict = piguard.gate_verdict([unknown, satisfied])
+
+        self.assertEqual(
+            verdict,
+            "clean",
+            "an unknown status is neither a fail nor a warn, so it blocks "
+            "nothing: the satisfied warn alone must not block either",
+        )
+        self.assertEqual(
+            piguard.summarize([unknown, satisfied]),
+            piguard.summarize([satisfied]),
+            "summarize is 1-iff-any-fail: an unknown status changes "
+            "nothing, both sides pinned at 0",
+        )
+        self.assertEqual(
+            piguard.summarize([satisfied]),
+            0,
+            "pinned: the satisfied warn alone yields 0",
         )
 
 
