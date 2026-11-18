@@ -14692,9 +14692,13 @@ class TestCodeownersFlowSkipPresent(CliCase):
 
 class TestCodeownersFlowSkipBoundary(CliCase):
     """Boundary pins for behaviours 3, 4, 6 and 7 of
-    plans/codeowners-flow-skip-existing-file.md - all no-production-change:
-    the skip (behaviour 2) already landed, these pins prove it holds at its
-    boundaries.
+    plans/codeowners-flow-skip-existing-file.md. Pins 3 and 5 (the blocked
+    gate with the file present) are re-pointed by behaviour 1 of
+    plans/file-path-fallback-file-only.md: the follow-up's file-present
+    skip branch is gone, so the gate runs the FULL interactive flow and
+    the clobber guard is the write seam's ``CodeownersError`` - and the
+    gate still exits ``EXIT_GUARDS_BLOCKED`` (9) whatever the follow-up
+    does. The remaining pins prove the boundaries that stand.
 
     Behaviour 3 - the absent file changes nothing: an empty target runs the
     no path in full - no skip line, the handles ask IS recorded, the body
@@ -14708,10 +14712,12 @@ class TestCodeownersFlowSkipBoundary(CliCase):
     picodeowners.py:273), the git commands still print, no exception leaves
     the run and the directory is still a directory with no file inside it.
 
-    Behaviour 6 - both call sites inherit the skip: the blocked setup-repo
-    gate with the file present skips with the same one line, still prints
-    its ``⛔`` block line after the follow-up, and still exits
-    ``EXIT_GUARDS_BLOCKED`` (9); an unresolvable repository returns before
+    Behaviour 6 - the gate site runs the flow: the blocked setup-repo gate
+    with the file present now runs the FULL interactive flow (the handles
+    ask fires, an accepted write offer is refused at the write seam),
+    still prints its ``⛔`` block line after the follow-up, and still exits
+    ``EXIT_GUARDS_BLOCKED`` (9) - the verdict is the marker-False warn,
+    and no follow-up changes it; an unresolvable repository returns before
     any of this, so the report is byte-identical to the follow-up-disabled
     baseline - no prompt, no flow, no skip line.
 
@@ -14882,6 +14888,87 @@ class TestCodeownersFlowSkipBoundary(CliCase):
             self.addCleanup(patcher.stop)
         result = self.invoke(["setup-repo", str(target)])
         return result, asks, confirms, findings, target
+
+    def _assert_flow_ran(self, result, asks, confirms, site):
+        """The run reached and completed the flow (behaviour 1's
+        fall-through): the six steps, the recorded handles ask (prompt
+        names the handle, default the pre-filled @owner), the built
+        body echoed verbatim, and all three confirms consumed in order
+        (free-plan question, content confirm, write offer). Mirrors
+        ``TestCodeownersFlowSkipPresent._assert_flow_ran`` so the two
+        classes cannot drift."""
+        for token in self.STEP_TOKENS:
+            self.assertIn(
+                token,
+                result.output,
+                "{}: the six-step walkthrough must still print - step "
+                "token {!r} is missing:\n{}".format(site, token, result.output),
+            )
+        self.assertEqual(
+            1,
+            len(asks),
+            "{}: the flow's handles ask must be recorded exactly once - "
+            "{} ask(s): {}".format(site, len(asks), asks),
+        )
+        prompt, default = asks[0]
+        self.assertIn(
+            "handle",
+            prompt.lower(),
+            "{}: the handles ask prompt must name the handle - "
+            "prompt={!r}".format(site, prompt),
+        )
+        self.assertEqual(
+            "@" + self.OWNER,
+            default,
+            "{}: the handles ask must default to the pre-filled @owner - "
+            "default={!r}".format(site, default),
+        )
+        body = cli.picodeowners.codeowners_body(self.ASK_ANSWER)
+        for line in body.splitlines():
+            self.assertIn(
+                line,
+                result.output,
+                "{}: the built body must be echoed verbatim - the line "
+                "{!r} is missing:\n{}".format(site, line, result.output),
+            )
+        self.assertEqual(
+            3,
+            len(confirms),
+            "{}: all three confirms must be consumed - the free-plan "
+            "question, the content confirm and the write offer: {} "
+            "recorded:\n{}".format(site, confirms, result.output),
+        )
+        self.assertIn(
+            "Restrict file paths",
+            confirms[0][0],
+            "{}: the FIRST confirm must be the free-plan question: "
+            "prompt={!r}".format(site, confirms[0][0]),
+        )
+
+    def _assert_no_skip_or_arm(self, result, site):
+        """Neither the #109 skip line nor the arm line is ever printed
+        (behaviour 1 of plans/file-path-fallback-file-only.md): both
+        strings are absent, the arm line in either branch spelling.
+        Mirrors ``TestCodeownersFlowSkipPresent._assert_no_skip_or_arm``
+        so the two classes cannot drift."""
+        self.assertEqual(
+            0,
+            result.output.count(self.SKIP_LINE),
+            "{}: the skip line must be ABSENT - found {} time(s):\n{}"
+            .format(site, result.output.count(self.SKIP_LINE), result.output),
+        )
+        for branch in ("main", "release"):
+            self.assertEqual(
+                0,
+                result.output.count(
+                    ARM_LINE_TEMPLATE.format(branch)
+                ),
+                "{}: the arm line for {!r} must be ABSENT - found {} "
+                "time(s):\n{}".format(
+                    site, branch, result.output.count(ARM_LINE_TEMPLATE.format(branch)),
+                    result.output,
+                ),
+            )
 
     def _baseline_verify_guards(self):
         """The same ``verify-guards`` run with the WHOLE follow-up
@@ -15101,48 +15188,36 @@ class TestCodeownersFlowSkipBoundary(CliCase):
             ),
         )
 
-    # -- pin 3: behaviour 6 - the blocked gate inherits the skip ----------------
+    # -- pin 3: behaviour 6 - the gate site runs the flow, still blocked --------
 
-    def test_blocked_gate_with_the_file_present_skips_and_still_exits_blocked(
+    def test_blocked_gate_with_the_file_present_runs_the_flow_and_still_exits_blocked(
         self,
     ):
-        """The blocked setup-repo gate with the file present: the SAME one
-        skip line prints (no per-site wiring), the handles ask is NOT
-        recorded, only the free-plan question is consumed, the gate still
-        prints its ``⛔`` block line AFTER the skip line, and the exit is
-        still ``EXIT_GUARDS_BLOCKED`` (9) - the skip never masks the
-        block."""
+        """The blocked setup-repo gate with the file present: re-pointed by
+        behaviour 1 of plans/file-path-fallback-file-only.md - the
+        file-present skip is gone, so the gate site runs the FULL
+        interactive flow, exactly as the verify-guards site does: the
+        free-plan question answered no, the six steps, the handles ask
+        (recorded once, default the pre-filled @owner), the body echoed
+        verbatim, the content confirm passed, the write offer declined -
+        and NEITHER the skip line nor the arm line is printed. The gate
+        still prints its ``⛔`` block line AFTER the follow-up, and the
+        exit is still ``EXIT_GUARDS_BLOCKED`` (9): the verdict is the
+        marker-False warn, and no follow-up changes the gate's exit."""
         target = self._gate_target()
         self._write_present_file(target)
         result, asks, confirms, _findings, _t = self._run_blocked_gate(
-            (False,), self.ASK_ANSWER, (self.OWNER, self.REPO), target=target
+            (False, True, False), self.ASK_ANSWER, (self.OWNER, self.REPO), target=target
         )
-        self.assertEqual(
-            1,
-            result.output.count(self.SKIP_LINE),
-            "the blocked gate must skip with the SAME one line - found "
-            "{} time(s):\n{}".format(
-                result.output.count(self.SKIP_LINE), result.output
-            ),
+        self._assert_flow_ran(
+            result, asks, confirms, "blocked gate, file present"
         )
-        self.assertEqual(
-            0,
-            len(asks),
-            "the gate's skip must never reach the flow's handles ask - "
-            "{} ask(s) recorded:\n{}".format(len(asks), result.output),
-        )
-        self.assertEqual(
-            1,
-            len(confirms),
-            "at most ONE confirm - the free-plan question itself - no "
-            "content confirm and no write offer: {} recorded: "
-            "{}\n{}".format(len(confirms), confirms, result.output),
-        )
+        self._assert_no_skip_or_arm(result, "blocked gate, file present")
         self.assertIn(
-            "Restrict file paths",
-            confirms[0][0],
-            "the only confirm must be the free-plan question: "
-            "prompt={!r}".format(confirms[0][0]),
+            "Nothing written",
+            result.output,
+            "the declined offer must print its one line saying nothing "
+            "was written:\n{}".format(result.output),
         )
         block_lines = [
             line
@@ -15156,10 +15231,12 @@ class TestCodeownersFlowSkipBoundary(CliCase):
             "line(s):\n{}".format(len(block_lines), result.output),
         )
         self.assertLess(
-            result.output.index(self.SKIP_LINE),
+            result.output.index(self.INTRO_LINE),
             result.output.index(block_lines[0]),
-            "the gate must print its block line AFTER the skip line - "
-            "the order is reversed:\n{}".format(result.output),
+            "the gate must print its block line AFTER the follow-up - "
+            "the flow's intro line must come first:\n{}".format(
+                result.output
+            ),
         )
         self.assertEqual(
             9,
@@ -15172,7 +15249,7 @@ class TestCodeownersFlowSkipBoundary(CliCase):
             cli.EXIT_GUARDS_BLOCKED,
             result.exit_code,
             "the blocked gate with the file present still exits blocked "
-            "(9) - the skip never masks the block:\n{}".format(
+            "(9) - the follow-up never masks the block:\n{}".format(
                 result.output
             ),
         )
@@ -15240,33 +15317,47 @@ class TestCodeownersFlowSkipBoundary(CliCase):
     # -- pin 5: behaviour 7 - the gate never touches the present file -----------
 
     def test_blocked_gate_with_the_file_present_never_touches_the_file(self):
-        """The blocked gate with the file present: the file's bytes are
-        identical after the run, and the target tree gains no file beyond
-        the one the gate is allowed to prepare (``.github-ruleset.json``,
-        behaviour 7 of plans/setup-repo-guards.md) - the CODEOWNERS flow
-        itself writes nothing: no partial write, no backup file, no new
-        file under ``.github/`` where it would write. The run skips (one
-        skip line, no ask), so nothing after the skip can touch the
-        file."""
+        """The blocked gate with the file present: re-pointed by behaviour
+        1 of plans/file-path-fallback-file-only.md - the safety now rests
+        on the write seam (``picodeowners.write_codeowners``,
+        anvilkit/pi/picodeowners.py:282), not on the skip (which is gone).
+        The gate runs the FULL flow, and with the write offer accepted it
+        reaches the seam, which refuses the existing file: exactly ONE
+        CodeownersError line (the "never clobbered" message), no skip
+        line, no arm line. The file's bytes are identical after the run,
+        and the target tree gains no file beyond the one the gate is
+        allowed to prepare (``.github-ruleset.json``, behaviour 7 of
+        plans/setup-repo-guards.md): no partial write, no backup file,
+        no new file under ``.github/`` where the flow would write."""
         target = self._gate_target()
         path = self._write_present_file(target)
         before = self._tree_snapshot(target)
-        result, asks, _confirms, _findings, _t = self._run_blocked_gate(
-            (False,), self.ASK_ANSWER, (self.OWNER, self.REPO), target=target
+        result, asks, confirms, _findings, _t = self._run_blocked_gate(
+            (False, True, True), self.ASK_ANSWER, (self.OWNER, self.REPO), target=target
         )
+        self._assert_flow_ran(
+            result, asks, confirms, "blocked gate, file present"
+        )
+        self._assert_no_skip_or_arm(result, "blocked gate, file present")
+        error_lines = [
+            line
+            for line in result.output.splitlines()
+            if "could not write .github/CODEOWNERS" in line
+        ]
         self.assertEqual(
             1,
-            result.output.count(self.SKIP_LINE),
-            "sanity: the gate run must skip (this pin rests on the skip "
-            "holding) - found {} time(s):\n{}".format(
-                result.output.count(self.SKIP_LINE), result.output
+            len(error_lines),
+            "the write seam's refusal must print as exactly ONE "
+            "CodeownersError line - {} such line(s) found:\n{}".format(
+                len(error_lines), result.output
             ),
         )
-        self.assertEqual(
-            0,
-            len(asks),
-            "sanity: the skip must never reach the flow's handles ask - "
-            "{} ask(s) recorded:\n{}".format(len(asks), result.output),
+        self.assertIn(
+            "never clobbered",
+            error_lines[0],
+            "the refusal line must carry the write seam's existing-file "
+            "message (anvilkit/pi/picodeowners.py:282) - got "
+            "{!r}".format(error_lines[0]),
         )
         self.assertEqual(
             self.CODEOWNERS_BYTES,
