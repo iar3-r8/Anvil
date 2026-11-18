@@ -16334,11 +16334,6 @@ class TestGuardFindingsCodeownersPresence(CliCase):
             any(r.get("type") == "file_path_restriction" for r in updated),
             "the fixture must lack file_path_restriction - the warn half",
         )
-        self.assertTrue(
-            cli.piguard.code_owner_review_on(updated),
-            "the fixture's pull_request rule must carry "
-            "require_code_owner_review True - the review half",
-        )
         return updated
 
     # -- traps ---------------------------------------------------------------------
@@ -16771,11 +16766,6 @@ class TestAcceptanceSatisfiedFallback(CliCase):
             any(r.get("type") == "file_path_restriction" for r in updated),
             "fixture sanity: the acceptance state has no "
             "file_path_restriction rule",
-        )
-        self.assertTrue(
-            cli.piguard.code_owner_review_on(updated),
-            "fixture sanity: the pull_request rule must carry "
-            "require_code_owner_review True",
         )
         return updated
 

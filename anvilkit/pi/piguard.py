@@ -1238,34 +1238,6 @@ def check_review(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     ]
 
 
-def code_owner_review_on(rules: List[Dict[str, Any]]) -> bool:
-    """Whether the CODEOWNERS review gate is on, from the fetched rules.
-
-    Reads the review half of the CODEOWNERS fallback (behaviour 1 of
-    plans/file-path-fallback-satisfied.md) from the array already fetched
-    by :func:`fetch_branch_rules` - no fetch of its own. "Require review
-    from Code Owners" is not a rule type: it is
-    ``parameters.require_code_owner_review`` on the ``pull_request`` rule
-    (doc/external/github/rest-api-endpoints-for-rules.md:136).
-
-    Returns True iff the first ``pull_request`` element carries that key
-    exactly ``True``: the ``is True`` test is what rejects ``"true"``,
-    ``1``, ``0`` and ``None``, and GitHub's own sample ships the key
-    present and false, so absence and falsity are the same answer. A
-    duplicated ``pull_request`` type takes the first element, exactly
-    :func:`check_file_paths`' first-wins semantics; non-dict elements are
-    skipped. An absent element, unreadable ``parameters`` or a missing key
-    returns False; the function never raises and is deterministic.
-    """
-    for candidate in rules:
-        if not isinstance(candidate, dict):
-            continue
-        if candidate.get("type") == "pull_request":
-            parameters = candidate.get("parameters")
-            if not isinstance(parameters, dict):
-                return False
-            return parameters.get("require_code_owner_review") is True
-    return False
 
 
 def check_update(rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
