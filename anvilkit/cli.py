@@ -90,11 +90,6 @@ BANNER = r"""
 
 _SEPARATOR = "-" * 60
 
-# Behaviour 8 (plans/file-path-fallback-satisfied.md): the partial-state arm
-# line, printed after #109's skip line with the checked branch interpolated.
-# At most 80 characters for the pinned branch spellings (main: 64, release: 67).
-_ARM_LINE_TEMPLATE = 'Tick "Require review from Code Owners" for {} to arm the gate.'
-
 # Section headings for .env, mapping keys to comment headings.
 _ENV_SECTIONS = {
     "HF_HOME": "--- Host Storage Paths ---",
@@ -1664,13 +1659,10 @@ def _free_plan_followup(
     Non-interactive, ``--yes`` and ``--dry-run`` runs never ask: they print
     exactly one line, then return - no prompt, no stdin read, and the exit
     code is untouched (behaviour 5). The line is a report line, one
-    sentence, built here, not in a module - and the fallback is
-    skip-aware (behaviour 5 of
-    plans/codeowners-flow-skip-existing-file.md): on the SAME predicate
-    the interactive skip uses (``is_file()`` on
-    ``codeowners_path(target)``), a file present at the path prints
-    behaviour 2's skip line, while an absent path (a directory at the
-    path counts as absent) prints the free-plan line, byte-identical.
+    sentence, built here, not in a module - and it is unconditional: the
+    file-present skip branches are gone (behaviour 1 of
+    plans/file-path-fallback-file-only.md), so a file at the path prints
+    the same free-plan line as an absent one.
 
     An interactive run asks the behaviour-4 unit exactly once: the question
     is positive (behaviour 9) and the caller inverts - a ``no`` answer means
@@ -1678,12 +1670,13 @@ def _free_plan_followup(
     (behaviour 6) built by ``picodeowners`` from the resolved repository
     and the checked ``branch`` - never re-derived here - after the
     report's "To fix" section and bypass note, then ends in the
-    interactive CODEOWNERS flow (behaviour 20) - unless the file is
-    already present at ``codeowners_path(target)``, in which case
-    behaviour 2 of
-    plans/codeowners-flow-skip-existing-file.md prints exactly one fixed
-    skip line and returns: the ask and confirm seams are never called,
-    and the exit code is untouched. A ``yes`` answer keeps the
+    interactive CODEOWNERS flow (behaviour 20), the file present or
+    not: the file-present skip branches are gone (behaviour 1 of
+    plans/file-path-fallback-file-only.md), and it is safe because the
+    clobber guard is the write seam's ``CodeownersError``, never a skip
+    - and once the marker is the file alone (that plan's behaviour 2), a
+    file-present run never reaches this follow-up at all
+    (``wants_walkthrough`` is False). A ``yes`` answer keeps the
     output byte-identical - no confirmation line (behaviour 7's polarity
     under the positive question): the plan offers the option, and the
     report's "To fix" line is the fix. A ``CodeownersError`` is
@@ -1695,33 +1688,16 @@ def _free_plan_followup(
     if repository is None:
         return
     if shared.dry_run or shared.assume_yes or not shared.interactive():
-        # Behaviour 5 (plans/codeowners-flow-skip-existing-file.md): the
-        # fallback is skip-aware - it picks the same one line the
-        # interactive skip does, on the SAME predicate
-        # (``is_file()`` on ``codeowners_path(target)``), so the two
-        # paths cannot disagree about what "present" means. File present
-        # -> behaviour 2's skip line; absent (a directory at the path
-        # counts as absent, like the interactive half) -> the free-plan
-        # line, byte-identical. Either way: no prompt, no stdin read,
-        # the exit code untouched.
-        if picodeowners.codeowners_path(target).is_file():
-            shared.echo(".github/CODEOWNERS already exists - nothing to do.")
-            # Behaviour 8 (plans/file-path-fallback-satisfied.md): the arm
-            # line names the missing half. It prints UNCONDITIONALLY here
-            # because reaching the skip line forces the state:
-            # wants_walkthrough True means the file_paths warn carries
-            # fallback_in_place False (NOT present-AND-review-on), and the
-            # skip predicate is_file() is True (present), so the review half
-            # is necessarily the missing half - and with the review half on,
-            # behaviour 6 means this follow-up never runs. No parameter, no
-            # fetch: the checked branch is all the line needs.
-            shared.echo(_ARM_LINE_TEMPLATE.format(branch))
-        else:
-            shared.echo(
-                "Your plan may not offer \"Restrict file paths\" - the "
-                "free-plan CODEOWNERS fix: re-run without --yes to see the "
-                "walkthrough."
-            )
+        # Behaviour 5: the fallback prints the free-plan line
+        # unconditionally - the file-present skip branch is gone
+        # (behaviour 1 of plans/file-path-fallback-file-only.md), so a
+        # file at the path counts no different from an absent one.
+        # No prompt, no stdin read, the exit code untouched.
+        shared.echo(
+            "Your plan may not offer \"Restrict file paths\" - the "
+            "free-plan CODEOWNERS fix: re-run without --yes to see the "
+            "walkthrough."
+        )
         return
     answer = _ask_free_plan(shared, branch_findings)
     if answer:
@@ -1744,24 +1720,9 @@ def _free_plan_followup(
         return
     for step in steps:
         shared.echo(step)
-    # Behaviour 2 (plans/codeowners-flow-skip-existing-file.md): the no
-    # branch skips the CODEOWNERS flow when the file is already present
-    # - the predicate is ``is_file()`` on ``codeowners_path(target)``,
-    # the exact path the flow would write, so the check and the write
-    # cannot drift. One fixed line, then return: no ask, no echo, no
-    # offer, no git commands, and the exit code is untouched.
-    if picodeowners.codeowners_path(target).is_file():
-        shared.echo(".github/CODEOWNERS already exists - nothing to do.")
-        # Behaviour 8 (plans/file-path-fallback-satisfied.md): the arm line
-        # names the missing half. It prints UNCONDITIONALLY here for the
-        # same invariant as the fallback: the skip line is only reached when
-        # wants_walkthrough is True (the file_paths warn's marker False, so
-        # NOT present-AND-review-on) and is_file() is True (present), which
-        # forces the review half off. When the review half IS on, behaviour
-        # 6 keeps this follow-up from running at all, so the arm line can
-        # never mis-name a state in which both halves are armed.
-        shared.echo(_ARM_LINE_TEMPLATE.format(branch))
-        return
+    # The file-present skip is gone (behaviour 1 of
+    # plans/file-path-fallback-file-only.md): a present file falls through
+    # to the flow and is refused at the write seam, never at a skip.
     # Behaviour 20 (plans/file-path-codeowners-interactive.md): the no
     # branch ends in the interactive CODEOWNERS flow, using the SAME
     # default seams (``prompts.ask`` / ``prompts.confirm``) the rest of
