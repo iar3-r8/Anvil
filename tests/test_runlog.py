@@ -110,6 +110,26 @@ Behaviour 6 (``start-run-writes-meta``), pinned from the plan:
 
 While ``start_run`` is absent, every behaviour-6 test is red at the
 fetch step: the module attribute is not callable.
+
+Behaviour 7 (``start-run-refuses-overwrite``), pinned from the plan:
+
+    start_run(root, run_id, intake, sessions, started_at) with an existing
+    logs/runs/<run-id>/ -> RunLogError naming the run id
+
+- a second ``start_run`` with the same run id raises ``RunLogError`` naming
+  the run id - a past run is evidence and is never overwritten;
+- nothing on disk is touched: the original ``meta.json`` is intact
+  (full-dict equality, not file existence) and no file under the root is
+  added, removed or rewritten. The refused call deliberately carries
+  different valid inputs, so an overwriting implementation is caught by the
+  comparison rather than passing it invisibly;
+- a different run id in the same root succeeds while the first run's
+  directory and meta are untouched - no cross-run interference.
+
+The setup opens a real run through the genuine ``start_run`` (behaviour 6),
+so the archive being refused is a real on-disk run. While the refusal is
+unimplemented, the two refusal tests are red at the second call: the current
+``start_run`` uses ``exist_ok=True`` and silently rewrites ``meta.json``.
 """
 
 import json
@@ -858,6 +878,173 @@ class RunLogStartRunTestCase(unittest.TestCase):
                 not run_dir.exists() or not (run_dir / "meta.json").exists(),
                 "start_run wrote to %s despite a validation error; a run "
                 "that failed intake must not be half-recorded" % run_dir,
+            )
+
+
+class RunLogOverwriteRefusalTestCase(unittest.TestCase):
+    """Behaviour 7 (``start-run-refuses-overwrite``): an existing archive is
+    never overwritten.
+
+    The plan pins: given a ``logs/runs/<run-id>/`` that already exists,
+    ``start_run`` called with that id touches nothing on disk and raises
+    ``RunLogError`` naming the run id - a past run is evidence.
+
+    The setup opens a real run through the genuine ``start_run`` (behaviour
+    6), so the archive being refused is a real on-disk run, not a hand-built
+    directory. The refused call deliberately carries different valid inputs:
+    an implementation that overwrites would leave those new values in
+    ``meta.json`` and be caught by the full-dict comparison - with identical
+    inputs the overwrite would pass the pin invisibly.
+
+    While the refusal is unimplemented, the two refusal tests are red at the
+    second call: ``start_run`` currently succeeds with ``exist_ok=True`` and
+    silently rewrites ``meta.json``. The cross-run test is a green-now guard
+    against a refusal that would lock the whole ``logs/runs/`` tree.
+    """
+
+    RUN_ID = EXPECTED_ID
+    OTHER_RUN_ID = "run-20261119-134501-2b3c"
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+
+    # Deliberately different valid inputs for the refused second call.
+    NEW_STARTED_AT = "2026-11-19T14:00:00Z"
+    NEW_INTAKE = {"issue": 59, "text": "a later task"}
+    NEW_SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+
+    OTHER_STARTED_AT = "2026-11-19T13:45:01Z"
+    OTHER_INTAKE = {"issue": 60, "text": "another task"}
+    OTHER_SESSIONS = {"coder": "run-20261119-134501-2b3c-coder"}
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; behaviour 6 "
+            "(start-run-writes-meta) has not been implemented yet",
+        )
+        return start_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "behaviour 1 (run-id-format) has not been implemented yet",
+        )
+        return run_log_error
+
+    def _seed_run(self, root):
+        """Open a real run with valid inputs so its archive exists on disk."""
+        start_run = self._start_run()
+        start_run(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+
+    @staticmethod
+    def _read_meta(root, run_id):
+        """The parsed ``meta.json`` of run ``run_id`` under ``root``."""
+        meta_path = root / "logs" / "runs" / run_id / "meta.json"
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _tree(root):
+        """Every file under ``root`` as sorted relative POSIX paths.
+
+        A snapshot of the whole tree, so "nothing on disk is touched" is
+        pinned in full: the meta comparison catches an in-place rewrite, and
+        the tree snapshot catches a file added or removed anywhere under the
+        root.
+        """
+        return sorted(
+            path.relative_to(root).as_posix()
+            for path in root.rglob("*")
+            if path.is_file()
+        )
+
+    def test_start_run_existing_run_id_raises_naming_run_id(self):
+        start_run = self._start_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_run(root)
+            with self.assertRaisesRegex(run_log_error, re.escape(self.RUN_ID)):
+                start_run(
+                    root,
+                    self.RUN_ID,
+                    self.NEW_INTAKE,
+                    self.NEW_SESSIONS,
+                    self.NEW_STARTED_AT,
+                )
+
+    def test_start_run_existing_run_id_touches_nothing_on_disk(self):
+        start_run = self._start_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_run(root)
+            original_meta = self._read_meta(root, self.RUN_ID)
+            before_tree = self._tree(root)
+            with self.assertRaises(run_log_error):
+                start_run(
+                    root,
+                    self.RUN_ID,
+                    self.NEW_INTAKE,
+                    self.NEW_SESSIONS,
+                    self.NEW_STARTED_AT,
+                )
+            self.assertEqual(
+                self._read_meta(root, self.RUN_ID),
+                original_meta,
+                "start_run rewrote the existing run's meta.json; a past "
+                "run is evidence and must never be overwritten",
+            )
+            self.assertEqual(
+                self._tree(root),
+                before_tree,
+                "start_run changed files on disk while refusing an "
+                "existing run; nothing may be touched",
+            )
+
+    def test_start_run_different_run_id_succeeds_and_first_run_untouched(self):
+        start_run = self._start_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_run(root)
+            original_meta = self._read_meta(root, self.RUN_ID)
+            second_dir = start_run(
+                root,
+                self.OTHER_RUN_ID,
+                self.OTHER_INTAKE,
+                self.OTHER_SESSIONS,
+                self.OTHER_STARTED_AT,
+            )
+            first_dir = root / "logs" / "runs" / self.RUN_ID
+            self.assertIsInstance(second_dir, Path)
+            self.assertEqual(
+                second_dir, root / "logs" / "runs" / self.OTHER_RUN_ID
+            )
+            self.assertTrue(second_dir.is_dir())
+            self.assertNotEqual(first_dir, second_dir)
+            # The first run is untouched: its directory still exists and its
+            # meta is the original, whole.
+            self.assertTrue(first_dir.is_dir())
+            self.assertEqual(
+                self._read_meta(root, self.RUN_ID),
+                original_meta,
+                "opening a second run in the same root disturbed the first "
+                "run's archive",
             )
 
 
