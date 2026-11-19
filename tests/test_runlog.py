@@ -2209,8 +2209,10 @@ class RunLogOpenRunUnparseableTestCase(unittest.TestCase):
 
     # Not JSON at all: two lines, neither of which parses.
     NOT_JSON_TEXT = "totally not json\nalso not json\n"
-    # Truncated: one valid line plus a final line cut mid-JSON.
-    TRUNCATED_TEXT = '{"type": "agent_start"}\n{"type": "agent_st'
+    # Truncated: a single line cut mid-JSON, so the stream parses to zero
+    # events with one malformed line - the zero-events state, not the
+    # mixed one-event state (see MIXED_TEXT below).
+    TRUNCATED_TEXT = '{"type": "agent_st'
     # A stream that parses to one event yet also carries a malformed
     # line: not unparseable, because the marker is the zero-events
     # state, not the malformed-lines state.
@@ -2343,8 +2345,8 @@ class RunLogOpenRunUnparseableTestCase(unittest.TestCase):
         self.assertEqual(
             expected_line,
             "stream unparseable: 1 malformed lines, no readable events",
-            "test-precondition: pievents.parse must count the cut final "
-            "line of %r as malformed" % (self.TRUNCATED_TEXT,),
+            "test-precondition: pievents.parse must count the cut line "
+            "of %r as malformed" % (self.TRUNCATED_TEXT,),
         )
         self.assertIn(
             expected_line,
