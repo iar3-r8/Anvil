@@ -369,6 +369,16 @@ def _role_section(role: str, session_id: object, run_dir: Path) -> List[str]:
     counters, the tokens and the cost. A missing or unreadable stream
     renders the path without the facts, so a half-written archive never
     crashes the renderer.
+
+    A stream that parses to zero events - whatever its malformed-line
+    count, so an empty stream is unparseable with a count of zero - is
+    unparseable: instead of the facts the section renders the pinned
+    line ``stream unparseable: <n> malformed lines, no readable events``
+    with ``<n>`` from ``pievents.parse``'s ``malformed_lines`` (behaviour
+    13). A stream with at least one event is never marked unparseable,
+    even when it also carries malformed lines - the marker is the
+    zero-events state, not the malformed-lines state. A broken stream
+    never raises - the broken run is the one most worth reopening.
     """
     lines = ["## Role: " + role, ""]
     lines.append("session id: %s" % (session_id,))
@@ -376,27 +386,43 @@ def _role_section(role: str, session_id: object, run_dir: Path) -> List[str]:
     lines.append("stream: %s" % (stream_path,))
     text = _read_text_if_present(stream_path)
     if text is not None:
-        events = pievents.parse(text)["events"]
-        outcome = pievents.outcome(events)
-        calls = pievents.tool_calls(events)
-        lines.append("settled: %s" % (outcome["settled"],))
-        lines.append("aborted: %s" % (outcome["aborted"],))
-        lines.append(
-            "tool calls: attempted=%d succeeded=%d failed=%d "
-            "unfinished=%d orphaned=%d"
-            % (
-                calls["attempted"],
-                calls["succeeded"],
-                calls["failed"],
-                calls["unfinished"],
-                calls["orphaned"],
+        parsed = pievents.parse(text)
+        events = parsed["events"]
+        if not events:
+            lines.append(
+                "stream unparseable: %d malformed lines, no readable events"
+                % (parsed["malformed_lines"],)
             )
-        )
-        lines.append(
-            "tokens: input=%d output=%d total=%d"
-            % (outcome["input"], outcome["output"], outcome["totalTokens"])
-        )
-        lines.append("cost: %s" % (outcome["cost_total"],))
+        else:
+            session_info = pievents.session(events)
+            if session_info["session_id"] is not None:
+                lines.append(
+                    "stream session: %s" % (session_info["session_id"],)
+                )
+            outcome = pievents.outcome(events)
+            calls = pievents.tool_calls(events)
+            lines.append("settled: %s" % (outcome["settled"],))
+            lines.append("aborted: %s" % (outcome["aborted"],))
+            lines.append(
+                "tool calls: attempted=%d succeeded=%d failed=%d "
+                "unfinished=%d orphaned=%d"
+                % (
+                    calls["attempted"],
+                    calls["succeeded"],
+                    calls["failed"],
+                    calls["unfinished"],
+                    calls["orphaned"],
+                )
+            )
+            lines.append(
+                "tokens: input=%d output=%d total=%d"
+                % (
+                    outcome["input"],
+                    outcome["output"],
+                    outcome["totalTokens"],
+                )
+            )
+            lines.append("cost: %s" % (outcome["cost_total"],))
     lines.append("")
     return lines
 
