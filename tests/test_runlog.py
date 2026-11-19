@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1 and 2 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-3 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -36,6 +36,25 @@ defaults, every behaviour-2 test is red at the no-argument call:
 ``TypeError: new_run_id() missing 2 required positional arguments``.
 Behaviour 1 stays green - the defaults are additive and apply only when the
 arguments are absent.
+
+Behaviour 3 (``session-id-derivation``), pinned from the plan:
+
+    session_id(run_id, role) -> "<run-id>-<role>"
+
+- the plan's own example pins the exact id
+  ``run-20261119-134500-1a2b-coder``, and one pin per role of
+  ``pirole.ROLES`` (architect, coder, tester, docs) pins ``<run-id>-<role>``;
+- the result is a plain ``str``;
+- the run id crosses through verbatim: the behaviour specifies no
+  validation of the run id, so a syntactically valid string that is not
+  an id ``new_run_id`` would produce still just gets the role appended,
+  with no exception;
+- a role outside ``pirole.ROLES`` - including the empty string, which
+  cannot be named in a message - raises ``RunLogError``; the non-empty
+  case must name the offending role and list all four known roles.
+
+While ``session_id`` is absent, every behaviour-3 test is red at the
+fetch step: the module attribute is not callable.
 """
 
 import re
@@ -48,6 +67,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from anvilkit.pi import pirole
 
 # The aware-UTC instant behaviour 1 uses throughout: the plan's own example,
 # so the pinned id is the plan's own example id.
@@ -316,6 +337,109 @@ class RunLogDefaultsTestCase(unittest.TestCase):
         # Neither seam may be consulted when both arguments are explicit.
         self.assertEqual(clock.calls, [])
         self.assertEqual(entropy.calls, [])
+
+
+class RunLogSessionIdTestCase(unittest.TestCase):
+    """Behaviour 3 (``session-id-derivation``): ``session_id(run_id, role)``.
+
+    The plan pins the return value as ``<run-id>-<role>`` and says nothing
+    about re-validating the run id, so these tests pin the verbatim
+    reading: the run id crosses through unchanged - even a syntactically
+    valid string ``new_run_id`` would never produce - and only the role
+    is checked, against ``pirole.ROLES``.
+
+    While ``session_id`` is absent, every test here is red at the fetch
+    step (``_session_id``): the module attribute is not callable, and the
+    red is that missing behaviour, not a collection error of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _session_id(self):
+        """Fetch ``anvilkit.pi.runlog.session_id``."""
+        runlog = self._runlog()
+        session_id = getattr(runlog, "session_id", None)
+        self.assertTrue(
+            callable(session_id),
+            "anvilkit.pi.runlog.session_id is not callable; behaviour 3 "
+            "(session-id-derivation) has not been implemented yet",
+        )
+        return session_id
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "behaviour 1 (run-id-format) has not been implemented yet",
+        )
+        return run_log_error
+
+    @staticmethod
+    def _naming_and_listing_pattern(offender):
+        """A regex pinning a message that names ``offender`` and the roles.
+
+        ``re.search`` finds a match at any position, and a lookahead
+        asserts each name appears somewhere in the message, so the pin
+        holds on the contract - the offending role is named, and all
+        four known roles are listed - without dictating word order or
+        rendering.
+        """
+        return "".join(
+            "(?=.*" + re.escape(name) + ")" for name in (offender,) + pirole.ROLES
+        )
+
+    def test_session_id_plan_example_pinned(self):
+        session_id = self._session_id()
+        self.assertEqual(
+            session_id(self.RUN_ID, "coder"), "run-20261119-134500-1a2b-coder"
+        )
+
+    def test_session_id_one_pin_per_known_role(self):
+        session_id = self._session_id()
+        for role in pirole.ROLES:
+            with self.subTest(role=role):
+                self.assertEqual(
+                    session_id(self.RUN_ID, role), self.RUN_ID + "-" + role
+                )
+
+    def test_session_id_returns_plain_str(self):
+        session_id = self._session_id()
+        session = session_id(self.RUN_ID, "coder")
+        self.assertIs(type(session), str)
+
+    def test_session_id_run_id_crosses_through_verbatim(self):
+        # A syntactically valid Pi session-id string that no run id is
+        # (the entropy block is not 4 lowercase hex chars): the plan
+        # specifies no validation of the run id, so the role is simply
+        # appended and no exception is raised.
+        session_id = self._session_id()
+        foreign_run_id = "run-19991231-235959-ZZZZ"
+        self.assertEqual(
+            session_id(foreign_run_id, "coder"), foreign_run_id + "-coder"
+        )
+
+    def test_session_id_unknown_role_raises_naming_role_and_listing_known_roles(self):
+        session_id = self._session_id()
+        run_log_error = self._run_log_error()
+        with self.assertRaisesRegex(
+            run_log_error, self._naming_and_listing_pattern("reviewer")
+        ):
+            session_id(self.RUN_ID, "reviewer")
+
+    def test_session_id_empty_role_raises(self):
+        session_id = self._session_id()
+        run_log_error = self._run_log_error()
+        with self.assertRaises(run_log_error):
+            session_id(self.RUN_ID, "")
 
 
 if __name__ == "__main__":
