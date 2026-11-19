@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-14 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-16 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -288,8 +288,23 @@ computed in the tests through ``pievents`` itself. While the mark and
 the absence wording are unimplemented, those tests are red at the
 assertion: a ``complete: false`` run today renders with no INCOMPLETE
 mark and no absence wording - the gaps.
+
+Behaviour 16 (``[PIN] module-discipline``) is a green-now boundary pin
+with no production change, matching the drift guards on ``pirole`` and
+``pidriver``: the ``anvilkit.pi.runlog`` import surface (a) imports no
+process-execution module - no ``subprocess`` import node and no
+``os.system`` usage, scanned with ``ast`` over the module's own source
+so string content, comments and docstrings can never trip the guard,
+with the anti-vacuity positive control run against ``pibakeoff`` (which
+really imports ``subprocess``) before the scan is asserted clean;
+(b) writes nothing outside the run directory it was given - the whole
+writer set is exercised under a fresh tempdir root and every path that
+exists under the root is asserted to be under
+``root/logs/runs/<run-id>/``; and (c) exposes exactly one exception
+type, and it is ``RunLogError``.
 """
 
+import ast
 import json
 import re
 import sys
@@ -297,6 +312,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import List
 from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -3054,6 +3070,216 @@ class RunLogOpenRunUnknownIdTestCase(unittest.TestCase):
                     "path searched; the component %r is missing from %r"
                     % (component, str(error)),
                 )
+
+
+# Behaviour 16: [PIN] module-discipline. A drift guard on the module's
+# boundary: ``runlog`` owns the id format and the archive files, and must
+# never execute a process or spill outside the run directory. The scans
+# are done with ``ast`` over the module's import and attribute nodes -
+# the same technique as the ``pirole`` decision-seam guard in
+# ``tests/test_pirole.py`` - so the guard is about what the module
+# *imports and calls*, not about how its source is formatted, and it
+# keeps pinning the boundary without any production change.
+
+
+def _imported_module_names(source: str) -> List[str]:
+    """The module names a source file imports, via ``ast``.
+
+    ``import subprocess`` yields ``"subprocess"``;
+    ``import anvilkit.pi.pisandbox`` yields
+    ``"anvilkit.pi.pisandbox"``;
+    ``from anvilkit.pi import pisandbox`` yields
+    ``"anvilkit.pi.pisandbox"`` (the qualified name) as well as the
+    package prefix ``"anvilkit.pi"``. Only real import nodes are read, so
+    string content, comments and docstrings can never trip the guard.
+    """
+    module_names = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                module_names.append(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                module_names.append(node.module)
+                for alias in node.names:
+                    module_names.append(node.module + "." + alias.name)
+    return module_names
+
+
+def _os_system_usages(source: str) -> List[int]:
+    """The line numbers where ``source`` reaches ``os.system``, via ``ast``.
+
+    The two spellings a source file can use to reach the
+    process-execution entry point: ``os.system(...)`` (an attribute
+    access on the name ``os``) and ``from os import system``. Only real
+    syntax nodes are read, so string content, comments and docstrings
+    can never trip the guard.
+    """
+    lines = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Attribute) and node.attr == "system":
+            if isinstance(node.value, ast.Name) and node.value.id == "os":
+                lines.append(node.lineno)
+        elif isinstance(node, ast.ImportFrom) and node.module == "os":
+            for alias in node.names:
+                if alias.name == "system":
+                    lines.append(node.lineno)
+    return lines
+
+
+def _is_under(path: Path, parent: Path) -> bool:
+    """True if ``path`` equals or is nested under ``parent``."""
+    try:
+        path.relative_to(parent)
+    except ValueError:
+        return False
+    return True
+
+
+class RunLogModuleDisciplinePinTestCase(unittest.TestCase):
+    """Behaviour 16 (``[PIN] module-discipline``): a green-now boundary pin.
+
+    No production change. The ``anvilkit.pi.runlog`` import surface is
+    pinned at its boundary:
+
+    - no process-execution module - no ``subprocess`` import node and no
+      ``os.system`` usage anywhere in the module source, so the archive
+      writers stay pure file I/O and the module stays exercisable with
+      no container, no driver and no Pi;
+    - no writes outside the run directory - the whole writer set
+      (``start_run``, ``write_stream``, ``write_diff``, ``write_commits``,
+      ``finish_run``) is exercised under a fresh tempdir root, and every
+      path that exists under the root is asserted to live under
+      ``root/logs/runs/<run-id>/``;
+    - exactly one exception type - the public namespace of the module
+      carries one and only one Exception subclass defined by the module,
+      and it is ``RunLogError``.
+
+    If any pin is red at the committed state, that is a real boundary
+    violation in ``runlog``, not in this pin.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    FINISHED_AT = "2026-11-19T13:46:00Z"
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def test_runlog_imports_no_process_execution_module(self):
+        # Arrange: the module source under guard.
+        runlog = self._runlog()
+        source = Path(runlog.__file__).read_text(encoding="utf-8")
+        # Anti-vacuity control: the import scan must flag the real
+        # offender before it is asserted clean, or the guard would pass
+        # on an empty pattern.
+        pibakeoff_source = (
+            REPO_ROOT / "anvilkit" / "pi" / "pibakeoff.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "subprocess",
+            _imported_module_names(pibakeoff_source),
+            "the positive control failed: pibakeoff really imports "
+            "subprocess, so the scan must flag it; the guard would be "
+            "vacuous",
+        )
+        # Assert: no ``subprocess`` import (plain or aliased or dotted)
+        # and no ``os.system`` usage of either spelling.
+        imported = _imported_module_names(source)
+        self.assertFalse(
+            any(
+                name == "subprocess" or name.startswith("subprocess.")
+                for name in imported
+            ),
+            "runlog must not import a process-execution module; found "
+            "%r in its imports: %r" % ("subprocess", imported),
+        )
+        self.assertEqual(
+            _os_system_usages(source),
+            [],
+            "runlog must not reach os.system (the process-execution "
+            "entry point); found usages on line(s) %r"
+            % (_os_system_usages(source),),
+        )
+
+    def test_runlog_exposes_exactly_one_exception_type_named_run_log_error(self):
+        # Arrange: the module's public namespace, filtered to the
+        # exception types the module itself defines - imported exception
+        # classes would not be types runlog exposes as its own.
+        runlog = self._runlog()
+        exception_types = [
+            name
+            for name in dir(runlog)
+            if not name.startswith("_")
+            and isinstance(getattr(runlog, name), type)
+            and issubclass(getattr(runlog, name), Exception)
+            and getattr(getattr(runlog, name), "__module__", None)
+            == runlog.__name__
+        ]
+        # Assert: exactly one, and it is RunLogError.
+        self.assertEqual(
+            exception_types,
+            ["RunLogError"],
+            "runlog must expose exactly one exception type and it must "
+            "be RunLogError (callers need a single except); found %r"
+            % (exception_types,),
+        )
+
+    def test_runlog_writers_write_only_inside_the_run_directory(self):
+        # Arrange: a fresh root with nothing under it.
+        runlog = self._runlog()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = runlog.start_run(
+                root,
+                self.RUN_ID,
+                {"issue": 58, "text": "task body"},
+                {role: self.RUN_ID + "-" + role for role in pirole.ROLES},
+                self.STARTED_AT,
+            )
+            # Act: the whole writer set, one run end to end.
+            for role in pirole.ROLES:
+                runlog.write_stream(run_dir, role, "{}\n")
+            runlog.write_diff(run_dir, "diff text")
+            runlog.write_commits(
+                run_dir, [{"sha": "abc123", "subject": "subject"}]
+            )
+            runlog.finish_run(run_dir, "shipped", self.FINISHED_AT)
+            # Assert: every path that exists under the root is either
+            # inside the run directory or one of the run directory's own
+            # ancestor directories (the ``logs/`` and ``logs/runs/``
+            # levels the archive is addressed through, which ``start_run``
+            # must create to reach ``root/logs/runs/<run-id>/``) - no log,
+            # lock, cache or sibling run may appear anywhere else in the
+            # root the writers were given.
+            self.assertTrue(run_dir.is_dir(), "the run directory is missing")
+            created = sorted(root.rglob("*"))
+            self.assertTrue(
+                created,
+                "the writers created no paths at all under the root; "
+                "the run archive is missing, so the pin did not observe "
+                "the writers",
+            )
+            ancestors = {
+                run_dir.parent: "root/logs/runs",
+                run_dir.parent.parent: "root/logs",
+            }
+            offenders = [
+                p
+                for p in created
+                if not _is_under(p, run_dir)
+                and not (p.is_dir() and p in ancestors)
+            ]
+            self.assertEqual(
+                offenders,
+                [],
+                "runlog wrote outside the run directory it was given; "
+                "paths outside %r that are not the run directory's own "
+                "ancestor directories %r: %r"
+                % (run_dir, ancestors, offenders),
+            )
 
 
 if __name__ == "__main__":
