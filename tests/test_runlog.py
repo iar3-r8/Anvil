@@ -64,6 +64,25 @@ the four ``pirole.ROLES``, the derived id ``session_id(run_id, role)``
 ``pirole.role_argv``'s returned argv byte-identical, in the exact
 ``["--session-id", <id>]`` adjacency. If the id format or the derivation
 ever drifts in a way that breaks Pi's session-id rule, the pin fails.
+
+Behaviour 5 (``archive-gitignored``), pinned from the plan:
+
+    Given: the repository ``.gitignore``. When: it is read. Then: an
+    explicit ``logs/runs/`` line is present, ``logs/stress-*.log`` stays
+    covered by ``*.log``, and no new pattern ignores ``.pi/`` or
+    ``.pi/roles/``. Error: a missing ``logs/runs/`` line fails naming it -
+    ``*.log`` does not cover ``.jsonl``, ``.patch`` or ``.json`` archive
+    members, so without it a run's prompts and tool output become
+    committable.
+
+The ``logs/runs/`` pin is red now - the committed ``.gitignore`` has no
+such line - and green once the run-log archive directory is added. The
+other two pins are green-now guards: they keep the stress writer's
+``*.log`` coverage and keep the rendered role prompts in ``.pi/``
+committable. The ``.pi`` guard flags an ignore line whose stripped form
+is exactly ``.pi``, ``.pi/`` or ``.pi/*``, or that starts with ``.pi/``
+(which also covers ``.pi/roles/``); comment and negation lines are not
+ignore patterns and are not flagged.
 """
 
 import re
@@ -540,6 +559,92 @@ class RunLogDerivedIdPinTestCase(unittest.TestCase):
         # Single-digit fields in the stamp and a different entropy, so the
         # derived ids exercise digits inside the id, not only in the middle.
         self._pin_run_id(SINGLE_DIGIT_NOW, self.SECOND_ENTROPY)
+
+
+class RunLogGitignorePinTestCase(unittest.TestCase):
+    """Behaviour 5 (``archive-gitignored``): pins the repository ``.gitignore``.
+
+    Red now: the committed ``.gitignore`` has no ``logs/runs/`` line, so
+    the archive's ``.jsonl``, ``.patch`` and ``.json`` members would be
+    committable. The two green-now guards keep the stress writer's
+    ``*.log`` coverage and keep ``.pi/`` (including ``.pi/roles/``)
+    committable.
+    """
+
+    RUNS_LINE = "logs/runs/"
+    LOG_LINE = "*.log"
+    PI_PREFIX = ".pi/"
+
+    @staticmethod
+    def _gitignore_lines():
+        """The repository ``.gitignore`` as a list of stripped lines."""
+        gitignore = REPO_ROOT / ".gitignore"
+        lines = gitignore.read_text(encoding="utf-8").splitlines()
+        return [line.strip() for line in lines]
+
+    @classmethod
+    def _ignore_lines(cls):
+        """Only the lines that are ignore patterns.
+
+        Blank lines, comment lines (``#``) and negation lines (``!``)
+        are not ignore patterns; a negation like ``!.pi/foo`` re-includes
+        rather than ignores, so none of them may trip the ``.pi`` guard.
+        """
+        return [
+            line
+            for line in cls._gitignore_lines()
+            if line
+            and not line.startswith("#")
+            and not line.startswith("!")
+        ]
+
+    def test_gitignore_present(self):
+        self.assertTrue(
+            (REPO_ROOT / ".gitignore").is_file(),
+            "the repository .gitignore is missing; behaviour 5 "
+            "(archive-gitignored) cannot be pinned without it",
+        )
+
+    def test_logs_runs_line_present(self):
+        # The primary pin: red until the archive directory is ignored.
+        lines = self._gitignore_lines()
+        self.assertIn(
+            self.RUNS_LINE,
+            lines,
+            ".gitignore is missing the explicit %r line; *.log does not "
+            "cover the .jsonl, .patch or .json members of logs/runs/, so "
+            "a run's prompts and tool output would become committable"
+            % self.RUNS_LINE,
+        )
+
+    def test_star_log_line_still_present(self):
+        # Green-now guard: logs/stress-*.log stays covered by *.log.
+        lines = self._gitignore_lines()
+        self.assertIn(
+            self.LOG_LINE,
+            lines,
+            ".gitignore lost the %r line; the stress writer's "
+            "logs/stress-*.log files would no longer be ignored"
+            % self.LOG_LINE,
+        )
+
+    def test_no_pattern_ignores_pi(self):
+        # Green-now guard: rendered role prompts in .pi/ stay committable.
+        # Flags a line whose stripped form is exactly .pi, .pi/ or .pi/*,
+        # or that starts with .pi/ (which also covers .pi/roles/).
+        offenders = [
+            line
+            for line in self._ignore_lines()
+            if line in (".pi", ".pi/", ".pi/*")
+            or line.startswith(self.PI_PREFIX)
+        ]
+        self.assertEqual(
+            offenders,
+            [],
+            ".gitignore ignores .pi/ or .pi/roles/ via the over-broad "
+            "pattern(s) %r; the rendered role prompts under .pi/ must "
+            "stay committable" % (offenders,),
+        )
 
 
 if __name__ == "__main__":
