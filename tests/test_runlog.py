@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-8 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-10 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -130,6 +130,37 @@ The setup opens a real run through the genuine ``start_run`` (behaviour 6),
 so the archive being refused is a real on-disk run. While the refusal is
 unimplemented, the two refusal tests are red at the second call: the current
 ``start_run`` uses ``exist_ok=True`` and silently rewrites ``meta.json``.
+
+Behaviour 9 (``write-diff``), pinned from the plan:
+
+    write_diff(run_dir, text)
+
+- ``diff.patch`` holds the diff text verbatim, byte-for-byte;
+- an empty diff still writes an empty file, since "changed nothing" is
+  data - a run that changed nothing must remain distinguishable from a
+  run whose diff was never recorded;
+- a missing run directory raises ``RunLogError`` naming the path - the
+  same guard as behaviour 8, pinned the same way.
+
+Behaviour 10 (``write-commits``), pinned from the plan:
+
+    write_commits(run_dir, commits)
+
+- ``commits.json`` holds the list of ``{"sha", "subject"}`` entries via
+  ``json.dumps``, in order - pinned by full-list equality of
+  ``json.loads`` of the file;
+- an empty list writes ``[]``;
+- an entry with the wrong key set - a missing ``subject`` or an extra
+  key - raises ``RunLogError`` naming the index of the offending entry,
+  pinned as ``index <n>`` so the offending entry is locatable in a
+  message without dictating the rendering.
+
+Both classes seed a real run directory through the genuine ``start_run``
+(behaviour 6), so the directory being written is a real on-disk run
+directory, not a hand-built stand-in. While the writers are absent,
+every test in the two classes is red at the fetch step: the module
+attribute is not callable, and the red is that missing behaviour, not
+a collection error of this file.
 """
 
 import json
@@ -1231,6 +1262,279 @@ class RunLogWriteStreamTestCase(unittest.TestCase):
                 run_log_error, re.escape(str(missing))
             ):
                 self._write_stream()(missing, "coder", "x")
+
+
+class RunLogWriteDiffTestCase(unittest.TestCase):
+    """Behaviour 9 (``write-diff``): ``write_diff(run_dir, text)``.
+
+    The plan pins: given a run directory and the run's diff text,
+    ``diff.patch`` holds the text verbatim; an empty diff still writes an
+    empty file, since "changed nothing" is data. A missing run directory
+    raises ``RunLogError`` naming the path - the same guard as behaviour 8.
+
+    The happy-path setup opens a real run through the genuine ``start_run``
+    (behaviour 6), so the run directory being written is a real on-disk run
+    directory. While ``write_diff`` is absent, every test here is red at the
+    fetch step (``_write_diff``): the module attribute is not callable, and
+    the red is that missing behaviour, not a collection error of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+
+    # A realistic multi-line unified-diff fragment: the verbatim pin must
+    # survive every byte, including the +/- marker lines and the final
+    # trailing newline.
+    DIFF_TEXT = (
+        "diff --git a/anvilkit/pi/runlog.py b/anvilkit/pi/runlog.py\n"
+        "index 1a2b3c4..5d6e7f8 100644\n"
+        "--- a/anvilkit/pi/runlog.py\n"
+        "+++ b/anvilkit/pi/runlog.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " def new_run_id():\n"
+        "     pass\n"
+        "+\n"
+        "+def write_diff(run_dir, text):\n"
+    )
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _write_diff(self):
+        """Fetch ``anvilkit.pi.runlog.write_diff``."""
+        runlog = self._runlog()
+        write_diff = getattr(runlog, "write_diff", None)
+        self.assertTrue(
+            callable(write_diff),
+            "anvilkit.pi.runlog.write_diff is not callable; behaviour 9 "
+            "(write-diff) has not been implemented yet",
+        )
+        return write_diff
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; behaviour 6 "
+            "(start-run-writes-meta) has not been implemented yet",
+        )
+        return start_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "behaviour 1 (run-id-format) has not been implemented yet",
+        )
+        return run_log_error
+
+    def _seed_run_dir(self, root):
+        """Open a real run through ``start_run`` and return its run directory."""
+        return self._start_run()(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+
+    @staticmethod
+    def _read_text(path):
+        """The file's exact bytes decoded as UTF-8, for verbatim pins."""
+        return path.read_bytes().decode("utf-8")
+
+    def test_write_diff_multiline_diff_written_verbatim(self):
+        self._write_diff()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_diff()(run_dir, self.DIFF_TEXT)
+            diff_path = run_dir / "diff.patch"
+            self.assertTrue(
+                diff_path.is_file(),
+                "write_diff did not create %s" % diff_path,
+            )
+            self.assertEqual(
+                self._read_text(diff_path),
+                self.DIFF_TEXT,
+                "diff.patch does not hold the diff text verbatim",
+            )
+
+    def test_write_diff_empty_diff_writes_empty_file(self):
+        # "Changed nothing" is data: an empty diff still leaves a file, so
+        # open_run can distinguish "no diff recorded" (absent) from a run
+        # that changed nothing (present, empty).
+        self._write_diff()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_diff()(run_dir, "")
+            diff_path = run_dir / "diff.patch"
+            self.assertTrue(
+                diff_path.is_file(),
+                "write_diff did not create %s for an empty diff; an empty "
+                "diff is data (a run that changed nothing)" % diff_path,
+            )
+            self.assertEqual(diff_path.stat().st_size, 0)
+            self.assertEqual(self._read_text(diff_path), "")
+
+    def test_write_diff_missing_run_dir_raises_naming_path(self):
+        # The same guard as behaviour 8: a missing run directory raises
+        # RunLogError naming the path.
+        self._write_diff()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no-such-run"
+            with self.assertRaisesRegex(
+                run_log_error, re.escape(str(missing))
+            ):
+                self._write_diff()(missing, self.DIFF_TEXT)
+
+
+class RunLogWriteCommitsTestCase(unittest.TestCase):
+    """Behaviour 10 (``write-commits``): ``write_commits(run_dir, commits)``.
+
+    The plan pins: given a run directory and a list of ``{"sha", "subject"}``
+    entries, ``commits.json`` holds the list via ``json.dumps``, in order; an
+    empty list writes ``[]``. An entry with the wrong key set - a missing
+    ``subject`` or an extra key - raises ``RunLogError`` naming the index of
+    the offending entry (the mechanical analogue of behaviour 6's key-set
+    guard).
+
+    The index pin is ``index <n>`` in the message: the plan says the error
+    names the index, and pinning the word plus the number (with flexible
+    spacing) holds the contract - the offending entry is locatable - without
+    dictating the rendering.
+
+    The happy-path setup opens a real run through the genuine ``start_run``
+    (behaviour 6), so the run directory being written is a real on-disk run
+    directory. While ``write_commits`` is absent, every test here is red at
+    the fetch step (``_write_commits``): the module attribute is not
+    callable, and the red is that missing behaviour, not a collection error
+    of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+
+    COMMITS = [
+        {"sha": "a1b2c3d", "subject": "feat(x): the thing"},
+        {"sha": "e4f5g6h", "subject": "fix(y): the bug"},
+    ]
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _write_commits(self):
+        """Fetch ``anvilkit.pi.runlog.write_commits``."""
+        runlog = self._runlog()
+        write_commits = getattr(runlog, "write_commits", None)
+        self.assertTrue(
+            callable(write_commits),
+            "anvilkit.pi.runlog.write_commits is not callable; behaviour 10 "
+            "(write-commits) has not been implemented yet",
+        )
+        return write_commits
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; behaviour 6 "
+            "(start-run-writes-meta) has not been implemented yet",
+        )
+        return start_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "behaviour 1 (run-id-format) has not been implemented yet",
+        )
+        return run_log_error
+
+    def _seed_run_dir(self, root):
+        """Open a real run through ``start_run`` and return its run directory."""
+        return self._start_run()(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+
+    def test_write_commits_list_written_in_order(self):
+        self._write_commits()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_commits()(run_dir, self.COMMITS)
+            commits_path = run_dir / "commits.json"
+            self.assertTrue(
+                commits_path.is_file(),
+                "write_commits did not create %s" % commits_path,
+            )
+            self.assertEqual(
+                json.loads(commits_path.read_text(encoding="utf-8")),
+                self.COMMITS,
+                "commits.json does not hold the commit list in order",
+            )
+
+    def test_write_commits_empty_list_writes_empty_json_array(self):
+        # No commits in the run is data, exactly as an empty diff is:
+        # commits.json exists and reads back as [].
+        self._write_commits()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_commits()(run_dir, [])
+            commits_path = run_dir / "commits.json"
+            self.assertTrue(
+                commits_path.is_file(),
+                "write_commits did not create %s for an empty list; a run "
+                "with no commits is data" % commits_path,
+            )
+            self.assertEqual(
+                json.loads(commits_path.read_text(encoding="utf-8")),
+                [],
+                "commits.json for an empty list must read back as []",
+            )
+
+    def test_write_commits_missing_subject_raises_naming_index(self):
+        # Entry 0 lacks "subject": the error must name index 0.
+        self._write_commits()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            bad = [{"sha": "a1b2c3d"}, self.COMMITS[1]]
+            with self.assertRaisesRegex(run_log_error, r"index\s*0"):
+                self._write_commits()(run_dir, bad)
+
+    def test_write_commits_extra_key_raises_naming_index(self):
+        # Entry 1 carries an extra key: the error must name index 1.
+        self._write_commits()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            extra = dict(self.COMMITS[1])
+            extra["extra"] = 1
+            bad = [self.COMMITS[0], extra]
+            with self.assertRaisesRegex(run_log_error, r"index\s*1"):
+                self._write_commits()(run_dir, bad)
 
 
 if __name__ == "__main__":
