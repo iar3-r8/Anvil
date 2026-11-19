@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-10 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-11 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -161,6 +161,35 @@ directory, not a hand-built stand-in. While the writers are absent,
 every test in the two classes is red at the fetch step: the module
 attribute is not callable, and the red is that missing behaviour, not
 a collection error of this file.
+
+Behaviour 11 (``finish-run-marks-complete``), pinned from the plan:
+
+    finish_run(run_dir, outcome, finished_at)
+
+- ``meta.json`` is rewritten with ``finished_at``, the outcome and
+  ``complete: true``, every other key preserved verbatim - pinned by
+  full-dict equality of the re-read JSON against the expected merged
+  dict, so no key can be dropped, altered or added;
+- each of the four outcomes ``shipped`` / ``halted`` / ``failed`` /
+  ``unknown`` is accepted (``unknown`` is the "we never learned"
+  terminal);
+- an outcome outside the four raises ``RunLogError`` naming the
+  offending value and listing all four known outcomes, pinned in
+  lookahead style; on a refused call ``meta.json`` is unchanged
+  (full-dict equality against the pre-call dict) - a run's record is
+  evidence and is not half-rewritten;
+- a run directory whose ``meta.json`` is missing raises ``RunLogError``
+  naming the path;
+- a ``finished_at`` that is not a string raises ``RunLogError`` naming
+  ``finished_at`` - the type-safety discipline behaviour 6 pins for
+  ``started_at`` applies to the finish stamp as well.
+
+The setup opens a real run through the genuine ``start_run``
+(behaviour 6), so the ``meta.json`` being rewritten was written by
+``start_run``, not a hand-built stand-in. While ``finish_run`` is
+absent, every test here is red at the fetch step (``_finish_run``):
+the module attribute is not callable, and the red is that missing
+behaviour, not a collection error of this file.
 """
 
 import json
@@ -1535,6 +1564,225 @@ class RunLogWriteCommitsTestCase(unittest.TestCase):
             bad = [self.COMMITS[0], extra]
             with self.assertRaisesRegex(run_log_error, r"index\s*1"):
                 self._write_commits()(run_dir, bad)
+
+
+class RunLogFinishRunTestCase(unittest.TestCase):
+    """Behaviour 11 (``finish-run-marks-complete``): ``finish_run`` rewrites
+    the run's ``meta.json``.
+
+    The plan pins: given a run directory whose ``meta.json`` was written by
+    ``start_run``, calling ``finish_run(run_dir, outcome, finished_at)``
+    rewrites ``meta.json`` with ``finished_at``, the outcome and
+    ``complete: true``, every other key preserved verbatim. An outcome
+    outside the four known terminals raises ``RunLogError`` naming it and
+    listing the four; a missing ``meta.json`` raises naming the path; a
+    ``finished_at`` that is not a string raises naming the field.
+
+    The setup opens a real run through the genuine ``start_run``
+    (behaviour 6), so the ``meta.json`` being rewritten was written by
+    ``start_run``. While ``finish_run`` is absent, every test here is red at
+    the fetch step (``_finish_run``): the module attribute is not callable,
+    and the red is that missing behaviour, not a collection error of this
+    file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+    FINISHED_AT = "2026-11-19T14:00:00Z"
+    OUTCOMES = ("shipped", "halted", "failed", "unknown")
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; behaviour 6 "
+            "(start-run-writes-meta) has not been implemented yet",
+        )
+        return start_run
+
+    def _finish_run(self):
+        """Fetch ``anvilkit.pi.runlog.finish_run``."""
+        runlog = self._runlog()
+        finish_run = getattr(runlog, "finish_run", None)
+        self.assertTrue(
+            callable(finish_run),
+            "anvilkit.pi.runlog.finish_run is not callable; behaviour 11 "
+            "(finish-run-marks-complete) has not been implemented yet",
+        )
+        return finish_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "behaviour 1 (run-id-format) has not been implemented yet",
+        )
+        return run_log_error
+
+    def _seed_run_dir(self, root):
+        """Open a real run through ``start_run`` and return its run directory."""
+        return self._start_run()(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+
+    @staticmethod
+    def _meta_path(run_dir):
+        """The ``meta.json`` path of the run directory."""
+        return run_dir / "meta.json"
+
+    @staticmethod
+    def _read_meta(run_dir):
+        """The parsed ``meta.json`` of the run directory."""
+        meta_path = run_dir / "meta.json"
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _expected_meta(outcome, finished_at):
+        """The full ``meta.json`` dict ``finish_run`` must leave on disk.
+
+        Every key ``start_run`` wrote is present and verbatim; only
+        ``finished_at``, ``outcome`` and ``complete`` differ. Full-dict
+        equality against this shape is what keeps any dropped, altered or
+        added key red.
+        """
+        return {
+            "run_id": EXPECTED_ID,
+            "started_at": "2026-11-19T13:45:00Z",
+            "finished_at": finished_at,
+            "intake": {"issue": 58, "text": "task body"},
+            "sessions": {"coder": "run-20261119-134500-1a2b-coder"},
+            "outcome": outcome,
+            "complete": True,
+        }
+
+    @staticmethod
+    def _naming_and_listing_pattern(offender):
+        """A regex pinning a message that names ``offender`` and the outcomes.
+
+        ``re.search`` finds a match at any position, and a lookahead
+        asserts each name appears somewhere in the message, so the pin
+        holds on the contract - the offending outcome is named, and all
+        four known outcomes are listed - without dictating word order or
+        rendering.
+        """
+        known = ("shipped", "halted", "failed", "unknown")
+        return "".join(
+            "(?=.*" + re.escape(name) + ")" for name in (offender,) + known
+        )
+
+    def test_finish_run_shipped_rewrites_meta_marking_complete(self):
+        finish_run = self._finish_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            finish_run(run_dir, "shipped", self.FINISHED_AT)
+            meta = self._read_meta(run_dir)
+            self.assertEqual(
+                meta,
+                self._expected_meta("shipped", self.FINISHED_AT),
+                "finish_run did not leave the full planned meta.json: "
+                "finished_at, outcome and complete must be set and every "
+                "other key preserved verbatim",
+            )
+            self.assertEqual(meta["finished_at"], self.FINISHED_AT)
+            self.assertEqual(meta["outcome"], "shipped")
+            self.assertIs(meta["complete"], True)
+
+    def test_finish_run_each_known_outcome_is_accepted(self):
+        finish_run = self._finish_run()
+        for outcome in self.OUTCOMES:
+            with self.subTest(outcome=outcome):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp)
+                    run_dir = self._seed_run_dir(root)
+                    finish_run(run_dir, outcome, self.FINISHED_AT)
+                    meta = self._read_meta(run_dir)
+                    self.assertEqual(
+                        meta,
+                        self._expected_meta(outcome, self.FINISHED_AT),
+                        "finish_run rejected or misrecorded the known "
+                        "outcome %r" % (outcome,),
+                    )
+
+    def test_finish_run_unknown_outcome_is_the_never_learned_terminal(self):
+        # "unknown" is the "we never learned" terminal: it is a valid
+        # finished outcome, not a sign of an unfinished run.
+        finish_run = self._finish_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            finish_run(run_dir, "unknown", self.FINISHED_AT)
+            meta = self._read_meta(run_dir)
+            self.assertEqual(meta["outcome"], "unknown")
+            self.assertIs(meta["complete"], True)
+
+    def test_finish_run_bad_outcome_raises_naming_it_and_listing_known(self):
+        finish_run = self._finish_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            with self.assertRaisesRegex(
+                run_log_error, self._naming_and_listing_pattern("cancelled")
+            ):
+                finish_run(run_dir, "cancelled", self.FINISHED_AT)
+
+    def test_finish_run_bad_outcome_leaves_meta_unchanged(self):
+        # A finished run's evidence is not half-rewritten: a refused call
+        # must leave meta.json byte-for-byte what start_run wrote.
+        finish_run = self._finish_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            original_meta = self._read_meta(run_dir)
+            with self.assertRaises(run_log_error):
+                finish_run(run_dir, "cancelled", self.FINISHED_AT)
+            self.assertEqual(
+                self._read_meta(run_dir),
+                original_meta,
+                "finish_run rewrote meta.json despite refusing the outcome; "
+                "a run's record must not be half-rewritten",
+            )
+
+    def test_finish_run_missing_meta_raises_naming_path(self):
+        # The run directory exists but holds no meta.json: the error must
+        # name the path, so a half-written archive is locatable.
+        finish_run = self._finish_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            # The run directory exists but its meta.json has been deleted:
+            # a half-written archive.
+            (run_dir / "meta.json").unlink()
+            meta_path = run_dir / "meta.json"
+            with self.assertRaisesRegex(run_log_error, re.escape(str(meta_path))):
+                finish_run(run_dir, "shipped", self.FINISHED_AT)
+
+    def test_finish_run_finished_at_not_a_string_raises_naming_field(self):
+        # The type-safety discipline behaviour 6 pins for started_at
+        # applies to the finish stamp as well.
+        finish_run = self._finish_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            with self.assertRaisesRegex(run_log_error, "finished_at"):
+                finish_run(run_dir, "shipped", 123)
 
 
 if __name__ == "__main__":
