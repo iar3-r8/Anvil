@@ -1,10 +1,18 @@
-"""Run-log run ids and the run archive (``plans/pi-phase11-runlog.md``).
+"""Pi run ids, the run archive and the reopen renderer (``plans/pi-phase11-runlog.md``).
+
+The concern: an unattended Pi run must stay reopenable after it ends, whether
+it finished or died mid-way. This module owns what that takes - the run id and
+the ``<run-id>-<role>`` session ids, the archive written under
+``logs/runs/<run-id>/``, and the Markdown report that reopens it. It never
+drives Pi and executes no process; it reads and writes the archive and nothing
+else.
 
 A run id is ``run-YYYYMMDD-HHMMSS-<4hex>``: a zero-padded UTC stamp plus a
-4-char lowercase-hex entropy suffix, so every Pi run (and the ``<run-id>-<role>``
-session ids derived under it) is uniquely addressable. This module owns the id
-format and its validation only - it does not touch the archive, the driver or
-Pi itself.
+4-char lowercase-hex entropy suffix, so every run is uniquely addressable.
+``session_id`` derives the per-role session id ``<run-id>-<role>``
+(behaviour 3): the run id crosses through verbatim and is not revalidated,
+and the role must be one of ``pirole.ROLES`` or ``RunLogError`` names it
+and lists the four known roles.
 
 ``new_run_id`` accepts both values explicitly (behaviour 1); when either is
 omitted it is computed at call time from the module's own references -
@@ -17,7 +25,9 @@ writes ``meta.json`` before anything else runs (behaviour 6): a run that
 dies mid-way leaves a readable record, with ``finished_at`` null,
 ``outcome`` unknown and ``complete`` false. Validation of ``intake``,
 ``sessions`` and ``started_at`` happens before any filesystem I/O, so a
-rejected run is never half-recorded.
+rejected run is never half-recorded. An id whose archive directory already
+exists is refused before any validation or I/O (behaviour 7): a past run is
+evidence and is never overwritten.
 
 ``finish_run`` marks a finished run complete (behaviour 11): it rewrites
 the run's ``meta.json`` with the given ``finished_at`` and outcome and
@@ -27,15 +37,29 @@ string; either violation, or a missing ``meta.json``, raises
 ``RunLogError`` before anything is written, so a refused call never
 half-rewrites the record.
 
+``write_stream`` (behaviour 8), ``write_diff`` (behaviour 9) and
+``write_commits`` (behaviour 10) keep what they were given: the
+captured stream verbatim in ``<role>.jsonl`` byte-for-byte - an empty
+or unparseable stream is stored unchanged, since those are the runs
+worth reading; the diff text verbatim in ``diff.patch``, where an empty
+diff still lands as an empty file, so "changed nothing" stays
+distinguishable from "never recorded"; and the commit list in
+``commits.json`` via ``json.dumps``, in order. Every writer refuses an
+unknown role or a missing run directory with ``RunLogError`` naming
+the offender, before any file is created.
+
 ``open_run`` renders a completed archive as a Markdown report
 (behaviour 12): the run id and stamps, the intake, one section per role
 carrying the session id, the stream file path and the settled/aborted
 state, tool-call counters, tokens and cost computed via ``pievents``,
 then the diff and commit sections. Raw stream bytes are never inlined -
 only the stream's file path, since a stream can hold prompts, tool
-arguments and file contents. Every member is read through a guard that
-treats a missing or unreadable member as absent, so a half-written
-archive can never crash the renderer.
+arguments and file contents. A stream that parses to zero events - empty,
+truncated or not JSON - renders the pinned line ``stream unparseable: <n>
+malformed lines, no readable events`` instead of the facts, and never
+raises (behaviour 13). Every member is read through a guard that treats a
+missing or unreadable member as absent, so a half-written archive can
+never crash the renderer.
 
 A run whose ``meta.json`` is not marked complete - the run died mid-way
 and ``finish_run`` never ran - is rendered the same way and additionally
@@ -43,9 +67,13 @@ carries the exact line ``status: INCOMPLETE`` (behaviour 14); each
 absent member renders its pinned wording (``no diff recorded``,
 ``no commits recorded``, ``no stream recorded for <role>``) while
 whatever did land renders unchanged. A complete run carries no
-INCOMPLETE text at all.
+INCOMPLETE text at all. ``open_run`` never raises on such a half-written
+archive; it raises ``RunLogError`` only for an unknown run id, naming the
+id and the path searched (behaviour 15), so a typo is fixable without
+reading the source.
 
-Stdlib only. One exception type: ``RunLogError``.
+Stdlib only, no process execution, and writes are confined to the run
+directory it was given. One exception type: ``RunLogError``.
 """
 
 import json
