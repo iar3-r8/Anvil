@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-13 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-14 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -248,6 +248,46 @@ text, the other roles' streams are the repository's well-formed
 fixture. While the unparseable rendering is absent, every marker test
 is red at the assertion: the broken role's section today renders the
 path with the zero-facts and no "unparseable" wording at all.
+
+Behaviour 14 (``open-run-incomplete``), pinned from the plan:
+
+    Given: a run directory whose meta.json has complete: false, with
+    diff.patch, commits.json or some streams absent. When: open_run is
+    called. Then: the report is marked INCOMPLETE, each missing member
+    renders as a readable absence (no diff recorded, no commits
+    recorded, no stream recorded for <role>), and whatever did land
+    still renders. Error: open_run never raises on a half-written
+    archive - a run that died mid-way is still reopenable.
+
+- The INCOMPLETE mark is pinned as the exact whole line
+  ``status: INCOMPLETE`` - the rendering proposed for this behaviour,
+  in the same ``key: value`` style as the report's ``started_at:`` and
+  ``finished_at:`` lines; a finished run carries no ``INCOMPLETE`` text
+  at all;
+- each missing member renders the plan's pinned wording verbatim -
+  ``no diff recorded`` for an absent ``diff.patch``,
+  ``no commits recorded`` for an absent ``commits.json``, and
+  ``no stream recorded for <role>`` for every role in the sessions map
+  whose stream file is absent - and a role whose stream did land must
+  not carry its absence wording;
+- whatever did land still renders: in a report carrying the absence
+  wording, the landed role's section still carries its session id, the
+  stream's path and the fixture's own facts, and a landed ``diff.patch``
+  / ``commits.json`` still renders its content while the report stays
+  marked incomplete;
+- ``open_run`` returns a plain ``str`` for every half-written shape the
+  plan names - no test expects an exception.
+
+The archives are built with the genuine writers (behaviours 6, 8, 9
+and 10) under a tempdir and deliberately left unfinished: ``finish_run``
+is never called, so ``complete`` stays ``false`` on disk, and every
+test asserts that precondition on ``meta.json`` before reading the
+report. The landed streams are the repository's well-formed fixture, so
+the "what landed still renders" pins are the fixture's own facts,
+computed in the tests through ``pievents`` itself. While the mark and
+the absence wording are unimplemented, those tests are red at the
+assertion: a ``complete: false`` run today renders with no INCOMPLETE
+mark and no absence wording - the gaps.
 """
 
 import json
@@ -2489,6 +2529,396 @@ class RunLogOpenRunUnparseableTestCase(unittest.TestCase):
                 self._role_section(report, "coder"),
                 "the coder section for %r does not carry the unparseable "
                 "marker" % (text,),
+            )
+
+
+class RunLogOpenRunIncompleteTestCase(unittest.TestCase):
+    """Behaviour 14 (``open-run-incomplete``): ``open_run`` reopens a
+    half-written archive.
+
+    The plan pins: given a run directory whose ``meta.json`` has
+    ``complete: false``, with ``diff.patch``, ``commits.json`` or some
+    streams absent, ``open_run`` marks the report ``INCOMPLETE``,
+    renders each missing member as a readable absence - the pinned
+    wording ``no diff recorded``, ``no commits recorded`` and
+    ``no stream recorded for <role>`` - and still renders whatever did
+    land; it never raises, so a run that died mid-way is still
+    reopenable.
+
+    The INCOMPLETE rendering pinned here: a half-written report carries
+    the exact whole line ``status: INCOMPLETE`` - the proposal for this
+    behaviour, in the same ``key: value`` style as the report's
+    ``started_at:`` and ``finished_at:`` lines. A finished run carries
+    no ``INCOMPLETE`` text at all (the mirror of behaviour 12's
+    existing pin, here from the incomplete side).
+
+    The archives are built with the genuine writers (behaviours 6, 8, 9
+    and 10) under a tempdir and deliberately left unfinished:
+    ``finish_run`` is never called, so ``complete`` stays ``false`` on
+    disk, and every test asserts that precondition on ``meta.json``
+    before reading the report. The landed coder stream is the
+    repository's well-formed fixture, so the "what landed still
+    renders" pins are the fixture's own facts, computed in the tests
+    through ``pievents`` itself. While the mark and the absence wording
+    are unimplemented, those tests are red at the assertion: a
+    ``complete: false`` run today renders with no INCOMPLETE mark and
+    no absence wording - the gaps.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    FINISHED_AT = "2026-11-19T14:00:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {role: EXPECTED_ID + "-" + role for role in pirole.ROLES}
+
+    # The exact INCOMPLETE rendering this class proposes and pins: a
+    # whole line, in the report's key: value style.
+    INCOMPLETE_LINE = "status: INCOMPLETE"
+    # The plan's pinned absence wording, verbatim.
+    NO_DIFF = "no diff recorded"
+    NO_COMMITS = "no commits recorded"
+
+    # The repository's well-formed fixture: the landed coder stream, so
+    # the "what landed still renders" pins are the fixture's own facts.
+    FIXTURE_TEXT = (
+        REPO_ROOT / "tests" / "fixtures" / "pi_events_sample.jsonl"
+    ).read_text(encoding="utf-8")
+
+    DIFF_TEXT = (
+        "diff --git a/anvilkit/pi/runlog.py b/anvilkit/pi/runlog.py\n"
+        "index 1a2b3c4..5d6e7f8 100644\n"
+        "--- a/anvilkit/pi/runlog.py\n"
+        "+++ b/anvilkit/pi/runlog.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " def open_run(run_id, root):\n"
+        "+    return report\n"
+    )
+    DIFF_FRAGMENT = "diff --git a/anvilkit/pi/runlog.py b/anvilkit/pi/runlog.py"
+
+    COMMITS = [
+        {"sha": "a1b2c3d9", "subject": "feat(runlog): open_run report"},
+        {"sha": "e4f5a6b7", "subject": "fix(runlog): absent archive guard"},
+    ]
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _open_run(self):
+        """Fetch ``anvilkit.pi.runlog.open_run`` (green since behaviour 12)."""
+        runlog = self._runlog()
+        open_run = getattr(runlog, "open_run", None)
+        self.assertTrue(
+            callable(open_run),
+            "anvilkit.pi.runlog.open_run is not callable; behaviour 12 "
+            "(open-run-complete) is a precondition of behaviour 14",
+        )
+        return open_run
+
+    def _writer(self, name, behaviour):
+        """Fetch a green archive writer from the module under test."""
+        runlog = self._runlog()
+        writer = getattr(runlog, name, None)
+        self.assertTrue(
+            callable(writer),
+            "anvilkit.pi.runlog.%s is not callable; behaviour %s has not "
+            "been implemented yet" % (name, behaviour),
+        )
+        return writer
+
+    def _assert_incomplete_meta(self, run_dir):
+        """Precondition: the archive on disk really is half-written.
+
+        ``finish_run`` was never called, so ``meta.json``'s ``complete``
+        must still be ``false``; without this check a builder that
+        finished the run would test the complete path and pass
+        invisibly.
+        """
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+        self.assertIs(
+            meta["complete"],
+            False,
+            "the test archive must be half-written (complete: false); the "
+            "builder must never call finish_run",
+        )
+
+    def _build_incomplete_archive(
+        self, root, stream_roles=(), with_diff=False, with_commits=False
+    ):
+        """Build a half-written archive with the genuine writers.
+
+        ``start_run`` opens the run with all four roles in the sessions
+        map; only the listed roles' streams are written (each the
+        well-formed fixture); the diff and the commits land only when
+        asked. ``finish_run`` is never called, so the run stays
+        ``complete: false`` on disk.
+        """
+        start_run = self._writer("start_run", "6 (start-run-writes-meta)")
+        write_stream = self._writer(
+            "write_stream", "8 (write-stream-verbatim)"
+        )
+        write_diff = self._writer("write_diff", "9 (write-diff)")
+        write_commits = self._writer("write_commits", "10 (write-commits)")
+        run_dir = start_run(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+        for role in stream_roles:
+            write_stream(run_dir, role, self.FIXTURE_TEXT)
+        if with_diff:
+            write_diff(run_dir, self.DIFF_TEXT)
+        if with_commits:
+            write_commits(run_dir, self.COMMITS)
+        return run_dir
+
+    def _build_finished_archive(self, root):
+        """Build the complete behaviour-12 shape for the not-marked
+        mirror pin: every member present, ``finish_run`` called."""
+        start_run = self._writer("start_run", "6 (start-run-writes-meta)")
+        write_stream = self._writer(
+            "write_stream", "8 (write-stream-verbatim)"
+        )
+        write_diff = self._writer("write_diff", "9 (write-diff)")
+        write_commits = self._writer("write_commits", "10 (write-commits)")
+        finish_run = self._writer(
+            "finish_run", "11 (finish-run-marks-complete)"
+        )
+        run_dir = start_run(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+        for role in pirole.ROLES:
+            write_stream(run_dir, role, self.FIXTURE_TEXT)
+        write_diff(run_dir, self.DIFF_TEXT)
+        write_commits(run_dir, self.COMMITS)
+        finish_run(run_dir, "shipped", self.FINISHED_AT)
+        return run_dir
+
+    def _open(self, root, **build_kwargs):
+        """Build the half-written archive; return the report and the run
+        directory it lives in."""
+        run_dir = self._build_incomplete_archive(root, **build_kwargs)
+        self._assert_incomplete_meta(run_dir)
+        report = self._open_run()(self.RUN_ID, root)
+        return report, run_dir
+
+    def _role_section(self, report, role):
+        """The report text of one role's section: from its header up to
+        (not including) the next section header. Raises ``AssertionError``
+        if the section header is missing."""
+        header = "## Role: " + role
+        start = report.index(header)
+        rest = report[start + len(header):]
+        for next_header in ("## Intake", "## Role:", "## Diff", "## Commits"):
+            if rest.startswith(next_header):
+                continue
+            cut = rest.find(next_header)
+            if cut != -1:
+                return rest[:cut]
+        return rest
+
+    def test_open_run_meta_only_run_report_marked_incomplete(self):
+        # A run that died right after start_run: no streams, no diff, no
+        # commits. The report must carry the INCOMPLETE mark as the exact
+        # whole line this class proposes.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        self.assertIs(
+            type(report),
+            str,
+            "open_run must return a plain str on a half-written archive; "
+            "a run that died mid-way is still reopenable",
+        )
+        self.assertIn(
+            self.INCOMPLETE_LINE,
+            report.splitlines(),
+            "a half-written archive's report does not carry the exact "
+            "line %r marking the run incomplete" % (self.INCOMPLETE_LINE,),
+        )
+
+    def test_open_run_finished_run_report_not_marked_incomplete(self):
+        # The mirror pin from the incomplete side: a finished run -
+        # every member present, complete: true - carries no INCOMPLETE
+        # text at all.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._build_finished_archive(root)
+            report = self._open_run()(self.RUN_ID, root)
+        self.assertIs(type(report), str)
+        self.assertNotIn(
+            "INCOMPLETE",
+            report,
+            "a complete run's report must not be marked INCOMPLETE; that "
+            "mark is reserved for a half-written archive",
+        )
+
+    def test_open_run_missing_members_render_pinned_absence_wording(self):
+        # Only the coder's stream landed: the diff, the commits and the
+        # other three roles' streams are absent, and each missing member
+        # renders the plan's pinned wording verbatim.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp), stream_roles=("coder",))
+        self.assertIn(
+            self.NO_DIFF,
+            report,
+            "the report does not carry the pinned absence wording %r for "
+            "the missing diff.patch" % (self.NO_DIFF,),
+        )
+        self.assertIn(
+            self.NO_COMMITS,
+            report,
+            "the report does not carry the pinned absence wording %r for "
+            "the missing commits.json" % (self.NO_COMMITS,),
+        )
+        for role in pirole.ROLES:
+            with self.subTest(role=role):
+                section = self._role_section(report, role)
+                expected = "no stream recorded for " + role
+                if role == "coder":
+                    self.assertNotIn(
+                        expected,
+                        section,
+                        "the coder's stream did land, so its section must "
+                        "not carry %r" % (expected,),
+                    )
+                else:
+                    self.assertIn(
+                        expected,
+                        section,
+                        "the %r section does not carry the pinned absence "
+                        "wording %r for its missing stream"
+                        % (role, expected),
+                    )
+
+    def test_open_run_landed_coder_section_still_renders_session_path_and_facts(self):
+        # Whatever did land still renders: in the same half-written
+        # report that carries the absence wording, the coder's section
+        # still carries its session id, the stream's path and the
+        # fixture's own facts.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp), stream_roles=("coder",))
+        section = self._role_section(report, "coder")
+        events = pievents.parse(self.FIXTURE_TEXT)["events"]
+        outcome = pievents.outcome(events)
+        session = pievents.session(events)
+        self.assertIn(
+            "session id: " + self.SESSIONS["coder"],
+            section,
+            "the landed coder section does not carry its session id %r"
+            % (self.SESSIONS["coder"],),
+        )
+        self.assertIn(
+            str(run_dir / "coder.jsonl"),
+            section,
+            "the landed coder section does not carry the stream path %s"
+            % (run_dir / "coder.jsonl",),
+        )
+        self.assertIn(
+            "stream session: %s" % (session["session_id"],),
+            section,
+            "the landed coder section does not carry the fixture stream's "
+            "session id %r" % (session["session_id"],),
+        )
+        self.assertIn(
+            "settled: %s" % (outcome["settled"],),
+            section,
+            "the landed coder section does not carry the fixture stream's "
+            "settled state",
+        )
+        for value in (
+            outcome["input"],
+            outcome["output"],
+            outcome["totalTokens"],
+            outcome["cost_total"],
+        ):
+            with self.subTest(value=value):
+                self.assertIn(
+                    str(value),
+                    section,
+                    "the landed coder section does not carry the value %r "
+                    "derived from the fixture stream via pievents (tokens "
+                    "or cost)" % (value,),
+                )
+
+    def test_open_run_partial_landing_diff_and_commits_render_with_mark(self):
+        # diff.patch and commits.json landed but no stream did: the
+        # report is still INCOMPLETE, the diff section carries the diff,
+        # the commits section carries the commits, and every role's
+        # missing stream renders the pinned absence wording.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(
+                Path(tmp), with_diff=True, with_commits=True
+            )
+        self.assertIn(
+            self.INCOMPLETE_LINE,
+            report.splitlines(),
+            "a run with a diff and commits but no streams is still "
+            "half-written and must carry %r" % (self.INCOMPLETE_LINE,),
+        )
+        self.assertIn(
+            self.DIFF_FRAGMENT,
+            report,
+            "the diff section does not carry the diff that did land (%r)"
+            % (self.DIFF_FRAGMENT,),
+        )
+        for commit in self.COMMITS:
+            with self.subTest(sha=commit["sha"]):
+                self.assertIn(
+                    commit["sha"],
+                    report,
+                    "the commits section does not carry the commit sha %r"
+                    % (commit["sha"],),
+                )
+                self.assertIn(
+                    commit["subject"],
+                    report,
+                    "the commits section does not carry the commit subject "
+                    "%r" % (commit["subject"],),
+                )
+        for role in pirole.ROLES:
+            with self.subTest(role=role):
+                expected = "no stream recorded for " + role
+                self.assertIn(
+                    expected,
+                    self._role_section(report, role),
+                    "the %r section does not carry the pinned absence "
+                    "wording %r for its missing stream" % (role, expected),
+                )
+
+    def test_open_run_every_half_written_shape_returns_str(self):
+        # open_run never raises on a half-written archive: every shape
+        # the plan names - no members at all, some streams, the diff,
+        # the commits - comes back as a report, and every shape is
+        # marked incomplete.
+        self._open_run()
+        shapes = (
+            {},
+            {"stream_roles": ("coder",)},
+            {"stream_roles": ("coder", "tester")},
+            {"with_diff": True},
+            {"with_commits": True},
+            {"with_diff": True, "with_commits": True},
+        )
+        for shape in shapes:
+            with self.subTest(shape=shape), \
+                    tempfile.TemporaryDirectory() as tmp:
+                report, run_dir = self._open(Path(tmp), **shape)
+            self.assertIs(
+                type(report),
+                str,
+                "open_run did not return a str on the half-written shape "
+                "%r; a run that died mid-way is still reopenable"
+                % (shape,),
+            )
+            self.assertIn(
+                self.INCOMPLETE_LINE,
+                report.splitlines(),
+                "the report for the half-written shape %r does not carry "
+                "%r" % (shape, self.INCOMPLETE_LINE),
             )
 
 
