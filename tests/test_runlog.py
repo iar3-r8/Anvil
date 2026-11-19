@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-11 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-12 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -190,6 +190,32 @@ The setup opens a real run through the genuine ``start_run``
 absent, every test here is red at the fetch step (``_finish_run``):
 the module attribute is not callable, and the red is that missing
 behaviour, not a collection error of this file.
+
+Behaviour 12 (``open-run-complete``), pinned from the plan:
+
+open_run(run_id, root) -> str (a Markdown report)
+
+- given a run directory holding ``meta.json`` (complete), four streams,
+``diff.patch`` and ``commits.json``, the report carries the run id and
+both stamps, the intake, one section per role (session id, stream file
+path, settled/aborted, the tool-call counters, tokens and cost from
+``pievents``), then the diff and the commit sections;
+- raw stream bytes are never inlined - only the file path, since a stream
+can hold prompts, tool arguments and file contents. The pin holds by
+splicing a sentinel into the coder stream's own content and asserting
+it stays out of the report while the stream's path stays in it;
+- a complete run is not marked ``INCOMPLETE`` - that mark belongs to
+behaviour 14's half-written archives.
+
+The archive is built end-to-end with the genuine writers (behaviours 6,
+8, 9, 10 and 11) under a tempdir, and the per-role numbers (settled/
+aborted, counters, tokens, cost) are computed in the test through
+``pievents`` itself - ``parse`` then ``outcome`` and ``tool_calls`` - so
+the pins are about the presence of the fixture's own numbers in the
+report, not about re-deriving ``pievents``' arithmetic. While
+``open_run`` is absent, every test here is red at the fetch step
+(``_open_run``): the module attribute is not callable, and the red is
+that missing behaviour, not a collection error of this file.
 """
 
 import json
@@ -205,6 +231,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from anvilkit.pi import pievents
 from anvilkit.pi import pirole
 
 # The aware-UTC instant behaviour 1 uses throughout: the plan's own example,
@@ -1783,6 +1810,328 @@ class RunLogFinishRunTestCase(unittest.TestCase):
             run_dir = self._seed_run_dir(root)
             with self.assertRaisesRegex(run_log_error, "finished_at"):
                 finish_run(run_dir, "shipped", 123)
+
+
+class RunLogOpenRunCompleteTestCase(unittest.TestCase):
+    """Behaviour 12 (``open-run-complete``): ``open_run(run_id, root)``.
+
+    The plan pins: given a run directory holding ``meta.json`` (complete),
+    four streams, ``diff.patch`` and ``commits.json``, ``open_run(run_id,
+    root)`` returns a Markdown report - the run id and stamps, the intake,
+    one section per role carrying the session id, settled/aborted, the
+    tool-call counters, tokens and cost from ``pievents``, then the diff
+    and commit sections. Raw stream bytes are never inlined - only the
+    file path, since a stream can hold prompts, tool arguments and file
+    contents. Error: none on well-formed input.
+
+    The archive is built end-to-end with the real writer functions
+    (behaviours 6, 8, 9, 10, 11) under a tempdir: ``start_run`` opens the
+    run, each role's stream is built from the repository's realistic Pi
+    JSONL fixture, ``write_diff`` and ``write_commits`` land the diff and
+    the commit list, and ``finish_run`` marks the run complete. The
+    per-role facts are computed in the test with ``pievents`` itself -
+    ``parse(text)["events"]`` then ``outcome`` and ``tool_calls`` - so the
+    pins are about presence of the fixture's own numbers in the report,
+    not about re-deriving ``pievents``' arithmetic.
+
+    While ``open_run`` is absent, every test here is red at the fetch
+    step (``_open_run``): the module attribute is not callable, and the
+    red is that missing behaviour, not a collection error of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    FINISHED_AT = "2026-11-19T14:00:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {role: EXPECTED_ID + "-" + role for role in pirole.ROLES}
+
+    # The repo's realistic Pi JSONL fixture: the same well-formed
+    # multi-event stream backs every role, so the archive is the
+    # end-to-end shape the reopen command must read.
+    FIXTURE_TEXT = (
+        REPO_ROOT / "tests" / "fixtures" / "pi_events_sample.jsonl"
+    ).read_text(encoding="utf-8")
+
+    # A sentinel that appears only inside a stream line: it is spliced
+    # into the coder stream's first text delta, so it lands in the
+    # content of a message_update record while the stream stays
+    # well-formed JSONL. It must never surface in the report - raw
+    # stream bytes are data and are referenced by path only.
+    SENTINEL = "SENTINEL-RAW-STREAM-DO-NOT-INLINE-9f3a1c"
+    FIXTURE_DELTA = '"delta": "Running the suite now"'
+    SENTINEL_DELTA = '"delta": "Running the suite now ' + SENTINEL + '"'
+
+    DIFF_TEXT = (
+        "diff --git a/anvilkit/pi/runlog.py b/anvilkit/pi/runlog.py\n"
+        "index 1a2b3c4..5d6e7f8 100644\n"
+        "--- a/anvilkit/pi/runlog.py\n"
+        "+++ b/anvilkit/pi/runlog.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " def open_run(run_id, root):\n"
+        "+    return report\n"
+    )
+
+    COMMITS = [
+        {"sha": "a1b2c3d9", "subject": "feat(runlog): open_run report"},
+        {"sha": "e4f5a6b7", "subject": "fix(runlog): absent archive guard"},
+    ]
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _open_run(self):
+        """Fetch ``anvilkit.pi.runlog.open_run``."""
+        runlog = self._runlog()
+        open_run = getattr(runlog, "open_run", None)
+        self.assertTrue(
+            callable(open_run),
+            "anvilkit.pi.runlog.open_run is not callable; behaviour 12 "
+            "(open-run-complete) has not been implemented yet",
+        )
+        return open_run
+
+    def _writer(self, name, behaviour):
+        """Fetch a green archive writer from the module under test."""
+        runlog = self._runlog()
+        writer = getattr(runlog, name, None)
+        self.assertTrue(
+            callable(writer),
+            "anvilkit.pi.runlog.%s is not callable; behaviour %s has not "
+            "been implemented yet" % (name, behaviour),
+        )
+        return writer
+
+    def _stream_for(self, role):
+        """The role's stream: the fixture, sentinel in the coder's first
+        text delta."""
+        text = self.FIXTURE_TEXT
+        if role == "coder":
+            text = text.replace(self.FIXTURE_DELTA, self.SENTINEL_DELTA)
+        return text
+
+    def _build_complete_archive(self, root):
+        """Build the complete archive with the real writers; return the
+        run directory."""
+        start_run = self._writer("start_run", "6 (start-run-writes-meta)")
+        write_stream = self._writer(
+            "write_stream", "8 (write-stream-verbatim)"
+        )
+        write_diff = self._writer("write_diff", "9 (write-diff)")
+        write_commits = self._writer("write_commits", "10 (write-commits)")
+        finish_run = self._writer(
+            "finish_run", "11 (finish-run-marks-complete)"
+        )
+        run_dir = start_run(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+        for role in pirole.ROLES:
+            write_stream(run_dir, role, self._stream_for(role))
+        write_diff(run_dir, self.DIFF_TEXT)
+        write_commits(run_dir, self.COMMITS)
+        finish_run(run_dir, "shipped", self.FINISHED_AT)
+        return run_dir
+
+    def _open(self, root):
+        """Build the complete archive under ``root``; return the report
+        and the run directory it lives in."""
+        run_dir = self._build_complete_archive(root)
+        report = self._open_run()(self.RUN_ID, root)
+        return report, run_dir
+
+    def _fixture_facts(self):
+        """The fixture stream's outcome and tool-call facts via
+        ``pievents`` itself."""
+        events = pievents.parse(self.FIXTURE_TEXT)["events"]
+        return pievents.outcome(events), pievents.tool_calls(events)
+
+    def test_open_run_complete_archive_returns_markdown_str(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        self.assertIs(
+            type(report),
+            str,
+            "open_run must return the Markdown report as a plain str, "
+            "got %r" % (type(report),),
+        )
+
+    def test_open_run_carries_run_id(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        self.assertIn(
+            self.RUN_ID,
+            report,
+            "the report does not carry the run id %r" % (self.RUN_ID,),
+        )
+
+    def test_open_run_carries_started_at_and_finished_at(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        for stamp in (self.STARTED_AT, self.FINISHED_AT):
+            with self.subTest(stamp=stamp):
+                self.assertIn(
+                    stamp,
+                    report,
+                    "the report does not carry the stamp %r as written "
+                    "in meta.json" % (stamp,),
+                )
+
+    def test_open_run_carries_intake_issue_and_text(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        self.assertIn(
+            str(self.INTAKE["issue"]),
+            report,
+            "the report does not carry the intake issue number %r"
+            % (self.INTAKE["issue"],),
+        )
+        self.assertIn(
+            self.INTAKE["text"],
+            report,
+            "the report does not carry the intake task text %r"
+            % (self.INTAKE["text"],),
+        )
+
+    def test_open_run_complete_report_not_marked_incomplete(self):
+        # Behaviour 14 marks half-written archives INCOMPLETE; a complete
+        # run must not carry that mark.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        self.assertNotIn(
+            "INCOMPLETE",
+            report,
+            "a complete run's report must not be marked INCOMPLETE; that "
+            "mark is reserved for a half-written archive",
+        )
+
+    def test_open_run_each_role_section_carries_session_id_and_stream_path(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        for role in pirole.ROLES:
+            with self.subTest(role=role):
+                self.assertIn(
+                    self.SESSIONS[role],
+                    report,
+                    "the %r section does not carry the role's session id "
+                    "%r" % (role, self.SESSIONS[role]),
+                )
+                stream_path = run_dir / (role + ".jsonl")
+                self.assertIn(
+                    str(stream_path),
+                    report,
+                    "the %r section does not carry the stream file path %s"
+                    % (role, stream_path),
+                )
+
+    def test_open_run_role_sections_carry_outcome_counters_tokens_and_cost(self):
+        # The fixture's own numbers, computed via pievents itself: every
+        # role's stream is the fixture, so presence anywhere in the report
+        # suffices - the pin is about the values reaching the report, not
+        # about re-deriving pievents' arithmetic.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        outcome, calls = self._fixture_facts()
+        for value in (
+            outcome["input"],
+            outcome["output"],
+            outcome["totalTokens"],
+            outcome["cost_total"],
+            calls["attempted"],
+            calls["succeeded"],
+            calls["failed"],
+            calls["unfinished"],
+            calls["orphaned"],
+        ):
+            with self.subTest(value=value):
+                self.assertIn(
+                    str(value),
+                    report,
+                    "the report does not carry the value %r derived from "
+                    "the fixture stream via pievents (tokens, cost or a "
+                    "tool-call counter)" % (value,),
+                )
+        for word in ("settled", "aborted"):
+            with self.subTest(word=word):
+                self.assertIn(
+                    word,
+                    report,
+                    "the report does not carry the %r state of the stream"
+                    % (word,),
+                )
+
+    def test_open_run_diff_section_carries_diff(self):
+        # The diff is ours to show: a recognizable fragment of the diff
+        # text must appear in the report.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        fragment = "diff --git a/anvilkit/pi/runlog.py b/anvilkit/pi/runlog.py"
+        self.assertIn(
+            fragment,
+            report,
+            "the report does not carry the diff section's content (%r)"
+            % (fragment,),
+        )
+
+    def test_open_run_commits_section_carries_both_commits_in_order(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        first, second = self.COMMITS
+        for commit in self.COMMITS:
+            with self.subTest(sha=commit["sha"]):
+                self.assertIn(
+                    commit["sha"],
+                    report,
+                    "the report does not carry the commit sha %r"
+                    % (commit["sha"],),
+                )
+                self.assertIn(
+                    commit["subject"],
+                    report,
+                    "the report does not carry the commit subject %r"
+                    % (commit["subject"],),
+                )
+        self.assertLess(
+            report.index(first["subject"]),
+            report.index(second["subject"]),
+            "the commits are not rendered in the order commits.json holds "
+            "them",
+        )
+        self.assertLess(
+            report.index(first["sha"]),
+            report.index(second["sha"]),
+            "the commit shas are not rendered in the order commits.json "
+            "holds them",
+        )
+
+    def test_open_run_never_inlines_raw_stream_bytes(self):
+        # A stream can hold prompts, tool arguments and file contents: the
+        # report references a stream by its file path, never by its bytes.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            report, run_dir = self._open(Path(tmp))
+        self.assertNotIn(
+            self.SENTINEL,
+            report,
+            "the report inlined raw stream bytes: %r appears only inside "
+            "the coder stream and must stay out of the report"
+            % (self.SENTINEL,),
+        )
+        self.assertIn(
+            str(run_dir / "coder.jsonl"),
+            report,
+            "the report does not carry the coder stream's file path in "
+            "place of its bytes",
+        )
 
 
 if __name__ == "__main__":
