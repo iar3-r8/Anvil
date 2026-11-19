@@ -16,6 +16,8 @@ zoo-code-settings.json
 plans/*
 # bake-off run artifacts, one subtree per configuration (doc/pi-bakeoff)
 results/
+# Pi phase-11 run-log archive, one subtree per run (plans/pi-phase11-runlog)
+logs/runs/
 
 # Anvil local overrides (machine-specific, never committed)
 anvil.local.yaml
