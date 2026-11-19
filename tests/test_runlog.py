@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-4 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-6 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -83,10 +83,39 @@ committable. The ``.pi`` guard flags an ignore line whose stripped form
 is exactly ``.pi``, ``.pi/`` or ``.pi/*``, or that starts with ``.pi/``
 (which also covers ``.pi/roles/``); comment and negation lines are not
 ignore patterns and are not flagged.
+
+Behaviour 6 (``start-run-writes-meta``), pinned from the plan:
+
+    start_run(root, run_id, intake, sessions, started_at) -> Path
+
+- creates ``root/logs/runs/<run-id>/``, returns it as a ``pathlib.Path``,
+  and writes ``meta.json`` with exactly seven keys - ``run_id``,
+  ``started_at``, ``finished_at`` (``None``), ``intake`` (``{"issue",
+  "text"}``), ``sessions``, ``outcome`` (``"unknown"``) and ``complete``
+  (``False``) - the key set is pinned by sorted-key-list equality so no
+  extra key can sneak in;
+- the file is JSON-native: it round-trips through
+  ``json.loads(json.dumps(meta, sort_keys=True))`` unchanged, so a run
+  that dies next is still readable;
+- an empty ``sessions`` map is allowed and is written as ``{}``;
+- an ``intake`` whose key set is not exactly ``{"issue", "text"}`` -
+  missing a key, carrying an extra key, or not a dict at all - raises
+  ``RunLogError`` naming ``intake``; a ``sessions`` map holding a role
+  outside ``pirole.ROLES``, or a ``sessions`` that is not a dict, raises
+  naming the offending role or ``sessions``; a ``started_at`` that is
+  not a string raises naming ``started_at``;
+- on an error nothing is written: the run directory either does not
+  exist or holds no ``meta.json`` - the pin is meaningful because it
+  fails on a write-then-validate implementation.
+
+While ``start_run`` is absent, every behaviour-6 test is red at the
+fetch step: the module attribute is not callable.
 """
 
+import json
 import re
 import sys
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -645,6 +674,191 @@ class RunLogGitignorePinTestCase(unittest.TestCase):
             "pattern(s) %r; the rendered role prompts under .pi/ must "
             "stay committable" % (offenders,),
         )
+
+
+class RunLogStartRunTestCase(unittest.TestCase):
+    """Behaviour 6 (``start-run-writes-meta``): ``start_run`` writes the archive.
+
+    The plan's discipline is that a run that dies mid-way leaves a readable
+    archive, so ``meta.json`` exists from the start with ``finished_at``
+    null, ``outcome`` unknown and ``complete`` false. These tests pin the
+    seven-key shape exactly, the JSON-native round-trip, the empty-sessions
+    allowance, every error path naming its field, and that a validation
+    error writes nothing.
+
+    While ``start_run`` is absent, every test here is red at the fetch
+    step (``_start_run``): the module attribute is not callable, and the
+    red is that missing behaviour, not a collection error of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+    META_KEYS = sorted(
+        [
+            "run_id",
+            "started_at",
+            "finished_at",
+            "intake",
+            "sessions",
+            "outcome",
+            "complete",
+        ]
+    )
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; behaviour 6 "
+            "(start-run-writes-meta) has not been implemented yet",
+        )
+        return start_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "behaviour 1 (run-id-format) has not been implemented yet",
+        )
+        return run_log_error
+
+    def _start(self, root, intake=None, sessions=None, started_at=None):
+        """Call ``start_run`` with the canonical pins unless overridden."""
+        return self._start_run()(
+            root,
+            self.RUN_ID,
+            self.INTAKE if intake is None else intake,
+            self.SESSIONS if sessions is None else sessions,
+            self.STARTED_AT if started_at is None else started_at,
+        )
+
+    def _read_meta(self, root):
+        """The parsed ``meta.json`` of the run directory under ``root``."""
+        meta_path = root / "logs" / "runs" / self.RUN_ID / "meta.json"
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+
+    def test_start_run_creates_run_dir_returns_path_writes_seven_key_meta(self):
+        self._start_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._start(root)
+            self.assertIsInstance(run_dir, Path)
+            self.assertEqual(run_dir, root / "logs" / "runs" / self.RUN_ID)
+            self.assertTrue(run_dir.is_dir())
+            self.assertTrue((run_dir / "meta.json").is_file())
+            meta = self._read_meta(root)
+            self.assertEqual(
+                sorted(meta),
+                self.META_KEYS,
+                "meta.json key set must be exactly the seven planned keys; "
+                "got %r" % (sorted(meta),),
+            )
+            self.assertEqual(meta["run_id"], self.RUN_ID)
+            self.assertEqual(meta["started_at"], self.STARTED_AT)
+            self.assertIsNone(meta["finished_at"])
+            self.assertEqual(meta["intake"], self.INTAKE)
+            self.assertEqual(meta["sessions"], self.SESSIONS)
+            self.assertEqual(meta["outcome"], "unknown")
+            self.assertIs(meta["complete"], False)
+
+    def test_start_run_meta_json_round_trips(self):
+        # JSON-native: a run that dies next is still readable, which holds
+        # only if the file round-trips through a dump/load unchanged.
+        self._start_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._start(root)
+            meta = self._read_meta(root)
+            self.assertEqual(
+                json.loads(json.dumps(meta, sort_keys=True)),
+                meta,
+                "meta.json is not JSON-native: it changed on round-trip",
+            )
+
+    def test_start_run_empty_sessions_map_allowed_and_written_as_empty_dict(self):
+        self._start_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._start(root, sessions={})
+            self.assertTrue(run_dir.is_dir())
+            self.assertEqual(self._read_meta(root)["sessions"], {})
+
+    def _assert_bad_intake(self, intake):
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(run_log_error, "intake"):
+                self._start(root, intake=intake)
+
+    def test_start_run_intake_missing_key_raises_naming_intake(self):
+        self._start_run()
+        self._assert_bad_intake({"issue": 58})
+
+    def test_start_run_intake_extra_key_raises_naming_intake(self):
+        self._start_run()
+        self._assert_bad_intake({"issue": 58, "text": "task body", "extra": 1})
+
+    def test_start_run_intake_not_a_dict_raises_naming_intake(self):
+        self._start_run()
+        self._assert_bad_intake("task body")
+
+    def test_start_run_sessions_unknown_role_raises_naming_role_or_sessions(self):
+        self._start_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            bad_sessions = dict(self.SESSIONS)
+            bad_sessions["reviewer"] = self.RUN_ID + "-reviewer"
+            with self.assertRaisesRegex(run_log_error, "reviewer|sessions"):
+                self._start(root, sessions=bad_sessions)
+
+    def test_start_run_sessions_not_a_dict_raises_naming_sessions(self):
+        self._start_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(run_log_error, "sessions"):
+                self._start(root, sessions=[("coder", self.RUN_ID + "-coder")])
+
+    def test_start_run_started_at_not_a_string_raises_naming_started_at(self):
+        self._start_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(run_log_error, "started_at"):
+                self._start(root, started_at=12345)
+
+    def test_start_run_bad_intake_writes_nothing(self):
+        # Validate-then-write discipline: a rejected intake must leave no
+        # meta.json behind. The pin allows the directory to be absent (the
+        # expected case) or to exist without meta.json; it fails on a
+        # write-then-validate implementation, which would leave a
+        # half-recorded run.
+        self._start_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaises(run_log_error):
+                self._start(root, intake={"issue": 58})
+            run_dir = root / "logs" / "runs" / self.RUN_ID
+            self.assertTrue(
+                not run_dir.exists() or not (run_dir / "meta.json").exists(),
+                "start_run wrote to %s despite a validation error; a run "
+                "that failed intake must not be half-recorded" % run_dir,
+            )
 
 
 if __name__ == "__main__":
