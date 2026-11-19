@@ -26,13 +26,13 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from anvilkit.pi import pirole
 
 
 class RunLogError(Exception):
-    """A run id that cannot be built, or a run log that cannot be opened."""
+    """A run id that cannot be built, or a run log that cannot be written."""
 
 
 def new_run_id(
@@ -170,4 +170,76 @@ def _validate_start_inputs(
     if not isinstance(started_at, str):
         raise RunLogError(
             "started_at must be a str, got %r" % (started_at,)
+        )
+
+
+def write_stream(run_dir: Path, role: str, text: str) -> None:
+    """Write the role's captured stream to ``<role>.jsonl`` byte-for-byte.
+
+    ``text`` is the driver's captured ``result["stdout"]`` and is written
+    verbatim in UTF-8 with no newline added: an empty stream writes an empty
+    file, and an unparseable stream is kept unchanged - the captured bytes
+    are data, so this module never parses or rewrites a stream. ``role``
+    must be one of ``pirole.ROLES`` (otherwise ``RunLogError`` names the
+    role and no file is created), and ``run_dir`` must exist as a directory
+    (otherwise ``RunLogError`` names the path).
+    """
+    if role not in pirole.ROLES:
+        raise RunLogError(
+            "unknown role %r: the known roles are %s"
+            % (role, ", ".join(pirole.ROLES))
+        )
+    _require_run_dir(run_dir)
+    (run_dir / (role + ".jsonl")).write_text(text, encoding="utf-8")
+
+
+def write_diff(run_dir: Path, text: str) -> None:
+    """Write the run's diff text to ``diff.patch`` verbatim.
+
+    An empty diff still writes an empty file, since "changed nothing" is
+    data - a run that changed nothing stays distinguishable from a run
+    whose diff was never recorded. A missing run directory raises
+    ``RunLogError`` naming the path, the same guard as ``write_stream``.
+    """
+    _require_run_dir(run_dir)
+    (run_dir / "diff.patch").write_text(text, encoding="utf-8")
+
+
+def write_commits(run_dir: Path, commits: List[Dict[str, str]]) -> None:
+    """Write the run's commit list to ``commits.json`` via ``json.dumps``.
+
+    ``commits`` must be a list whose entries are each a dict with exactly
+    the keys ``{"sha", "subject"}``, in order; an entry with a missing or
+    extra key raises ``RunLogError`` naming the index of the offending
+    entry. An empty list writes ``[]``. A missing run directory raises
+    ``RunLogError`` naming the path.
+    """
+    if not isinstance(commits, list):
+        raise RunLogError(
+            "commits must be a list of {'sha', 'subject'} dicts, got %r"
+            % (commits,)
+        )
+    for index, entry in enumerate(commits):
+        if not isinstance(entry, dict) or set(entry.keys()) != {
+            "sha",
+            "subject",
+        }:
+            raise RunLogError(
+                "commits entry at index %d must be a dict with exactly the "
+                "keys {'sha', 'subject'}, got %r" % (index, entry)
+            )
+    _require_run_dir(run_dir)
+    (run_dir / "commits.json").write_text(json.dumps(commits), encoding="utf-8")
+
+
+def _require_run_dir(run_dir: Path) -> None:
+    """Raise ``RunLogError`` naming the path if ``run_dir`` is not a directory.
+
+    The shared missing-run-directory guard for the archive writers - the
+    same guard as behaviour 8, pinned the same way by every writer.
+    """
+    if not run_dir.is_dir():
+        raise RunLogError(
+            "run directory does not exist or is not a directory: %s"
+            % (run_dir,)
         )
