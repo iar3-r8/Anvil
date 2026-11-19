@@ -27,6 +27,16 @@ string; either violation, or a missing ``meta.json``, raises
 ``RunLogError`` before anything is written, so a refused call never
 half-rewrites the record.
 
+``open_run`` renders a completed archive as a Markdown report
+(behaviour 12): the run id and stamps, the intake, one section per role
+carrying the session id, the stream file path and the settled/aborted
+state, tool-call counters, tokens and cost computed via ``pievents``,
+then the diff and commit sections. Raw stream bytes are never inlined -
+only the stream's file path, since a stream can hold prompts, tool
+arguments and file contents. Every member is read through a guard that
+treats a missing or unreadable member as absent, so a half-written
+archive can never crash the renderer.
+
 Stdlib only. One exception type: ``RunLogError``.
 """
 
@@ -34,9 +44,9 @@ import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from anvilkit.pi import pirole
+from anvilkit.pi import pievents, pirole
 
 
 class RunLogError(Exception):
@@ -293,3 +303,163 @@ def _require_run_dir(run_dir: Path) -> None:
             "run directory does not exist or is not a directory: %s"
             % (run_dir,)
         )
+
+
+def open_run(run_id: str, root: Path) -> str:
+    """Return the Markdown report of the run ``run_id`` under ``root``.
+
+    Reads the archive at ``root/logs/runs/<run-id>/`` - ``meta.json``, one
+    ``<role>.jsonl`` per role present in ``meta.json``'s sessions map
+    (in ``pirole.ROLES`` order), ``diff.patch`` and ``commits.json`` - and
+    renders them as a Markdown report: the run id and both stamps verbatim,
+    the intake, one section per role carrying the session id, the stream
+    file path and the settled/aborted state, tool-call counters, tokens
+    and cost computed via ``pievents``, then the diff and commit sections
+    in ``commits.json`` order.
+
+    Raw stream bytes are never inlined - only the stream's file path, since
+    a stream can hold prompts, tool arguments and file contents. Every
+    member is read individually through ``_read_text_if_present`` /
+    ``_read_json_if_present``: a missing or unreadable member is rendered
+    as its absence, never as a crash, so a half-written archive stays
+    reopenable. On well-formed input no error is raised.
+    """
+    run_dir = root / "logs" / "runs" / run_id
+    meta = _read_json_if_present(run_dir / "meta.json")
+
+    lines: List[str] = ["# Run report: " + run_id, ""]
+    if isinstance(meta, dict):
+        lines.append("started_at: %s" % (meta.get("started_at"),))
+        lines.append("finished_at: %s" % (meta.get("finished_at"),))
+        lines.append("")
+        intake = meta.get("intake")
+        lines.extend(_intake_section(intake))
+        sessions = meta.get("sessions")
+        if isinstance(sessions, dict):
+            for role in pirole.ROLES:
+                if role in sessions:
+                    lines.extend(
+                        _role_section(role, sessions[role], run_dir)
+                    )
+    lines.extend(_diff_section(run_dir))
+    lines.extend(_commits_section(run_dir))
+    return "\n".join(lines) + "\n"
+
+
+def _intake_section(intake: object) -> List[str]:
+    """Render the intake section from ``meta.json``'s ``intake`` dict.
+
+    A non-dict intake renders as an empty intake: the numbers and text are
+    simply absent, never a crash.
+    """
+    lines = ["## Intake", ""]
+    issue = intake.get("issue") if isinstance(intake, dict) else None
+    text = intake.get("text") if isinstance(intake, dict) else None
+    lines.append("issue: %s" % (issue,))
+    lines.append("text: %s" % (text,))
+    lines.append("")
+    return lines
+
+
+def _role_section(role: str, session_id: object, run_dir: Path) -> List[str]:
+    """Render one role's section: session id, stream path and pievents facts.
+
+    The stream file is referenced by its absolute path only; its bytes are
+    parsed via ``pievents`` for the settled/aborted state, the tool-call
+    counters, the tokens and the cost. A missing or unreadable stream
+    renders the path without the facts, so a half-written archive never
+    crashes the renderer.
+    """
+    lines = ["## Role: " + role, ""]
+    lines.append("session id: %s" % (session_id,))
+    stream_path = run_dir / (role + ".jsonl")
+    lines.append("stream: %s" % (stream_path,))
+    text = _read_text_if_present(stream_path)
+    if text is not None:
+        events = pievents.parse(text)["events"]
+        outcome = pievents.outcome(events)
+        calls = pievents.tool_calls(events)
+        lines.append("settled: %s" % (outcome["settled"],))
+        lines.append("aborted: %s" % (outcome["aborted"],))
+        lines.append(
+            "tool calls: attempted=%d succeeded=%d failed=%d "
+            "unfinished=%d orphaned=%d"
+            % (
+                calls["attempted"],
+                calls["succeeded"],
+                calls["failed"],
+                calls["unfinished"],
+                calls["orphaned"],
+            )
+        )
+        lines.append(
+            "tokens: input=%d output=%d total=%d"
+            % (outcome["input"], outcome["output"], outcome["totalTokens"])
+        )
+        lines.append("cost: %s" % (outcome["cost_total"],))
+    lines.append("")
+    return lines
+
+
+def _diff_section(run_dir: Path) -> List[str]:
+    """Render the diff section from ``diff.patch``, absent-safe.
+
+    The diff is ours to show, so its text is inlined verbatim in a fenced
+    code block; a missing or unreadable file renders the header only.
+    """
+    lines = ["## Diff", ""]
+    diff_text = _read_text_if_present(run_dir / "diff.patch")
+    if diff_text is not None:
+        lines.append("```")
+        lines.append(diff_text)
+        lines.append("```")
+    lines.append("")
+    return lines
+
+
+def _commits_section(run_dir: Path) -> List[str]:
+    """Render the commits section from ``commits.json``, in file order.
+
+    Each entry renders as ``- <sha> <subject>`` in the order
+    ``commits.json`` holds them; a missing or unreadable file, or a file
+    that is not a list, renders the header only.
+    """
+    lines = ["## Commits", ""]
+    commits = _read_json_if_present(run_dir / "commits.json")
+    if isinstance(commits, list):
+        for commit in commits:
+            if isinstance(commit, dict):
+                lines.append(
+                    "- %s %s" % (commit.get("sha"), commit.get("subject"))
+                )
+    lines.append("")
+    return lines
+
+
+def _read_text_if_present(path: Path) -> Optional[str]:
+    """Read ``path`` as UTF-8 text, or ``None`` when absent or unreadable.
+
+    The absence guard shared by ``open_run``'s member reads: a missing or
+    unreadable member is data (a half-written archive), never a crash.
+    """
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _read_json_if_present(path: Path) -> Optional[Any]:
+    """Read and parse ``path`` as JSON, or ``None`` when absent or invalid.
+
+    The JSON counterpart of ``_read_text_if_present``: a missing,
+    unreadable or non-JSON member is rendered as absent, never a crash.
+    """
+    text = _read_text_if_present(path)
+    if text is None:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
