@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-3 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-4 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -55,6 +55,15 @@ Behaviour 3 (``session-id-derivation``), pinned from the plan:
 
 While ``session_id`` is absent, every behaviour-3 test is red at the
 fetch step: the module attribute is not callable.
+
+Behaviour 4 (``[PIN] derived-ids-valid-for-pi``) is a green-now boundary
+pin with no production change: it locks the seam between ``runlog`` and
+``pirole``. For a run id built by ``new_run_id`` (behaviour 1) and each of
+the four ``pirole.ROLES``, the derived id ``session_id(run_id, role)``
+(behaviour 3) must pass ``pirole._validate_session_id`` and reach
+``pirole.role_argv``'s returned argv byte-identical, in the exact
+``["--session-id", <id>]`` adjacency. If the id format or the derivation
+ever drifts in a way that breaks Pi's session-id rule, the pin fails.
 """
 
 import re
@@ -440,6 +449,97 @@ class RunLogSessionIdTestCase(unittest.TestCase):
         run_log_error = self._run_log_error()
         with self.assertRaises(run_log_error):
             session_id(self.RUN_ID, "")
+
+
+class RunLogDerivedIdPinTestCase(unittest.TestCase):
+    """Behaviour 4 (``[PIN] derived-ids-valid-for-pi``): a green-now boundary pin.
+
+    No production change. This pins the seam between ``runlog`` and
+    ``pirole``: for a run id from behaviour 1 and each of the four
+    ``pirole.ROLES``, the derived session id from behaviour 3 must
+
+    - pass ``pirole._validate_session_id`` - called directly, so a drift
+      in the id format is caught at Pi's own validation rule, not only at
+      argv build time;
+    - reach ``pirole.role_argv``'s returned argv byte-identical, in the
+      exact ``["--session-id", <id>]`` adjacency - pinned by index, not
+      membership, so an id that ``role_argv`` rewrote or reordered fails.
+
+    If any pin is red at the committed state, that is a real defect in
+    behaviours 1-3, not in this pin.
+    """
+
+    CODE_MODEL_ID = "coder-model"
+    FRONTIER_MODEL_ID = "frontier-model"
+    TASK = "task"
+
+    # The second fixed instant uses a different entropy from the
+    # canonical pin, so the character set exercised includes digits in
+    # the stamp and the entropy block of the derived ids.
+    SECOND_ENTROPY = "0f1e"
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _id_functions(self):
+        """Fetch ``new_run_id`` and ``session_id`` from the module under test."""
+        runlog = self._runlog()
+        new_run_id = getattr(runlog, "new_run_id", None)
+        session_id = getattr(runlog, "session_id", None)
+        self.assertTrue(
+            callable(new_run_id),
+            "anvilkit.pi.runlog.new_run_id is not callable; behaviour 1 "
+            "(run-id-format) has not been implemented yet",
+        )
+        self.assertTrue(
+            callable(session_id),
+            "anvilkit.pi.runlog.session_id is not callable; behaviour 3 "
+            "(session-id-derivation) has not been implemented yet",
+        )
+        return new_run_id, session_id
+
+    def _assert_session_id_adjacency(self, argv, derived_id):
+        """Pin the exact ``["--session-id", <id>]`` adjacency by index."""
+        flags = [i for i, token in enumerate(argv) if token == "--session-id"]
+        self.assertEqual(
+            len(flags),
+            1,
+            "expected exactly one --session-id token in argv %r" % (argv,),
+        )
+        i = flags[0]
+        self.assertEqual(
+            argv[i : i + 2],
+            ["--session-id", derived_id],
+            "derived id %r did not reach the argv byte-identical: %r"
+            % (derived_id, argv[i : i + 2]),
+        )
+
+    def _pin_run_id(self, now, entropy):
+        """Run both seams for every role under one fixed run id."""
+        new_run_id, session_id = self._id_functions()
+        run_id = new_run_id(now=now, entropy=entropy)
+        for role in pirole.ROLES:
+            with self.subTest(role=role, run_id=run_id):
+                derived_id = session_id(run_id, role)
+                # Seam 1: Pi's own session-id rule accepts the derived id.
+                pirole._validate_session_id(derived_id)
+                # Seam 2: the id reaches role_argv's output byte-identical.
+                definition = pirole.resolve(
+                    role, self.CODE_MODEL_ID, self.FRONTIER_MODEL_ID
+                )
+                argv = pirole.role_argv(definition, derived_id, self.TASK)
+                self._assert_session_id_adjacency(argv, derived_id)
+
+    def test_canonical_run_id_each_role_passes_validation_and_reaches_argv(self):
+        # The plan's own example run id, run-20261119-134500-1a2b.
+        self._pin_run_id(UTC_NOW, ENTROPY)
+
+    def test_single_digit_run_id_each_role_passes_validation_and_reaches_argv(self):
+        # Single-digit fields in the stamp and a different entropy, so the
+        # derived ids exercise digits inside the id, not only in the middle.
+        self._pin_run_id(SINGLE_DIGIT_NOW, self.SECOND_ENTROPY)
 
 
 if __name__ == "__main__":
