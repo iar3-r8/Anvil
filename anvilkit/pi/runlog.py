@@ -19,6 +19,14 @@ dies mid-way leaves a readable record, with ``finished_at`` null,
 ``sessions`` and ``started_at`` happens before any filesystem I/O, so a
 rejected run is never half-recorded.
 
+``finish_run`` marks a finished run complete (behaviour 11): it rewrites
+the run's ``meta.json`` with the given ``finished_at`` and outcome and
+``complete`` true, every other key preserved verbatim. ``outcome`` must be
+one of the four terminals in ``FINISH_OUTCOMES`` and ``finished_at`` a
+string; either violation, or a missing ``meta.json``, raises
+``RunLogError`` before anything is written, so a refused call never
+half-rewrites the record.
+
 Stdlib only. One exception type: ``RunLogError``.
 """
 
@@ -171,6 +179,48 @@ def _validate_start_inputs(
         raise RunLogError(
             "started_at must be a str, got %r" % (started_at,)
         )
+
+
+# The four terminal outcomes a finished run can carry. ``unknown`` is the
+# "we never learned" terminal - a valid finished outcome, not an
+# unfinished run.
+FINISH_OUTCOMES = ("shipped", "halted", "failed", "unknown")
+
+
+def finish_run(run_dir: Path, outcome: str, finished_at: str) -> None:
+    """Mark the run in ``run_dir`` complete by rewriting its ``meta.json``.
+
+    Rewrites ``meta.json`` with ``finished_at`` set to the given stamp,
+    ``outcome`` set to the given outcome and ``complete`` set to true,
+    every other key preserved verbatim - a finished run keeps the record
+    ``start_run`` opened for it, with exactly those three fields changed.
+
+    ``outcome`` must be one of the four terminals in ``FINISH_OUTCOMES``
+    and ``finished_at`` a ``str``; either violation raises ``RunLogError``
+    naming the offending value (for an outcome, also listing all four
+    known outcomes), and ``meta.json`` must exist and be readable,
+    otherwise ``RunLogError`` names its path. All validation happens
+    before any write, so a refused call leaves the record unchanged.
+    """
+    if outcome not in FINISH_OUTCOMES:
+        raise RunLogError(
+            "unknown outcome %r: the known outcomes are %s"
+            % (outcome, ", ".join(FINISH_OUTCOMES))
+        )
+    if not isinstance(finished_at, str):
+        raise RunLogError(
+            "finished_at must be a str, got %r" % (finished_at,)
+        )
+    meta_path = run_dir / "meta.json"
+    if not meta_path.is_file():
+        raise RunLogError(
+            "meta.json does not exist or is not readable: %s" % (meta_path,)
+        )
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta["finished_at"] = finished_at
+    meta["outcome"] = outcome
+    meta["complete"] = True
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
 
 
 def write_stream(run_dir: Path, role: str, text: str) -> None:
