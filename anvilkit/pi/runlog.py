@@ -19,6 +19,8 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from anvilkit.pi import pirole
+
 
 class RunLogError(Exception):
     """A run id that cannot be built, or a run log that cannot be opened."""
@@ -57,3 +59,21 @@ def new_run_id(
             % (entropy,)
         )
     return "run-" + now.strftime("%Y%m%d-%H%M%S") + "-" + entropy
+
+
+def session_id(run_id: str, role: str) -> str:
+    """Return ``<run-id>-<role>`` for the run ``run_id``.
+
+    The run id crosses through verbatim - it is not revalidated against
+    ``new_run_id``'s format, so a syntactically valid string this module
+    would never produce still gets the role appended. The role is the only
+    checked input: it must be one of ``pirole.ROLES``, and any other value
+    raises ``RunLogError`` naming the offending role and listing all four
+    known roles.
+    """
+    if role not in pirole.ROLES:
+        raise RunLogError(
+            "unknown role %r: the known roles are %s"
+            % (role, ", ".join(pirole.ROLES))
+        )
+    return run_id + "-" + role
