@@ -2922,5 +2922,139 @@ class RunLogOpenRunIncompleteTestCase(unittest.TestCase):
             )
 
 
+class RunLogOpenRunUnknownIdTestCase(unittest.TestCase):
+    """Behaviour 15 (``open-run-unknown-id``): ``open_run(run_id, root)``.
+
+    The plan pins: given a run id with no directory under
+    ``logs/runs/``, ``open_run`` renders nothing and raises
+    ``RunLogError`` naming the run id and the path searched, so a typo is
+    fixable without reading the source. The archive path convention is
+    behaviour 12's: ``root / "logs" / "runs" / run_id``.
+
+    While the guard is unimplemented, every test here is red at the
+    assertion: today ``open_run`` on an unknown id renders a full
+    INCOMPLETE report and returns it - the gap is the missing
+    ``RunLogError`` naming both the run id and the searched path.
+    """
+
+    RUN_ID = EXPECTED_ID
+    UNKNOWN_ID = "run-20261119-999999-dead"
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _open_run(self):
+        """Fetch ``anvilkit.pi.runlog.open_run`` (green since behaviour 12)."""
+        runlog = self._runlog()
+        open_run = getattr(runlog, "open_run", None)
+        self.assertTrue(
+            callable(open_run),
+            "anvilkit.pi.runlog.open_run is not callable; behaviour 12 "
+            "(open-run-complete) has not been implemented yet",
+        )
+        return open_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError`` (green since behaviour 1)."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "behaviour 1 (run-id-format) has not been implemented yet",
+        )
+        return run_log_error
+
+    def _seed_run(self, root):
+        """Open a real run under ``root`` with the green writers."""
+        start_run = self._runlog().start_run
+        start_run(
+            root,
+            self.RUN_ID,
+            {"issue": 58, "text": "task body"},
+            {role: self.RUN_ID + "-" + role for role in pirole.ROLES},
+            "2026-11-19T13:45:00Z",
+        )
+
+    def _raise_on_unknown_id(self, open_run, run_log_error, root):
+        """Call ``open_run`` with the unknown id; return the raised error.
+
+        ``assertRaises`` covers "nothing is rendered": a returned report
+        would surface as a normal test failure at this point.
+        """
+        with self.assertRaises(run_log_error) as ctx:
+            open_run(self.UNKNOWN_ID, root)
+        return ctx.exception
+
+    def test_open_run_unknown_id_raises_run_log_error(self):
+        # A run id with no directory under logs/runs/ - while a sibling
+        # run's archive does exist - renders nothing and raises.
+        open_run = self._open_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_run(root)
+            self._raise_on_unknown_id(open_run, run_log_error, root)
+
+    def test_open_run_unknown_id_error_names_run_id(self):
+        # The typo must be fixable without reading the source: the run id
+        # appears verbatim in the message.
+        open_run = self._open_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_run(root)
+            error = self._raise_on_unknown_id(open_run, run_log_error, root)
+        self.assertIn(
+            self.UNKNOWN_ID,
+            str(error),
+            "the RunLogError does not name the run id %r, so the typo "
+            "cannot be fixed without reading the source" % (self.UNKNOWN_ID,),
+        )
+
+    def test_open_run_unknown_id_error_names_path_searched(self):
+        # The path searched is the archive path behaviour 12 reads:
+        # root/logs/runs/<run-id> - the message carries every component
+        # of that concrete path.
+        open_run = self._open_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_run(root)
+            error = self._raise_on_unknown_id(open_run, run_log_error, root)
+        run_dir = root / "logs" / "runs" / self.UNKNOWN_ID
+        for component in (str(run_dir), str(run_dir.parent), self.UNKNOWN_ID):
+            with self.subTest(component=component):
+                self.assertIn(
+                    component,
+                    str(error),
+                    "the RunLogError does not name the path searched; "
+                    "the component %r is missing from %r"
+                    % (component, str(error)),
+                )
+
+    def test_open_run_unknown_root_raises_naming_run_id_and_path(self):
+        # A root that does not exist at all - a fresh tempdir with no
+        # logs/ subtree - is the same fixable error: a typo in the root.
+        open_run = self._open_run()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            error = self._raise_on_unknown_id(open_run, run_log_error, root)
+        run_dir = root / "logs" / "runs" / self.UNKNOWN_ID
+        for component in (str(run_dir), str(run_dir.parent), self.UNKNOWN_ID):
+            with self.subTest(component=component):
+                self.assertIn(
+                    component,
+                    str(error),
+                    "the RunLogError for a missing root does not name the "
+                    "path searched; the component %r is missing from %r"
+                    % (component, str(error)),
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
