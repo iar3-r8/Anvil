@@ -37,6 +37,14 @@ arguments and file contents. Every member is read through a guard that
 treats a missing or unreadable member as absent, so a half-written
 archive can never crash the renderer.
 
+A run whose ``meta.json`` is not marked complete - the run died mid-way
+and ``finish_run`` never ran - is rendered the same way and additionally
+carries the exact line ``status: INCOMPLETE`` (behaviour 14); each
+absent member renders its pinned wording (``no diff recorded``,
+``no commits recorded``, ``no stream recorded for <role>``) while
+whatever did land renders unchanged. A complete run carries no
+INCOMPLETE text at all.
+
 Stdlib only. One exception type: ``RunLogError``.
 """
 
@@ -323,14 +331,31 @@ def open_run(run_id: str, root: Path) -> str:
     ``_read_json_if_present``: a missing or unreadable member is rendered
     as its absence, never as a crash, so a half-written archive stays
     reopenable. On well-formed input no error is raised.
+
+    Completeness is read from ``meta.json``'s ``complete`` flag as written
+    by ``start_run`` and ``finish_run`` in this module. A run that is not
+    complete - the flag false, or ``meta.json`` itself absent or invalid -
+    is half-written: the report carries the exact whole line
+    ``status: INCOMPLETE`` next to the stamps, and each absent member
+    renders its pinned absence wording (``no diff recorded``,
+    ``no commits recorded``, ``no stream recorded for <role>``) while
+    whatever did land renders unchanged. A complete run carries no
+    INCOMPLETE text at all. ``open_run`` never raises on a half-written
+    archive: a run that died mid-way is still reopenable.
     """
     run_dir = root / "logs" / "runs" / run_id
     meta = _read_json_if_present(run_dir / "meta.json")
+    complete = isinstance(meta, dict) and meta.get("complete") is True
 
     lines: List[str] = ["# Run report: " + run_id, ""]
     if isinstance(meta, dict):
         lines.append("started_at: %s" % (meta.get("started_at"),))
         lines.append("finished_at: %s" % (meta.get("finished_at"),))
+        if not complete:
+            # The half-written mark: the exact whole line, in the report's
+            # key: value style, reserved for runs finish_run never marked
+            # complete. A complete run carries no INCOMPLETE text at all.
+            lines.append("status: INCOMPLETE")
         lines.append("")
         intake = meta.get("intake")
         lines.extend(_intake_section(intake))
@@ -339,10 +364,10 @@ def open_run(run_id: str, root: Path) -> str:
             for role in pirole.ROLES:
                 if role in sessions:
                     lines.extend(
-                        _role_section(role, sessions[role], run_dir)
+                        _role_section(role, sessions[role], run_dir, complete)
                     )
-    lines.extend(_diff_section(run_dir))
-    lines.extend(_commits_section(run_dir))
+    lines.extend(_diff_section(run_dir, complete))
+    lines.extend(_commits_section(run_dir, complete))
     return "\n".join(lines) + "\n"
 
 
@@ -361,14 +386,17 @@ def _intake_section(intake: object) -> List[str]:
     return lines
 
 
-def _role_section(role: str, session_id: object, run_dir: Path) -> List[str]:
+def _role_section(
+    role: str, session_id: object, run_dir: Path, complete: bool
+) -> List[str]:
     """Render one role's section: session id, stream path and pievents facts.
 
     The stream file is referenced by its absolute path only; its bytes are
     parsed via ``pievents`` for the settled/aborted state, the tool-call
-    counters, the tokens and the cost. A missing or unreadable stream
-    renders the path without the facts, so a half-written archive never
-    crashes the renderer.
+    counters, the tokens and the cost. A missing or unreadable stream in a
+    half-written archive - one ``open_run`` marked INCOMPLETE - renders the
+    pinned line ``no stream recorded for <role>`` instead of the stream
+    path and facts, so a run that died mid-way never crashes the renderer.
 
     A stream that parses to zero events - whatever its malformed-line
     count, so an empty stream is unparseable with a count of zero - is
@@ -385,6 +413,10 @@ def _role_section(role: str, session_id: object, run_dir: Path) -> List[str]:
     stream_path = run_dir / (role + ".jsonl")
     lines.append("stream: %s" % (stream_path,))
     text = _read_text_if_present(stream_path)
+    if text is None and not complete:
+        # The stream never landed: the pinned absence wording, not the
+        # stream path - a half-written archive's missing stream is data.
+        lines.append("no stream recorded for " + role)
     if text is not None:
         parsed = pievents.parse(text)
         events = parsed["events"]
@@ -427,14 +459,19 @@ def _role_section(role: str, session_id: object, run_dir: Path) -> List[str]:
     return lines
 
 
-def _diff_section(run_dir: Path) -> List[str]:
+def _diff_section(run_dir: Path, complete: bool) -> List[str]:
     """Render the diff section from ``diff.patch``, absent-safe.
 
     The diff is ours to show, so its text is inlined verbatim in a fenced
-    code block; a missing or unreadable file renders the header only.
+    code block; an absent file in a half-written archive - one
+    ``open_run`` marked INCOMPLETE - renders the pinned line
+    ``no diff recorded``.
     """
     lines = ["## Diff", ""]
     diff_text = _read_text_if_present(run_dir / "diff.patch")
+    if diff_text is None and not complete:
+        # The diff never landed: the pinned absence wording.
+        lines.append("no diff recorded")
     if diff_text is not None:
         lines.append("```")
         lines.append(diff_text)
@@ -443,15 +480,19 @@ def _diff_section(run_dir: Path) -> List[str]:
     return lines
 
 
-def _commits_section(run_dir: Path) -> List[str]:
+def _commits_section(run_dir: Path, complete: bool) -> List[str]:
     """Render the commits section from ``commits.json``, in file order.
 
     Each entry renders as ``- <sha> <subject>`` in the order
-    ``commits.json`` holds them; a missing or unreadable file, or a file
-    that is not a list, renders the header only.
+    ``commits.json`` holds them; an absent file in a half-written archive
+    - one ``open_run`` marked INCOMPLETE - renders the pinned line
+    ``no commits recorded``.
     """
     lines = ["## Commits", ""]
     commits = _read_json_if_present(run_dir / "commits.json")
+    if commits is None and not complete:
+        # The commits never landed: the pinned absence wording.
+        lines.append("no commits recorded")
     if isinstance(commits, list):
         for commit in commits:
             if isinstance(commit, dict):
