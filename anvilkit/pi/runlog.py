@@ -341,9 +341,21 @@ def open_run(run_id: str, root: Path) -> str:
     ``no commits recorded``, ``no stream recorded for <role>``) while
     whatever did land renders unchanged. A complete run carries no
     INCOMPLETE text at all. ``open_run`` never raises on a half-written
-    archive: a run that died mid-way is still reopenable.
+    archive: a run that died mid-way is still reopenable. An unknown run
+    id - no directory at the archive path - raises ``RunLogError`` naming
+    the run id and the path searched before anything is rendered
+    (behaviour 15): a typo is fixable without reading the source.
     """
     run_dir = root / "logs" / "runs" / run_id
+    if not run_dir.is_dir():
+        # First failure mode: an unknown id must never fall through to the
+        # half-written rendering. The message carries the run id verbatim,
+        # the archive path searched, and its parent, so a typo in either
+        # is fixable without reading the source.
+        raise RunLogError(
+            "run %r has no archive at %s, searched under %s"
+            % (run_id, run_dir, run_dir.parent)
+        )
     meta = _read_json_if_present(run_dir / "meta.json")
     complete = isinstance(meta, dict) and meta.get("complete") is True
 
