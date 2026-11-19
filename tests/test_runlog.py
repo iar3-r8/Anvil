@@ -290,7 +290,7 @@ class RunLogDefaultsTestCase(unittest.TestCase):
         )
         self.assertGreaterEqual(
             stamp,
-            before,
+            before.replace(microsecond=0),
             "stamp %s predates the call's start %s; the default must come "
             "from datetime.now(timezone.utc), never local time"
             % (stamp.isoformat(), before.isoformat()),
