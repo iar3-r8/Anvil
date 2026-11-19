@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-12 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-13 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -216,6 +216,38 @@ report, not about re-deriving ``pievents``' arithmetic. While
 ``open_run`` is absent, every test here is red at the fetch step
 (``_open_run``): the module attribute is not callable, and the red is
 that missing behaviour, not a collection error of this file.
+
+Behaviour 13 (``open-run-unparseable-stream``), pinned from the plan:
+
+    Given: a ``<role>.jsonl`` that is empty, truncated or not JSON at
+    all. When: ``open_run`` renders that role. Then: the section reads
+    ``stream unparseable`` with the malformed-line count from
+    ``pievents.parse`` and the stream's path, and every other role
+    still renders. Error: ``open_run`` never raises on a malformed
+    stream - the broken run is the one most worth reopening.
+
+- Unparseable is read as zero parsed events, whatever the malformed
+  count: ``pievents.parse`` is total and never raises, so the report
+  cannot tell "every line malformed" from "no lines at all" except
+  through the count it already carries. An empty stream is
+  unparseable too, with an honest count of zero;
+- the pinned rendering is the exact line
+  ``stream unparseable: <n> malformed lines, no readable events``,
+  where ``<n>`` is ``pievents.parse(text)["malformed_lines"]`` for the
+  bytes the role's stream holds - computed in the tests through the
+  real ``pievents.parse``, never hardcoded;
+- a stream that parses to at least one event is not unparseable, even
+  if it also carries malformed lines: the marker is the zero-events
+  state, not the malformed-lines state;
+- ``open_run`` returns a plain ``str`` on a broken archive - no test
+  expects an exception.
+
+The archive is built with the genuine writers under a tempdir, exactly
+as behaviour 12 does: the broken role's stream is the raw malformed
+text, the other roles' streams are the repository's well-formed
+fixture. While the unparseable rendering is absent, every marker test
+is red at the assertion: the broken role's section today renders the
+path with the zero-facts and no "unparseable" wording at all.
 """
 
 import json
@@ -2132,6 +2164,330 @@ class RunLogOpenRunCompleteTestCase(unittest.TestCase):
             "the report does not carry the coder stream's file path in "
             "place of its bytes",
         )
+
+
+class RunLogOpenRunUnparseableTestCase(unittest.TestCase):
+    """Behaviour 13 (``open-run-unparseable-stream``): ``open_run`` renders a
+    broken stream.
+
+    The plan pins: given a ``<role>.jsonl`` that is empty, truncated or not
+    JSON at all, ``open_run`` renders that role's section as
+    ``stream unparseable`` with the malformed-line count from
+    ``pievents.parse`` and the stream's path, and every other role still
+    renders; ``open_run`` never raises on a malformed stream - the broken
+    run is the one most worth reopening.
+
+    The unparseable reading is zero parsed events, whatever the malformed
+    count: ``pievents.parse`` is total and never raises, so the report
+    distinguishes "every line malformed" from "no lines at all" only
+    through the count it carries. The pinned rendering is the exact line
+    ``stream unparseable: <n> malformed lines, no readable events`` where
+    ``<n>`` is ``pievents.parse(text)["malformed_lines"]`` for the bytes
+    the role's stream holds - computed in the tests through the real
+    ``pievents.parse``, never hardcoded. A stream that parses to at least
+    one event is not unparseable, even when it carries malformed lines.
+
+    The archive is built with the genuine writers (behaviours 6, 8, 11)
+    under a tempdir: the broken role's stream is the raw malformed text,
+    the other roles' streams are the repository's well-formed fixture.
+    While the unparseable rendering is absent, every marker test is red
+    at the assertion: the broken role's section today renders the path
+    with the zero facts and no "unparseable" wording at all.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    FINISHED_AT = "2026-11-19T14:00:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {role: EXPECTED_ID + "-" + role for role in pirole.ROLES}
+
+    # The same well-formed fixture as behaviour 12 backs every healthy
+    # role, so the broken role is the only one that differs.
+    FIXTURE_TEXT = (
+        REPO_ROOT / "tests" / "fixtures" / "pi_events_sample.jsonl"
+    ).read_text(encoding="utf-8")
+
+    # Not JSON at all: two lines, neither of which parses.
+    NOT_JSON_TEXT = "totally not json\nalso not json\n"
+    # Truncated: one valid line plus a final line cut mid-JSON.
+    TRUNCATED_TEXT = '{"type": "agent_start"}\n{"type": "agent_st'
+    # A stream that parses to one event yet also carries a malformed
+    # line: not unparseable, because the marker is the zero-events
+    # state, not the malformed-lines state.
+    MIXED_TEXT = '{"type": "agent_start"}\nnot json at all'
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _open_run(self):
+        """Fetch ``anvilkit.pi.runlog.open_run`` (green since behaviour 12)."""
+        runlog = self._runlog()
+        open_run = getattr(runlog, "open_run", None)
+        self.assertTrue(
+            callable(open_run),
+            "anvilkit.pi.runlog.open_run is not callable; behaviour 12 "
+            "(open-run-complete) is a precondition of behaviour 13",
+        )
+        return open_run
+
+    def _writer(self, name, behaviour):
+        """Fetch a green archive writer from the module under test."""
+        runlog = self._runlog()
+        writer = getattr(runlog, name, None)
+        self.assertTrue(
+            callable(writer),
+            "anvilkit.pi.runlog.%s is not callable; behaviour %s has not "
+            "been implemented yet" % (name, behaviour),
+        )
+        return writer
+
+    def _build_archive(self, root, broken_role, broken_text):
+        """Build a complete archive with the genuine writers in which
+        exactly ``broken_role``'s stream is ``broken_text`` and every
+        other role's stream is the well-formed fixture. Returns the run
+        directory."""
+        start_run = self._writer("start_run", "6 (start-run-writes-meta)")
+        write_stream = self._writer(
+            "write_stream", "8 (write-stream-verbatim)"
+        )
+        finish_run = self._writer(
+            "finish_run", "11 (finish-run-marks-complete)"
+        )
+        run_dir = start_run(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+        for role in pirole.ROLES:
+            text = broken_text if role == broken_role else self.FIXTURE_TEXT
+            write_stream(run_dir, role, text)
+        finish_run(run_dir, "shipped", self.FINISHED_AT)
+        return run_dir
+
+    def _role_section(self, report, role):
+        """The report text of one role's section: from its header up to
+        (not including) the next section header. Raises ``AssertionError``
+        if the section header is missing."""
+        header = "## Role: " + role
+        start = report.index(header)
+        rest = report[start + len(header):]
+        for next_header in ("## Intake", "## Role:", "## Diff", "## Commits"):
+            if rest.startswith(next_header):
+                continue
+            cut = rest.find(next_header)
+            if cut != -1:
+                return rest[:cut]
+        return rest
+
+    def _unparseable_line(self, text):
+        """The exact pinned unparseable line for ``text``: the count is
+        computed with the real ``pievents.parse``, never hardcoded."""
+        return "stream unparseable: %d malformed lines, no readable events" % (
+            pievents.parse(text)["malformed_lines"],
+        )
+
+    def test_open_run_not_json_stream_marker_with_derived_count_and_path(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(root, "coder", self.NOT_JSON_TEXT)
+            report = self._open_run()(self.RUN_ID, root)
+        self.assertIsInstance(
+            report,
+            str,
+            "open_run must return a str on a broken archive; the broken "
+            "run is the one most worth reopening",
+        )
+        section = self._role_section(report, "coder")
+        expected_line = self._unparseable_line(self.NOT_JSON_TEXT)
+        self.assertEqual(
+            expected_line,
+            "stream unparseable: 2 malformed lines, no readable events",
+            "test-precondition: pievents.parse must count both lines of "
+            "%r as malformed" % (self.NOT_JSON_TEXT,),
+        )
+        self.assertIn(
+            expected_line,
+            section,
+            "the coder section does not carry the pinned unparseable line "
+            "%r (the count must be pievents.parse's malformed_lines for "
+            "the stream's bytes)" % (expected_line,),
+        )
+        self.assertIn(
+            str(run_dir / "coder.jsonl"),
+            section,
+            "the coder section does not carry the broken stream's path %s"
+            % (run_dir / "coder.jsonl",),
+        )
+        # The count is derived from the bytes, not invented: the same
+        # line must not appear in any healthy role's section.
+        for role in pirole.ROLES:
+            if role == "coder":
+                continue
+            with self.subTest(role=role):
+                self.assertNotIn(
+                    expected_line,
+                    self._role_section(report, role),
+                    "the healthy %r section must not carry the unparseable "
+                    "marker" % (role,),
+                )
+
+    def test_open_run_truncated_stream_marker_with_derived_count(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(root, "tester", self.TRUNCATED_TEXT)
+            report = self._open_run()(self.RUN_ID, root)
+        section = self._role_section(report, "tester")
+        expected_line = self._unparseable_line(self.TRUNCATED_TEXT)
+        self.assertEqual(
+            expected_line,
+            "stream unparseable: 1 malformed lines, no readable events",
+            "test-precondition: pievents.parse must count the cut final "
+            "line of %r as malformed" % (self.TRUNCATED_TEXT,),
+        )
+        self.assertIn(
+            expected_line,
+            section,
+            "the tester section does not carry the pinned unparseable "
+            "line %r for the truncated stream" % (expected_line,),
+        )
+        self.assertIn(
+            str(run_dir / "tester.jsonl"),
+            section,
+            "the tester section does not carry the truncated stream's path "
+            "%s" % (run_dir / "tester.jsonl",),
+        )
+
+    def test_open_run_empty_stream_marker_with_zero_count(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(root, "docs", "")
+            report = self._open_run()(self.RUN_ID, root)
+        self.assertIsInstance(report, str)
+        section = self._role_section(report, "docs")
+        expected_line = self._unparseable_line("")
+        self.assertEqual(
+            expected_line,
+            "stream unparseable: 0 malformed lines, no readable events",
+            "test-precondition: pievents.parse must count an empty stream "
+            "as zero events with a malformed count of zero",
+        )
+        self.assertIn(
+            expected_line,
+            section,
+            "the docs section does not carry the pinned unparseable line "
+            "%r for an empty stream (zero events is unparseable, and the "
+            "count renders as 0)" % (expected_line,),
+        )
+        self.assertIn(
+            str(run_dir / "docs.jsonl"),
+            section,
+            "the docs section does not carry the empty stream's path %s"
+            % (run_dir / "docs.jsonl",),
+        )
+
+    def test_open_run_mixed_stream_is_not_unparseable(self):
+        # One valid line plus one malformed line parses to one event, so
+        # it is not unparseable: the marker is the zero-events state, not
+        # the malformed-lines state.
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(root, "architect", self.MIXED_TEXT)
+            report = self._open_run()(self.RUN_ID, root)
+        section = self._role_section(report, "architect")
+        self.assertEqual(
+            pievents.parse(self.MIXED_TEXT)["malformed_lines"],
+            1,
+            "test-precondition: pievents.parse must count the one bad line "
+            "of %r as malformed while parsing one event" % (self.MIXED_TEXT,),
+        )
+        self.assertNotIn(
+            "stream unparseable",
+            section,
+            "a stream that parses to at least one event must not be marked "
+            "unparseable, even when it carries a malformed line",
+        )
+
+    def test_open_run_broken_role_and_healthy_role_render_in_one_report(self):
+        self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(root, "coder", self.NOT_JSON_TEXT)
+            report = self._open_run()(self.RUN_ID, root)
+        # The broken role carries the marker.
+        coder_section = self._role_section(report, "coder")
+        self.assertIn(
+            self._unparseable_line(self.NOT_JSON_TEXT),
+            coder_section,
+            "the broken coder section does not carry the unparseable marker",
+        )
+        # A healthy role still renders its facts: the fixture's own
+        # session id, settled state, token totals and cost, all computed
+        # via pievents itself.
+        events = pievents.parse(self.FIXTURE_TEXT)["events"]
+        outcome = pievents.outcome(events)
+        calls = pievents.tool_calls(events)
+        session = pievents.session(events)
+        for role in ("architect", "tester", "docs"):
+            with self.subTest(role=role):
+                section = self._role_section(report, role)
+                self.assertNotIn(
+                    "stream unparseable",
+                    section,
+                    "the healthy %r section must not carry the unparseable "
+                    "marker" % (role,),
+                )
+                self.assertIn(
+                    session["session_id"],
+                    section,
+                    "the healthy %r section does not carry the fixture's "
+                    "session id %r" % (role, session["session_id"]),
+                )
+                self.assertIn(
+                    "settled: %s" % (outcome["settled"],),
+                    section,
+                    "the healthy %r section does not carry the fixture's "
+                    "settled state" % (role,),
+                )
+                for value in (
+                    outcome["input"],
+                    outcome["output"],
+                    outcome["totalTokens"],
+                    outcome["cost_total"],
+                    calls["attempted"],
+                ):
+                    self.assertIn(
+                        str(value),
+                        section,
+                        "the healthy %r section does not carry the value "
+                        "%r derived from the fixture stream via pievents"
+                        % (role, value),
+                    )
+
+    def test_open_run_broken_stream_never_raises(self):
+        # Every archive shape the plan names - not JSON, truncated, empty -
+        # must come back as a report, not an exception.
+        self._open_run()
+        for text in (self.NOT_JSON_TEXT, self.TRUNCATED_TEXT, ""):
+            with self.subTest(text=text), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                run_dir = self._build_archive(root, "coder", text)
+                report = self._open_run()(self.RUN_ID, root)
+            self.assertIsInstance(
+                report,
+                str,
+                "open_run raised or did not return a str on the stream %r; "
+                "a malformed stream must never break the reopen" % (text,),
+            )
+            self.assertIn(
+                self._unparseable_line(text),
+                self._role_section(report, "coder"),
+                "the coder section for %r does not carry the unparseable "
+                "marker" % (text,),
+            )
 
 
 if __name__ == "__main__":
