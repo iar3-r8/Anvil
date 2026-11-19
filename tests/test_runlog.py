@@ -1,4 +1,4 @@
-"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-6 of ``plans/pi-phase11-runlog.md``.
+"""Tests for ``anvilkit.pi.runlog`` - behaviours 1-8 of ``plans/pi-phase11-runlog.md``.
 
 Written before the implementation (TDD). Every test loads the module through
 the deferred import in ``_runlog`` so that, while a behaviour is missing, the
@@ -1046,6 +1046,191 @@ class RunLogOverwriteRefusalTestCase(unittest.TestCase):
                 "opening a second run in the same root disturbed the first "
                 "run's archive",
             )
+    
+    
+class RunLogWriteStreamTestCase(unittest.TestCase):
+    """Behaviour 8 (``write-stream-verbatim``): ``write_stream(run_dir, role, text)``.
+
+    The plan pins: given a run directory, a role and the driver's captured
+    ``result["stdout"]``, ``<role>.jsonl`` holds the text byte-for-byte. An
+    empty stream writes an empty file, and an unparseable stream is kept
+    unchanged - those are the runs worth reading, so this module never parses
+    or rewrites a stream. An unknown role raises ``RunLogError`` naming it;
+    a missing run directory raises naming the path.
+
+    The happy-path setup opens a real run through the genuine ``start_run``
+    (behaviour 6), so the run directory being written is a real on-disk run
+    directory, not a hand-built stand-in. While ``write_stream`` is absent,
+    every test here is red at the fetch step (``_write_stream``): the module
+    attribute is not callable, and the red is that missing behaviour, not a
+    collection error of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 58, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+
+    # A realistic multi-line JSONL stream, in the shape of the driver's
+    # captured result["stdout"]: content is data, never parsed.
+    STREAM = (
+        '{"type": "session", "version": 3, '
+        '"id": "9f1c7a42-6e3d-4b8a-9c2f-7d5e8a1b3c4d", '
+        '"timestamp": "2026-11-19T13:45:00.000Z", "cwd": "/workspace"}\n'
+        '{"type": "agent_start"}\n'
+        '{"type": "agent_end", "messages": [], "willRetry": false}\n'
+        '{"type": "agent_settled", "aborted": false}\n'
+    )
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _write_stream(self):
+        """Fetch ``anvilkit.pi.runlog.write_stream``."""
+        runlog = self._runlog()
+        write_stream = getattr(runlog, "write_stream", None)
+        self.assertTrue(
+            callable(write_stream),
+            "anvilkit.pi.runlog.write_stream is not callable; behaviour 8 "
+            "(write-stream-verbatim) has not been implemented yet",
+        )
+        return write_stream
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; behaviour 6 "
+            "(start-run-writes-meta) has not been implemented yet",
+        )
+        return start_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "behaviour 1 (run-id-format) has not been implemented yet",
+        )
+        return run_log_error
+
+    def _seed_run_dir(self, root):
+        """Open a real run through ``start_run`` and return its run directory."""
+        return self._start_run()(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+
+    @staticmethod
+    def _read_text(path):
+        """The file's exact bytes decoded as UTF-8, for byte-for-byte pins."""
+        return path.read_bytes().decode("utf-8")
+
+    def test_write_stream_coder_multiline_jsonl_written_verbatim(self):
+        self._write_stream()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_stream()(run_dir, "coder", self.STREAM)
+            stream_path = run_dir / "coder.jsonl"
+            self.assertTrue(
+                stream_path.is_file(),
+                "write_stream did not create %s" % stream_path,
+            )
+            self.assertEqual(
+                self._read_text(stream_path),
+                self.STREAM,
+                "coder.jsonl does not hold the captured stream byte-for-byte",
+            )
+
+    def test_write_stream_trailing_newline_round_trips_exactly(self):
+        self._write_stream()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            with_trailing = '{"type": "agent_start"}\n{"type": "agent_end"}\n'
+            self._write_stream()(run_dir, "tester", with_trailing)
+            self.assertEqual(
+                self._read_text(run_dir / "tester.jsonl"),
+                with_trailing,
+                "a stream with a trailing newline was rewritten; the "
+                "written bytes must equal the input exactly",
+            )
+
+    def test_write_stream_no_trailing_newline_round_trips_exactly(self):
+        self._write_stream()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            no_trailing = '{"type": "agent_start"}\n{"type": "agent_end"}'
+            self._write_stream()(run_dir, "docs", no_trailing)
+            self.assertEqual(
+                self._read_text(run_dir / "docs.jsonl"),
+                no_trailing,
+                "a stream without a trailing newline was rewritten; the "
+                "written bytes must equal the input exactly",
+            )
+
+    def test_write_stream_empty_stream_writes_empty_file(self):
+        self._write_stream()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_stream()(run_dir, "tester", "")
+            stream_path = run_dir / "tester.jsonl"
+            self.assertTrue(
+                stream_path.is_file(),
+                "write_stream did not create %s for an empty stream; an "
+                "empty stream is data (a run that produced nothing)"
+                % stream_path,
+            )
+            self.assertEqual(stream_path.stat().st_size, 0)
+            self.assertEqual(self._read_text(stream_path), "")
+
+    def test_write_stream_unparseable_stream_kept_unchanged(self):
+        self._write_stream()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            unparseable = "not json at all\n\ncut off {"
+            self._write_stream()(run_dir, "docs", unparseable)
+            self.assertEqual(
+                self._read_text(run_dir / "docs.jsonl"),
+                unparseable,
+                "an unparseable stream was modified; this module must keep "
+                "the captured bytes unchanged - those are the runs worth "
+                "reading",
+            )
+
+    def test_write_stream_unknown_role_raises_naming_role_and_creates_no_file(self):
+        self._write_stream()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            with self.assertRaisesRegex(run_log_error, "reviewer"):
+                self._write_stream()(run_dir, "reviewer", "x")
+            self.assertFalse(
+                (run_dir / "reviewer.jsonl").exists(),
+                "write_stream created reviewer.jsonl despite an unknown "
+                "role; a rejected role must write nothing",
+            )
+
+    def test_write_stream_missing_run_dir_raises_naming_path(self):
+        self._write_stream()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no-such-run"
+            with self.assertRaisesRegex(
+                run_log_error, re.escape(str(missing))
+            ):
+                self._write_stream()(missing, "coder", "x")
 
 
 if __name__ == "__main__":
