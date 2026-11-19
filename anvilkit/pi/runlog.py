@@ -97,6 +97,11 @@ def start_run(
 ) -> Path:
     """Open the archive directory for run ``run_id`` and write its ``meta.json``.
 
+    If ``root/logs/runs/<run-id>/`` already exists the run is refused before
+    any validation or I/O: ``RunLogError`` names the run id and nothing on
+    disk is touched (behaviour 7 - a past run is evidence and is never
+    overwritten).
+
     Creates ``root/logs/runs/<run-id>/`` and writes ``meta.json`` with exactly
     the seven planned keys - ``run_id``, ``started_at``, ``finished_at`` (null),
     ``intake``, ``sessions``, ``outcome`` (``"unknown"``) and ``complete``
@@ -110,8 +115,13 @@ def start_run(
     ``str``. Any violation raises ``RunLogError`` naming the offending field
     (or role) and leaves no ``meta.json`` behind.
     """
-    _validate_start_inputs(intake, sessions, started_at)
     run_dir = root / "logs" / "runs" / run_id
+    if run_dir.exists():
+        raise RunLogError(
+            "run %r already has an archive at %s and will not be "
+            "overwritten" % (run_id, run_dir)
+        )
+    _validate_start_inputs(intake, sessions, started_at)
     run_dir.mkdir(parents=True, exist_ok=True)
     meta = {
         "run_id": run_id,
