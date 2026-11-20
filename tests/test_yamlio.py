@@ -4,8 +4,9 @@ Written before the implementation (TDD step 2).
 
 Scope notes:
 
-* Anvil *reads* YAML and never writes it. ``config.yaml`` is owned by llama-swap
-  and stays hand-authored, so there is no dump surface to test.
+* ``config.yaml`` is owned by llama-swap and stays hand-authored; Anvil's
+  ``save`` surface (behaviour 3, ``plans/pi-phase13-profiles.md``) is for
+  Anvil's own files only, and is covered in ``TestSaveBehaviour3``.
 * ``pyyaml`` availability is not tested. The managed venv guarantees it, so a
   fallback path would be untestable dead code.
 
@@ -15,6 +16,8 @@ The contract is therefore narrow:
 * errors are typed and name the offending path, never a bare traceback
 * the shapes actually present in config.yaml load correctly, including the
   folded ``cmd: >`` scalars used for the long vLLM command lines
+* ``save`` creates parents, round-trips through ``load`` byte-for-byte, and
+  rejects non-mapping documents before anything touches the disk
 """
 
 import sys
@@ -167,6 +170,85 @@ class TestPublicSurfaceIsLoadOnly(unittest.TestCase):
                 hasattr(yamlio, forbidden),
                 "yamlio must not expose {!r}: Anvil never writes YAML".format(forbidden),
             )
+
+
+class TestSaveBehaviour3(YamlioTestCase):
+    """Behaviour 3 (plans/pi-phase13-profiles.md): yamlio gains a save function.
+
+    Red while ``anvilkit.yamlio.save`` does not exist: the module is imported
+    at collection time (module top), so this file collects cleanly and every
+    test below fails with an ``AttributeError`` naming ``save`` - not a
+    collection error. ``save`` is not in ``TestPublicSurfaceIsLoadOnly``'s
+    forbidden list, so implementing it will not disturb the existing surface
+    pin.
+    """
+
+    def _fresh_path(self):
+        tmp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp_dir.cleanup)
+        return Path(tmp_dir.name)
+
+    def test_save_creates_missing_parent_directories(self):
+        path = self._fresh_path() / "nested" / "dirs" / "profiles.yaml"
+
+        yamlio.save(path, {"version": 1})
+
+        self.assertTrue(path.is_file())
+
+    def test_save_roundtrips_nested_mapping(self):
+        path = self._fresh_path() / "profiles.yaml"
+        mapping = {
+            "version": 1,
+            "profiles": {
+                "project-x": {
+                    "path": "/code/project-x",
+                    "token_env": "GITHUB_TOKEN_PROJECT_X",
+                    "project": {
+                        "name": "project-x",
+                        "structure": {"src": ["a.py", "b.py"]},
+                    },
+                }
+            },
+        }
+
+        yamlio.save(path, mapping)
+
+        self.assertEqual(yamlio.load(path), mapping)
+
+    def test_save_roundtrips_multiline_string_value(self):
+        # Real newlines inside a value must survive the round trip byte-for-byte.
+        path = self._fresh_path() / "profiles.yaml"
+        mapping = {"project": {"structure": "line one\nline two\nline three"}}
+
+        yamlio.save(path, mapping)
+
+        self.assertEqual(yamlio.load(path), mapping)
+
+    def test_save_rejects_list_top_level_without_writing_file(self):
+        path = self._fresh_path() / "profiles.yaml"
+
+        with self.assertRaises(yamlio.YamlError):
+            yamlio.save(path, ["project-x", "api"])
+
+        self.assertFalse(path.exists())
+
+    def test_save_rejects_string_top_level_without_writing_file(self):
+        path = self._fresh_path() / "profiles.yaml"
+
+        with self.assertRaises(yamlio.YamlError):
+            yamlio.save(path, "just a string")
+
+        self.assertFalse(path.exists())
+
+    def test_save_unwritable_path_raises_yaml_error_naming_path(self):
+        # Parent is a regular file, so any write must fail on disk.
+        blocker = self.write_temp("a regular file, not a directory\n")
+        path = blocker / "child.yaml"
+
+        with self.assertRaises(yamlio.YamlError) as ctx:
+            yamlio.save(path, {"version": 1})
+
+        self.assertIn("child.yaml", str(ctx.exception))
 
 
 if __name__ == "__main__":
