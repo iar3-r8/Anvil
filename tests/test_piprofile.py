@@ -2,10 +2,12 @@
 
 Written before the implementation (TDD, ``plans/pi-phase13-profiles.md``).
 This file covers behaviour 1 ("name-charset"), behaviour 2
-("token-env-derivation"), behaviour 4 ("save-writes-record") and behaviour 5
-("save-updates-in-place"); the later behaviours (``load_profile``,
-``list_profiles``, ``resolve_token``) will be added here as separate test
-classes as they are implemented.
+("token-env-derivation"), behaviour 4 ("save-writes-record"), behaviour 5
+("save-updates-in-place"), behaviour 6 ("save-renames-on-same-path"),
+behaviour 7 ("save-refuses-name-collision"), behaviour 8
+("save-refuses-token-value") and behaviour 9 ("load-unknown-name"); the
+later behaviours (``list_profiles``, ``resolve_token``) will be added here
+as separate test classes as they are implemented.
 
 ``piprofile`` is imported inside each test body rather than at collection
 time, so the file always collects cleanly while the store behaviours remain
@@ -859,3 +861,160 @@ class SaveProfileRefusesTokenValueTestCase(unittest.TestCase):
 
                     profile = yamlio.load(root / "profiles.yaml")[RECORD_NAME]
                     self.assertEqual(profile[field], value)
+
+
+# Behaviour 9: ``load_profile(root, name)`` returns the stored record for a
+# known name and fails naming the unknown name for a typo, listing the
+# known profile names so the typo is fixable without reading the YAML. The
+# values are owned by the tests; the store is seeded through the green
+# ``save_profile`` at real directories so the read is proven against a
+# store the write path produced, not a hand-written file.
+LOAD_PROJECT_IDENTITY = ("octo-org", "project-x", "main")
+LOAD_API_IDENTITY = ("api-org", "api", "master")
+
+#: The populated project block the ``project-x`` record carries; ``api``
+#: carries an empty block, so both shapes of behaviour 12 are loaded.
+LOAD_PROJECT_BLOCK = {
+    "name": "project-x",
+    "structure": "anvilkit/   python package\nplans/    decision record\n",
+    "configuration": "gateway port 8080\ncontext 32k",
+}
+
+#: A name the store does not hold.
+LOAD_UNKNOWN_NAME = "typo"
+
+
+class LoadProfileUnknownNameTestCase(unittest.TestCase):
+    """Behaviour 9: load-unknown-name."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1, 2, 4, 5, 6, 7 and 8 are green), so
+        the import succeeds and a missing ``load_profile`` surfaces as an
+        ``AttributeError`` naming the function, not as a collection error.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _seed_two_profiles(self, module, tmp):
+        """Seed the store with ``project-x`` and ``api`` at real dirs.
+
+        ``project-x`` carries the populated ``LOAD_PROJECT_BLOCK``; ``api``
+        carries an empty project block. Returns ``(root, dir_x, dir_api)``.
+        """
+        dir_x = Path(tmp) / "project-x"
+        dir_x.mkdir()
+        dir_api = Path(tmp) / "api"
+        dir_api.mkdir()
+        root = Path(tmp) / ".anvil"
+        module.save_profile(
+            root=root,
+            name="project-x",
+            path=dir_x,
+            owner=LOAD_PROJECT_IDENTITY[0],
+            repo=LOAD_PROJECT_IDENTITY[1],
+            base=LOAD_PROJECT_IDENTITY[2],
+            project=LOAD_PROJECT_BLOCK,
+        )
+        module.save_profile(
+            root=root,
+            name="api",
+            path=dir_api,
+            owner=LOAD_API_IDENTITY[0],
+            repo=LOAD_API_IDENTITY[1],
+            base=LOAD_API_IDENTITY[2],
+            project={},
+        )
+        return root, dir_x, dir_api
+
+    def test_load_profile_known_name_returns_record_with_fields_intact(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, dir_x, dir_api = self._seed_two_profiles(module, tmp)
+
+            for name, target, identity, project in (
+                ("project-x", dir_x, LOAD_PROJECT_IDENTITY, LOAD_PROJECT_BLOCK),
+                ("api", dir_api, LOAD_API_IDENTITY, {}),
+            ):
+                with self.subTest(name=name):
+                    record = module.load_profile(root, name)
+
+                    self.assertEqual(
+                        record["path"], os.path.abspath(str(target))
+                    )
+                    self.assertEqual(record["owner"], identity[0])
+                    self.assertEqual(record["repo"], identity[1])
+                    self.assertEqual(record["base"], identity[2])
+                    # The derivation behaviour 2 pins, through the module's
+                    # own function so the test pins the contract, not a copy.
+                    self.assertEqual(
+                        record["token_env"], module.token_env_for(name)
+                    )
+                    self.assertEqual(record["project"], project)
+
+    def test_load_profile_unknown_name_raises_profile_error_naming_name_and_listing_known(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _dir_x, _dir_api = self._seed_two_profiles(module, tmp)
+
+            with self.assertRaises(module.ProfileError) as ctx:
+                module.load_profile(root, LOAD_UNKNOWN_NAME)
+
+            # The typo is named, and both known names are listed so the
+            # operator can fix the name without reading the YAML.
+            message = str(ctx.exception)
+            self.assertIn(LOAD_UNKNOWN_NAME, message)
+            self.assertIn("project-x", message)
+            self.assertIn("api", message)
+
+    def test_load_profile_missing_store_raises_profile_error_for_any_name(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            # The root directory does not exist at all: no profiles.yaml.
+            root = Path(tmp) / ".anvil"
+            self.assertFalse(root.exists())
+
+            # (requested name, known names that must NOT appear in the
+            # message — the empty store invents none).
+            for name, absent_known in (
+                ("project-x", ["api"]),
+                ("api", ["project-x"]),
+                ("typo", ["project-x", "api"]),
+            ):
+                with self.subTest(name=name):
+                    with self.assertRaises(module.ProfileError) as ctx:
+                        module.load_profile(root, name)
+
+                    message = str(ctx.exception)
+                    self.assertIn(name, message)
+                    for known in absent_known:
+                        self.assertNotIn(known, message)
+
+            # A read is a read: the failed load created nothing, neither
+            # the store file nor the root directory.
+            self.assertFalse((root / "profiles.yaml").exists())
+            self.assertFalse(root.exists())
+
+    def test_load_profile_empty_store_raises_profile_error_for_any_name(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            # The root exists but holds no profiles.yaml.
+            root = Path(tmp) / ".anvil"
+            root.mkdir()
+
+            for name, absent_known in (
+                ("project-x", ["api"]),
+                ("api", ["project-x"]),
+                ("typo", ["project-x", "api"]),
+            ):
+                with self.subTest(name=name):
+                    with self.assertRaises(module.ProfileError) as ctx:
+                        module.load_profile(root, name)
+
+                    message = str(ctx.exception)
+                    self.assertIn(name, message)
+                    for known in absent_known:
+                        self.assertNotIn(known, message)
+
+            # The failed load did not invent a store file.
+            self.assertFalse((root / "profiles.yaml").exists())
