@@ -12,10 +12,11 @@ for the empty string, a character outside the set, or a leading ``-``,
 ``.`` or digit: a leading hyphen reads as a CLI flag and a mangled name
 maps to a key Anvil never reads. ``token_env_for`` (behaviour 2) derives
 the GitHub token variable, and ``save_profile`` writes the record under
-the name into the store. The read behaviours (``load_profile``,
-``list_profiles``) and the same-name-different-path refusal (behaviour 7)
-will follow. This module imports no ``subprocess`` and no ``yaml`` —
-reading and writing the file is ``yamlio``'s licence.
+the name into the store, refusing — with a ``ProfileError`` naming the
+existing path — a re-save that keeps the name but points at a different
+existing directory (behaviour 7). The read behaviours (``load_profile``,
+``list_profiles``) will follow. This module imports no ``subprocess`` and
+no ``yaml`` — reading and writing the file is ``yamlio``'s licence.
 """
 
 import os
@@ -107,9 +108,12 @@ def save_profile(
 
     Raises:
         ProfileError: the name fails ``valid_name`` (the name is named),
-            or ``path`` is not an existing directory (the path is named).
-            In both cases nothing is written: the store file, if any,
-            is untouched and no directories are created.
+            ``path`` is not an existing directory (the path is named),
+            or the store already holds a record under ``name`` whose
+            path is a different existing directory (the existing path
+            is named) — the last is behaviour 7. In every case nothing
+            is written: the store file, if any, is untouched and no
+            directories are created.
     """
     if not valid_name(name):
         raise ProfileError(
@@ -142,16 +146,37 @@ def _save_into_store(
     record in place — the old key is dropped, its ``project`` block is
     carried across, and the identity fields come from this save
     (behaviour 6) — so the store never holds two records for one path.
-    The same-name-different-path refusal (behaviour 7) will mutate here.
-    The validation that must precede any write lives in ``save_profile``,
-    so a raised ``ProfileError`` leaves the file and the directory tree
-    untouched.
+    The same-name-different-path refusal (behaviour 7) mutates here too:
+    before any of the mutations below, a record already carrying this name
+    at a different existing directory is refused. The validation that must
+    precede any write lives in ``save_profile``, so a raised ``ProfileError``
+    leaves the file and the directory tree untouched.
     """
     store_path = Path(root) / _STORE_FILENAME
     try:
         store = yamlio.load(store_path) if store_path.exists() else {}
     except yamlio.YamlError as exc:
         raise ProfileError("could not read profile store: {}".format(exc)) from exc
+
+    # Behaviour 7 (refuse name collision): a record that already carries
+    # this name at a different existing directory is refused before any
+    # mutation — a silent overwrite would leave a later run editing the
+    # wrong repository. The error names the EXISTING path, in the
+    # absolute form the store records it, so the operator learns which
+    # repository the name already points at. A stale record whose path
+    # no longer exists is not a collision: the save proceeds.
+    existing = store.get(name)
+    if isinstance(existing, dict):
+        existing_path = existing.get("path")
+        if (
+            isinstance(existing_path, str)
+            and existing_path != absolute
+            and os.path.isdir(existing_path)
+        ):
+            raise ProfileError(
+                "profile name %r already points at %s: choose another "
+                "name to point at %s" % (name, existing_path, absolute)
+            )
 
     store["version"] = 1
 
