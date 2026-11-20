@@ -20,7 +20,10 @@ starts with a token prefix rather than naming a key (behaviour 8).
 ``load_profile`` reads a record back out of the store, refusing — with a
 ``ProfileError`` naming the unknown name and listing the known profile
 names — a name the store does not hold, so a typo is fixable without
-reading the YAML (behaviour 9). ``list_profiles`` will follow. This
+reading the YAML (behaviour 9), and refusing — naming the profile and
+the vanished path — a record whose ``path`` no longer exists on disk,
+checked per record so a healthy profile still loads while a sibling's
+path has vanished (behaviour 10). ``list_profiles`` will follow. This
 module imports no ``subprocess`` and
 no ``yaml`` — reading and writing the file is ``yamlio``'s licence.
 """
@@ -166,7 +169,12 @@ def load_profile(root: Union[str, Path], name: str) -> Dict[str, Any]:
     error — and the record held under ``name`` is returned with its
     fields intact: ``path``, ``owner``, ``repo``, ``base``,
     ``token_env`` and the ``project`` block as written by
-    ``save_profile``.
+    ``save_profile``. Behaviour 10 ("load-vanished-path") is enforced
+    before the record is returned: the record's ``path`` must still be
+    an existing directory, in the absolute form ``save_profile``
+    records, and a path that has vanished refuses the load. The check
+    is per record, never a store-wide scan, so a healthy profile loads
+    even when a sibling's path has vanished.
 
     Raises:
         ProfileError: the store does not hold a record under ``name`` —
@@ -174,8 +182,11 @@ def load_profile(root: Union[str, Path], name: str) -> Dict[str, Any]:
             listed, so a typo is fixable without reading the YAML. An
             empty or missing store invents no known names, and a
             malformed store raises the same way, wrapping the
-            ``YamlError``. A read is a read: ``load_profile`` never
-            writes, and a failed load leaves the filesystem untouched.
+            ``YamlError``. The record is held but its ``path`` no longer
+            exists on disk — the profile name and the vanished path are
+            both named, raised before any caller acts on the record.
+            A read is a read: ``load_profile`` never writes, and a
+            failed load leaves the filesystem untouched.
     """
     store = _load_store(root)
     record = store.get(name)
@@ -188,6 +199,15 @@ def load_profile(root: Union[str, Path], name: str) -> Dict[str, Any]:
             )
         raise ProfileError(
             "unknown profile %r: no profiles are saved" % name
+        )
+    # Behaviour 10 (load-vanished-path): per-record, not a store-wide
+    # scan — a healthy profile loads while a sibling's path has
+    # vanished. The path is in the absolute form the store records it.
+    stored_path = record.get("path")
+    if not (isinstance(stored_path, str) and os.path.isdir(stored_path)):
+        raise ProfileError(
+            "profile %r points at a vanished path: %s"
+            % (name, stored_path)
         )
     return record
 
