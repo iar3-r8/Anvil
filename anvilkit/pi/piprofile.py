@@ -16,7 +16,9 @@ the name into the store, refusing — with a ``ProfileError`` naming the
 existing path — a re-save that keeps the name but points at a different
 existing directory (behaviour 7), and refusing — naming the offending
 field — any save whose ``owner``, ``repo``, ``base`` or ``project`` value
-starts with a token prefix rather than naming a key (behaviour 8).
+starts with a token prefix rather than naming a key (behaviour 8), and
+refusing — naming the project field — a ``project`` block that is not a
+mapping, before any filesystem effect (behaviour 12).
 ``load_profile`` reads a record back out of the store, refusing — with a
 ``ProfileError`` naming the unknown name and listing the known profile
 names — a name the store does not hold, so a typo is fixable without
@@ -119,7 +121,7 @@ def save_profile(
     owner: Optional[str],
     repo: Optional[str],
     base: Optional[str],
-    project: Dict[str, Any],
+    project: Any,
 ) -> None:
     """Record a provisioning under ``name`` in ``<root>/profiles.yaml``.
 
@@ -134,18 +136,28 @@ def save_profile(
 
     Raises:
         ProfileError: the name fails ``valid_name`` (the name is named),
-            a value in ``owner``, ``repo``, ``base`` or the ``project``
-            block starts with a token prefix (the offending field is
-            named) — behaviour 8, ``path`` is not an existing directory
-            (the path is named), or the store already holds a record
-            under ``name`` whose path is a different existing directory
-            (the existing path is named) — the last is behaviour 7. In
-            every case nothing is written: the store file, if any, is
-            untouched and no directories are created.
+            the ``project`` block is not a mapping (the project field is
+            named) — behaviour 12, a value in ``owner``, ``repo``,
+            ``base`` or the ``project`` block starts with a token prefix
+            (the offending field is named) — behaviour 8, ``path`` is not
+            an existing directory (the path is named), or the store
+            already holds a record under ``name`` whose path is a
+            different existing directory (the existing path is named) —
+            the last is behaviour 7. In every case nothing is written:
+            the store file, if any, is untouched and no directories are
+            created.
     """
     if not valid_name(name):
         raise ProfileError(
             "invalid profile name %r: use only %s" % (name, _ALLOWED_CHARSET)
+        )
+    # Behaviour 12 (non-mapping project block): refused before the token
+    # check, which reads the block, and before any filesystem effect — a
+    # store that recorded a broken block would fail every later load.
+    if not isinstance(project, dict):
+        raise ProfileError(
+            "profile project block must be a mapping of field to value, "
+            "not a %s" % type(project).__name__
         )
     token_field = _token_field(owner, repo, base, project)
     if token_field is not None:
