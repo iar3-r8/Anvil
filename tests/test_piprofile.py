@@ -2,9 +2,10 @@
 
 Written before the implementation (TDD, ``plans/pi-phase13-profiles.md``).
 This file covers behaviour 1 ("name-charset"), behaviour 2
-("token-env-derivation") and behaviour 4 ("save-writes-record"); the later
-behaviours (``load_profile``, ``list_profiles``, ``resolve_token``) will be
-added here as separate test classes as they are implemented.
+("token-env-derivation"), behaviour 4 ("save-writes-record") and behaviour 5
+("save-updates-in-place"); the later behaviours (``load_profile``,
+``list_profiles``, ``resolve_token``) will be added here as separate test
+classes as they are implemented.
 
 ``piprofile`` is imported inside each test body rather than at collection
 time, so the file always collects cleanly while the store behaviours remain
@@ -318,3 +319,115 @@ class SaveProfileWritesRecordTestCase(unittest.TestCase):
 
             self.assertIn(str(not_a_dir), str(ctx.exception))
             self.assertFalse((root / "profiles.yaml").exists())
+
+
+# Behaviour 5: a store already holding the record, re-saved under the same
+# name and path carrying a changed identity field. The values are owned by
+# the tests; ``token_env`` is the derivation behaviour 2 pins for
+# ``project-x``, and the path is the absolute form behaviour 4 writes.
+RECORD_NAME = "project-x"
+RECORD_OWNER = "octo-org"
+RECORD_REPO = "project-x"
+RECORD_BASE = "main"
+
+#: Each identity field, changed to a distinct new value, with the other two
+#: fields expected to keep their original values.
+CHANGED_FIELD_SCENARIOS = [
+    ("owner", "new-owner", RECORD_REPO, RECORD_BASE),
+    ("repo", RECORD_OWNER, "renamed-repo", RECORD_BASE),
+    ("base", RECORD_OWNER, RECORD_REPO, "develop"),
+]
+
+
+class SaveProfileUpdatesInPlaceTestCase(unittest.TestCase):
+    """Behaviour 5: save-updates-in-place."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1, 2 and 4 are green), so the import
+        succeeds and a missing ``save_profile`` surfaces as an
+        ``AttributeError`` naming the function, not as a collection error.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _save(self, module, root, target, **overrides):
+        kwargs = dict(
+            root=root,
+            name=RECORD_NAME,
+            path=target,
+            owner=RECORD_OWNER,
+            repo=RECORD_REPO,
+            base=RECORD_BASE,
+            project={},
+        )
+        kwargs.update(overrides)
+        module.save_profile(**kwargs)
+
+    def test_save_profile_same_name_and_path_changed_field_updates_record_in_place(self):
+        module = self._module()
+        # A fresh store per scenario, each already holding the record.
+        for _, owner, repo, base in CHANGED_FIELD_SCENARIOS:
+            with self.subTest(owner=owner, repo=repo, base=base):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / RECORD_NAME
+                    target.mkdir()
+                    root = Path(tmp) / ".anvil"
+
+                    # The store already holds the record at the target
+                    # directory; provisioning again changes one field.
+                    self._save(module, root, target)
+                    self._save(
+                        module, root, target,
+                        owner=owner, repo=repo, base=base,
+                    )
+
+                    record = yamlio.load(root / "profiles.yaml")
+
+                    # The store still holds exactly one profile.
+                    self.assertEqual(
+                        sorted(k for k in record if k != "version"),
+                        [RECORD_NAME],
+                    )
+                    # version: 1 is preserved by the in-place update.
+                    self.assertEqual(record["version"], 1)
+
+                    profile = record[RECORD_NAME]
+                    self.assertEqual(profile["owner"], owner)
+                    self.assertEqual(profile["repo"], repo)
+                    self.assertEqual(profile["base"], base)
+                    # The path and token_env are unchanged by the update:
+                    # same directory, same name.
+                    self.assertEqual(
+                        profile["path"], os.path.abspath(str(target))
+                    )
+                    self.assertEqual(
+                        profile["token_env"],
+                        module.token_env_for(RECORD_NAME),
+                    )
+
+    def test_save_profile_provisioning_twice_creates_no_second_record(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / RECORD_NAME
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+
+            # Provisioning twice is the normal path, not an exception.
+            self._save(module, root, target)
+            self._save(module, root, target)
+
+            record = yamlio.load(root / "profiles.yaml")
+            self.assertEqual(
+                sorted(k for k in record if k != "version"),
+                [RECORD_NAME],
+            )
+            self.assertEqual(record["version"], 1)
+            profile = record[RECORD_NAME]
+            self.assertEqual(profile["path"], os.path.abspath(str(target)))
+            self.assertEqual(profile["owner"], RECORD_OWNER)
+            self.assertEqual(profile["repo"], RECORD_REPO)
+            self.assertEqual(profile["base"], RECORD_BASE)
+            self.assertEqual(
+                profile["token_env"], module.token_env_for(RECORD_NAME)
+            )
