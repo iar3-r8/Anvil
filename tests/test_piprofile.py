@@ -5,10 +5,11 @@ This file covers behaviour 1 ("name-charset"), behaviour 2
 ("token-env-derivation"), behaviour 4 ("save-writes-record"), behaviour 5
 ("save-updates-in-place"), behaviour 6 ("save-renames-on-same-path"),
 behaviour 7 ("save-refuses-name-collision"), behaviour 8
-("save-refuses-token-value"), behaviour 9 ("load-unknown-name") and
-behaviour 10 ("load-vanished-path"); the later behaviours
-(``list_profiles``, ``resolve_token``) will be added here as separate test
-classes as they are implemented.
+("save-refuses-token-value"), behaviour 9 ("load-unknown-name"),
+behaviour 10 ("load-vanished-path") and behaviour 11
+("two-profiles-coexist", including the ``list_profiles`` contract);
+the later behaviours (``resolve_token``) will be added here as separate
+test classes as they are implemented.
 
 ``piprofile`` is imported inside each test body rather than at collection
 time, so the file always collects cleanly while the store behaviours remain
@@ -1132,3 +1133,169 @@ class LoadProfileVanishedPathTestCase(unittest.TestCase):
             self.assertEqual(record["owner"], VANISHED_SIBLING_IDENTITY[0])
             self.assertEqual(record["repo"], VANISHED_SIBLING_IDENTITY[1])
             self.assertEqual(record["base"], VANISHED_SIBLING_IDENTITY[2])
+
+
+# Behaviour 11: two provisionings at distinct paths under distinct owners
+# coexist in one store — one Anvil install serving many repositories is the
+# whole point. Both records are seeded through the green ``save_profile`` at
+# real directories and read back through the green ``load_profile``; the
+# store must hold both, each with its own ``path``, ``owner``, ``repo`` and
+# ``token_env``. ``list_profiles`` (the only piece of this behaviour that is
+# not yet implemented) must return both names sorted, and an empty or
+# missing store must give an empty list, not an error. The values are owned
+# by the tests.
+COEXIST_X_NAME = "project-x"
+COEXIST_X_IDENTITY = ("alpha", "project-x", "main")
+COEXIST_X_PROJECT_BLOCK = {
+    "name": "project-x",
+    "structure": "anvilkit/   python package\nplans/    decision record\n",
+    "configuration": "gateway port 8080\ncontext 32k",
+}
+COEXIST_API_NAME = "api"
+COEXIST_API_IDENTITY = ("beta", "api", "master")
+
+
+class TwoProfilesCoexistTestCase(unittest.TestCase):
+    """Behaviour 11: two-profiles-coexist."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1 through 10 are green), so the
+        import succeeds and the missing ``list_profiles`` surfaces as an
+        ``AttributeError`` naming the function, not as a collection
+        error; the coexistence save/load half is asserted against the
+        store the green write and read paths produced.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _seed_two_profiles(self, module, tmp):
+        """Seed one store with both provisionings at real directories.
+
+        ``project-x`` at owner ``alpha`` with the populated project block,
+        ``api`` at owner ``beta`` with an empty block — distinct paths,
+        distinct owners, one store. Returns ``(root, dir_x, dir_api)``.
+        """
+        dir_x = Path(tmp) / COEXIST_X_NAME
+        dir_x.mkdir()
+        dir_api = Path(tmp) / COEXIST_API_NAME
+        dir_api.mkdir()
+        root = Path(tmp) / ".anvil"
+        module.save_profile(
+            root=root,
+            name=COEXIST_X_NAME,
+            path=dir_x,
+            owner=COEXIST_X_IDENTITY[0],
+            repo=COEXIST_X_IDENTITY[1],
+            base=COEXIST_X_IDENTITY[2],
+            project=COEXIST_X_PROJECT_BLOCK,
+        )
+        module.save_profile(
+            root=root,
+            name=COEXIST_API_NAME,
+            path=dir_api,
+            owner=COEXIST_API_IDENTITY[0],
+            repo=COEXIST_API_IDENTITY[1],
+            base=COEXIST_API_IDENTITY[2],
+            project={},
+        )
+        return root, dir_x, dir_api
+
+    def test_save_profile_two_provisionings_store_holds_both_records(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, dir_x, dir_api = self._seed_two_profiles(module, tmp)
+
+            record = yamlio.load(root / "profiles.yaml")
+
+            # One store, two profiles, no third key invented.
+            self.assertEqual(record["version"], 1)
+            self.assertEqual(
+                sorted(k for k in record if k != "version"),
+                [COEXIST_API_NAME, COEXIST_X_NAME],
+            )
+            # Each record keeps its own identity, not the other's.
+            profile_x = record[COEXIST_X_NAME]
+            self.assertEqual(
+                profile_x["path"], os.path.abspath(str(dir_x))
+            )
+            self.assertEqual(profile_x["owner"], COEXIST_X_IDENTITY[0])
+            self.assertEqual(profile_x["repo"], COEXIST_X_IDENTITY[1])
+            self.assertEqual(
+                profile_x["token_env"], module.token_env_for(COEXIST_X_NAME)
+            )
+            profile_api = record[COEXIST_API_NAME]
+            self.assertEqual(
+                profile_api["path"], os.path.abspath(str(dir_api))
+            )
+            self.assertEqual(profile_api["owner"], COEXIST_API_IDENTITY[0])
+            self.assertEqual(profile_api["repo"], COEXIST_API_IDENTITY[1])
+            self.assertEqual(
+                profile_api["token_env"], module.token_env_for(COEXIST_API_NAME)
+            )
+
+    def test_load_profile_both_records_load_back_intact(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, dir_x, dir_api = self._seed_two_profiles(module, tmp)
+
+            # Saving the second provisioning did not clobber the first:
+            # each profile loads back through the green load_profile with
+            # its own fields intact, through the module's own derivation
+            # so the test pins the contract, not a copy.
+            for name, target, identity, project in (
+                (COEXIST_X_NAME, dir_x, COEXIST_X_IDENTITY,
+                 COEXIST_X_PROJECT_BLOCK),
+                (COEXIST_API_NAME, dir_api, COEXIST_API_IDENTITY, {}),
+            ):
+                with self.subTest(name=name):
+                    record = module.load_profile(root, name)
+
+                    self.assertEqual(
+                        record["path"], os.path.abspath(str(target))
+                    )
+                    self.assertEqual(record["owner"], identity[0])
+                    self.assertEqual(record["repo"], identity[1])
+                    self.assertEqual(record["base"], identity[2])
+                    self.assertEqual(
+                        record["token_env"], module.token_env_for(name)
+                    )
+                    self.assertEqual(record["project"], project)
+
+    def test_list_profiles_two_profiles_returns_both_names_sorted(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _dir_x, _dir_api = self._seed_two_profiles(module, tmp)
+
+            # Both names, exactly, in sorted order: "api" before
+            # "project-x" regardless of the order they were saved.
+            self.assertEqual(
+                module.list_profiles(root),
+                [COEXIST_API_NAME, COEXIST_X_NAME],
+            )
+
+    def test_list_profiles_missing_store_returns_empty_list(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            # The root does not exist at all: no profiles.yaml. An empty
+            # list, not an error, is the contract.
+            root = Path(tmp) / ".anvil"
+            self.assertFalse(root.exists())
+
+            self.assertEqual(module.list_profiles(root), [])
+
+            # A read is a read: the failed-free listing created nothing.
+            self.assertFalse((root / "profiles.yaml").exists())
+            self.assertFalse(root.exists())
+
+    def test_list_profiles_empty_store_returns_empty_list(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            # The root exists but holds no profiles.yaml.
+            root = Path(tmp) / ".anvil"
+            root.mkdir()
+
+            self.assertEqual(module.list_profiles(root), [])
+
+            # The listing did not invent a store file.
+            self.assertFalse((root / "profiles.yaml").exists())
