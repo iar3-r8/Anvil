@@ -5,9 +5,10 @@ This file covers behaviour 1 ("name-charset"), behaviour 2
 ("token-env-derivation"), behaviour 4 ("save-writes-record"), behaviour 5
 ("save-updates-in-place"), behaviour 6 ("save-renames-on-same-path"),
 behaviour 7 ("save-refuses-name-collision"), behaviour 8
-("save-refuses-token-value") and behaviour 9 ("load-unknown-name"); the
-later behaviours (``list_profiles``, ``resolve_token``) will be added here
-as separate test classes as they are implemented.
+("save-refuses-token-value"), behaviour 9 ("load-unknown-name") and
+behaviour 10 ("load-vanished-path"); the later behaviours
+(``list_profiles``, ``resolve_token``) will be added here as separate test
+classes as they are implemented.
 
 ``piprofile`` is imported inside each test body rather than at collection
 time, so the file always collects cleanly while the store behaviours remain
@@ -18,6 +19,7 @@ imported at the top because it is already green.
 
 import importlib
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -1018,3 +1020,115 @@ class LoadProfileUnknownNameTestCase(unittest.TestCase):
 
             # The failed load did not invent a store file.
             self.assertFalse((root / "profiles.yaml").exists())
+
+
+# Behaviour 10: a stored profile whose ``path`` no longer exists on disk.
+# The store is seeded through the green ``save_profile`` at a real
+# directory, then that directory is deleted — ``load_profile`` must refuse
+# to hand a caller a record pointing at a missing directory. The values are
+# owned by the tests.
+VANISHED_NAME = "project-x"
+VANISHED_IDENTITY = ("octo-org", "project-x", "main")
+
+#: The second record's identity, at a directory that SURVIVES the deletion.
+VANISHED_SIBLING_NAME = "api"
+VANISHED_SIBLING_IDENTITY = ("api-org", "api", "master")
+
+
+class LoadProfileVanishedPathTestCase(unittest.TestCase):
+    """Behaviour 10: load-vanished-path."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1 through 9 are green), so the import
+        succeeds and a missing path check surfaces as a genuine failure —
+        the record comes back, no ``ProfileError`` — not as an
+        ``AttributeError``.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _seed_with_vanished_path(self, module, tmp):
+        """Seed two profiles, then delete the first one's directory.
+
+        Both are saved through the green ``save_profile`` at real
+        directories; ``VANISHED_NAME``'s directory is then removed with
+        ``shutil.rmtree`` while ``VANISHED_SIBLING_NAME``'s survives.
+        Returns ``(root, vanished_dir, sibling_dir)``.
+        """
+        vanished_dir = Path(tmp) / VANISHED_NAME
+        vanished_dir.mkdir()
+        sibling_dir = Path(tmp) / VANISHED_SIBLING_NAME
+        sibling_dir.mkdir()
+        root = Path(tmp) / ".anvil"
+        module.save_profile(
+            root=root,
+            name=VANISHED_NAME,
+            path=vanished_dir,
+            owner=VANISHED_IDENTITY[0],
+            repo=VANISHED_IDENTITY[1],
+            base=VANISHED_IDENTITY[2],
+            project={},
+        )
+        module.save_profile(
+            root=root,
+            name=VANISHED_SIBLING_NAME,
+            path=sibling_dir,
+            owner=VANISHED_SIBLING_IDENTITY[0],
+            repo=VANISHED_SIBLING_IDENTITY[1],
+            base=VANISHED_SIBLING_IDENTITY[2],
+            project={},
+        )
+        # The first record's directory is gone; the sibling's survives.
+        shutil.rmtree(vanished_dir)
+        self.assertFalse(vanished_dir.exists())
+        self.assertTrue(sibling_dir.exists())
+        return root, vanished_dir, sibling_dir
+
+    def test_load_profile_vanished_path_raises_profile_error(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _vanished_dir, _sibling_dir = self._seed_with_vanished_path(
+                module, tmp
+            )
+
+            # The caller never receives a record pointing at a missing
+            # directory: assertRaises fails if load_profile returns.
+            with self.assertRaises(module.ProfileError):
+                module.load_profile(root, VANISHED_NAME)
+
+    def test_load_profile_vanished_path_error_names_profile_and_path(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, vanished_dir, _sibling_dir = self._seed_with_vanished_path(
+                module, tmp
+            )
+
+            with self.assertRaises(module.ProfileError) as ctx:
+                module.load_profile(root, VANISHED_NAME)
+
+            # The error is about the path, not the name: the name IS in the
+            # store, but the message must still name the profile as well as
+            # the vanished path (in the absolute form the store records).
+            message = str(ctx.exception)
+            self.assertIn(VANISHED_NAME, message)
+            self.assertIn(os.path.abspath(str(vanished_dir)), message)
+
+    def test_load_profile_sibling_survives_vanished_sibling_path(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _vanished_dir, sibling_dir = self._seed_with_vanished_path(
+                module, tmp
+            )
+
+            # The check is per-record, not a store-wide scan that fails the
+            # whole load: the surviving profile loads with its fields intact
+            # even though its sibling's path has vanished.
+            record = module.load_profile(root, VANISHED_SIBLING_NAME)
+
+            self.assertEqual(
+                record["path"], os.path.abspath(str(sibling_dir))
+            )
+            self.assertEqual(record["owner"], VANISHED_SIBLING_IDENTITY[0])
+            self.assertEqual(record["repo"], VANISHED_SIBLING_IDENTITY[1])
+            self.assertEqual(record["base"], VANISHED_SIBLING_IDENTITY[2])
