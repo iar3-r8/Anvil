@@ -1,16 +1,19 @@
 """Name-charset gate and write half of the ``~/.anvil/profiles.yaml`` store.
 
-Two jobs so far: decide whether a candidate profile name is a name Anvil
-can address — behaviour 1 of ``plans/pi-phase13-profiles.md`` — and
-record a provisioning — behaviour 4 ("save-writes-record").
-``valid_name`` returns ``True`` for non-empty names drawn entirely from
-``[A-Za-z0-9._-]`` and ``False`` for the empty string, a character
-outside the set, or a leading ``-``, ``.`` or digit: a leading hyphen
-reads as a CLI flag and a mangled name maps to a key Anvil never reads.
-``token_env_for`` (behaviour 2) derives the GitHub token variable, and
-``save_profile`` writes the record under the name into a ``version: 1``
-store. The read behaviours (``load_profile``, ``list_profiles``) and
-the in-place update, rename and collision handling (behaviours 5-7)
+Decide whether a candidate profile name is a name Anvil can address —
+behaviour 1 of ``plans/pi-phase13-profiles.md`` — and record a
+provisioning — behaviour 4 ("save-writes-record") — into a ``version: 1``
+store, keeping it to one path, one profile: a re-save under the same name
+updates the record in place (behaviour 5), and a save under a new name for
+a path another record already holds renames that record in place, carrying
+its ``project`` block across (behaviour 6). ``valid_name`` returns ``True``
+for non-empty names drawn entirely from ``[A-Za-z0-9._-]`` and ``False``
+for the empty string, a character outside the set, or a leading ``-``,
+``.`` or digit: a leading hyphen reads as a CLI flag and a mangled name
+maps to a key Anvil never reads. ``token_env_for`` (behaviour 2) derives
+the GitHub token variable, and ``save_profile`` writes the record under
+the name into the store. The read behaviours (``load_profile``,
+``list_profiles``) and the same-name-different-path refusal (behaviour 7)
 will follow. This module imports no ``subprocess`` and no ``yaml`` —
 reading and writing the file is ``yamlio``'s licence.
 """
@@ -133,11 +136,16 @@ def _save_into_store(
 
     Private load-mutate-save flow shared by the write behaviours: load
     the store (a missing file is an empty store, not an error), replace
-    the record under ``name`` keeping ``version: 1``, and save. The
-    validation that must precede any write lives in ``save_profile``, so
-    a raised ``ProfileError`` leaves the file and the directory tree
-    untouched. The in-place update, rename and collision handling
-    (behaviours 5-7) mutate here once they are implemented.
+    the record under ``name`` keeping ``version: 1``, and save. A re-save
+    under the same name updates the record in place (behaviour 5); a save
+    under a new name for a path another record already holds renames that
+    record in place — the old key is dropped, its ``project`` block is
+    carried across, and the identity fields come from this save
+    (behaviour 6) — so the store never holds two records for one path.
+    The same-name-different-path refusal (behaviour 7) will mutate here.
+    The validation that must precede any write lives in ``save_profile``,
+    so a raised ``ProfileError`` leaves the file and the directory tree
+    untouched.
     """
     store_path = Path(root) / _STORE_FILENAME
     try:
@@ -146,13 +154,34 @@ def _save_into_store(
         raise ProfileError("could not read profile store: {}".format(exc)) from exc
 
     store["version"] = 1
+
+    # Behaviour 6 (rename on same path): one path, one profile. A record
+    # under a different name that already carries this absolute path is
+    # renamed in place — its key is dropped and its project block carried
+    # across, so the new record's identity fields come from this save
+    # while the project block survives the rename.
+    carried_project = None
+    for key, existing in list(store.items()):
+        if key in ("version", name):
+            continue
+        if isinstance(existing, dict) and existing.get("path") == absolute:
+            if carried_project is None and isinstance(
+                existing.get("project"), dict
+            ):
+                carried_project = dict(existing["project"])
+            del store[key]
+
+    project_block = dict(project)
+    if carried_project:
+        project_block = carried_project
+
     store[name] = {
         "path": absolute,
         "owner": owner,
         "repo": repo,
         "base": base,
         "token_env": token_env_for(name),
-        "project": dict(project),
+        "project": project_block,
     }
 
     try:
