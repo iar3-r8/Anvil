@@ -17455,3 +17455,253 @@ class TestAcceptanceSatisfiedFallback(CliCase):
             "the file-absent warn blocks exactly as an ordinary warn "
             "does - exit 9:\n{}".format(out),
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 14 of plans/pi-phase13-profiles.md - setup-repo-records-profile
+# ---------------------------------------------------------------------------
+#
+# ``setup-repo`` with GitHub enabled and a ``--profile <name>`` flag records
+# the provisioning into ``~/.anvil/profiles.yaml`` once it succeeds: the
+# absolute target path, ``owner``/``repo`` from the guard gate's
+# ``resolve_repository`` (the ``cli.piguard`` seam), ``base`` as the literal
+# branch the gate checked (``"main"``), ``token_env`` derived per the store
+# module, and an empty ``project`` block; the store also holds
+# ``version: 1``. An unresolvable identity records NO identity rather than
+# guessing one: the record still exists, ``owner`` and ``repo`` are absent
+# or null, ``base`` is still "main", and provisioning still succeeds.
+#
+# RED: ``--profile`` is an unknown option today (exit 2), and nothing ever
+# writes ``~/.anvil/profiles.yaml`` - the store assertions below fail on the
+# missing store. ``cli.piguard.resolve_repository`` is the seam the CLI uses
+# (it returns ``Optional[Tuple[str, str]]`` and never raises, so a None
+# return is the unresolvable case), and ``HOME`` is overridden to a fresh
+# temporary directory so the store lands at ``<home>/.anvil/profiles.yaml``.
+# ---------------------------------------------------------------------------
+
+
+class TestSetupRepoRecordsProfile(CliCase):
+    """``setup-repo --profile <name>`` records the provisioning (behaviour 14)."""
+
+    OWNER = "alpha"
+    REPO = "project-x"
+    PROFILE = "project-x"
+    TOKEN_ENV = "GITHUB_TOKEN_PROJECT_X"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.store_path = self.home / ".anvil" / "profiles.yaml"
+
+        # The guard gate's identity seam: the CLI resolves owner/repo through
+        # cli.piguard.resolve_repository, which never raises.
+        self._resolve = mock.patch.object(
+            cli.piguard, "resolve_repository", return_value=(self.OWNER, self.REPO)
+        )
+        self._resolve.start()
+        self.addCleanup(self._resolve.stop)
+        # The network is never touched: no rules fetched, no token probes run.
+        self._fetch = mock.patch.object(
+            cli.piguard, "fetch_branch_rules", return_value=([], None)
+        )
+        self._fetch.start()
+        self.addCleanup(self._fetch.stop)
+        self._token = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=[]
+        )
+        self._token.start()
+        self.addCleanup(self._token.stop)
+
+    def _run(self, target, resolve_value):
+        """One non-interactive ``setup-repo --profile`` with the gate's
+        identity pinned to ``resolve_value`` and the store under a fresh
+        ``HOME`` override, so the store lands at ``<home>/.anvil``.
+
+        ``provision.setup_repo`` is NOT patched: the target is a real
+        directory and the store's ``path`` check (and the read-back of a
+        still-existing path) needs a real directory to point at. The gate
+        resolves, fetches nothing (no rules) and probes nothing (no token
+        findings), so the verdict is clean and provisioning proceeds -
+        exit 0 - for both a resolved and an unresolvable identity.
+        """
+        self._resolve.return_value = resolve_value
+        env_values = {"LLM_PORT": "8000", "GITHUB_TOKEN": "ghp_profile_test"}
+        self.write_env(**env_values)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke(
+                [
+                    "setup-repo",
+                    target,
+                    "--profile",
+                    self.PROFILE,
+                    "--yes",
+                    "--no-anthropic",
+                    "--no-oxylabs",
+                ]
+            )
+
+    def _store(self):
+        """The store read back through yamlio (the honest way to assert
+        ``version`` and the record's fields); a missing file is ``None``."""
+        from anvilkit import yamlio
+
+        if not self.store_path.exists():
+            return None
+        try:
+            return yamlio.load(self.store_path)
+        except yamlio.YamlError as exc:
+            self.fail(
+                "the profile store at {} is not a readable mapping: {}".format(
+                    self.store_path, exc
+                )
+            )
+
+    def test_setup_repo_records_a_profile_on_success(self):
+        """A successful provisioning writes the full record: path, owner,
+        repo, base "main", the derived token_env, an empty project block,
+        and ``version: 1`` - under the overridden HOME."""
+        with tempfile.TemporaryDirectory() as target:
+            result = self._run(target, (self.OWNER, self.REPO))
+
+            # The store assertion leads: it is the behaviour under test, and
+            # the correct red reason is a missing store - not the usage
+            # error an unknown --profile option raises before it exists.
+            store = self._store()
+            self.assertIsNotNone(
+                store,
+                "the profile store at {} was not written - setup-repo "
+                "must record the profile on a successful provisioning".format(
+                    self.store_path
+                ),
+            )
+            self.assertEqual(
+                0,
+                result.exit_code,
+                "a clean gate must provision - exit 0:\n{}".format(
+                    result.output
+                ),
+            )
+            self.assertEqual(
+                1,
+                store.get("version"),
+                "the store must hold version: 1, got {!r}".format(
+                    store.get("version")
+                ),
+            )
+            record = store.get(self.PROFILE)
+            self.assertIsInstance(
+                record,
+                dict,
+                "the store must hold a record under {!r}, got {!r}".format(
+                    self.PROFILE, record
+                ),
+            )
+            self.assertEqual(
+                os.path.abspath(target),
+                record.get("path"),
+                "the record's path must be the absolute target path",
+            )
+            self.assertEqual(self.OWNER, record.get("owner"))
+            self.assertEqual(self.REPO, record.get("repo"))
+            self.assertEqual("main", record.get("base"))
+            self.assertEqual(
+                self.TOKEN_ENV,
+                record.get("token_env"),
+                "token_env must be derived per the store module",
+            )
+            self.assertEqual({}, record.get("project"))
+            # Cross-check the read side: the store module loads the record
+            # back with the same fields the CLI wrote.
+            from anvilkit.pi import piprofile
+
+            loaded = piprofile.load_profile(self.home, self.PROFILE)
+            self.assertEqual(os.path.abspath(target), loaded["path"])
+            self.assertEqual(self.OWNER, loaded["owner"])
+            self.assertEqual(self.REPO, loaded["repo"])
+            self.assertEqual("main", loaded["base"])
+            self.assertEqual(self.TOKEN_ENV, piprofile.token_env_for(self.PROFILE))
+
+    def test_setup_repo_records_in_place_on_rerun(self):
+        """Provisioning the same name at the same path twice updates the
+        record in place: the store holds exactly one profile."""
+        with tempfile.TemporaryDirectory() as target:
+            self._run(target, (self.OWNER, self.REPO))
+            result = self._run(target, (self.OWNER, self.REPO))
+
+        # The store assertion leads: the store must hold exactly one profile
+        # after a re-run, and the missing store is the correct red reason.
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} must exist after a re-run".format(
+                self.store_path
+            ),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a re-run must still provision - exit 0:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            [self.PROFILE],
+            [key for key in store if key != "version"],
+            "a re-run at the same path must update in place - the store "
+            "holds exactly one profile, got {!r}".format(
+                sorted(key for key in store if key != "version")
+            ),
+        )
+        self.assertEqual(1, store.get("version"))
+        self.assertEqual(os.path.abspath(target), store[self.PROFILE].get("path"))
+
+    def test_setup_repo_records_no_identity_when_unresolvable(self):
+        """An unresolvable identity records no identity rather than
+        guessing one: the record still exists, ``owner`` and ``repo`` are
+        absent or null, ``base`` is still "main", and provisioning still
+        succeeds (exit 0)."""
+        with tempfile.TemporaryDirectory() as target:
+            result = self._run(target, None)
+
+        # The store assertion leads: the record must exist even for an
+        # unresolvable identity, and the missing store is the correct red
+        # reason.
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written - an unresolvable "
+            "identity must still record the provisioning".format(
+                self.store_path
+            ),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "an unresolvable identity must not block provisioning - exit "
+            "0:\n{}".format(result.output),
+        )
+        self.assertEqual(1, store.get("version"))
+        record = store.get(self.PROFILE)
+        self.assertIsInstance(
+            record,
+            dict,
+            "the record must still exist for an unresolvable identity, "
+            "got {!r}".format(record),
+        )
+        self.assertEqual(
+            os.path.abspath(target),
+            record.get("path"),
+            "the record's path must still be the absolute target path",
+        )
+        self.assertTrue(
+            record.get("owner") is None
+            and record.get("repo") is None,
+            "an unresolvable identity must record no identity - owner and "
+            "repo must be absent or null, got {!r}".format(
+                (record.get("owner"), record.get("repo"))
+            ),
+        )
+        self.assertEqual("main", record.get("base"))
+        self.assertEqual(self.TOKEN_ENV, record.get("token_env"))
