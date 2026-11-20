@@ -1299,3 +1299,153 @@ class TwoProfilesCoexistTestCase(unittest.TestCase):
 
             # The listing did not invent a store file.
             self.assertFalse((root / "profiles.yaml").exists())
+
+
+# Behaviour 12: the project block round-trips byte-identically. The values
+# are owned by the tests and are the ones the byte-identity claim must
+# survive: ``structure`` ends in a trailing newline, and
+# ``configuration`` contains a blank line (consecutive newlines) — a store
+# that dropped either newline or collapsed the blank line would fail the
+# round-trip. A project block that is not a mapping must be refused with a
+# ``ProfileError`` naming the project field, writing nothing.
+ROUNDTRIP_NAME = "roundtrip-proj"
+ROUNDTRIP_IDENTITY = ("gamma", "roundtrip-proj", "main")
+ROUNDTRIP_PROJECT_BLOCK = {
+    "name": "roundtrip-proj",
+    # Trailing newline: the value ends in \n and must come back ending in \n.
+    "structure": "anvilkit/   python package\nplans/    decision record\n",
+    # Consecutive newlines: the blank line must survive, not collapse.
+    "configuration": "gateway port 8080\n\ncontext 32k\n",
+}
+
+#: Project blocks that are not mappings: a string and a list, one per way a
+#: caller could hand over the wrong shape.
+NON_MAPPING_PROJECT_BLOCKS = [
+    "a block",
+    ["structure", "configuration"],
+]
+
+
+class ProjectBlockRoundtripTestCase(unittest.TestCase):
+    """Behaviour 12: project-block-roundtrip."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1 through 11 are green), so the import
+        succeeds and the assertions run against the store the green write and
+        read paths produce; the non-mapping refusal is the new contract under
+        test.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _save_block(self, module, root, target, block):
+        return module.save_profile(
+            root=root,
+            name=ROUNDTRIP_NAME,
+            path=target,
+            owner=ROUNDTRIP_IDENTITY[0],
+            repo=ROUNDTRIP_IDENTITY[1],
+            base=ROUNDTRIP_IDENTITY[2],
+            project=block,
+        )
+
+    def test_save_profile_project_block_roundtrip_loads_back_byte_identical(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ROUNDTRIP_NAME
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+
+            self._save_block(module, root, target, ROUNDTRIP_PROJECT_BLOCK)
+            record = module.load_profile(root, ROUNDTRIP_NAME)
+
+            # The whole block, exactly: a dropped trailing newline, a
+            # collapsed blank line or a missing field all fail.
+            self.assertEqual(record["project"], ROUNDTRIP_PROJECT_BLOCK)
+            for field, expected in ROUNDTRIP_PROJECT_BLOCK.items():
+                with self.subTest(field=field):
+                    self.assertEqual(record["project"][field], expected)
+            # The rest of the record comes back with it.
+            self.assertEqual(record["path"], os.path.abspath(str(target)))
+            self.assertEqual(record["owner"], ROUNDTRIP_IDENTITY[0])
+            self.assertEqual(record["repo"], ROUNDTRIP_IDENTITY[1])
+            self.assertEqual(record["base"], ROUNDTRIP_IDENTITY[2])
+            self.assertEqual(
+                record["token_env"], module.token_env_for(ROUNDTRIP_NAME)
+            )
+
+    def test_save_profile_empty_project_block_loads_back_as_empty_mapping(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ROUNDTRIP_NAME
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+
+            self._save_block(module, root, target, {})
+            record = module.load_profile(root, ROUNDTRIP_NAME)
+
+            # An empty block is valid, not an error: it loads back as the
+            # empty mapping, present in the record.
+            self.assertIn("project", record)
+            self.assertEqual(record["project"], {})
+
+    def test_save_profile_non_mapping_project_block_raises_profile_error_naming_project(self):
+        module = self._module()
+        for block in NON_MAPPING_PROJECT_BLOCKS:
+            with self.subTest(block=block):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / ROUNDTRIP_NAME
+                    target.mkdir()
+                    root = Path(tmp) / ".anvil"
+
+                    with self.assertRaises(module.ProfileError) as ctx:
+                        self._save_block(module, root, target, block)
+
+                    # The error names the project field, so the operator
+                    # knows which value to fix without reading the store.
+                    self.assertIn("project", str(ctx.exception))
+
+    def test_save_profile_non_mapping_project_block_writes_nothing_to_fresh_root(self):
+        module = self._module()
+        for block in NON_MAPPING_PROJECT_BLOCKS:
+            with self.subTest(block=block):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / ROUNDTRIP_NAME
+                    target.mkdir()
+                    root = Path(tmp) / ".anvil"
+                    self.assertFalse(root.exists())
+
+                    with self.assertRaises(module.ProfileError):
+                        self._save_block(module, root, target, block)
+
+                    # A refusal that left a store behind would record a
+                    # broken profile the next load chokes on: for a fresh
+                    # root the store file must not come into existence.
+                    self.assertFalse((root / "profiles.yaml").exists())
+
+    def test_save_profile_non_mapping_project_block_leaves_existing_record_untouched(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ROUNDTRIP_NAME
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+            self._save_block(module, root, target, ROUNDTRIP_PROJECT_BLOCK)
+            # Snapshot the raw store before the refused re-save.
+            before = yamlio.load(root / "profiles.yaml")
+
+            for block in NON_MAPPING_PROJECT_BLOCKS:
+                with self.subTest(block=block):
+                    with self.assertRaises(module.ProfileError):
+                        self._save_block(module, root, target, block)
+
+                    # The re-save was refused before any write: the stored
+                    # record is byte-for-byte the one that was there,
+                    # project block included, and still loads back intact.
+                    self.assertEqual(
+                        yamlio.load(root / "profiles.yaml"), before
+                    )
+                    self.assertEqual(
+                        module.load_profile(root, ROUNDTRIP_NAME)["project"],
+                        ROUNDTRIP_PROJECT_BLOCK,
+                    )
