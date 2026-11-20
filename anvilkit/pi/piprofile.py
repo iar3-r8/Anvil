@@ -14,8 +14,11 @@ maps to a key Anvil never reads. ``token_env_for`` (behaviour 2) derives
 the GitHub token variable, and ``save_profile`` writes the record under
 the name into the store, refusing — with a ``ProfileError`` naming the
 existing path — a re-save that keeps the name but points at a different
-existing directory (behaviour 7). The read behaviours (``load_profile``,
-``list_profiles``) will follow. This module imports no ``subprocess`` and
+existing directory (behaviour 7), and refusing — naming the offending
+field — any save whose ``owner``, ``repo``, ``base`` or ``project`` value
+starts with a token prefix rather than naming a key (behaviour 8). The
+read behaviours (``load_profile``, ``list_profiles``) will follow. This
+module imports no ``subprocess`` and
 no ``yaml`` — reading and writing the file is ``yamlio``'s licence.
 """
 
@@ -37,6 +40,22 @@ _ALLOWED_CHARSET = "[A-Za-z0-9._-]"
 #: ``~/.anvil``, so the file is ``<root>/profiles.yaml`` — the root is
 #: the directory that receives it, never a parent of it.
 _STORE_FILENAME = "profiles.yaml"
+
+#: The string prefixes a saved value must never start with (behaviour 8):
+#: each one is the shape of a GitHub or GitLab token, so a value that starts
+#: with one is a token smuggled into the store rather than a key name.
+#: Start-of-string is the whole rule — the same prefix embedded after other
+#: characters is an ordinary string, and the profile's own ``token_env`` is
+#: derived from the name, never a smuggle-in vector.
+_TOKEN_PREFIXES = (
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "glpat_",
+)
 
 
 class ProfileError(Exception):
@@ -108,16 +127,24 @@ def save_profile(
 
     Raises:
         ProfileError: the name fails ``valid_name`` (the name is named),
-            ``path`` is not an existing directory (the path is named),
-            or the store already holds a record under ``name`` whose
-            path is a different existing directory (the existing path
-            is named) — the last is behaviour 7. In every case nothing
-            is written: the store file, if any, is untouched and no
-            directories are created.
+            a value in ``owner``, ``repo``, ``base`` or the ``project``
+            block starts with a token prefix (the offending field is
+            named) — behaviour 8, ``path`` is not an existing directory
+            (the path is named), or the store already holds a record
+            under ``name`` whose path is a different existing directory
+            (the existing path is named) — the last is behaviour 7. In
+            every case nothing is written: the store file, if any, is
+            untouched and no directories are created.
     """
     if not valid_name(name):
         raise ProfileError(
             "invalid profile name %r: use only %s" % (name, _ALLOWED_CHARSET)
+        )
+    token_field = _token_field(owner, repo, base, project)
+    if token_field is not None:
+        raise ProfileError(
+            "profile field %r starts with a token prefix: record the "
+            "key name, not the token value" % token_field
         )
     absolute = os.path.abspath(str(path))
     if not os.path.isdir(absolute):
@@ -125,6 +152,31 @@ def save_profile(
             "profile path %s is not an existing directory" % absolute
         )
     _save_into_store(root, name, absolute, owner, repo, base, project)
+
+
+def _token_field(
+    owner: Optional[str],
+    repo: Optional[str],
+    base: Optional[str],
+    project: Dict[str, Any],
+) -> Optional[str]:
+    """Return the first field whose value is a token, or ``None``.
+
+    Behaviour 8 of ``plans/pi-phase13-profiles.md``: a value is a token
+    when it is a string that starts with one of ``_TOKEN_PREFIXES`` —
+    start-of-string, no length floor, the prefix is the rule. The fields
+    checked are ``owner``, ``repo``, ``base`` and the values at the top
+    level of the ``project`` block (non-string values are not tokens);
+    the profile's own ``token_env`` is derived, not supplied, and is
+    never checked.
+    """
+    for field, value in (("owner", owner), ("repo", repo), ("base", base)):
+        if isinstance(value, str) and value.startswith(_TOKEN_PREFIXES):
+            return field
+    for key, value in project.items():
+        if isinstance(value, str) and value.startswith(_TOKEN_PREFIXES):
+            return str(key)
+    return None
 
 
 def _save_into_store(
