@@ -431,3 +431,101 @@ class SaveProfileUpdatesInPlaceTestCase(unittest.TestCase):
             self.assertEqual(
                 profile["token_env"], module.token_env_for(RECORD_NAME)
             )
+
+
+# Behaviour 6: a store holding ``old-name`` at a real directory, re-saved
+# under ``new-name`` for that SAME path. The record must be renamed in
+# place — one path, one profile — carrying its ``project`` block across,
+# with ``token_env`` re-derived from the new name. The values are owned by
+# the tests; the re-save supplies its own owner/repo/base so the record's
+# identity fields are proven to come from the re-save, not the old record.
+RENAME_OLD_NAME = "old-name"
+RENAME_NEW_NAME = "new-name"
+
+#: The populated project block the first save writes and the rename must
+#: carry across untouched.
+RENAME_PROJECT_BLOCK = {
+    "name": "project-x",
+    "structure": "anvilkit/   python package\nplans/    decision record\n",
+    "configuration": "gateway port 8080\ncontext 32k",
+}
+
+#: Identity supplied on the re-save; distinct from the first save so the
+#: assertions cannot be satisfied by the old record's values.
+RENAME_OLD_IDENTITY = ("octo-org", "project-x", "main")
+RENAME_NEW_IDENTITY = ("new-org", "renamed-repo", "develop")
+
+
+class SaveProfileRenamesOnSamePathTestCase(unittest.TestCase):
+    """Behaviour 6: save-renames-on-same-path."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1, 2, 4 and 5 are green), so the
+        import succeeds and the assertions below surface as genuine
+        failures against the store contents, not as an AttributeError.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def test_save_profile_same_path_new_name_renames_record_in_place(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "project-x"
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+
+            # The store holds old-name at the real directory, with a
+            # populated project block.
+            module.save_profile(
+                root=root,
+                name=RENAME_OLD_NAME,
+                path=target,
+                owner=RENAME_OLD_IDENTITY[0],
+                repo=RENAME_OLD_IDENTITY[1],
+                base=RENAME_OLD_IDENTITY[2],
+                project=RENAME_PROJECT_BLOCK,
+            )
+            # Re-saved under the SAME path but the NEW name.
+            module.save_profile(
+                root=root,
+                name=RENAME_NEW_NAME,
+                path=target,
+                owner=RENAME_NEW_IDENTITY[0],
+                repo=RENAME_NEW_IDENTITY[1],
+                base=RENAME_NEW_IDENTITY[2],
+                project=RENAME_PROJECT_BLOCK,
+            )
+
+            record = yamlio.load(root / "profiles.yaml")
+
+            # One path, one profile: the store holds exactly one profile,
+            # under new-name, and old-name is gone.
+            self.assertEqual(
+                sorted(k for k in record if k != "version"),
+                [RENAME_NEW_NAME],
+            )
+            self.assertNotIn(RENAME_OLD_NAME, record)
+
+            profile = record[RENAME_NEW_NAME]
+
+            # The path is unchanged (absolute) by the rename.
+            self.assertEqual(
+                profile["path"], os.path.abspath(str(target))
+            )
+            # The project block carried across from the old record.
+            self.assertEqual(profile["project"], RENAME_PROJECT_BLOCK)
+            # token_env re-derived from the NEW name, through the module's
+            # own function so the test pins the contract, not a copy.
+            self.assertEqual(
+                profile["token_env"],
+                module.token_env_for(RENAME_NEW_NAME),
+            )
+            self.assertEqual(profile["token_env"], "GITHUB_TOKEN_NEW_NAME")
+            # owner/repo/base are as supplied on the re-save, not the
+            # old record's.
+            self.assertEqual(profile["owner"], RENAME_NEW_IDENTITY[0])
+            self.assertEqual(profile["repo"], RENAME_NEW_IDENTITY[1])
+            self.assertEqual(profile["base"], RENAME_NEW_IDENTITY[2])
+            # version: 1 is preserved by the rename.
+            self.assertEqual(record["version"], 1)
