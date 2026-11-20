@@ -1449,3 +1449,168 @@ class ProjectBlockRoundtripTestCase(unittest.TestCase):
                         module.load_profile(root, ROUNDTRIP_NAME)["project"],
                         ROUNDTRIP_PROJECT_BLOCK,
                     )
+
+
+# Behaviour 13: ``resolve_token(profile, home_env=..., install_env=...)``
+# reads the profile's GitHub token from two ``.env`` files, the home file
+# (``~/.anvil/.env``) under the profile's own ``token_env`` key outranking
+# the install ``.env``'s ``GITHUB_TOKEN`` — the fallback key is always
+# ``GITHUB_TOKEN``, regardless of the profile's ``token_env`` — and the
+# empty string when neither holds a value. A missing token is a resolvable
+# state the caller reports, never an exception, and a read is a read:
+# neither file is ever created by a resolve. The profile record is the
+# mapping ``load_profile`` returns, built directly by the tests so this
+# behaviour is pinned without a store. The values are owned by the tests.
+RESOLVE_PROFILE = {
+    "name": "project-x",
+    "path": "/code/project-x",
+    "owner": "octo-org",
+    "repo": "project-x",
+    "base": "main",
+    "token_env": "GITHUB_TOKEN_PROJECT_X",
+}
+
+#: Distinct values, one per file, so a precedence that reads the wrong file
+#: or the wrong key cannot pass.
+RESOLVE_HOME_VALUE = "home-token-value"
+RESOLVE_INSTALL_VALUE = "install-token-value"
+
+
+class ResolveTokenOrderTestCase(unittest.TestCase):
+    """Behaviour 13: token-resolution-order."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1 through 12 are green), so the import
+        succeeds and a missing ``resolve_token`` surfaces as an
+        ``AttributeError`` naming the function, not as a collection error.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _profile(self, **overrides):
+        """A profile record as ``load_profile`` returns it, tests-owned."""
+        profile = dict(RESOLVE_PROFILE)
+        profile.update(overrides)
+        return profile
+
+    def _write_env(self, path, key, value):
+        path.write_text(
+            "{}={}\n".format(key, value), encoding="utf-8"
+        )
+
+    def test_resolve_token_home_token_env_value_wins_over_install_github_token(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home_env = Path(tmp) / "home.env"
+            install_env = Path(tmp) / "install.env"
+            # Both files hold a value, different: the home file under the
+            # profile's own token_env key, the install file under the
+            # fallback key. The home value must win.
+            self._write_env(home_env, RESOLVE_PROFILE["token_env"],
+                            RESOLVE_HOME_VALUE)
+            self._write_env(install_env, "GITHUB_TOKEN",
+                            RESOLVE_INSTALL_VALUE)
+
+            self.assertEqual(
+                module.resolve_token(
+                    self._profile(),
+                    home_env=home_env,
+                    install_env=install_env,
+                ),
+                RESOLVE_HOME_VALUE,
+            )
+
+    def test_resolve_token_absent_in_home_falls_back_to_install_github_token(self):
+        module = self._module()
+        # The install file always holds the fallback under GITHUB_TOKEN,
+        # regardless of the profile's own token_env: the second profile
+        # carries a different token_env, so the fallback key cannot be
+        # satisfied by reading the profile's key.
+        for profile in (
+            self._profile(),
+            self._profile(token_env="GITHUB_TOKEN_API"),
+        ):
+            with self.subTest(token_env=profile["token_env"]):
+                with tempfile.TemporaryDirectory() as tmp:
+                    home_env = Path(tmp) / "home.env"
+                    install_env = Path(tmp) / "install.env"
+                    self._write_env(install_env, "GITHUB_TOKEN",
+                                    RESOLVE_INSTALL_VALUE)
+
+                    # The home file absent entirely...
+                    self.assertFalse(home_env.exists())
+                    self.assertEqual(
+                        module.resolve_token(
+                            profile,
+                            home_env=home_env,
+                            install_env=install_env,
+                        ),
+                        RESOLVE_INSTALL_VALUE,
+                    )
+
+                    # ...or present but without the profile's key. A
+                    # GITHUB_TOKEN in the home file is NOT the profile's
+                    # token_env, so it must not win.
+                    self._write_env(home_env, "GITHUB_TOKEN",
+                                    "other-home-value")
+                    self.assertEqual(
+                        module.resolve_token(
+                            profile,
+                            home_env=home_env,
+                            install_env=install_env,
+                        ),
+                        RESOLVE_INSTALL_VALUE,
+                    )
+
+    def test_resolve_token_absent_in_both_returns_empty_string(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home_env = Path(tmp) / "home.env"
+            install_env = Path(tmp) / "install.env"
+
+            # Both files missing entirely: the empty string, not an
+            # exception — a missing token is a resolvable state.
+            self.assertEqual(
+                module.resolve_token(
+                    self._profile(),
+                    home_env=home_env,
+                    install_env=install_env,
+                ),
+                "",
+            )
+
+            # Both files present but holding no relevant key either: the
+            # same resolvable state.
+            self._write_env(home_env, "OTHER_KEY", "home")
+            self._write_env(install_env, "OTHER_KEY", "install")
+            self.assertEqual(
+                module.resolve_token(
+                    self._profile(),
+                    home_env=home_env,
+                    install_env=install_env,
+                ),
+                "",
+            )
+
+    def test_resolve_token_creates_neither_env_file(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            home_env = Path(tmp) / "home.env"
+            install_env = Path(tmp) / "install.env"
+            self.assertFalse(home_env.exists())
+            self.assertFalse(install_env.exists())
+
+            # A read is a read: resolving from absent files returns the
+            # empty string and leaves both paths nonexistent.
+            self.assertEqual(
+                module.resolve_token(
+                    self._profile(),
+                    home_env=home_env,
+                    install_env=install_env,
+                ),
+                "",
+            )
+
+            self.assertFalse(home_env.exists())
+            self.assertFalse(install_env.exists())
