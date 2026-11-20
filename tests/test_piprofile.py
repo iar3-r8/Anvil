@@ -615,3 +615,247 @@ class SaveProfileRefusesNameCollisionTestCase(unittest.TestCase):
             self.assertEqual(store_path.read_bytes(), before)
             profile = yamlio.load(store_path)[COLLISION_NAME]
             self.assertEqual(profile["path"], os.path.abspath(str(dir_a)))
+
+
+# Behaviour 8: the store records which key holds the token, never the token.
+# The detection rule is decided and recorded in the plan's Assumptions
+# (plans/pi-phase13-profiles.md): a record is refused when any string value
+# in ``owner``, ``repo``, ``base`` or the ``project`` block starts with a
+# known GitHub token prefix, and the ProfileError names the offending
+# field. No length floor — the prefix is the rule. The profile's own
+# ``token_env`` field is derived from the name and is never a smuggle-in
+# vector, so it is deliberately not tested here.
+TOKEN_PREFIXES = [
+    "ghp_",
+    "gho_",
+    "ghu_",
+    "ghs_",
+    "ghr_",
+    "github_pat_",
+    "glpat_",
+]
+
+#: A token value per prefix: the prefix itself plus a plausible body, so no
+#: implementation can pass by matching the prefix alone against an empty
+#: remainder — the value still starts with the prefix either way.
+def _token_value(prefix):
+    return prefix + "abcdefghijklmnop"
+
+
+#: The identity fields the rule covers, one per way of smuggling a token in
+#: outside the ``project`` block.
+TOKEN_IDENTITY_FIELDS = ["owner", "repo", "base"]
+
+#: Ordinary values that merely resemble a token and must NOT be refused:
+#: the prefix mid-sentence, or embedded after other characters. The rule is
+#: start-of-string, not "contains" — so none of these may start with a
+#: prefix, or the refusal rule would fire for good reason.
+ORDINARY_OWNERS = ["notghp_abcdefghijklmnop", "xghu_abcdefgh"]
+ORDINARY_STRUCTURE = "layout: see ghp_abcdefghijklmnop in the notes\n"
+ORDINARY_CONFIGURATION = "gateway port 8080 (notglpat_abc is a label)"
+
+
+class SaveProfileRefusesTokenValueTestCase(unittest.TestCase):
+    """Behaviour 8: save-refuses-token-value."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1, 2, 4, 5, 6 and 7 are green), so
+        the import succeeds and the assertions below surface as genuine
+        failures — no ProfileError raised, the file written — not as an
+        AttributeError: the token check is simply absent yet.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _save(self, module, root, target, **overrides):
+        kwargs = dict(
+            root=root,
+            name=RECORD_NAME,
+            path=target,
+            owner=RECORD_OWNER,
+            repo=RECORD_REPO,
+            base=RECORD_BASE,
+            project={},
+        )
+        kwargs.update(overrides)
+        module.save_profile(**kwargs)
+
+    def test_save_profile_token_value_in_identity_field_raises_profile_error(self):
+        module = self._module()
+        for prefix in TOKEN_PREFIXES:
+            for field in TOKEN_IDENTITY_FIELDS:
+                with self.subTest(prefix=prefix, field=field):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        target = Path(tmp) / RECORD_NAME
+                        target.mkdir()
+                        root = Path(tmp) / ".anvil"
+
+                        with self.assertRaises(module.ProfileError):
+                            self._save(
+                                module, root, target,
+                                **{field: _token_value(prefix)},
+                            )
+
+    def test_save_profile_token_value_in_project_block_raises_profile_error(self):
+        module = self._module()
+        for prefix in TOKEN_PREFIXES:
+            with self.subTest(prefix=prefix):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / RECORD_NAME
+                    target.mkdir()
+                    root = Path(tmp) / ".anvil"
+
+                    with self.assertRaises(module.ProfileError):
+                        self._save(
+                            module, root, target,
+                            project={
+                                "name": "project-x",
+                                "structure": "flat",
+                                "configuration": _token_value(prefix),
+                            },
+                        )
+
+    def test_save_profile_token_value_error_names_offending_field(self):
+        module = self._module()
+        for prefix in TOKEN_PREFIXES:
+            for field in TOKEN_IDENTITY_FIELDS:
+                with self.subTest(prefix=prefix, field=field):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        target = Path(tmp) / RECORD_NAME
+                        target.mkdir()
+                        root = Path(tmp) / ".anvil"
+
+                        with self.assertRaises(module.ProfileError) as ctx:
+                            self._save(
+                                module, root, target,
+                                **{field: _token_value(prefix)},
+                            )
+
+                        # The field is named so the operator knows which
+                        # value to fix, not just that a save was refused.
+                        self.assertIn(field, str(ctx.exception))
+
+    def test_save_profile_token_value_in_project_block_error_names_field(self):
+        module = self._module()
+        with self.subTest(prefix="ghp_"):
+            with tempfile.TemporaryDirectory() as tmp:
+                target = Path(tmp) / RECORD_NAME
+                target.mkdir()
+                root = Path(tmp) / ".anvil"
+
+                with self.assertRaises(module.ProfileError) as ctx:
+                    self._save(
+                        module, root, target,
+                        project={"configuration": _token_value("ghp_")},
+                    )
+
+                self.assertIn("configuration", str(ctx.exception))
+
+    def test_save_profile_token_value_writes_nothing_when_store_empty(self):
+        module = self._module()
+        for prefix in TOKEN_PREFIXES:
+            for field in TOKEN_IDENTITY_FIELDS:
+                with self.subTest(prefix=prefix, field=field):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        target = Path(tmp) / RECORD_NAME
+                        target.mkdir()
+                        root = Path(tmp) / ".anvil"
+
+                        with self.assertRaises(module.ProfileError):
+                            self._save(
+                                module, root, target,
+                                **{field: _token_value(prefix)},
+                            )
+
+                        # Nothing is written: no store file, and no root
+                        # directory created either — the check precedes any
+                        # filesystem effect.
+                        self.assertFalse((root / "profiles.yaml").exists())
+                        self.assertFalse(root.exists())
+
+    def test_save_profile_token_value_leaves_existing_store_byte_identical(self):
+        module = self._module()
+        for prefix in TOKEN_PREFIXES:
+            for field in TOKEN_IDENTITY_FIELDS:
+                with self.subTest(prefix=prefix, field=field):
+                    with tempfile.TemporaryDirectory() as tmp:
+                        target = Path(tmp) / RECORD_NAME
+                        target.mkdir()
+                        root = Path(tmp) / ".anvil"
+
+                        # The store already holds a good record for the
+                        # same name and path; the re-save smuggles a token.
+                        self._save(module, root, target)
+                        store_path = root / "profiles.yaml"
+                        before = store_path.read_bytes()
+
+                        with self.assertRaises(module.ProfileError):
+                            self._save(
+                                module, root, target,
+                                **{field: _token_value(prefix)},
+                            )
+
+                        # The existing store file is byte-identical and the
+                        # old record's good value survives the refusal.
+                        self.assertEqual(store_path.read_bytes(), before)
+                        profile = yamlio.load(store_path)[RECORD_NAME]
+                        self.assertEqual(profile[field], {
+                            "owner": RECORD_OWNER,
+                            "repo": RECORD_REPO,
+                            "base": RECORD_BASE,
+                        }[field])
+
+    def test_save_profile_ordinary_values_are_not_refused(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / RECORD_NAME
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+
+            # Every value here merely resembles a token: a prefix after
+            # other characters, or mid-sentence. None is a token, so the
+            # save must succeed and round-trip the values as given.
+            self._save(
+                module, root, target,
+                owner=ORDINARY_OWNERS[0],
+                repo=ORDINARY_OWNERS[1],
+                project={
+                    "name": "project-x",
+                    "structure": ORDINARY_STRUCTURE,
+                    "configuration": ORDINARY_CONFIGURATION,
+                },
+            )
+
+            profile = yamlio.load(root / "profiles.yaml")[RECORD_NAME]
+
+            self.assertEqual(profile["owner"], ORDINARY_OWNERS[0])
+            self.assertEqual(profile["repo"], ORDINARY_OWNERS[1])
+            self.assertEqual(profile["base"], RECORD_BASE)
+            self.assertEqual(
+                profile["project"]["structure"], ORDINARY_STRUCTURE
+            )
+            self.assertEqual(
+                profile["project"]["configuration"], ORDINARY_CONFIGURATION
+            )
+
+    def test_save_profile_prefix_match_is_start_of_string_only(self):
+        module = self._module()
+        for field in TOKEN_IDENTITY_FIELDS:
+            with self.subTest(field=field):
+                with tempfile.TemporaryDirectory() as tmp:
+                    target = Path(tmp) / RECORD_NAME
+                    target.mkdir()
+                    root = Path(tmp) / ".anvil"
+
+                    # The prefix embedded after other characters is NOT a
+                    # token: the match is by start of the string, and this
+                    # save must succeed.
+                    value = "not" + _token_value("ghp_")
+                    self._save(
+                        module, root, target,
+                        **{field: value},
+                    )
+
+                    profile = yamlio.load(root / "profiles.yaml")[RECORD_NAME]
+                    self.assertEqual(profile[field], value)
