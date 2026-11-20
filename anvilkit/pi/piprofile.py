@@ -26,7 +26,11 @@ reading the YAML (behaviour 9), and refusing — naming the profile and
 the vanished path — a record whose ``path`` no longer exists on disk,
 checked per record so a healthy profile still loads while a sibling's
 path has vanished (behaviour 10). ``list_profiles`` names every profile
-the store holds, sorted (behaviour 11). This
+the store holds, sorted (behaviour 11), and
+``resolve_token`` resolves a profile's GitHub token — the value in
+the home ``.env`` under the profile's own ``token_env`` key
+outranks the install ``.env``'s ``GITHUB_TOKEN``, the empty
+string when neither holds one (behaviour 13). This
 module imports no ``subprocess`` and
 no ``yaml`` — reading and writing the file is ``yamlio``'s licence.
 """
@@ -36,6 +40,7 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from anvilkit import env
 from anvilkit import yamlio
 
 #: The whole permitted body of a profile name.
@@ -49,6 +54,11 @@ _ALLOWED_CHARSET = "[A-Za-z0-9._-]"
 #: ``~/.anvil``, so the file is ``<root>/profiles.yaml`` — the root is
 #: the directory that receives it, never a parent of it.
 _STORE_FILENAME = "profiles.yaml"
+
+#: The install ``.env`` key the resolution order always falls back
+#: to (behaviour 13): the literal ``GITHUB_TOKEN``, regardless of
+#: the profile's own ``token_env``.
+_FALLBACK_TOKEN_ENV = "GITHUB_TOKEN"
 
 #: The string prefixes a saved value must never start with (behaviour 8):
 #: each one is the shape of a GitHub or GitLab token, so a value that starts
@@ -241,6 +251,35 @@ def list_profiles(root: os.PathLike) -> List[str]:
     """
     store = _load_store(root)
     return sorted(key for key in store if key != "version")
+
+
+def resolve_token(
+    profile: Dict[str, Any],
+    home_env: Union[str, os.PathLike],
+    install_env: Union[str, os.PathLike],
+) -> str:
+    """Return the profile's GitHub token, or the empty string.
+
+    Behaviour 13 ("token-resolution-order") of
+    ``plans/pi-phase13-profiles.md``: the value in ``home_env``
+    (``~/.anvil/.env``) under the profile's own ``token_env`` key
+    wins; absent there, the install ``.env``'s ``GITHUB_TOKEN`` —
+    the fallback key is always the literal ``GITHUB_TOKEN``,
+    regardless of the profile's ``token_env`` — is the fallback;
+    absent in both, the empty string, never an exception: a
+    missing token is a resolvable state the caller reports. Both
+    paths are injectable keyword parameters with no default, so
+    the suite runs with no real home — the injectable-home seam
+    ``pibakeoff`` and ``picrew`` already set. Each file is read
+    through ``env.read``, whose missing-file-yields-an-empty-mapping
+    behaviour is exactly the read contract here: a read is a
+    read, and neither file is ever created by a resolve.
+    """
+    token_key = profile.get("token_env")
+    token = env.read(home_env).get(token_key)
+    if not token:
+        token = env.read(install_env).get(_FALLBACK_TOKEN_ENV)
+    return token or ""
 
 
 def _token_field(
