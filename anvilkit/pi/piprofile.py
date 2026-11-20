@@ -16,8 +16,11 @@ the name into the store, refusing — with a ``ProfileError`` naming the
 existing path — a re-save that keeps the name but points at a different
 existing directory (behaviour 7), and refusing — naming the offending
 field — any save whose ``owner``, ``repo``, ``base`` or ``project`` value
-starts with a token prefix rather than naming a key (behaviour 8). The
-read behaviours (``load_profile``, ``list_profiles``) will follow. This
+starts with a token prefix rather than naming a key (behaviour 8).
+``load_profile`` reads a record back out of the store, refusing — with a
+``ProfileError`` naming the unknown name and listing the known profile
+names — a name the store does not hold, so a typo is fixable without
+reading the YAML (behaviour 9). ``list_profiles`` will follow. This
 module imports no ``subprocess`` and
 no ``yaml`` — reading and writing the file is ``yamlio``'s licence.
 """
@@ -154,6 +157,41 @@ def save_profile(
     _save_into_store(root, name, absolute, owner, repo, base, project)
 
 
+def load_profile(root: Union[str, Path], name: str) -> Dict[str, Any]:
+    """Return the record stored under ``name`` in ``<root>/profiles.yaml``.
+
+    Behaviour 9 ("load-unknown-name") of
+    ``plans/pi-phase13-profiles.md``: the store is read through
+    ``yamlio.load`` — a missing file is an empty store, not a read
+    error — and the record held under ``name`` is returned with its
+    fields intact: ``path``, ``owner``, ``repo``, ``base``,
+    ``token_env`` and the ``project`` block as written by
+    ``save_profile``.
+
+    Raises:
+        ProfileError: the store does not hold a record under ``name`` —
+            the unknown name is named and the known profile names are
+            listed, so a typo is fixable without reading the YAML. An
+            empty or missing store invents no known names, and a
+            malformed store raises the same way, wrapping the
+            ``YamlError``. A read is a read: ``load_profile`` never
+            writes, and a failed load leaves the filesystem untouched.
+    """
+    store = _load_store(root)
+    record = store.get(name)
+    if not isinstance(record, dict):
+        known = sorted(key for key in store if key != "version")
+        if known:
+            raise ProfileError(
+                "unknown profile %r: known profiles are %s"
+                % (name, ", ".join(known))
+            )
+        raise ProfileError(
+            "unknown profile %r: no profiles are saved" % name
+        )
+    return record
+
+
 def _token_field(
     owner: Optional[str],
     repo: Optional[str],
@@ -265,3 +303,21 @@ def _save_into_store(
         yamlio.save(store_path, store)
     except yamlio.YamlError as exc:
         raise ProfileError("could not write profile store: {}".format(exc)) from exc
+
+
+def _load_store(root: Union[str, Path]) -> Dict[str, Any]:
+    """Read the store under ``root``; a missing file is an empty store.
+
+    Behaviour 9 of ``plans/pi-phase13-profiles.md``: a missing
+    ``profiles.yaml`` (or a missing ``root``) is an empty store, not a
+    read error, and the store is read through ``yamlio.load`` with a
+    failed read wrapped into ``ProfileError`` the way the write path
+    does. The read touches nothing on disk: no file is created.
+    """
+    store_path = Path(root) / _STORE_FILENAME
+    if not store_path.exists():
+        return {}
+    try:
+        return yamlio.load(store_path)
+    except yamlio.YamlError as exc:
+        raise ProfileError("could not read profile store: {}".format(exc)) from exc
