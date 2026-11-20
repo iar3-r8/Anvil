@@ -23,7 +23,8 @@ names — a name the store does not hold, so a typo is fixable without
 reading the YAML (behaviour 9), and refusing — naming the profile and
 the vanished path — a record whose ``path`` no longer exists on disk,
 checked per record so a healthy profile still loads while a sibling's
-path has vanished (behaviour 10). ``list_profiles`` will follow. This
+path has vanished (behaviour 10). ``list_profiles`` names every profile
+the store holds, sorted (behaviour 11). This
 module imports no ``subprocess`` and
 no ``yaml`` — reading and writing the file is ``yamlio``'s licence.
 """
@@ -31,7 +32,7 @@ no ``yaml`` — reading and writing the file is ``yamlio``'s licence.
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from anvilkit import yamlio
 
@@ -210,6 +211,24 @@ def load_profile(root: Union[str, Path], name: str) -> Dict[str, Any]:
             % (name, stored_path)
         )
     return record
+
+
+def list_profiles(root: os.PathLike) -> List[str]:
+    """Return the profile names the store under ``root`` holds, sorted.
+
+    Behaviour 11 ("two-profiles-coexist") of
+    ``plans/pi-phase13-profiles.md``: reads the store through
+    ``_load_store`` and returns every key except ``version``, sorted
+    lexicographically, so a store holding two profiles lists both names
+    in the same order no matter the order they were saved. A missing
+    file, a missing root and a file holding no profiles are all an
+    empty list, never an error, and a malformed store raises
+    ``ProfileError`` the way ``load_profile`` does. A listing is a read:
+    it never writes, so neither ``root`` nor ``root/profiles.yaml``
+    comes into existence as a side effect.
+    """
+    store = _load_store(root)
+    return sorted(key for key in store if key != "version")
 
 
 def _token_field(
