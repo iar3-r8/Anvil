@@ -529,3 +529,89 @@ class SaveProfileRenamesOnSamePathTestCase(unittest.TestCase):
             self.assertEqual(profile["base"], RENAME_NEW_IDENTITY[2])
             # version: 1 is preserved by the rename.
             self.assertEqual(record["version"], 1)
+
+
+# Behaviour 7: a store holding ``project-x`` at a real directory A, re-saved
+# under the SAME name for a DIFFERENT real directory B. The write must be
+# refused — a silent overwrite would leave a later run editing the wrong
+# repository — and the refusal must name the existing path (A) so the
+# operator learns which repository that name already points at. The values
+# are owned by the tests.
+COLLISION_NAME = "project-x"
+COLLISION_IDENTITY = ("octo-org", "project-x", "main")
+
+
+class SaveProfileRefusesNameCollisionTestCase(unittest.TestCase):
+    """Behaviour 7: save-refuses-name-collision."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1, 2, 4, 5 and 6 are green), so the
+        import succeeds and the assertions below surface as genuine
+        failures against the store contents, not as an AttributeError.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _save(self, module, root, name, target):
+        owner, repo, base = COLLISION_IDENTITY
+        module.save_profile(
+            root=root,
+            name=name,
+            path=target,
+            owner=owner,
+            repo=repo,
+            base=base,
+            project={},
+        )
+
+    def _store_at(self, module, tmp):
+        """Build two real directories and save ``project-x`` at the first.
+
+        Returns ``(root, dir_a, dir_b)`` with the store holding
+        ``COLLISION_NAME`` at ``dir_a``.
+        """
+        dir_a = Path(tmp) / "project-x"
+        dir_a.mkdir()
+        dir_b = Path(tmp) / "other"
+        dir_b.mkdir()
+        root = Path(tmp) / ".anvil"
+        self._save(module, root, COLLISION_NAME, dir_a)
+        return root, dir_a, dir_b
+
+    def test_save_profile_same_name_different_path_raises_profile_error(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _dir_a, dir_b = self._store_at(module, tmp)
+
+            with self.assertRaises(module.ProfileError):
+                self._save(module, root, COLLISION_NAME, dir_b)
+
+    def test_save_profile_name_collision_error_names_existing_path(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, dir_a, dir_b = self._store_at(module, tmp)
+
+            with self.assertRaises(module.ProfileError) as ctx:
+                self._save(module, root, COLLISION_NAME, dir_b)
+
+            # The EXISTING path (directory A, in the absolute form the
+            # store records) is named so the operator learns which
+            # repository that name already points at.
+            self.assertIn(os.path.abspath(str(dir_a)), str(ctx.exception))
+
+    def test_save_profile_same_name_different_path_leaves_store_untouched(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, dir_a, dir_b = self._store_at(module, tmp)
+            store_path = root / "profiles.yaml"
+            before = store_path.read_bytes()
+
+            with self.assertRaises(module.ProfileError):
+                self._save(module, root, COLLISION_NAME, dir_b)
+
+            # Nothing on disk is touched: the store file is byte-identical
+            # and the record still points at directory A, not B.
+            self.assertEqual(store_path.read_bytes(), before)
+            profile = yamlio.load(store_path)[COLLISION_NAME]
+            self.assertEqual(profile["path"], os.path.abspath(str(dir_a)))
