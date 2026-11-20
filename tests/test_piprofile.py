@@ -1,19 +1,25 @@
 """Tests for anvilkit.pi.piprofile — the ``~/.anvil/profiles.yaml`` store.
 
 Written before the implementation (TDD, ``plans/pi-phase13-profiles.md``).
-This file covers behaviour 1 ("name-charset") and behaviour 2
-("token-env-derivation"); the later behaviours (``save_profile``,
-``load_profile``, ``list_profiles``, ``resolve_token``) will be added here
-as separate test classes as they are implemented.
+This file covers behaviour 1 ("name-charset"), behaviour 2
+("token-env-derivation") and behaviour 4 ("save-writes-record"); the later
+behaviours (``load_profile``, ``list_profiles``, ``resolve_token``) will be
+added here as separate test classes as they are implemented.
 
-The production module is imported inside each test body rather than at
-collection time, so the file always collects cleanly. While behaviour 2 is
-unimplemented, its expected red failure is an ``AttributeError`` naming
-``token_env_for`` — not a collection error in this file.
+``piprofile`` is imported inside each test body rather than at collection
+time, so the file always collects cleanly while the store behaviours remain
+unimplemented: a missing ``save_profile`` surfaces as an ``AttributeError``
+naming the function, not as a collection error in this file. ``yamlio`` is
+imported at the top because it is already green.
 """
 
 import importlib
+import os
+import tempfile
 import unittest
+from pathlib import Path
+
+from anvilkit import yamlio
 
 # The tests own these values; the module must derive its verdict from the
 # name's characters, not from a hardcoded allowlist.
@@ -149,3 +155,166 @@ class TokenEnvDerivationTestCase(unittest.TestCase):
                 if name:
                     self.assertIn(name, message)
                 self.assertIn(ALLOWED_CHARSET, message)
+
+
+# Behaviour 4: the record ``save_profile`` must write. The values are owned
+# by the tests; ``token_env`` is the exact derivation behaviour 2 already
+# pins for ``project-x``.
+SAVE_RECORD = {
+    "name": "project-x",
+    "owner": "octo-org",
+    "repo": "project-x",
+    "base": "main",
+    "token_env": "GITHUB_TOKEN_PROJECT_X",
+}
+
+#: Names that fail behaviour 1; one per way of failing it.
+INVALID_SAVE_NAMES = ["-project", ".hidden", "2cool"]
+
+
+class SaveProfileWritesRecordTestCase(unittest.TestCase):
+    """Behaviour 4: save-writes-record."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1 and 2 are green), so the import
+        succeeds and a missing ``save_profile`` surfaces as an
+        ``AttributeError`` naming the function, not as a collection error.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _save(self, module, root, name, target):
+        return module.save_profile(
+            root=root,
+            name=name,
+            path=target,
+            owner=SAVE_RECORD["owner"],
+            repo=SAVE_RECORD["repo"],
+            base=SAVE_RECORD["base"],
+            project={},
+        )
+
+    def test_save_profile_writes_record_to_profiles_yaml(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "project-x"
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+
+            self._save(module, root, "project-x", target)
+
+            record = yamlio.load(root / "profiles.yaml")
+
+            # The store is versioned and keyed by the profile name.
+            self.assertEqual(record["version"], 1)
+            self.assertIn("project-x", record)
+
+            # The profile block carries the resolved record.
+            profile = record["project-x"]
+            self.assertEqual(
+                profile["path"], os.path.abspath(str(target))
+            )
+            self.assertEqual(profile["owner"], SAVE_RECORD["owner"])
+            self.assertEqual(profile["repo"], SAVE_RECORD["repo"])
+            self.assertEqual(profile["base"], SAVE_RECORD["base"])
+
+    def test_save_profile_derives_token_env(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "project-x"
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+
+            self._save(module, root, "project-x", target)
+
+            profile = yamlio.load(root / "profiles.yaml")["project-x"]
+
+            # The known derivation from behaviour 2, re-derived through the
+            # module's own function so the test pins the contract, not a copy.
+            self.assertEqual(
+                profile["token_env"],
+                module.token_env_for("project-x"),
+            )
+            self.assertEqual(profile["token_env"], SAVE_RECORD["token_env"])
+
+    def test_save_profile_keeps_project_block_as_given(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "project-x"
+            target.mkdir()
+            # An empty dict is a valid block; a populated one round-trips.
+            for project in ({}, {"name": "project-x", "structure": "flat"}):
+                with self.subTest(project=project):
+                    root = Path(tmp) / ".anvil"
+                    module.save_profile(
+                        root=root,
+                        name=SAVE_RECORD["name"],
+                        path=target,
+                        owner=SAVE_RECORD["owner"],
+                        repo=SAVE_RECORD["repo"],
+                        base=SAVE_RECORD["base"],
+                        project=project,
+                    )
+                    profile = yamlio.load(root / "profiles.yaml")[
+                        "project-x"
+                    ]
+                    self.assertEqual(profile["project"], project)
+
+    def test_save_profile_creates_root_parent_directories(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "project-x"
+            target.mkdir()
+            # Three levels that do not exist yet; the write must create them.
+            root = Path(tmp) / "deep" / "nested" / ".anvil"
+            self.assertFalse(root.exists())
+
+            self._save(module, root, "project-x", target)
+
+            self.assertTrue((root / "profiles.yaml").is_file())
+
+    def test_save_profile_invalid_name_raises_profile_error(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "project-x"
+            target.mkdir()
+            root = Path(tmp) / ".anvil"
+
+            for name in INVALID_SAVE_NAMES:
+                with self.subTest(name=name):
+                    with self.assertRaises(module.ProfileError) as ctx:
+                        self._save(module, root, name, target)
+
+                    # The offending name is named, not swallowed.
+                    if name:
+                        self.assertIn(name, str(ctx.exception))
+                    # Nothing is written: no store file, no root directory.
+                    self.assertFalse((root / "profiles.yaml").exists())
+
+    def test_save_profile_missing_target_path_raises_profile_error(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "does-not-exist"
+            root = Path(tmp) / ".anvil"
+
+            with self.assertRaises(module.ProfileError) as ctx:
+                self._save(module, root, "project-x", missing)
+
+            # The offending path is named so the operator can fix it.
+            self.assertIn(str(missing), str(ctx.exception))
+            # Nothing is written.
+            self.assertFalse((root / "profiles.yaml").exists())
+
+    def test_save_profile_target_path_is_file_raises_profile_error(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            not_a_dir = Path(tmp) / "a-file"
+            not_a_dir.write_text("not a directory\n", encoding="utf-8")
+            root = Path(tmp) / ".anvil"
+
+            with self.assertRaises(module.ProfileError) as ctx:
+                self._save(module, root, "project-x", not_a_dir)
+
+            self.assertIn(str(not_a_dir), str(ctx.exception))
+            self.assertFalse((root / "profiles.yaml").exists())
