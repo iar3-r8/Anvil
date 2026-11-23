@@ -18091,3 +18091,227 @@ class TestSetupRepoProfileNamePrompt(CliCase):
             "an invalid answered name must record nothing - the store at "
             "{} must not exist".format(self.store_path),
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 16 of plans/pi-phase13-profiles.md - dry-run-writes-nothing
+# ---------------------------------------------------------------------------
+#
+# ``--dry-run`` is the global flag (before the subcommand, the shape the
+# established dry-run tests at ``test_dry_run_setup_repo_writes_nothing_into_
+# the_target`` use). A ``--dry-run setup-repo`` with GitHub enabled and a
+# ``--profile <name>`` flag reaches the profile step without any prompt. Its
+# contract: name the store path and every field it would record - the
+# profile name, the absolute target path, owner, repo, base and the
+# ``token_env`` key name - and never create or modify the store: neither
+# ``<home>/.anvil/profiles.yaml`` nor any ``.anvil`` directory comes into
+# existence, and a store that already exists is left byte-for-byte
+# unchanged. A dry run that wrote a profile would be the bug this pins.
+#
+# RED: ``_record_profile`` still runs under ``--dry-run`` after the (dry)
+# provisioning succeeds (``anvilkit/cli.py:1483``) - the store is created
+# where it must not exist, a seeded store is rewritten, and nothing names
+# the store path or its fields in the output.
+# ---------------------------------------------------------------------------
+
+
+class TestSetupRepoDryRunProfile(CliCase):
+    """``--dry-run setup-repo --profile`` names the record but writes nothing
+    (behaviour 16)."""
+
+    OWNER = "alpha"
+    REPO = "project-x"
+    PROFILE = "project-x"
+    BASE = "main"
+    TOKEN_ENV = "GITHUB_TOKEN_PROJECT_X"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store would land at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.store_path = self.home / ".anvil" / "profiles.yaml"
+
+        # The guard gate's identity seam: the CLI resolves owner/repo through
+        # cli.piguard.resolve_repository, which never raises. The network is
+        # never touched: no rules fetched, no token probes run. With an empty
+        # rules list the verdict is clean, so the run reaches the profile
+        # step.
+        self._resolve = mock.patch.object(
+            cli.piguard, "resolve_repository",
+            return_value=(self.OWNER, self.REPO),
+        )
+        self._resolve.start()
+        self.addCleanup(self._resolve.stop)
+        self._fetch = mock.patch.object(
+            cli.piguard, "fetch_branch_rules", return_value=([], None),
+        )
+        self._fetch.start()
+        self.addCleanup(self._fetch.stop)
+        self._check_all = mock.patch.object(
+            cli.piguard, "check_all", return_value=[],
+        )
+        self._check_all.start()
+        self.addCleanup(self._check_all.stop)
+        self._token = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=[],
+        )
+        self._token.start()
+        self.addCleanup(self._token.stop)
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run_dry(self, target):
+        """One non-interactive ``--dry-run setup-repo --profile`` with the
+        gate pinned clean and the store under a fresh ``HOME`` override, so
+        the store would land at ``<home>/.anvil``.
+
+        ``provision.setup_repo`` is NOT patched: the (dry) provisioning must
+        still succeed, and the ``path`` the record would carry must be a real
+        directory. The gate resolves, fetches nothing and probes nothing, so
+        the verdict is clean and the run reaches the profile step - exit 0.
+        """
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN="ghp_profile_test")
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke(
+                [
+                    "--dry-run",
+                    "setup-repo",
+                    target,
+                    "--profile",
+                    self.PROFILE,
+                    "--yes",
+                    "--no-anthropic",
+                    "--no-oxylabs",
+                ]
+            )
+
+    # -- the dry run names what it would record --------------------------
+
+    def test_dry_run_setup_repo_names_the_store_and_fields_but_writes_nothing(self):
+        """A dry run names the store path and every field it would record -
+        the profile name, the absolute target path, owner, repo, base and
+        the ``token_env`` key - and creates neither the store file nor the
+        ``.anvil`` directory."""
+        with tempfile.TemporaryDirectory() as target:
+            result = self._run_dry(target)
+
+            # The no-write assertion leads: a dry run that wrote a profile is
+            # the bug this pins, and the correct red reason is a store that
+            # came into existence.
+            self.assertFalse(
+                self.store_path.exists(),
+                "a --dry-run must never create the profile store - {} "
+                "came into existence".format(self.store_path),
+            )
+            self.assertFalse(
+                (self.home / ".anvil").exists(),
+                "a --dry-run must never create the .anvil directory - {} "
+                "came into existence".format(self.home / ".anvil"),
+            )
+            self.assertEqual(
+                0,
+                result.exit_code,
+                "a clean gate must dry-run provision - exit 0:\n{}".format(
+                    result.output
+                ),
+            )
+            # The output names the store path and every field it would
+            # record.
+            self.assertIn(
+                str(self.store_path),
+                result.output,
+                "the dry run must name the store path {} - output:\n{}".format(
+                    self.store_path, result.output
+                ),
+            )
+            self.assertIn(
+                self.PROFILE,
+                result.output,
+                "the dry run must name the profile name {!r} - output:\n{}".format(
+                    self.PROFILE, result.output
+                ),
+            )
+            self.assertIn(
+                os.path.abspath(target),
+                result.output,
+                "the dry run must name the absolute target path - output:\n{}".format(
+                    result.output
+                ),
+            )
+            self.assertIn(
+                self.OWNER,
+                result.output,
+                "the dry run must name the owner {!r} - output:\n{}".format(
+                    self.OWNER, result.output
+                ),
+            )
+            self.assertIn(
+                self.REPO,
+                result.output,
+                "the dry run must name the repo {!r} - output:\n{}".format(
+                    self.REPO, result.output
+                ),
+            )
+            self.assertIn(
+                self.BASE,
+                result.output,
+                "the dry run must name the base branch {!r} - output:\n{}".format(
+                    self.BASE, result.output
+                ),
+            )
+            self.assertIn(
+                self.TOKEN_ENV,
+                result.output,
+                "the dry run must name the token_env key {!r} - output:\n{}".format(
+                    self.TOKEN_ENV, result.output
+                ),
+            )
+
+    # -- the dry run leaves an existing store untouched ------------------
+
+    def test_dry_run_setup_repo_leaves_an_existing_store_byte_for_byte_unchanged(self):
+        """A store that already exists is left byte-for-byte unchanged by a
+        dry run and still loads afterwards."""
+        seed = (
+            "version: 1\n"
+            "other-proj:\n"
+            "  path: /code/other\n"
+            "  owner: beta\n"
+            "  repo: other\n"
+            "  base: main\n"
+            "  token_env: GITHUB_TOKEN_OTHER\n"
+            "  project: {}\n"
+        )
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+        before = self.store_path.read_bytes()
+
+        with tempfile.TemporaryDirectory() as target:
+            result = self._run_dry(target)
+
+        after = self.store_path.read_bytes()
+        self.assertEqual(
+            before,
+            after,
+            "a --dry-run must leave the existing store at {} byte-for-byte "
+            "unchanged - it was rewritten".format(self.store_path),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a clean gate must dry-run provision - exit 0:\n{}".format(
+                result.output
+            ),
+        )
+        from anvilkit import yamlio
+
+        store = yamlio.load(self.store_path)
+        self.assertIsInstance(
+            store,
+            dict,
+            "the seeded store must still load after the dry run",
+        )
+        self.assertEqual(1, store.get("version"))
