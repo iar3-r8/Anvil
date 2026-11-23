@@ -19,11 +19,14 @@ imported at the top because it is already green.
 """
 
 import importlib
+import inspect
 import os
+import re
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from anvilkit import yamlio
 
@@ -1783,3 +1786,162 @@ class ProfilePathTestCase(unittest.TestCase):
             # directory comes into existence.
             self.assertFalse(root.exists())
             self.assertFalse((root / "profiles.yaml").exists())
+
+
+# Behaviour 18 (``[PIN] module-discipline``): a green-now boundary pin on
+# the ``anvilkit.pi.piprofile`` import surface. No production change. The
+# module must raise exactly one exception type (``ProfileError``, so
+# callers need a single ``except``), import no ``subprocess`` and no
+# ``yaml`` (process execution is another module's licence, and YAML
+# parsing is ``yamlio``'s), write nothing outside the injected store
+# root, and never call ``Path.home()`` when a root is supplied. If any
+# pin is red at the committed state, that is a real boundary violation
+# in ``piprofile``, not in this pin.
+
+
+class ModuleDisciplineTestCase(unittest.TestCase):
+    """Behaviour 18 (``[PIN] module-discipline``): a green-now boundary pin."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (the store behaviours are green), so the import
+        succeeds and a missing function surfaces as an AttributeError
+        naming the function, not as a collection error.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def test_module_exposes_exactly_one_exception_type_named_profile_error(self):
+        # Arrange: the module's globals — the whole import surface.
+        module = self._module()
+        # Act: every class the module's globals carry that is an
+        # Exception type, however directly it derives from Exception.
+        exception_names = {
+            value.__name__
+            for value in module.__dict__.values()
+            if isinstance(value, type) and issubclass(value, Exception)
+        }
+        # Assert: exactly one, and it is ProfileError.
+        self.assertEqual(
+            exception_names,
+            {"ProfileError"},
+            "piprofile must expose exactly one exception type and it must "
+            "be ProfileError (callers need a single except); found %r"
+            % (sorted(exception_names),),
+        )
+
+    def test_module_imports_no_subprocess_and_no_yaml(self):
+        module = self._module()
+        # Module-level names: a plain ``import subprocess`` or
+        # ``import yaml`` binds exactly these names.
+        self.assertNotIn("subprocess", module.__dict__)
+        self.assertNotIn("yaml", module.__dict__)
+        # Source lines: an aliased import (``import yaml as y``) dodges
+        # the name scan while keeping its import statement, so the
+        # source scan is the one that catches it.
+        source = inspect.getsource(module)
+        for pattern in (
+            r"^\s*import (subprocess|yaml)\b",
+            r"^\s*from (subprocess|yaml)\b",
+        ):
+            self.assertIsNone(
+                re.search(pattern, source, flags=re.MULTILINE),
+                "piprofile must not import subprocess or yaml; source "
+                "matches r'%s'" % pattern,
+            )
+
+    def test_module_writes_nothing_outside_the_injected_store_root(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as work, tempfile.TemporaryDirectory() as home:
+            home_dir = Path(home)
+            root = Path(work) / ".anvil"
+            target = Path(work) / "project-x"
+            target.mkdir()
+            # The token-resolution happy path reads the home .env, so it
+            # is seeded for the call; the walk below must still find ONLY
+            # that file under the fake home.
+            home_env = home_dir / ".env"
+            home_env.write_text(
+                "GITHUB_TOKEN_PROJECT_X=home-token\n", encoding="utf-8"
+            )
+            install_env = Path(work) / "install.env"
+
+            # Path.home() is the only route into the fake home, so any
+            # write the module makes outside the injected root lands
+            # there and is caught by the walk.
+            with mock.patch.object(Path, "home", return_value=home_dir):
+                module.save_profile(
+                    root=root,
+                    name="project-x",
+                    path=target,
+                    owner="octo-org",
+                    repo="project-x",
+                    base="main",
+                    project={},
+                )
+                record = module.load_profile(root, "project-x")
+                names = module.list_profiles(root)
+                stored = module.profile_path(root, "project-x")
+                token = module.resolve_token(
+                    record, home_env=home_env, install_env=install_env
+                )
+
+            # The calls above really ran: the reads came back.
+            self.assertEqual(names, ["project-x"])
+            self.assertEqual(stored, os.path.abspath(str(target)))
+            # The home .env outranks the install .env (behaviour 13), so
+            # the happy path read the seeded file.
+            self.assertEqual(token, "home-token")
+
+            # Assert: the fake home holds exactly the seeded .env and
+            # nothing else — no profiles.yaml, no directory, no cache.
+            found = sorted(
+                str(p.relative_to(home_dir)) for p in home_dir.rglob("*")
+            )
+            self.assertEqual(found, [".env"])
+
+    def test_module_never_calls_path_home_when_a_root_is_supplied(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as work:
+            root = Path(work) / ".anvil"
+            target = Path(work) / "project-x"
+            target.mkdir()
+            install_env = Path(work) / "install.env"
+
+            # Any Path.home() call in the chain raises; the assertion is
+            # that none of the five calls with an explicit root trips it.
+            with mock.patch.object(
+                Path,
+                "home",
+                side_effect=AssertionError(
+                    "Path.home() called with an explicit root"
+                ),
+            ):
+                module.save_profile(
+                    root=root,
+                    name="project-x",
+                    path=target,
+                    owner="octo-org",
+                    repo="project-x",
+                    base="main",
+                    project={},
+                )
+                record = module.load_profile(root, "project-x")
+                self.assertEqual(
+                    module.list_profiles(root), ["project-x"]
+                )
+                self.assertEqual(
+                    module.profile_path(root, "project-x"),
+                    os.path.abspath(str(target)),
+                )
+                # resolve_token takes both env paths explicitly; with no
+                # file present it resolves to the empty string, so the
+                # call is a genuine read that must not need a home.
+                self.assertEqual(
+                    module.resolve_token(
+                        record,
+                        home_env=install_env,
+                        install_env=install_env,
+                    ),
+                    "",
+                )
