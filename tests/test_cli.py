@@ -18597,3 +18597,89 @@ class TestProfileListAndShow(CliCase):
             result.exit_code,
             "profile list with no store must exit 0:\n{}".format(result.output),
         )
+
+    # -- behaviour 19: list tolerates a vanished path -----------------------
+
+    def test_profile_list_over_a_vanished_path_still_lists_the_rest(self):
+        """``list`` stays a working discovery tool when one record's path
+        has vanished: exit 0, and BOTH names are printed - the healthy
+        record with its path, the vanished one with its stored path. This
+        is the pin that forces the implementation to use the raw accessor
+        (``piprofile.profile_path``) instead of ``load_profile``, which
+        behaviour 10 makes refuse a vanished path."""
+        shutil.rmtree(str(self.profile_path))
+        result = self._run(["profile", "list"])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile list must exit 0 even when a stored path has "
+            "vanished:\n{}".format(result.output),
+        )
+        # Both names are printed: the discovery tool lists what is saved,
+        # not what still exists on disk.
+        self.assertIn(
+            self.SECOND,
+            result.output,
+            "profile list must still print the healthy profile {!r} - "
+            "output:\n{}".format(self.SECOND, result.output),
+        )
+        self.assertIn(
+            self.PROFILE,
+            result.output,
+            "profile list must still print the vanished profile {!r} - "
+            "output:\n{}".format(self.PROFILE, result.output),
+        )
+        # The healthy record keeps the behaviour 17 shape: a line naming it
+        # together with its path.
+        healthy = os.path.abspath(str(self.second_path))
+        healthy_lines = [
+            line
+            for line in result.output.splitlines()
+            if self.SECOND in line and healthy in line
+        ]
+        self.assertTrue(
+            healthy_lines,
+            "profile list must print a line naming the healthy profile "
+            "{!r} with its path {} - output:\n{}".format(
+                self.SECOND, healthy, result.output
+            ),
+        )
+        # The vanished record is printed with its stored path (the raw
+        # accessor's value); the exact line format is the implementer's
+        # choice, but the stored path must appear.
+        vanished = os.path.abspath(str(self.profile_path))
+        self.assertIn(
+            vanished,
+            result.output,
+            "profile list must print the vanished profile's stored path "
+            "{} - output:\n{}".format(vanished, result.output),
+        )
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by profile list",
+            )
+
+    def test_profile_show_still_refuses_a_vanished_path(self):
+        """Guard against over-correction: only ``list`` becomes tolerant
+        over a vanished path. ``show`` keeps behaviour 10's existence
+        check and still surfaces a ``ProfileError`` (the real entrypoint
+        maps it to EXIT_CONFIG, which CliRunner cannot see - see
+        TestRunEntryPoint)."""
+        shutil.rmtree(str(self.profile_path))
+        result = self._run(["profile", "show", self.PROFILE])
+        from anvilkit.pi import piprofile
+
+        self.assertIsInstance(
+            result.exception,
+            piprofile.ProfileError,
+            "show of a vanished path must still surface a ProfileError, "
+            "got {!r}".format(result.exception),
+        )
+        self.assertNotEqual(
+            0,
+            result.exit_code,
+            "show of a vanished path must still exit non-zero, got {}: "
+            "output:\n{}".format(result.exit_code, result.output),
+        )

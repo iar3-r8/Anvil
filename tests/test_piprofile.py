@@ -1614,3 +1614,172 @@ class ResolveTokenOrderTestCase(unittest.TestCase):
 
             self.assertFalse(home_env.exists())
             self.assertFalse(install_env.exists())
+
+
+# Behaviour 19 (store half): ``profile_path(root, name)`` — the raw path
+# accessor for a listing. It returns the record's stored ``path`` string
+# with NO existence check: a vanished path is returned as stored, which is
+# what keeps ``profile list`` a working discovery tool (the CLI half is
+# pinned in ``tests/test_cli.py::TestProfileListAndShow``). The error
+# contract is behaviour 9's: an unknown name is named and the known
+# profile names are listed, with "no profiles are saved" when the store is
+# empty, and a malformed store raises ``ProfileError`` the way the other
+# reads do. A read is a read: it writes nothing, and a missing root stays
+# missing. The values are owned by the tests.
+PROFILE_PATH_NAME = "project-x"
+PROFILE_PATH_IDENTITY = ("octo-org", "project-x", "main")
+PROFILE_PATH_SIBLING_NAME = "api"
+PROFILE_PATH_SIBLING_IDENTITY = ("api-org", "api", "master")
+
+#: A name the store does not hold.
+PROFILE_PATH_UNKNOWN = "typo"
+
+#: Two ways of being a malformed store: one that parses but whose top
+#: level is not a mapping, and one whose YAML does not parse at all.
+MALFORMED_STORE_TOP_LEVEL_LIST = "- project-x\n- api\n"
+MALFORMED_STORE_INVALID_YAML = "path: [unclosed\n  owner: oops\n"
+
+
+class ProfilePathTestCase(unittest.TestCase):
+    """Behaviour 19 (store half): raw-path-accessor."""
+
+    def _module(self):
+        """Import anvilkit.pi.piprofile, named in any red failure.
+
+        The module exists (behaviours 1 through 13 are green), so the import
+        succeeds and a missing ``profile_path`` surfaces as an
+        ``AttributeError`` naming the function, not as a collection error.
+        """
+        return importlib.import_module("anvilkit.pi.piprofile")
+
+    def _seed_two_profiles(self, module, tmp):
+        """Seed the store with both records at real directories.
+
+        Both are saved through the green ``save_profile``; returns
+        ``(root, dir_x, dir_api)``.
+        """
+        dir_x = Path(tmp) / PROFILE_PATH_NAME
+        dir_x.mkdir()
+        dir_api = Path(tmp) / PROFILE_PATH_SIBLING_NAME
+        dir_api.mkdir()
+        root = Path(tmp) / ".anvil"
+        module.save_profile(
+            root=root,
+            name=PROFILE_PATH_NAME,
+            path=dir_x,
+            owner=PROFILE_PATH_IDENTITY[0],
+            repo=PROFILE_PATH_IDENTITY[1],
+            base=PROFILE_PATH_IDENTITY[2],
+            project={},
+        )
+        module.save_profile(
+            root=root,
+            name=PROFILE_PATH_SIBLING_NAME,
+            path=dir_api,
+            owner=PROFILE_PATH_SIBLING_IDENTITY[0],
+            repo=PROFILE_PATH_SIBLING_IDENTITY[1],
+            base=PROFILE_PATH_SIBLING_IDENTITY[2],
+            project={},
+        )
+        return root, dir_x, dir_api
+
+    def test_profile_path_returns_stored_path_string_as_is(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, dir_x, _dir_api = self._seed_two_profiles(module, tmp)
+
+            # The contract is the stored string, not a re-resolved path:
+            # read the store the way a listing would and compare.
+            stored = yamlio.load(root / "profiles.yaml")[PROFILE_PATH_NAME][
+                "path"
+            ]
+
+            self.assertEqual(
+                module.profile_path(root, PROFILE_PATH_NAME), stored
+            )
+            self.assertEqual(stored, os.path.abspath(str(dir_x)))
+
+    def test_profile_path_vanished_path_is_returned_as_stored(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, dir_x, _dir_api = self._seed_two_profiles(module, tmp)
+            # The whole point of the raw accessor: no existence check.
+            shutil.rmtree(dir_x)
+            self.assertFalse(dir_x.exists())
+
+            # A vanished path is returned exactly as stored.
+            self.assertEqual(
+                module.profile_path(root, PROFILE_PATH_NAME),
+                os.path.abspath(str(dir_x)),
+            )
+
+    def test_profile_path_unknown_name_raises_profile_error_naming_name_and_listing_known(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _dir_x, _dir_api = self._seed_two_profiles(module, tmp)
+
+            with self.assertRaises(module.ProfileError) as ctx:
+                module.profile_path(root, PROFILE_PATH_UNKNOWN)
+
+            # Behaviour 9's message: the typo is named and both known
+            # profiles are listed, so a typo is fixable without reading
+            # the YAML.
+            message = str(ctx.exception)
+            self.assertIn(PROFILE_PATH_UNKNOWN, message)
+            self.assertIn(PROFILE_PATH_NAME, message)
+            self.assertIn(PROFILE_PATH_SIBLING_NAME, message)
+
+    def test_profile_path_unknown_name_empty_store_says_no_profiles_saved(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            # A missing root and an empty root are the same empty store.
+            for label, root, must_exist in (
+                ("missing root", Path(tmp) / ".anvil", False),
+                ("empty root", Path(tmp) / "empty.anvil", True),
+            ):
+                with self.subTest(label=label):
+                    if must_exist:
+                        root.mkdir()
+                    self.assertFalse((root / "profiles.yaml").exists())
+
+                    with self.assertRaises(module.ProfileError) as ctx:
+                        module.profile_path(root, PROFILE_PATH_UNKNOWN)
+
+                    # Behaviour 9's empty-store message, not an invented
+                    # list of known names.
+                    message = str(ctx.exception)
+                    self.assertIn(PROFILE_PATH_UNKNOWN, message)
+                    self.assertIn("no profiles", message)
+
+    def test_profile_path_malformed_store_raises_profile_error(self):
+        module = self._module()
+        for text in (
+            MALFORMED_STORE_TOP_LEVEL_LIST,
+            MALFORMED_STORE_INVALID_YAML,
+        ):
+            with self.subTest(store=text):
+                with tempfile.TemporaryDirectory() as tmp:
+                    root = Path(tmp) / ".anvil"
+                    root.mkdir()
+                    (root / "profiles.yaml").write_text(text, encoding="utf-8")
+
+                    with self.assertRaises(module.ProfileError) as ctx:
+                        module.profile_path(root, PROFILE_PATH_NAME)
+
+                    # The same wrap the other reads use: a ProfileError
+                    # naming the profile store.
+                    self.assertIn("profile store", str(ctx.exception))
+
+    def test_profile_path_writes_nothing_and_missing_root_stays_missing(self):
+        module = self._module()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / ".anvil"
+            self.assertFalse(root.exists())
+
+            with self.assertRaises(module.ProfileError):
+                module.profile_path(root, PROFILE_PATH_NAME)
+
+            # A read is a read: neither the store file nor the root
+            # directory comes into existence.
+            self.assertFalse(root.exists())
+            self.assertFalse((root / "profiles.yaml").exists())
