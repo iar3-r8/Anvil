@@ -17713,3 +17713,381 @@ class TestSetupRepoRecordsProfile(CliCase):
         )
         self.assertEqual("main", record.get("base"))
         self.assertEqual(self.TOKEN_ENV, record.get("token_env"))
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 15 of plans/pi-phase13-profiles.md - profile-name-prompt
+# ---------------------------------------------------------------------------
+#
+# ``setup-repo`` with GitHub enabled and NO ``--profile`` flag asks for the
+# profile name through the established prompt seam (``cli.prompts.ask``),
+# whose DEFAULT is the target basename. ``--profile <name>`` (behaviour 14)
+# returns the flag's name WITHOUT prompting, and ``--yes`` takes the basename
+# default without prompting. A supplied or answered name failing the charset
+# rule (``piprofile.valid_name`` - ``[A-Za-z0-9._-]``, no leading ``-``/``.``/
+# digit) exits on the usage code (``cli.EXIT_USAGE``) naming the charset,
+# BEFORE anything is provisioned: no provision call and no store record.
+#
+# RED: the CLI records a profile ONLY when ``--profile`` was passed (behaviour
+# 14, green) - there is no name prompt and no charset validation yet. So the
+# non-flag interactive path, the ``--yes`` default path, and the invalid-name
+# usage exit do not exist: the no-flag runs make no prompt and write no store
+# (tests 1-2 and 4), and an invalid ``--profile`` / answered name is not
+# refused up front with a usage exit (tests 5-6).
+# ---------------------------------------------------------------------------
+
+
+class TestSetupRepoProfileNamePrompt(CliCase):
+    """``setup-repo`` asks for the profile name (behaviour 15)."""
+
+    OWNER = "alpha"
+    REPO = "project-x"
+    BASELINE = "project-x"
+    CHARSET = "[A-Za-z0-9._-]"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.store_path = self.home / ".anvil" / "profiles.yaml"
+
+        # The guard gate's identity seam: the CLI resolves owner/repo through
+        # cli.piguard.resolve_repository, which never raises. The network is
+        # never touched: no rules fetched, no token probes run. With an empty
+        # rules list the verdict is clean, so provisioning proceeds.
+        self._resolve = mock.patch.object(
+            cli.piguard, "resolve_repository",
+            return_value=(self.OWNER, self.REPO),
+        )
+        self._resolve.start()
+        self.addCleanup(self._resolve.stop)
+        self._fetch = mock.patch.object(
+            cli.piguard, "fetch_branch_rules", return_value=([], None),
+        )
+        self._fetch.start()
+        self.addCleanup(self._fetch.stop)
+        self._check_all = mock.patch.object(
+            cli.piguard, "check_all", return_value=[],
+        )
+        self._check_all.start()
+        self.addCleanup(self._check_all.stop)
+        self._token = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=[],
+        )
+        self._token.start()
+        self.addCleanup(self._token.stop)
+
+    # -- helpers ---------------------------------------------------------
+
+    def _target(self):
+        """A real, empty target directory whose basename is ``project-x`` -
+        the basename is the prompt's default, so the name must be exact."""
+        parent = tempfile.TemporaryDirectory()
+        self.addCleanup(parent.cleanup)
+        target = Path(parent.name) / self.BASELINE
+        target.mkdir()
+        return str(target)
+
+    def _spy_provision(self):
+        """A recorder over ``provision.setup_repo`` that delegates to the real
+        provision (the same seam the behaviour-14 template relies on), so a
+        run that should not provision actually writes - the target then gains
+        the usual artifacts and the call count is the 'no provision' signal."""
+        self._provision_calls = []
+        real = cli.provision.setup_repo
+
+        def spy(target, repo_plan, **kwargs):
+            self._provision_calls.append((str(target), repo_plan, kwargs))
+            return real(target, repo_plan, **kwargs)
+
+        patcher = mock.patch.object(cli.provision, "setup_repo", spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    @staticmethod
+    def _ask_resolve(prompt, default, supplied=None, assume_yes=False,
+                     interactive=True):
+        """Mimic ``prompts.ask``'s resolution (supplied -> default) so a
+        flag-supplied name flows through even if the implementation routes it
+        via the seam; never actually reads stdin."""
+        if supplied is not None:
+            return supplied
+        return default
+
+    def _run(self, target, interactive, assume_yes, profile=None,
+             ask_return=None, ask_side_effect=None, boom=False):
+        """One ``setup-repo`` with the gate pinned clean, a fresh ``HOME``,
+        the real provision under a recorder, and the name-prompt seam
+        (``cli.prompts.ask``) controlled or observed.
+
+        ``ask_return`` / ``ask_side_effect`` steer the answer; ``boom``
+        replaces the recorder with an AssertionError trap, so any prompt asked
+        fails loudly. The seam is the only ``ask`` on this path (the token is
+        stored, the frontier is declined, oxylabs skipped)."""
+        self._spy_provision()
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN="ghp_profile_test")
+
+        argv = ["setup-repo", target, "--no-anthropic", "--no-oxylabs"]
+        if profile is not None:
+            argv += ["--profile", profile]
+        if assume_yes:
+            argv.append("--yes")
+
+        if interactive:
+            inter = mock.patch.object(
+                cli, "_is_interactive", return_value=True,
+            )
+            inter.start()
+            self.addCleanup(inter.stop)
+
+        if boom:
+            ask_patcher = mock.patch.object(
+                cli.prompts, "ask",
+                side_effect=AssertionError(
+                    "a profile-name prompt was asked"),
+            )
+        elif ask_side_effect is not None:
+            ask_patcher = mock.patch.object(
+                cli.prompts, "ask", side_effect=ask_side_effect,
+            )
+        else:
+            ask_patcher = mock.patch.object(
+                cli.prompts, "ask", return_value=ask_return,
+            )
+        self._ask_mock = ask_patcher.start()
+        self.addCleanup(ask_patcher.stop)
+
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _ask_default(self):
+        """The ``default`` argument of the single ``ask`` call, whether it was
+        passed positionally (2nd) or by keyword - ``None`` if never called."""
+        if self._ask_mock is None or not self._ask_mock.called:
+            return None
+        args, kwargs = self._ask_mock.call_args
+        if "default" in kwargs:
+            return kwargs["default"]
+        if len(args) >= 2:
+            return args[1]
+        return None
+
+    def _store(self):
+        """The store read back through yamlio (the honest way to assert the
+        record); a missing file is ``None``."""
+        from anvilkit import yamlio
+
+        if not self.store_path.exists():
+            return None
+        try:
+            return yamlio.load(self.store_path)
+        except yamlio.YamlError as exc:
+            self.fail(
+                "the profile store at {} is not a readable mapping: {}".format(
+                    self.store_path, exc,
+                ),
+            )
+
+    # -- the prompt default and the recorded name --------------------------
+
+    def test_interactive_prompt_defaults_to_basename_and_records_answered_name(self):
+        """Interactive, no --profile, no --yes: the prompt's default is the
+        target basename, and the ANSWERED name is what gets recorded."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=False, ask_return="renamed-proj",
+        )
+        self._ask_mock.assert_called_once()
+        self.assertEqual(
+            self.BASELINE,
+            self._ask_default(),
+            "the profile-name prompt must default to the target basename "
+            "{!r}".format(self.BASELINE),
+        )
+        self.assertEqual(
+            0, result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written - the answered name "
+            "must be recorded".format(self.store_path),
+        )
+        record = store.get("renamed-proj")
+        self.assertIsInstance(
+            record, dict,
+            "the record must land under the answered name 'renamed-proj', "
+            "got keys {!r}".format(sorted(store)),
+        )
+        self.assertEqual(
+            os.path.abspath(target), record.get("path"),
+            "the record's path must be the absolute target path",
+        )
+
+    def test_interactive_prompt_default_answer_records_basename(self):
+        """Interactive, no --profile, no --yes, the user accepts the default:
+        the record lands under the basename."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=False,
+            ask_return=self.BASELINE,
+        )
+        self._ask_mock.assert_called_once()
+        self.assertEqual(
+            self.BASELINE,
+            self._ask_default(),
+            "the profile-name prompt must default to the target basename "
+            "{!r}".format(self.BASELINE),
+        )
+        self.assertEqual(
+            0, result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written - the accepted default "
+            "must be recorded".format(self.store_path),
+        )
+        record = store.get(self.BASELINE)
+        self.assertIsInstance(
+            record, dict,
+            "the record must land under the accepted default basename "
+            "{!r}, got keys {!r}".format(self.BASELINE, sorted(store)),
+        )
+        self.assertEqual(
+            os.path.abspath(target), record.get("path"),
+            "the record's path must be the absolute target path",
+        )
+
+    # -- the no-prompt paths ----------------------------------------------
+
+    def test_profile_flag_returns_flag_name_without_prompting(self):
+        """--profile <name>: the flag's name is used WITHOUT prompting (the
+        booby-trapped ask must never fire) and the record lands under it."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=True,
+            profile="chosen", boom=True,
+        )
+        self.assertFalse(
+            self._ask_mock.called,
+            "--profile must return the flag's name without prompting",
+        )
+        self.assertEqual(
+            0, result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written".format(self.store_path),
+        )
+        record = store.get("chosen")
+        self.assertIsInstance(
+            record, dict,
+            "the record must land under the flag's name 'chosen', got "
+            "keys {!r}".format(sorted(store)),
+        )
+        self.assertEqual(
+            os.path.abspath(target), record.get("path"),
+            "the record's path must be the absolute target path",
+        )
+
+    def test_yes_takes_basename_default_without_prompting(self):
+        """--yes, no --profile: the basename default is taken WITHOUT
+        prompting (the booby-trapped ask must never fire) and the record
+        lands under it."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=True, boom=True,
+        )
+        self.assertFalse(
+            self._ask_mock.called,
+            "--yes must take the basename default without prompting",
+        )
+        self.assertEqual(
+            0, result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written - --yes must record "
+            "under the basename default".format(self.store_path),
+        )
+        record = store.get(self.BASELINE)
+        self.assertIsInstance(
+            record, dict,
+            "the record must land under the basename default {!r}, got "
+            "keys {!r}".format(self.BASELINE, sorted(store)),
+        )
+        self.assertEqual(
+            os.path.abspath(target), record.get("path"),
+            "the record's path must be the absolute target path",
+        )
+
+    # -- the charset refusal, before provisioning --------------------------
+
+    def test_invalid_profile_flag_exits_usage_before_provisioning(self):
+        """--profile with a charset violation: exit on the usage code naming
+        the charset, BEFORE anything is provisioned - no provision call, no
+        store record."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=True,
+            profile="bad name!", ask_side_effect=self._ask_resolve,
+        )
+        self.assertEqual(
+            cli.EXIT_USAGE, result.exit_code,
+            "an invalid --profile name must exit on the usage code, got "
+            "{}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            self.CHARSET, result.output,
+            "the usage message must name the allowed charset {!r}:\n{}".format(
+                self.CHARSET, result.output),
+        )
+        self.assertEqual(
+            0, len(self._provision_calls),
+            "an invalid name must be refused BEFORE provisioning - "
+            "provision was called {} times".format(len(self._provision_calls)),
+        )
+        self.assertIsNone(
+            self._store(),
+            "an invalid name must record nothing - the store at {} must "
+            "not exist".format(self.store_path),
+        )
+
+    def test_invalid_answered_name_exits_usage_before_provisioning(self):
+        """Interactive, no --profile, the answered name fails the charset:
+        exit on the usage code naming the charset, BEFORE provisioning."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=False, ask_return="has space",
+        )
+        self._ask_mock.assert_called_once()
+        self.assertEqual(
+            cli.EXIT_USAGE, result.exit_code,
+            "an invalid answered name must exit on the usage code, got "
+            "{}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            self.CHARSET, result.output,
+            "the usage message must name the allowed charset {!r}:\n{}".format(
+                self.CHARSET, result.output),
+        )
+        self.assertEqual(
+            0, len(self._provision_calls),
+            "an invalid answered name must be refused BEFORE provisioning - "
+            "provision was called {} times".format(len(self._provision_calls)),
+        )
+        self.assertIsNone(
+            self._store(),
+            "an invalid answered name must record nothing - the store at "
+            "{} must not exist".format(self.store_path),
+        )
