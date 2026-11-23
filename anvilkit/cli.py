@@ -1480,8 +1480,29 @@ def setup_repo(
     # before provisioning (behaviour 15), so it is None exactly when the
     # gate did not run. A gate that ran but could not resolve the identity
     # still records - with owner/repo null rather than a guessed identity.
+    # Behaviour 16: under --dry-run the record is only NAMED, never written -
+    # the store path is computed at call time (Path.home()), so an overridden
+    # HOME names the location the operator would see. Only key names and
+    # facts are echoed; a token value never appears.
     if profile_name is not None:
-        _record_profile(path, profile_name, repository)
+        if shared.dry_run:
+            owner, repo = (
+                repository if repository is not None else (None, None)
+            )
+            shared.echo(
+                "would store profile {!r} in {} - path: {}, owner: {}, "
+                "repo: {}, base: {}, token_env: {}".format(
+                    profile_name,
+                    Path.home() / ".anvil" / "profiles.yaml",
+                    os.path.abspath(path),
+                    owner,
+                    repo,
+                    "main",
+                    piprofile.token_env_for(profile_name),
+                )
+            )
+        else:
+            _record_profile(path, profile_name, repository)
 
 
 def _resolve_profile_name(
