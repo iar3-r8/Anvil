@@ -32,8 +32,9 @@ from . import compose, config, env, health, prompts, provision, render, smoke
 from .compose import Compose, ComposeError
 from .pi import pibakeoff
 from .config import ConfigError
-from .pi import picodeowners, piguard, pitokenrecipe, piruleset
+from .pi import picodeowners, piguard, pitokenrecipe, piruleset, piprofile
 from .pi.piruleset import RulesetError
+from .pi.piprofile import ProfileError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
 from .render import RenderError
@@ -1318,6 +1319,12 @@ def setup_repo(
     no_oxylabs: bool = typer.Option(
         False, "--no-oxylabs", help="Skip Oxylabs documentation scraping entirely."
     ),
+    profile: Optional[str] = typer.Option(
+        None,
+        "--profile",
+        help="Record the provisioning under this profile name in the Anvil "
+        "profile store (plans/pi-phase13-profiles.md behaviour 14).",
+    ),
     container: bool = typer.Option(
         False,
         "--container",
@@ -1350,6 +1357,9 @@ def setup_repo(
         # frontier/oxylabs prompts, so a blocked run asks no question it will
         # then discard. --no-github skips it entirely: with no GitHub there is
         # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
+        # None unless the gate ran: the profile record (behaviour 14) reuses
+        # this identity rather than re-resolving it.
+        repository: Optional[Tuple[str, str]] = None
         if not no_github:
             branch_findings, token_findings, repository = _collect_guard_findings(
                 Path(path), token, "main"
@@ -1448,6 +1458,44 @@ def setup_repo(
         raise _fail("❌ {}".format(exc), EXIT_PROVISION) from exc
     except RenderError as exc:
         raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+
+    # Behaviour 14: the record is written AFTER a successful provisioning,
+    # from values already resolved - the gate's identity, never re-resolved.
+    # Without a --profile name there is no record to write (the name prompt
+    # is behaviour 15, not landed), and a skipped gate (--no-github) has no
+    # identity to record, so the record runs only when the gate ran.
+    # A gate that ran but could not resolve the identity still records -
+    # with owner/repo null rather than a guessed identity.
+    if profile is not None and not no_github:
+        _record_profile(path, profile, repository)
+
+
+def _record_profile(
+    path: str, name: str, repository: Optional[Tuple[str, str]]
+) -> None:
+    """Record a successful provisioning under ``name`` (behaviour 14).
+
+    Written after ``provision.setup_repo`` succeeds, from values already
+    resolved: the absolute target path, the guard gate's identity, and the
+    literal branch the gate checked. The store root is ``~/.anvil`` and is
+    read at call time via ``Path.home()`` so the suite can redirect ``HOME``
+    without touching the real home. ``repository`` may be ``None`` when the
+    identity was unresolvable; then owner and repo are recorded as null
+    rather than guessed. A ``ProfileError`` (for instance a name collision
+    at a different path) is left to escape: ``run()`` maps it to
+    ``EXIT_CONFIG``, so a failed record is never silently swallowed after
+    a success.
+    """
+    owner, repo = repository if repository is not None else (None, None)
+    piprofile.save_profile(
+        root=Path.home() / ".anvil",
+        name=name,
+        path=path,
+        owner=owner,
+        repo=repo,
+        base="main",
+        project={},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2256,6 +2304,9 @@ def run() -> int:
         typer.echo("❌ {}".format(exc), err=True)
         return EXIT_STRESS_UNAVAILABLE
     except RenderError as exc:
+        typer.echo("❌ {}".format(exc), err=True)
+        return EXIT_CONFIG
+    except ProfileError as exc:
         typer.echo("❌ {}".format(exc), err=True)
         return EXIT_CONFIG
     except KeyboardInterrupt:
