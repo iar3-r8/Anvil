@@ -2351,6 +2351,10 @@ def profile_list() -> None:
 
     A read is a read: it never writes, and it prints only the record's own
     fields - never a resolved token, so a token value is never echoed.
+    A record whose path has vanished still lists, with its stored path:
+    ``profile_path`` does no existence check (behaviour 19), so ``list``
+    stays a working discovery tool while ``show`` keeps behaviour 10's
+    refusal.
     """
     root = _profile_root()
     names = piprofile.list_profiles(root)
@@ -2358,8 +2362,7 @@ def profile_list() -> None:
         typer.echo("No profiles are saved.")
         return
     for name in names:
-        record = piprofile.load_profile(root, name)
-        typer.echo("{}\t{}".format(name, record["path"]))
+        typer.echo("{}\t{}".format(name, piprofile.profile_path(root, name)))
 
 
 @profile_app.command(name="show")

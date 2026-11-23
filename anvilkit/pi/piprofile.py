@@ -27,6 +27,9 @@ the vanished path — a record whose ``path`` no longer exists on disk,
 checked per record so a healthy profile still loads while a sibling's
 path has vanished (behaviour 10). ``list_profiles`` names every profile
 the store holds, sorted (behaviour 11), and
+``profile_path`` returns a record's stored ``path`` verbatim with NO
+existence check — a vanished path comes back exactly as stored, which
+is what keeps ``profile list`` a working discovery tool (behaviour 19).
 ``resolve_token`` resolves a profile's GitHub token — the value in
 the home ``.env`` under the profile's own ``token_env`` key
 outranks the install ``.env``'s ``GITHUB_TOKEN``, the empty
@@ -214,15 +217,7 @@ def load_profile(root: Union[str, Path], name: str) -> Dict[str, Any]:
     store = _load_store(root)
     record = store.get(name)
     if not isinstance(record, dict):
-        known = sorted(key for key in store if key != "version")
-        if known:
-            raise ProfileError(
-                "unknown profile %r: known profiles are %s"
-                % (name, ", ".join(known))
-            )
-        raise ProfileError(
-            "unknown profile %r: no profiles are saved" % name
-        )
+        _raise_unknown_profile(store, name)
     # Behaviour 10 (load-vanished-path): per-record, not a store-wide
     # scan — a healthy profile loads while a sibling's path has
     # vanished. The path is in the absolute form the store records it.
@@ -233,6 +228,36 @@ def load_profile(root: Union[str, Path], name: str) -> Dict[str, Any]:
             % (name, stored_path)
         )
     return record
+
+
+def profile_path(root: Union[str, Path], name: str) -> str:
+    """Return the ``path`` stored under ``name``, with NO existence check.
+
+    Behaviour 19 ("raw-path-accessor") of
+    ``plans/pi-phase13-profiles.md``: reads the store through
+    ``_load_store`` and returns the record's stored ``path`` string
+    verbatim — a vanished path is returned exactly as stored, which is
+    what keeps ``profile list`` a working discovery tool: a record
+    whose directory has been deleted still lists, while
+    ``load_profile`` refuses the same record per behaviour 10. An
+    unknown name raises the same ``ProfileError`` ``load_profile``
+    raises (behaviour 9: the unknown name is named and the known
+    profile names are listed, or "no profiles are saved" when the
+    store is empty), and a malformed store raises the same way
+    ``_load_store`` wraps ``YamlError``. A read is a read:
+    ``profile_path`` never writes, and a missing root stays missing.
+
+    Raises:
+        ProfileError: the store does not hold a record under
+            ``name`` — behaviour 9's message, naming the unknown
+            name and listing the known profiles — or the store is
+            malformed, wrapped from the ``YamlError``.
+    """
+    store = _load_store(root)
+    record = store.get(name)
+    if not isinstance(record, dict):
+        _raise_unknown_profile(store, name)
+    return record["path"]
 
 
 def list_profiles(root: os.PathLike) -> List[str]:
@@ -393,6 +418,23 @@ def _save_into_store(
         yamlio.save(store_path, store)
     except yamlio.YamlError as exc:
         raise ProfileError("could not write profile store: {}".format(exc)) from exc
+
+
+def _raise_unknown_profile(store: Dict[str, Any], name: str) -> None:
+    """Raise behaviour 9's ``ProfileError`` for a name the store lacks.
+
+    Shared by ``load_profile`` and ``profile_path`` so the two reads
+    fail with the same message: the unknown name is named and the
+    known profile names are listed, so a typo is fixable without
+    reading the YAML; an empty store invents no names and says so.
+    """
+    known = sorted(key for key in store if key != "version")
+    if known:
+        raise ProfileError(
+            "unknown profile %r: known profiles are %s"
+            % (name, ", ".join(known))
+        )
+    raise ProfileError("unknown profile %r: no profiles are saved" % name)
 
 
 def _load_store(root: Union[str, Path]) -> Dict[str, Any]:
