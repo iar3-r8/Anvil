@@ -1289,6 +1289,120 @@ def _persist_anthropic_key(shared: Context, api_key: str) -> None:
     shared.echo("⚡ Key accepted and persisted to .env")
 
 
+def _guard_gate(
+    shared: Context,
+    path: str,
+    token_flag: Optional[str],
+    no_github: bool,
+) -> Tuple[str, Optional[Tuple[str, str]]]:
+    """Resolve the GitHub token and run the guard gate on ``path``; a
+    blocked gate exits 9 without provisioning (behaviours 6, 7, 8 and 11)."""
+    token = _resolve_github_token(shared, token_flag, no_github)
+    shared.echo("")
+    # The guard gate: after the token (the gate needs it) and before the
+    # frontier/oxylabs prompts, so a blocked run asks no question it will
+    # then discard. --no-github skips it entirely: with no GitHub there is
+    # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
+    # None unless the gate ran: the profile record (behaviour 14) reuses
+    # this identity rather than re-resolving it.
+    repository: Optional[Tuple[str, str]] = None
+    if not no_github:
+        branch_findings, token_findings, repository = _collect_guard_findings(
+            Path(path), token, "main"
+        )
+        # Behaviour 11: the report prints whenever ANY finding has
+        # status warn or fail - computed over the branch + token
+        # findings together, the same combined list the verdict and
+        # the renderers see - not only when the gate blocks, so a
+        # proceeding gate shows why the warn stands. The condition
+        # is status-only, piguard.render_fixes' own selection rule,
+        # and NEVER includes skipped: a clean gate of only
+        # passed/skipped findings prints nothing, as today (a plain
+        # target with no git origin is all-skipped).
+        if any(
+            finding.get("status") in ("warn", "fail")
+            for finding in branch_findings + token_findings
+        ):
+            shared.echo("")
+            # Behaviour 6: the sectioned report, the same blocks
+            # verify-guards prints - never re-derived. The findings
+            # carry no token value, so nothing secret is echoed.
+            _echo_guard_report(shared, branch_findings, token_findings)
+        if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
+            _free_plan_followup(
+                shared, branch_findings, repository, "main", Path(path)
+            )
+            shared.echo("")
+            remediation = piguard.gate_remediation(
+                branch_findings, token_findings
+            )
+            # Behaviour 7: the gate prepares the fix a junior can
+            # follow - the importable ruleset - after the report and
+            # before the final exit. The run still ends blocked; the
+            # prepared fix never masks the block.
+            if remediation["needs_ruleset"]:
+                _prepare_gate_ruleset(shared, Path(path))
+                shared.echo("")
+            # Behaviour 8: the gate prints the token fix a junior
+            # can follow - the pre-filled creation URL and the
+            # ordered steps - after the ruleset preparation (branch
+            # rules first, then the token fix) and before the final
+            # exit. Only a bad token (a token finding with status
+            # fail) earns the recipe (the warn asymmetry). The URL
+            # carries no token value, so nothing secret is echoed.
+            # ``repository`` is only None when no repository could be
+            # resolved, in which case the token probes never ran, so
+            # the guard is defensive and unreachable.
+            if remediation["needs_token_recipe"] and repository is not None:
+                _prepare_gate_token_recipe(shared, repository)
+                shared.echo("")
+            shared.echo(
+                "⛔ Fix the branch rules and token scope above, then "
+                "re-run setup-repo."
+            )
+            raise typer.Exit(EXIT_GUARDS_BLOCKED)
+    return token, repository
+
+
+def _announce_or_record_profile(
+    shared: Context,
+    path: str,
+    profile_name: str,
+    repository: Optional[Tuple[str, str]],
+) -> None:
+    """Announce (dry-run) or write the profile record after a successful
+    provisioning (behaviours 14 and 16)."""
+    # Behaviour 14: the record is written AFTER a successful provisioning,
+    # from values already resolved - the gate's identity, never re-resolved.
+    # A skipped gate (--no-github) has no identity to record, so the record
+    # runs only when the gate ran; the name was resolved and validated
+    # before provisioning (behaviour 15), so it is None exactly when the
+    # gate did not run. A gate that ran but could not resolve the identity
+    # still records - with owner/repo null rather than a guessed identity.
+    # Behaviour 16: under --dry-run the record is only NAMED, never written -
+    # the store path is computed at call time (Path.home()), so an overridden
+    # HOME names the location the operator would see. Only key names and
+    # facts are echoed; a token value never appears.
+    if shared.dry_run:
+        owner, repo = (
+            repository if repository is not None else (None, None)
+        )
+        shared.echo(
+            "would store profile {!r} in {} - path: {}, owner: {}, "
+            "repo: {}, base: {}, token_env: {}".format(
+                profile_name,
+                Path.home() / ".anvil" / "profiles.yaml",
+                os.path.abspath(path),
+                owner,
+                repo,
+                "main",
+                piprofile.token_env_for(profile_name),
+            )
+        )
+    else:
+        _record_profile(path, profile_name, repository)
+
+
 @app.command(name="setup-repo")
 def setup_repo(
     ctx: typer.Context,
@@ -1351,70 +1465,7 @@ def setup_repo(
     shared.detail("context window: {}".format(topology.coder_context_window))
 
     try:
-        token = _resolve_github_token(shared, github_token, no_github)
-        shared.echo("")
-        # The guard gate: after the token (the gate needs it) and before the
-        # frontier/oxylabs prompts, so a blocked run asks no question it will
-        # then discard. --no-github skips it entirely: with no GitHub there is
-        # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
-        # None unless the gate ran: the profile record (behaviour 14) reuses
-        # this identity rather than re-resolving it.
-        repository: Optional[Tuple[str, str]] = None
-        if not no_github:
-            branch_findings, token_findings, repository = _collect_guard_findings(
-                Path(path), token, "main"
-            )
-            # Behaviour 11: the report prints whenever ANY finding has
-            # status warn or fail - computed over the branch + token
-            # findings together, the same combined list the verdict and
-            # the renderers see - not only when the gate blocks, so a
-            # proceeding gate shows why the warn stands. The condition
-            # is status-only, piguard.render_fixes' own selection rule,
-            # and NEVER includes skipped: a clean gate of only
-            # passed/skipped findings prints nothing, as today (a plain
-            # target with no git origin is all-skipped).
-            if any(
-                finding.get("status") in ("warn", "fail")
-                for finding in branch_findings + token_findings
-            ):
-                shared.echo("")
-                # Behaviour 6: the sectioned report, the same blocks
-                # verify-guards prints - never re-derived. The findings
-                # carry no token value, so nothing secret is echoed.
-                _echo_guard_report(shared, branch_findings, token_findings)
-            if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
-                _free_plan_followup(
-                    shared, branch_findings, repository, "main", Path(path)
-                )
-                shared.echo("")
-                remediation = piguard.gate_remediation(
-                    branch_findings, token_findings
-                )
-                # Behaviour 7: the gate prepares the fix a junior can
-                # follow - the importable ruleset - after the report and
-                # before the final exit. The run still ends blocked; the
-                # prepared fix never masks the block.
-                if remediation["needs_ruleset"]:
-                    _prepare_gate_ruleset(shared, Path(path))
-                    shared.echo("")
-                # Behaviour 8: the gate prints the token fix a junior
-                # can follow - the pre-filled creation URL and the
-                # ordered steps - after the ruleset preparation (branch
-                # rules first, then the token fix) and before the final
-                # exit. Only a bad token (a token finding with status
-                # fail) earns the recipe (the warn asymmetry). The URL
-                # carries no token value, so nothing secret is echoed.
-                # ``repository`` is only None when no repository could be
-                # resolved, in which case the token probes never ran, so
-                # the guard is defensive and unreachable.
-                if remediation["needs_token_recipe"] and repository is not None:
-                    _prepare_gate_token_recipe(shared, repository)
-                    shared.echo("")
-                shared.echo(
-                    "⛔ Fix the branch rules and token scope above, then "
-                    "re-run setup-repo."
-                )
-                raise typer.Exit(EXIT_GUARDS_BLOCKED)
+        token, repository = _guard_gate(shared, path, github_token, no_github)
         frontier = _resolve_frontier(
             shared,
             settings,
@@ -1473,36 +1524,8 @@ def setup_repo(
     except RenderError as exc:
         raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
-    # Behaviour 14: the record is written AFTER a successful provisioning,
-    # from values already resolved - the gate's identity, never re-resolved.
-    # A skipped gate (--no-github) has no identity to record, so the record
-    # runs only when the gate ran; the name was resolved and validated
-    # before provisioning (behaviour 15), so it is None exactly when the
-    # gate did not run. A gate that ran but could not resolve the identity
-    # still records - with owner/repo null rather than a guessed identity.
-    # Behaviour 16: under --dry-run the record is only NAMED, never written -
-    # the store path is computed at call time (Path.home()), so an overridden
-    # HOME names the location the operator would see. Only key names and
-    # facts are echoed; a token value never appears.
     if profile_name is not None:
-        if shared.dry_run:
-            owner, repo = (
-                repository if repository is not None else (None, None)
-            )
-            shared.echo(
-                "would store profile {!r} in {} - path: {}, owner: {}, "
-                "repo: {}, base: {}, token_env: {}".format(
-                    profile_name,
-                    Path.home() / ".anvil" / "profiles.yaml",
-                    os.path.abspath(path),
-                    owner,
-                    repo,
-                    "main",
-                    piprofile.token_env_for(profile_name),
-                )
-            )
-        else:
-            _record_profile(path, profile_name, repository)
+        _announce_or_record_profile(shared, path, profile_name, repository)
 
 
 def _resolve_profile_name(
