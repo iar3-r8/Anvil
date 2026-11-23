@@ -410,6 +410,7 @@ class TestSubcommandsExist(CliCase):
         "stress",
         "verify-guards",
         "smoke-test",
+        "profile",
     )
 
     def registered_names(self):
@@ -18315,3 +18316,284 @@ class TestSetupRepoDryRunProfile(CliCase):
             "the seeded store must still load after the dry run",
         )
         self.assertEqual(1, store.get("version"))
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 17 of plans/pi-phase13-profiles.md - profile-list-and-show
+# ---------------------------------------------------------------------------
+#
+# ``profile`` is a typer sub-app (``add_typer``; the CLI is flat today,
+# ``anvilkit/cli.py:191``) holding two read-only commands. The store is at
+# ``<home>/.anvil/profiles.yaml`` and is seeded with
+# ``piprofile.save_profile`` against REAL temporary directories - behaviour 10
+# makes ``load_profile`` refuse a record whose path has vanished, so a seed
+# pointing at a missing directory would itself fail to load. ``profile list``
+# prints each name with its path; ``profile show <name>`` prints the record's
+# fields - the absolute path, owner, repo, base, the ``token_env`` KEY name and
+# the ``project`` block's values byte-for-byte - and never a token *value*: the
+# home ``.env`` carries a known value under the profile's ``token_env`` key and
+# a known ``GITHUB_TOKEN``. ``show`` of an unknown name exits on the usage code
+# with behaviour 9's message; ``show`` of a record whose path has vanished
+# surfaces as a ``ProfileError`` (the real entrypoint ``run()`` maps it to
+# ``EXIT_CONFIG`` - ``CliRunner`` cannot see that mapping, see
+# ``TestRunEntryPoint``).
+#
+# RED: ``profile`` is not a registered command - ``CliRunner`` reports
+# "No such command 'profile'" for ``["profile", "list"]``, and every
+# exit/output assertion below fails for exactly that reason.
+# ``TestSubcommandsExist.EXPECTED`` is extended in this red step with
+# ``"profile"``, so its three registration pins go red alongside the new tests.
+# ---------------------------------------------------------------------------
+
+
+class TestProfileListAndShow(CliCase):
+    """``profile list`` / ``profile show`` (behaviour 17)."""
+
+    PROFILE = "project-x"
+    SECOND = "api"
+    SECOND_OWNER = "beta"
+    OWNER = "alpha"
+    REPO = "project-x"
+    BASE = "main"
+    TOKEN_ENV = "GITHUB_TOKEN_PROJECT_X"
+    HOME_TOKEN_VALUE = "s3cret-project-x-home-token"
+    FALLBACK_TOKEN_VALUE = "s3cret-fallback-home-token"
+    PROJECT = {
+        "name": "project-x",
+        "structure": "src/\n  main.py\n  util.py\n",
+        "configuration": "llm: coder\nport: 8000\n",
+    }
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The home .env carries known token values - one under the profile's
+        # own token_env key and one under the GITHUB_TOKEN fallback. Neither
+        # value may ever appear in a command's output.
+        from anvilkit import env
+
+        env.write(
+            self.anvil_home / ".env",
+            [
+                (self.TOKEN_ENV, self.HOME_TOKEN_VALUE),
+                ("GITHUB_TOKEN", self.FALLBACK_TOKEN_VALUE),
+            ],
+        )
+
+        # Real target directories, one per profile: behaviour 10 makes
+        # load_profile refuse a vanished path, so the seeds must point at
+        # directories that exist.
+        second_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(second_dir.cleanup)
+        self.second_path = Path(second_dir.name)
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        # The most honest seeder: the production write path, so the store on
+        # disk is exactly what ``profile list`` / ``show`` will read.
+        from anvilkit.pi import piprofile
+
+        piprofile.save_profile(
+            self.anvil_home,
+            self.SECOND,
+            self.second_path,
+            self.SECOND_OWNER,
+            "api",
+            self.BASE,
+            {},
+        )
+        piprofile.save_profile(
+            self.anvil_home,
+            self.PROFILE,
+            self.profile_path,
+            self.OWNER,
+            self.REPO,
+            self.BASE,
+            self.PROJECT,
+        )
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``profile`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception: before the sub-app exists, click raises a
+        UsageError ("No such command 'profile'") at the app level."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _blank_store(self):
+        """Delete the seeded store file: no store at all."""
+        self.store_path.unlink()
+
+    # -- profile list ------------------------------------------------------
+
+    def test_profile_list_exits_zero_and_names_each_profile_with_its_path(self):
+        """``profile list`` prints a line per profile carrying both the name
+        and its path, and never a token value."""
+        result = self._run(["profile", "list"])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile list must exit 0:\n{}".format(result.output),
+        )
+        for name, path in (
+            (self.SECOND, self.second_path),
+            (self.PROFILE, self.profile_path),
+        ):
+            absolute = os.path.abspath(str(path))
+            lines = [
+                line
+                for line in result.output.splitlines()
+                if name in line and absolute in line
+            ]
+            self.assertTrue(
+                lines,
+                "profile list must print a line naming {!r} together with "
+                "its path {} - output:\n{}".format(name, absolute, result.output),
+            )
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by profile list",
+            )
+
+    # -- profile show ------------------------------------------------------
+
+    def test_profile_show_prints_the_record_fields_and_the_project_block(self):
+        """``profile show project-x`` prints the record's fields: the absolute
+        path, owner, repo, base, the ``token_env`` KEY name, and the
+        ``project`` block's values byte-for-byte."""
+        result = self._run(["profile", "show", self.PROFILE])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile show must exit 0:\n{}".format(result.output),
+        )
+        for value in (
+            os.path.abspath(str(self.profile_path)),
+            self.OWNER,
+            self.REPO,
+            self.BASE,
+            self.TOKEN_ENV,
+        ):
+            self.assertIn(
+                value,
+                result.output,
+                "profile show must print {!r} - output:\n{}".format(
+                    value, result.output
+                ),
+            )
+        for field_value in self.PROJECT.values():
+            self.assertIn(
+                field_value,
+                result.output,
+                "profile show must print the project block value {!r} "
+                "byte-for-byte - output:\n{}".format(field_value, result.output),
+            )
+
+    def test_profile_show_never_prints_a_token_value(self):
+        """Known token values are seeded in the home .env under the profile's
+        token_env key and GITHUB_TOKEN: neither may appear anywhere in the
+        show output - only the token_env key name is printed."""
+        result = self._run(["profile", "show", self.PROFILE])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile show must exit 0:\n{}".format(result.output),
+        )
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by profile show",
+            )
+
+    # -- show of an unknown name: behaviour 9's message ---------------------
+
+    def test_profile_show_unknown_name_exits_usage_naming_it_and_the_known_profiles(self):
+        """``show`` of a name the store does not hold exits on the usage code
+        with behaviour 9's message: the unknown name named, the known profile
+        names listed."""
+        result = self._run(["profile", "show", "ghost"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "show of an unknown name must exit on the usage code, got "
+            "{}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            "unknown profile",
+            result.output,
+            "the message must use behaviour 9's 'unknown profile' "
+            "phrasing - output:\n{}".format(result.output),
+        )
+        self.assertIn("ghost", result.output)
+        self.assertIn(self.PROFILE, result.output)
+        self.assertIn(self.SECOND, result.output)
+
+    def test_profile_show_unknown_name_with_no_profiles_saved_says_so(self):
+        """With a store holding no profiles at all, the message says no
+        profiles are saved."""
+        self._blank_store()
+        result = self._run(["profile", "show", "ghost"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "show of an unknown name with no profiles saved must exit on "
+            "the usage code, got {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertIn(
+            "no profiles",
+            result.output,
+            "the message must say no profiles are saved - "
+            "output:\n{}".format(result.output),
+        )
+
+    # -- the controlled failures --------------------------------------------
+
+    def test_profile_show_vanished_path_raises_a_profile_error(self):
+        """``show`` of a record whose path has vanished is a controlled
+        failure: at the CliRunner level the exception is a ProfileError (the
+        real entrypoint maps it to EXIT_CONFIG, which CliRunner cannot see -
+        see TestRunEntryPoint) and the exit code is non-zero, never a raw
+        traceback."""
+        shutil.rmtree(str(self.profile_path))
+        result = self._run(["profile", "show", self.PROFILE])
+        from anvilkit.pi import piprofile
+
+        self.assertIsInstance(
+            result.exception,
+            piprofile.ProfileError,
+            "show of a vanished path must surface a ProfileError, got "
+            "{!r}".format(result.exception),
+        )
+        self.assertNotEqual(
+            0,
+            result.exit_code,
+            "show of a vanished path must exit non-zero, got {}: "
+            "output:\n{}".format(result.exit_code, result.output),
+        )
+
+    def test_profile_list_with_no_store_exits_zero(self):
+        """No store at all: list exits 0 (no crash)."""
+        self._blank_store()
+        result = self._run(["profile", "list"])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile list with no store must exit 0:\n{}".format(result.output),
+        )
