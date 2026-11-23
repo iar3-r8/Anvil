@@ -28,7 +28,8 @@ Two environment notes that shaped these tests:
 
 Nothing here touches the network, the Docker daemon, or the real ``$HOME``: the
 repository root is redirected into a ``TemporaryDirectory`` and ``HOME`` is
-overridden whenever a default derived from it is asserted.
+always overridden by the base class, so code resolving ``Path.home()`` at call
+time can only ever write under a test-owned directory.
 """
 
 import contextlib
@@ -344,6 +345,19 @@ class CliCase(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.project = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
+
+        # A fresh, isolated suite home: production resolves Path.home() at call
+        # time (the profile store in anvilkit.cli), so every test must see a
+        # test-owned HOME. Named ``suite_home`` - not ``home`` - because the
+        # profile classes define their own per-test ``self.home`` and a
+        # collision would shadow this cleanup. A per-test override patches
+        # over this one and restores to it.
+        self._suite_home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._suite_home.cleanup)
+        self.suite_home = Path(self._suite_home.name)
+        home_patcher = mock.patch.dict(os.environ, {"HOME": str(self.suite_home)})
+        home_patcher.start()
+        self.addCleanup(home_patcher.stop)
 
         # Real configuration files, so config parsing is exercised rather than
         # mocked - they are tiny and this keeps the CLI honest about what it reads.
