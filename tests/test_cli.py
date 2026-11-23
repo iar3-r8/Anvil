@@ -535,7 +535,8 @@ class TestDispatch(CliCase):
             with mock.patch.object(
                 cli.provision, "setup_repo", return_value=target
             ) as setup:
-                result = self.invoke(["setup-repo", target])
+                result = self.invoke(["setup-repo", "--profile", "proj", target])
+
 
         self.assertEqual(0, result.exit_code)
         self.assertEqual(1, setup.call_count)
@@ -668,7 +669,8 @@ class TestExitCodes(CliCase):
 
     def test_provisioning_failure_exits_with_the_provision_code(self):
         result = self.invoke_allowing_exception(
-            ["setup-repo", str(self.project / "nope"), "--yes"]
+            ["setup-repo", "--profile", "proj", str(self.project / "nope"), "--yes"]
+
         )
         self.assertEqual(cli.EXIT_PROVISION, result.exit_code)
 
@@ -677,7 +679,8 @@ class TestExitCodes(CliCase):
         # must fail loudly rather than write an empty credential.
         with tempfile.TemporaryDirectory() as target:
             result = self.invoke_allowing_exception(
-                ["setup-repo", target, "--yes", "--anthropic"]
+                ["setup-repo", "--profile", "proj", target, "--yes", "--anthropic"]
+
             )
         self.assertEqual(cli.EXIT_PROMPT, result.exit_code)
 
@@ -725,7 +728,8 @@ class TestDryRun(CliCase):
 
     def test_dry_run_setup_repo_writes_nothing_into_the_target(self):
         with tempfile.TemporaryDirectory() as target:
-            result = self.invoke(["--dry-run", "setup-repo", target, "--yes"])
+            result = self.invoke(["--dry-run", "setup-repo", "--profile", "proj", target, "--yes"])
+
             self.assertEqual(0, result.exit_code)
             self.assertEqual([], list(Path(target).rglob("*")))
 
@@ -735,6 +739,8 @@ class TestDryRun(CliCase):
                 [
                     "--dry-run",
                     "setup-repo",
+                    "--profile",
+                    "proj",
                     target,
                     "--yes",
                     "--anthropic-key",
@@ -786,7 +792,8 @@ class TestNonInteractive(CliCase):
     def test_yes_setup_repo_reads_no_stdin(self):
         self.write_env(LLM_PORT="8000")
         with tempfile.TemporaryDirectory() as target:
-            result = self.run_without_stdin(["setup-repo", target, "--yes"])
+            result = self.run_without_stdin(["setup-repo", "--profile", "proj", target, "--yes"])
+
         self.assertEqual(0, result.exit_code)
 
     def test_yes_status_reads_no_stdin_even_without_an_env_file(self):
@@ -976,7 +983,8 @@ class TestImplicitEnvBootstrap(CliCase):
 
     def test_setup_repo_does_not_create_an_env_file(self):
         with tempfile.TemporaryDirectory() as target:
-            self.invoke(["setup-repo", target, "--yes"])
+            self.invoke(["setup-repo", "--profile", "proj", target, "--yes"])
+
         self.assertFalse(self.env_path().exists())
 
     def test_the_bootstrap_is_announced(self):
@@ -2430,24 +2438,28 @@ class TestSetupRepo(CliCase):
         with mock.patch.object(
             cli.provision, "setup_repo", return_value=self.target
         ) as setup:
-            self.invoke(["setup-repo", self.target, "--yes"])
+            self.invoke(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
 
         first_positional = setup.call_args[0][0]
         self.assertEqual(self.target, str(first_positional))
 
     def test_plan_carries_the_resolved_port(self):
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(8000, plan.port)
 
     def test_container_target_defaults_to_false(self):
         """Host-side setup-repo keeps rendering localhost URLs."""
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
 
         self.assertFalse(plan.container_target)
 
     def test_container_flag_sets_container_target(self):
         """--container re-points the rendered URLs at the llm-network containers."""
-        plan = self.captured_plan(["setup-repo", self.target, "--yes", "--container"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes", "--container"])
+
 
         self.assertTrue(plan.container_target)
 
@@ -2455,14 +2467,16 @@ class TestSetupRepo(CliCase):
         from anvilkit import config
 
         topology = config.read_models(self.project / "config.yaml")
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(topology.coder_context_window, plan.context_window)
 
     def test_plan_carries_the_model_ids_from_config_yaml(self):
         from anvilkit import config
 
         topology = config.read_models(self.project / "config.yaml")
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(topology.coder_id, plan.coder_model_id)
         self.assertEqual(topology.embedder_id, plan.embedder_model_id)
 
@@ -2470,13 +2484,15 @@ class TestSetupRepo(CliCase):
         from anvilkit import config
 
         settings = config.read_settings(self.project / "anvil.yaml")
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(settings.local_profile_id, plan.local_profile_id)
         self.assertEqual(settings.anthropic_profile_id, plan.anthropic_profile_id)
 
     def test_declining_everything_matches_the_bash_defaults(self):
         # anvil:158-160: declined keeps the anthropic profile dormant but valid.
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertFalse(plan.use_anthropic_for_frontier_modes)
         self.assertEqual("to set", plan.anthropic_api_key)
         self.assertEqual("", plan.github_token)
@@ -2485,12 +2501,14 @@ class TestSetupRepo(CliCase):
         from anvilkit import config
 
         settings = config.read_settings(self.project / "anvil.yaml")
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(settings.default_anthropic_model, plan.anthropic_model_id)
 
     def test_github_token_flag_enables_github(self):
         plan = self.captured_plan(
-            ["setup-repo", self.target, "--yes", "--github-token", "ghp_abc"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes", "--github-token", "ghp_abc"]
+
         )
         self.assertEqual("ghp_abc", plan.github_token)
 
@@ -2500,7 +2518,8 @@ class TestSetupRepo(CliCase):
 
     def test_anthropic_key_flag_enables_anthropic_for_frontier_modes(self):
         plan = self.captured_plan(
-            ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-live"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", "sk-live"]
+
         )
         self.assertTrue(plan.use_anthropic_for_frontier_modes)
         self.assertEqual("sk-live", plan.anthropic_api_key)
@@ -2509,6 +2528,8 @@ class TestSetupRepo(CliCase):
         plan = self.captured_plan(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 self.target,
                 "--yes",
                 "--no-anthropic",
@@ -2522,6 +2543,8 @@ class TestSetupRepo(CliCase):
         plan = self.captured_plan(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 self.target,
                 "--yes",
                 "--anthropic-key",
@@ -2537,6 +2560,8 @@ class TestSetupRepo(CliCase):
         plan = self.captured_plan(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 self.target,
                 "--yes",
                 "--anthropic-key",
@@ -2552,7 +2577,8 @@ class TestSetupRepo(CliCase):
 
         with mock.patch.object(cli.provision, "setup_repo", return_value=self.target):
             self.invoke(
-                ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-persist"]
+                ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", "sk-persist"]
+
             )
 
         self.assertEqual(
@@ -2566,7 +2592,8 @@ class TestSetupRepo(CliCase):
 
         with mock.patch.object(cli.provision, "setup_repo", return_value=self.target):
             self.invoke(
-                ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-persist"]
+                ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", "sk-persist"]
+
             )
 
         values = env.read(self.env_path())
@@ -2577,7 +2604,8 @@ class TestSetupRepo(CliCase):
         # anvil:176: "Reusing existing ANTHROPIC_API_KEY from .env".
         self.write_env(LLM_PORT="8000", ANTHROPIC_API_KEY="sk-existing")
         plan = self.captured_plan(
-            ["setup-repo", self.target, "--yes", "--anthropic"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic"]
+
         )
         self.assertEqual("sk-existing", plan.anthropic_api_key)
 
@@ -2588,7 +2616,8 @@ class TestSetupRepo(CliCase):
         nasty = r"sk-a|b&c\d"
         with mock.patch.object(cli.provision, "setup_repo", return_value=self.target):
             self.invoke(
-                ["setup-repo", self.target, "--yes", "--anthropic-key", nasty]
+                ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", nasty]
+
             )
 
         self.assertEqual(nasty, env.get(self.env_path(), "ANTHROPIC_API_KEY"))
@@ -2596,7 +2625,8 @@ class TestSetupRepo(CliCase):
     def test_the_key_is_never_echoed(self):
         with mock.patch.object(cli.provision, "setup_repo", return_value=self.target):
             result = self.invoke(
-                ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-secret"]
+                ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", "sk-secret"]
+
             )
         self.assertNotIn("sk-secret", result.output)
 
@@ -2604,13 +2634,15 @@ class TestSetupRepo(CliCase):
         with mock.patch.object(
             cli.provision, "setup_repo", return_value=self.target
         ) as setup:
-            self.invoke(["--dry-run", "setup-repo", self.target, "--yes"])
+            self.invoke(["--dry-run", "setup-repo", "--profile", "proj", self.target, "--yes"])
+
 
         self.assertTrue(setup.call_args[1]["dry_run"])
 
     def test_a_missing_target_is_reported_clearly(self):
         result = self.invoke_allowing_exception(
-            ["setup-repo", str(self.project / "absent"), "--yes"]
+            ["setup-repo", "--profile", "proj", str(self.project / "absent"), "--yes"]
+
         )
         self.assertIn("does not exist", result.output)
 
@@ -2731,7 +2763,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -2779,7 +2812,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(0, len(self._provision_calls), result.output)
@@ -2802,7 +2836,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._spy_provision(invoke_real=True)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(0, result.exit_code, result.output)
@@ -2912,7 +2947,8 @@ class TestSetupRepoGuardGate(CliCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         return self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
     def test_blocked_gate_prints_branch_rules_header_then_token_scope_header(
@@ -3114,7 +3150,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._blocked_run_wiring()
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3182,7 +3219,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._blocked_run_wiring(write_spy=write_spy)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3246,7 +3284,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._blocked_run_wiring(write_spy=write_spy)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         # The Error-clause guarantees of the never-overwrites test still
@@ -3319,7 +3358,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._blocked_run_wiring(write_spy=write_spy)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3487,7 +3527,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(0, len(self._provision_calls), result.output)
@@ -3599,7 +3640,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3658,7 +3700,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target], input=""
+            ["setup-repo", "--profile", "proj", self.target], input=""
+
         )
 
         self.assertNotIn(
@@ -3735,7 +3778,8 @@ class TestSetupRepoGuardGate(CliCase):
         self.addCleanup(opener_patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3798,7 +3842,8 @@ class TestSetupRepoGuardGate(CliCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         return self.invoke_allowing_exception(
-            ["--dry-run", "setup-repo", self.target, "--yes"]
+            ["--dry-run", "setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
     def test_dry_run_blocked_gate_writes_nothing(self):
@@ -4353,7 +4398,8 @@ class TestGuardReportCrossSiteConsistency(CliCase):
         target = tempfile.TemporaryDirectory()
         self.addCleanup(target.cleanup)
         return self.invoke_allowing_exception(
-            ["setup-repo", target.name, "--yes"]
+            ["setup-repo", "--profile", "proj", target.name, "--yes"]
+
         )
 
     def run_verify(self, branch_findings, token_findings):
@@ -6101,7 +6147,8 @@ class TestRunEntryPoint(CliCase):
 
     def test_a_provisioning_failure_exits_with_the_provision_code(self):
         self.write_env(LLM_PORT="8000")
-        code, _ = self.run_cli(["setup-repo", str(self.project / "absent"), "--yes"])
+        code, _ = self.run_cli(["setup-repo", "--profile", "proj", str(self.project / "absent"), "--yes"])
+
         self.assertEqual(cli.EXIT_PROVISION, code)
 
     def test_a_compose_exit_code_is_propagated(self):
@@ -10524,7 +10571,8 @@ class TestFreePlanBoundary(CliCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        result = self.invoke(["setup-repo", target.name])
+        result = self.invoke(["setup-repo", "--profile", "proj", target.name])
+
         return result, Path(target.name), env_before
 
     def _spy_provision(self):
@@ -11187,7 +11235,8 @@ class TestFreePlanQuestionPositive(CliCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        return self.invoke(["setup-repo", target.name])
+        return self.invoke(["setup-repo", "--profile", "proj", target.name])
+
 
     def _fallback_lines(self, output):
         """The lines carrying ALL the non-interactive fallback line's
@@ -13582,7 +13631,8 @@ class TestCodeownersFlowWiring(CliCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        result = self.invoke(["setup-repo", target.name])
+        result = self.invoke(["setup-repo", "--profile", "proj", target.name])
+
         return result, asks, confirms, findings, Path(target.name)
 
     def _baseline_verify_guards(self, branch="main"):
@@ -15115,7 +15165,8 @@ class TestCodeownersFlowSkipBoundary(CliCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        result = self.invoke(["setup-repo", str(target)])
+        result = self.invoke(["setup-repo", "--profile", "proj", str(target)])
+
         return result, asks, confirms, findings, target
 
     def _assert_flow_ran(self, result, asks, confirms, site):
@@ -15522,6 +15573,8 @@ class TestCodeownersFlowSkipBoundary(CliCase):
         return self.invoke(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 str(target),
                 "--yes",
                 "--no-anthropic",
@@ -16575,6 +16628,8 @@ class TestGuardFindingsCodeownersPresence(CliCase):
         result = self.invoke(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 target.name,
                 "--yes",
                 "--no-anthropic",
@@ -16918,6 +16973,8 @@ class TestAcceptanceSatisfiedFallback(CliCase):
         return self.invoke(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 target,
                 "--yes",
                 "--no-anthropic",
@@ -17731,29 +17788,41 @@ class TestSetupRepoRecordsProfile(CliCase):
 
 
 # ---------------------------------------------------------------------------
-# Behaviour 15 of plans/pi-phase13-profiles.md - profile-name-prompt
+# Behaviour 21 of plans/pi-phase13-profiles.md - profile-name-always-asked
 # ---------------------------------------------------------------------------
 #
 # ``setup-repo`` with GitHub enabled and NO ``--profile`` flag asks for the
-# profile name through the established prompt seam (``cli.prompts.ask``),
-# whose DEFAULT is the target basename. ``--profile <name>`` (behaviour 14)
-# returns the flag's name WITHOUT prompting, and ``--yes`` takes the basename
-# default without prompting. A supplied or answered name failing the charset
-# rule (``piprofile.valid_name`` - ``[A-Za-z0-9._-]``, no leading ``-``/``.``/
-# digit) exits on the usage code (``cli.EXIT_USAGE``) naming the charset,
-# BEFORE anything is provisioned: no provision call and no store record.
+# profile name with NO default: an interactive run is prompted and re-prompts
+# until the name passes the store's charset rule (``piprofile.valid_name`` -
+# ``[A-Za-z0-9._-]``, no leading ``-``/``.``/digit); ``--yes`` or a
+# non-interactive run cannot answer a question with no default, so it fails
+# clean on the prompt code (``cli.EXIT_PROMPT`` = 6) naming ``--profile NAME``
+# as the fix, BEFORE anything is provisioned - no provision call, no store
+# record, an empty target. A supplied ``--profile <name>`` still bypasses
+# the prompt entirely (behaviour 14), and an invalid ``--profile`` value is
+# still a usage error (``cli.EXIT_USAGE``), unchanged from behaviour 15.
 #
-# RED: the CLI records a profile ONLY when ``--profile`` was passed (behaviour
-# 14, green) - there is no name prompt and no charset validation yet. So the
-# non-flag interactive path, the ``--yes`` default path, and the invalid-name
-# usage exit do not exist: the no-flag runs make no prompt and write no store
-# (tests 1-2 and 4), and an invalid ``--profile`` / answered name is not
-# refused up front with a usage exit (tests 5-6).
+# This supersedes behaviour 15's basename default (user decision, 2026-11-23,
+# on PR #115): "we should not have a default for profiles, it should always
+# be asked by the cli".
+#
+# The contract is pinned through the observables, not the seam's identity:
+# the default-carrying seam (``cli.prompts.ask``) is booby-trapped where it
+# must not be reached, and the no-default seam (``cli.prompts.ask_required``
+# or its equivalent) is left REAL so the empty-stdin and re-prompt runs
+# exercise the genuine asking.
+#
+# RED: the CLI still resolves the no-flag name to the target basename -
+# ``--yes`` and non-interactive runs exit 0 and record under the basename
+# instead of failing on the prompt code, the interactive prompt carries a
+# default (the booby trap fires), and an invalid answered line is refused
+# once (usage 2) instead of re-prompting.
 # ---------------------------------------------------------------------------
 
 
 class TestSetupRepoProfileNamePrompt(CliCase):
-    """``setup-repo`` asks for the profile name (behaviour 15)."""
+    """``setup-repo`` always asks for the profile name - no default
+    (behaviour 21)."""
 
     OWNER = "alpha"
     REPO = "project-x"
@@ -17799,7 +17868,9 @@ class TestSetupRepoProfileNamePrompt(CliCase):
 
     def _target(self):
         """A real, empty target directory whose basename is ``project-x`` -
-        the basename is the prompt's default, so the name must be exact."""
+        deliberately distinct from every recorded name the pins expect, so a
+        run that falls back to the old basename default records under the
+        wrong key and fails the store assertion."""
         parent = tempfile.TemporaryDirectory()
         self.addCleanup(parent.cleanup)
         target = Path(parent.name) / self.BASELINE
@@ -17822,26 +17893,23 @@ class TestSetupRepoProfileNamePrompt(CliCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
-    @staticmethod
-    def _ask_resolve(prompt, default, supplied=None, assume_yes=False,
-                     interactive=True):
-        """Mimic ``prompts.ask``'s resolution (supplied -> default) so a
-        flag-supplied name flows through even if the implementation routes it
-        via the seam; never actually reads stdin."""
-        if supplied is not None:
-            return supplied
-        return default
-
     def _run(self, target, interactive, assume_yes, profile=None,
-             ask_return=None, ask_side_effect=None, boom=False):
+             input_=None, trap_ask=True, trap_required=False):
         """One ``setup-repo`` with the gate pinned clean, a fresh ``HOME``,
-        the real provision under a recorder, and the name-prompt seam
-        (``cli.prompts.ask``) controlled or observed.
+        the real provision under a recorder, and the name-prompt seams
+        controlled or observed.
 
-        ``ask_return`` / ``ask_side_effect`` steer the answer; ``boom``
-        replaces the recorder with an AssertionError trap, so any prompt asked
-        fails loudly. The seam is the only ``ask`` on this path (the token is
-        stored, the frontier is declined, oxylabs skipped)."""
+        ``trap_ask`` booby-traps the default-carrying seam
+        (``cli.prompts.ask``): under behaviour 21 the name is asked with NO
+        default, so reaching that seam at all is the bug - a call fails the
+        run loudly. ``trap_required`` does the same for the no-default seam
+        (``cli.prompts.ask_required``) on the ``--profile`` runs, where no
+        question may be asked at all. Where neither is trapped the no-default
+        seam is REAL, so the empty-stdin and re-prompt runs exercise the
+        genuine asking; ``input_`` feeds stdin for those (``None`` = the
+        runner's default, a non-tty closed at EOF). The token is stored, the
+        frontier declined, oxylabs skipped, so no other prompt is on this
+        path."""
         self._spy_provision()
         self.write_env(LLM_PORT="8000", GITHUB_TOKEN="ghp_profile_test")
 
@@ -17858,37 +17926,31 @@ class TestSetupRepoProfileNamePrompt(CliCase):
             inter.start()
             self.addCleanup(inter.stop)
 
-        if boom:
+        if trap_ask:
             ask_patcher = mock.patch.object(
                 cli.prompts, "ask",
                 side_effect=AssertionError(
+                    "a default-carrying profile-name prompt was asked"),
+            )
+            self._ask_mock = ask_patcher.start()
+            self.addCleanup(ask_patcher.stop)
+        else:
+            self._ask_mock = None
+
+        if trap_required:
+            required_patcher = mock.patch.object(
+                cli.prompts, "ask_required",
+                side_effect=AssertionError(
                     "a profile-name prompt was asked"),
             )
-        elif ask_side_effect is not None:
-            ask_patcher = mock.patch.object(
-                cli.prompts, "ask", side_effect=ask_side_effect,
-            )
-        else:
-            ask_patcher = mock.patch.object(
-                cli.prompts, "ask", return_value=ask_return,
-            )
-        self._ask_mock = ask_patcher.start()
-        self.addCleanup(ask_patcher.stop)
+            required_patcher.start()
+            self.addCleanup(required_patcher.stop)
 
+        kwargs = {}
+        if input_ is not None:
+            kwargs["input"] = input_
         with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
-            return self.invoke_allowing_exception(argv)
-
-    def _ask_default(self):
-        """The ``default`` argument of the single ``ask`` call, whether it was
-        passed positionally (2nd) or by keyword - ``None`` if never called."""
-        if self._ask_mock is None or not self._ask_mock.called:
-            return None
-        args, kwargs = self._ask_mock.call_args
-        if "default" in kwargs:
-            return kwargs["default"]
-        if len(args) >= 2:
-            return args[1]
-        return None
+            return self.invoke_allowing_exception(argv, **kwargs)
 
     def _store(self):
         """The store read back through yamlio (the honest way to assert the
@@ -17906,25 +17968,63 @@ class TestSetupRepoProfileNamePrompt(CliCase):
                 ),
             )
 
-    # -- the prompt default and the recorded name --------------------------
+    # -- the no-default prompt and its clean failure -----------------------
 
-    def test_interactive_prompt_defaults_to_basename_and_records_answered_name(self):
-        """Interactive, no --profile, no --yes: the prompt's default is the
-        target basename, and the ANSWERED name is what gets recorded."""
+    def test_interactive_no_profile_no_value_fails_clean_before_provisioning(
+        self,
+    ):
+        """Interactive, no --profile, no --yes, stdin closed (no input):
+        the name cannot be answered, so the run fails clean on the prompt
+        code (6) naming ``--profile NAME`` as the fix, and provisions
+        nothing. The default-carrying seam (``prompts.ask``) is booby-
+        trapped: under behaviour 21 it must not be reached, and reaching it
+        fails the run loudly (exit 1) instead of silently taking a default
+        - which is exactly how this pin goes red on the old code."""
+        target = self._target()
+        result = self._run(target, interactive=True, assume_yes=False)
+        self.assertEqual(
+            cli.EXIT_PROMPT, result.exit_code,
+            "a no-default name that cannot be answered must fail on the "
+            "prompt code, got {}:\n{}".format(
+                result.exit_code, result.output),
+        )
+        self.assertIn(
+            "--profile",
+            result.output,
+            "the failure must name --profile NAME as the fix:\n{}".format(
+                result.output),
+        )
+        self.assertEqual(
+            0, len(self._provision_calls),
+            "a missing name must be refused BEFORE provisioning - "
+            "provision was called {} times".format(len(self._provision_calls)),
+        )
+        self.assertIsNone(
+            self._store(),
+            "a missing name must record nothing - the store at {} must "
+            "not exist".format(self.store_path),
+        )
+        self.assertEqual(
+            [], list(Path(target).rglob("*")),
+            "a missing name must provision nothing into the target",
+        )
+
+    def test_interactive_no_profile_records_the_typed_name_not_the_basename(
+        self,
+    ):
+        """Interactive, no --profile, one valid line on stdin: the ANSWERED
+        name is what gets recorded - never the target basename, which is no
+        longer a default. Guard: the answered-name half of behaviour 15's
+        contract that survives the change."""
         target = self._target()
         result = self._run(
-            target, interactive=True, assume_yes=False, ask_return="renamed-proj",
-        )
-        self._ask_mock.assert_called_once()
-        self.assertEqual(
-            self.BASELINE,
-            self._ask_default(),
-            "the profile-name prompt must default to the target basename "
-            "{!r}".format(self.BASELINE),
+            target, interactive=True, assume_yes=False,
+            input_="typed-name\n", trap_ask=False,
         )
         self.assertEqual(
             0, result.exit_code,
-            "a clean gate must provision - exit 0:\n{}".format(result.output),
+            "a clean gate with an answered name must provision - exit 0:"
+            "\n{}".format(result.output),
         )
         store = self._store()
         self.assertIsNotNone(
@@ -17932,47 +18032,17 @@ class TestSetupRepoProfileNamePrompt(CliCase):
             "the profile store at {} was not written - the answered name "
             "must be recorded".format(self.store_path),
         )
-        record = store.get("renamed-proj")
+        record = store.get("typed-name")
         self.assertIsInstance(
             record, dict,
-            "the record must land under the answered name 'renamed-proj', "
-            "got keys {!r}".format(sorted(store)),
+            "the record must land under the typed name 'typed-name', got "
+            "keys {!r}".format(sorted(store)),
         )
-        self.assertEqual(
-            os.path.abspath(target), record.get("path"),
-            "the record's path must be the absolute target path",
-        )
-
-    def test_interactive_prompt_default_answer_records_basename(self):
-        """Interactive, no --profile, no --yes, the user accepts the default:
-        the record lands under the basename."""
-        target = self._target()
-        result = self._run(
-            target, interactive=True, assume_yes=False,
-            ask_return=self.BASELINE,
-        )
-        self._ask_mock.assert_called_once()
-        self.assertEqual(
-            self.BASELINE,
-            self._ask_default(),
-            "the profile-name prompt must default to the target basename "
-            "{!r}".format(self.BASELINE),
-        )
-        self.assertEqual(
-            0, result.exit_code,
-            "a clean gate must provision - exit 0:\n{}".format(result.output),
-        )
-        store = self._store()
-        self.assertIsNotNone(
-            store,
-            "the profile store at {} was not written - the accepted default "
-            "must be recorded".format(self.store_path),
-        )
-        record = store.get(self.BASELINE)
-        self.assertIsInstance(
-            record, dict,
-            "the record must land under the accepted default basename "
-            "{!r}, got keys {!r}".format(self.BASELINE, sorted(store)),
+        self.assertNotIn(
+            self.BASELINE, store,
+            "the target basename {!r} must not become the record key - "
+            "there is no default anymore, got keys {!r}".format(
+                self.BASELINE, sorted(store)),
         )
         self.assertEqual(
             os.path.abspath(target), record.get("path"),
@@ -17982,12 +18052,13 @@ class TestSetupRepoProfileNamePrompt(CliCase):
     # -- the no-prompt paths ----------------------------------------------
 
     def test_profile_flag_returns_flag_name_without_prompting(self):
-        """--profile <name>: the flag's name is used WITHOUT prompting (the
-        booby-trapped ask must never fire) and the record lands under it."""
+        """--profile <name>: the flag's name is used WITHOUT prompting -
+        both name seams booby-trapped, so any question fails the run loudly
+        - and the record lands under it (unchanged from behaviour 14)."""
         target = self._target()
         result = self._run(
             target, interactive=True, assume_yes=True,
-            profile="chosen", boom=True,
+            profile="chosen", trap_required=True,
         )
         self.assertFalse(
             self._ask_mock.called,
@@ -18013,37 +18084,78 @@ class TestSetupRepoProfileNamePrompt(CliCase):
             "the record's path must be the absolute target path",
         )
 
-    def test_yes_takes_basename_default_without_prompting(self):
-        """--yes, no --profile: the basename default is taken WITHOUT
-        prompting (the booby-trapped ask must never fire) and the record
-        lands under it."""
+    def test_yes_without_profile_fails_clean_before_provisioning(self):
+        """--yes, no --profile: --yes accepts defaults, but there is no
+        default to accept, so the run fails clean on the prompt code (6)
+        naming ``--profile NAME`` as the fix, and provisions nothing: no
+        files in the target, no store record under the overridden HOME."""
         target = self._target()
-        result = self._run(
-            target, interactive=True, assume_yes=True, boom=True,
+        result = self._run(target, interactive=True, assume_yes=True)
+        self.assertEqual(
+            cli.EXIT_PROMPT, result.exit_code,
+            "--yes cannot answer a no-default question - it must fail on "
+            "the prompt code, got {}:\n{}".format(
+                result.exit_code, result.output),
         )
-        self.assertFalse(
-            self._ask_mock.called,
-            "--yes must take the basename default without prompting",
+        self.assertIn(
+            "--profile",
+            result.output,
+            "the failure must name --profile NAME as the fix:\n{}".format(
+                result.output),
         )
         self.assertEqual(
-            0, result.exit_code,
-            "a clean gate must provision - exit 0:\n{}".format(result.output),
+            0, len(self._provision_calls),
+            "--yes without --profile must be refused BEFORE provisioning "
+            "- provision was called {} times".format(len(self._provision_calls)),
         )
-        store = self._store()
-        self.assertIsNotNone(
-            store,
-            "the profile store at {} was not written - --yes must record "
-            "under the basename default".format(self.store_path),
-        )
-        record = store.get(self.BASELINE)
-        self.assertIsInstance(
-            record, dict,
-            "the record must land under the basename default {!r}, got "
-            "keys {!r}".format(self.BASELINE, sorted(store)),
+        self.assertIsNone(
+            self._store(),
+            "--yes without --profile must record nothing - the store at "
+            "{} must not exist".format(self.store_path),
         )
         self.assertEqual(
-            os.path.abspath(target), record.get("path"),
-            "the record's path must be the absolute target path",
+            [], list(Path(target).rglob("*")),
+            "--yes without --profile must provision nothing into the "
+            "target",
+        )
+
+    def test_non_interactive_without_profile_fails_clean_before_provisioning(
+        self,
+    ):
+        """Non-interactive (the runner's stdin is not a tty, unpatched), no
+        --yes, no --profile: the same clean failure as --yes - the prompt
+        code (6), ``--profile NAME`` named as the fix, nothing provisioned
+        or recorded."""
+        target = self._target()
+        result = self._run(target, interactive=False, assume_yes=False,
+                           trap_ask=False)
+        self.assertEqual(
+            cli.EXIT_PROMPT, result.exit_code,
+            "a non-interactive run without --profile must fail on the "
+            "prompt code, got {}:\n{}".format(
+                result.exit_code, result.output),
+        )
+        self.assertIn(
+            "--profile",
+            result.output,
+            "the failure must name --profile NAME as the fix:\n{}".format(
+                result.output),
+        )
+        self.assertEqual(
+            0, len(self._provision_calls),
+            "a non-interactive run without --profile must be refused "
+            "BEFORE provisioning - provision was called {} times".format(
+                len(self._provision_calls)),
+        )
+        self.assertIsNone(
+            self._store(),
+            "a non-interactive run without --profile must record nothing "
+            "- the store at {} must not exist".format(self.store_path),
+        )
+        self.assertEqual(
+            [], list(Path(target).rglob("*")),
+            "a non-interactive run without --profile must provision "
+            "nothing into the target",
         )
 
     # -- the charset refusal, before provisioning --------------------------
@@ -18055,7 +18167,7 @@ class TestSetupRepoProfileNamePrompt(CliCase):
         target = self._target()
         result = self._run(
             target, interactive=True, assume_yes=True,
-            profile="bad name!", ask_side_effect=self._ask_resolve,
+            profile="bad name!", trap_required=True,
         )
         self.assertEqual(
             cli.EXIT_USAGE, result.exit_code,
@@ -18078,33 +18190,55 @@ class TestSetupRepoProfileNamePrompt(CliCase):
             "not exist".format(self.store_path),
         )
 
-    def test_invalid_answered_name_exits_usage_before_provisioning(self):
-        """Interactive, no --profile, the answered name fails the charset:
-        exit on the usage code naming the charset, BEFORE provisioning."""
+    def test_interactive_re_prompts_until_a_valid_name_is_recorded(self):
+        """Interactive, no --profile, no --yes: an invalid first line (a
+        charset violation) is rejected and the prompt is asked again - the
+        ANSWERED valid line is what gets recorded, never the target
+        basename. This is what 'no default' buys: the question cannot be
+        answered with nothing typed, and a bad answer cannot be accepted
+        (behaviour 21 supersedes behaviour 15's one-shot default)."""
         target = self._target()
         result = self._run(
-            target, interactive=True, assume_yes=False, ask_return="has space",
+            target, interactive=True, assume_yes=False,
+            input_="bad name!\ngood-name\n", trap_ask=False,
         )
-        self._ask_mock.assert_called_once()
         self.assertEqual(
-            cli.EXIT_USAGE, result.exit_code,
-            "an invalid answered name must exit on the usage code, got "
-            "{}:\n{}".format(result.exit_code, result.output),
+            0, result.exit_code,
+            "an invalid first line must be re-prompted, not accepted or "
+            "refused once - exit 0 after the valid line:\n{}".format(
+                result.output),
         )
         self.assertIn(
             self.CHARSET, result.output,
-            "the usage message must name the allowed charset {!r}:\n{}".format(
+            "the re-prompt must name the allowed charset {!r}:\n{}".format(
                 self.CHARSET, result.output),
         )
         self.assertEqual(
-            0, len(self._provision_calls),
-            "an invalid answered name must be refused BEFORE provisioning - "
+            1, len(self._provision_calls),
+            "the valid re-prompted name must provision exactly once - "
             "provision was called {} times".format(len(self._provision_calls)),
         )
-        self.assertIsNone(
-            self._store(),
-            "an invalid answered name must record nothing - the store at "
-            "{} must not exist".format(self.store_path),
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written - the re-prompted "
+            "name must be recorded".format(self.store_path),
+        )
+        record = store.get("good-name")
+        self.assertIsInstance(
+            record, dict,
+            "the record must land under the VALID re-prompted name "
+            "'good-name', got keys {!r}".format(sorted(store)),
+        )
+        self.assertNotIn(
+            self.BASELINE, store,
+            "the target basename {!r} must not become the record key - "
+            "there is no default anymore, got keys {!r}".format(
+                self.BASELINE, sorted(store)),
+        )
+        self.assertEqual(
+            os.path.abspath(target), record.get("path"),
+            "the record's path must be the absolute target path",
         )
 
 
@@ -18765,8 +18899,9 @@ class TestSuiteNeverTouchesRealHome(CliCase):
         the fetched rules are an empty array, and BOTH the branch check
         and the token probes emit no findings, so the verdict is clean and
         provisioning proceeds exactly as today - and the record is
-        written. ``--yes`` takes the target's basename as the profile
-        name; no ``--no-github``, so the gate (and the record) run.
+        written. ``--profile proj`` supplies the name (behaviour 21: there
+        is no default to take); no ``--no-github``, so the gate (and the
+        record) run.
         """
         self.write_env(LLM_PORT="8000")
         patchers = (
@@ -18788,7 +18923,8 @@ class TestSuiteNeverTouchesRealHome(CliCase):
         self._target = tempfile.TemporaryDirectory()
         self.addCleanup(self._target.cleanup)
         return self.invoke_allowing_exception(
-            ["setup-repo", self._target.name, "--yes"]
+            ["setup-repo", self._target.name, "--profile", "proj", "--yes"]
+
         )
 
     # -- the pin --------------------------------------------------------------
@@ -18826,8 +18962,8 @@ class TestSuiteNeverTouchesRealHome(CliCase):
     def test_setup_repo_store_lands_under_the_suite_home(self):
         """After a clean-gate ``setup-repo`` the suite's ``HOME`` is a
         test-owned directory distinct from the real home, and the record
-        lands under it: ``<HOME>/.anvil/profiles.yaml`` holds the target's
-        basename record with the target's absolute path."""
+        lands under it: ``<HOME>/.anvil/profiles.yaml`` holds the ``proj``
+        record with the target's absolute path."""
         result = self._clean_gate_run()
         self.assertEqual(
             0,
@@ -18851,13 +18987,13 @@ class TestSuiteNeverTouchesRealHome(CliCase):
         from anvilkit import yamlio
 
         loaded = yamlio.load(store)
-        name = Path(self._target.name).name
+        name = "proj"
         record = loaded.get(name)
         self.assertIsInstance(
             record,
             dict,
             "the store under the suite's HOME must hold a record under "
-            "the target's basename {!r}, got {!r}".format(name, loaded),
+            "the supplied --profile name {!r}, got {!r}".format(name, loaded),
         )
         self.assertEqual(
             os.path.abspath(self._target.name),
