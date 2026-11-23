@@ -18683,3 +18683,170 @@ class TestProfileListAndShow(CliCase):
             "show of a vanished path must still exit non-zero, got {}: "
             "output:\n{}".format(result.exit_code, result.output),
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 20 of plans/pi-phase13-profiles.md - suite-home-isolation (PIN)
+# ---------------------------------------------------------------------------
+#
+# The whole ``tests.test_cli`` suite must pass with no real home directory:
+# every ``setup-repo`` and profile command a test invokes must find a
+# test-owned ``HOME`` and land its ``~/.anvil`` store under it.
+# ``CliCase`` currently does not override ``HOME``, and the production
+# ``_record_profile`` resolves ``Path.home() / ".anvil"`` at call time, so
+# every clean-gate ``setup-repo`` run appends a record to the developer's
+# REAL ``~/.anvil/profiles.yaml``. The four newer profile test classes
+# override ``HOME`` per-test and did not leak; the rest of the suite did.
+#
+# RED: a clean-gate ``setup-repo`` (the gate's piguard seams pinned clean,
+# ``--yes``, a ``TemporaryDirectory`` target, no ``--no-github``) provokes
+# the write. Test 1 asserts the real store is byte-for-byte as the suite
+# found it (or still absent) - it fails while the run appends a record.
+# Test 2 asserts the suite's ``HOME`` is test-owned and distinct from the
+# real home, and the record lands under it - it fails on the first
+# conjunct while ``HOME`` is never overridden. ``tearDown`` pins the
+# creation half: a real ``.anvil`` directory that did not exist before the
+# test must not exist after it.
+# ---------------------------------------------------------------------------
+
+
+class TestSuiteNeverTouchesRealHome(CliCase):
+    """The suite never writes into the real ``$HOME`` (behaviour 20, PIN)."""
+
+    OWNER = "alpha"
+    REPO = "project-x"
+
+    def setUp(self):
+        # Capture the REAL home BEFORE ``super().setUp()``: the fix under
+        # test gives ``CliCase`` its own ``HOME`` there, so the real one is
+        # only still visible while it precedes the patch.
+        self.real_home = Path(os.environ["HOME"])
+        self.real_store = self.real_home / ".anvil" / "profiles.yaml"
+        self.real_store_before = (
+            self.real_store.read_bytes() if self.real_store.is_file() else None
+        )
+        self.real_anvil_dir_before = (self.real_home / ".anvil").exists()
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        # The creation half of the pin: a real ``.anvil`` that did not
+        # exist before the test must not exist after it, whichever command
+        # ran.
+        if not self.real_anvil_dir_before:
+            anvil_dir = self.real_home / ".anvil"
+            self.assertFalse(
+                anvil_dir.exists(),
+                "the suite created {} in the real home - the suite must "
+                "never write into the real home".format(anvil_dir),
+            )
+
+    # -- helpers -------------------------------------------------------------
+
+    def _clean_gate_run(self):
+        """One non-interactive clean-gate ``setup-repo``.
+
+        The piguard seams are pinned the clean variant of
+        ``TestSetupRepoGuardGate._blocked_seams``: the identity resolves,
+        the fetched rules are an empty array, and BOTH the branch check
+        and the token probes emit no findings, so the verdict is clean and
+        provisioning proceeds exactly as today - and the record is
+        written. ``--yes`` takes the target's basename as the profile
+        name; no ``--no-github``, so the gate (and the record) run.
+        """
+        self.write_env(LLM_PORT="8000")
+        patchers = (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard, "fetch_branch_rules", return_value=([], None)
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=[]),
+            mock.patch.object(cli.piguard, "check_token_all", return_value=[]),
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self._target = tempfile.TemporaryDirectory()
+        self.addCleanup(self._target.cleanup)
+        return self.invoke_allowing_exception(
+            ["setup-repo", self._target.name, "--yes"]
+        )
+
+    # -- the pin --------------------------------------------------------------
+
+    def test_setup_repo_never_writes_into_the_real_home(self):
+        """A clean-gate ``setup-repo`` leaves the real profile store
+        byte-for-byte as the suite found it - or still absent if it never
+        existed: the DoD pin, 'the suite passes with no real home
+        directory'."""
+        result = self._clean_gate_run()
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+
+        if self.real_store_before is None:
+            self.assertFalse(
+                self.real_store.exists(),
+                "setup-repo created the real profile store {} - the "
+                "suite must never write into the real home".format(
+                    self.real_store
+                ),
+            )
+        else:
+            self.assertEqual(
+                self.real_store_before,
+                self.real_store.read_bytes(),
+                "setup-repo mutated the real profile store {} - the "
+                "suite must never write into the real home".format(
+                    self.real_store
+                ),
+            )
+
+    def test_setup_repo_store_lands_under_the_suite_home(self):
+        """After a clean-gate ``setup-repo`` the suite's ``HOME`` is a
+        test-owned directory distinct from the real home, and the record
+        lands under it: ``<HOME>/.anvil/profiles.yaml`` holds the target's
+        basename record with the target's absolute path."""
+        result = self._clean_gate_run()
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+
+        self.assertNotEqual(
+            os.environ["HOME"],
+            str(self.real_home),
+            "the suite must run with its own HOME - setup-repo resolves "
+            "the store via Path.home() at call time, so a shared real "
+            "home is the leak",
+        )
+        store = Path(os.environ["HOME"]) / ".anvil" / "profiles.yaml"
+        self.assertTrue(
+            store.is_file(),
+            "the profile store {} under the suite's HOME was not written "
+            "after a successful provisioning".format(store),
+        )
+        from anvilkit import yamlio
+
+        loaded = yamlio.load(store)
+        name = Path(self._target.name).name
+        record = loaded.get(name)
+        self.assertIsInstance(
+            record,
+            dict,
+            "the store under the suite's HOME must hold a record under "
+            "the target's basename {!r}, got {!r}".format(name, loaded),
+        )
+        self.assertEqual(
+            os.path.abspath(self._target.name),
+            record.get("path"),
+            "the record's path must be the absolute target path",
+        )
