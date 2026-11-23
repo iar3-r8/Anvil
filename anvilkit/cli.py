@@ -1431,6 +1431,20 @@ def setup_repo(
     except PromptError as exc:
         raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
+    # Behaviour 15: the profile name, resolved BEFORE anything is
+    # provisioned, and only on the path that records (the gate ran, i.e. not
+    # --no-github). --profile returns its name without prompting; otherwise
+    # the prompt seam defaults to the target basename. The resolved name is
+    # validated against the store's charset rule up front, so an invalid
+    # name is a usage error that stops the run before provisioning - an
+    # invalid name can no longer reach save_profile. A skipped gate
+    # (--no-github) has no identity to record, so no name is resolved.
+    profile_name: Optional[str] = None
+    if not no_github:
+        profile_name = _resolve_profile_name(
+            shared, profile, Path(path).resolve().name
+        )
+
     repo_plan = RepoPlan(
         port=port,
         context_window=topology.coder_context_window,
@@ -1461,13 +1475,52 @@ def setup_repo(
 
     # Behaviour 14: the record is written AFTER a successful provisioning,
     # from values already resolved - the gate's identity, never re-resolved.
-    # Without a --profile name there is no record to write (the name prompt
-    # is behaviour 15, not landed), and a skipped gate (--no-github) has no
-    # identity to record, so the record runs only when the gate ran.
-    # A gate that ran but could not resolve the identity still records -
-    # with owner/repo null rather than a guessed identity.
-    if profile is not None and not no_github:
-        _record_profile(path, profile, repository)
+    # A skipped gate (--no-github) has no identity to record, so the record
+    # runs only when the gate ran; the name was resolved and validated
+    # before provisioning (behaviour 15), so it is None exactly when the
+    # gate did not run. A gate that ran but could not resolve the identity
+    # still records - with owner/repo null rather than a guessed identity.
+    if profile_name is not None:
+        _record_profile(path, profile_name, repository)
+
+
+def _resolve_profile_name(
+    shared: Context, supplied: Optional[str], basename: str
+) -> str:
+    """Resolve the profile name for the record (behaviour 15).
+
+    Runs BEFORE anything is provisioned, on the path that records (the
+    guard gate ran). A supplied ``--profile`` name is returned without
+    prompting; otherwise the established prompt seam
+    (:func:`prompts.ask`) asks, defaulting to the target ``basename``.
+    ``--yes`` accepts the basename default without prompting. The resolved
+    name is then validated against the store's charset rule, and an
+    invalid name fails on the usage code - naming the allowed charset,
+    the way the store module names it - before the caller may provision.
+    """
+    if supplied is not None:
+        name = supplied
+    elif shared.assume_yes:
+        # --yes accepts the default without prompting; the seam is never
+        # reached, so a non-interactive or booby-trapped run prompts no
+        # question.
+        name = basename
+    else:
+        name = prompts.ask(
+            "Profile name for the Anvil profile store",
+            default=basename,
+            supplied=None,
+            assume_yes=shared.assume_yes,
+            interactive=shared.interactive(),
+        )
+    if not piprofile.valid_name(name):
+        raise _fail(
+            "❌ invalid profile name {!r}: use only {}".format(
+                name, piprofile._ALLOWED_CHARSET
+            ),
+            EXIT_USAGE,
+        )
+    return name
 
 
 def _record_profile(
