@@ -17502,7 +17502,7 @@ class TestSetupRepoRecordsProfile(CliCase):
         self._resolve = mock.patch.object(
             cli.piguard, "resolve_repository", return_value=(self.OWNER, self.REPO)
         )
-        self._resolve.start()
+        self._resolve_mock = self._resolve.start()
         self.addCleanup(self._resolve.stop)
         # The network is never touched: no rules fetched, no token probes run.
         self._fetch = mock.patch.object(
@@ -17510,6 +17510,14 @@ class TestSetupRepoRecordsProfile(CliCase):
         )
         self._fetch.start()
         self.addCleanup(self._fetch.stop)
+        # With an empty rules list the real check_all still emits warn
+        # findings, which the verdict reads as blocked - pin it clean, the
+        # way the guard tests build their seams in the opposite direction.
+        self._check_all = mock.patch.object(
+            cli.piguard, "check_all", return_value=[]
+        )
+        self._check_all.start()
+        self.addCleanup(self._check_all.stop)
         self._token = mock.patch.object(
             cli.piguard, "check_token_all", return_value=[]
         )
@@ -17528,7 +17536,7 @@ class TestSetupRepoRecordsProfile(CliCase):
         findings), so the verdict is clean and provisioning proceeds -
         exit 0 - for both a resolved and an unresolvable identity.
         """
-        self._resolve.return_value = resolve_value
+        self._resolve_mock.return_value = resolve_value
         env_values = {"LLM_PORT": "8000", "GITHUB_TOKEN": "ghp_profile_test"}
         self.write_env(**env_values)
         with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
@@ -17618,7 +17626,7 @@ class TestSetupRepoRecordsProfile(CliCase):
             # back with the same fields the CLI wrote.
             from anvilkit.pi import piprofile
 
-            loaded = piprofile.load_profile(self.home, self.PROFILE)
+            loaded = piprofile.load_profile(self.home / ".anvil", self.PROFILE)
             self.assertEqual(os.path.abspath(target), loaded["path"])
             self.assertEqual(self.OWNER, loaded["owner"])
             self.assertEqual(self.REPO, loaded["repo"])
