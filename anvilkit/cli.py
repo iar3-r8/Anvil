@@ -2320,6 +2320,86 @@ def smoke_test(
 
 
 # ---------------------------------------------------------------------------
+# profile sub-app
+# ---------------------------------------------------------------------------
+
+# A flat CLI grows a sub-group the moment one command family carries more
+# than one verb; ``profile`` is that family. The commands here are
+# read-only and need no shared Context (no port, no compose), so they stay
+# standalone: no global callback, no prompts, no ``--yes``.
+profile_app = typer.Typer(
+    help="Inspect the profiles recorded in the ~/.anvil profile store.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(profile_app, name="profile")
+
+
+def _profile_root() -> Path:
+    """The profile store root: ``~/.anvil``, computed at call time.
+
+    Computed per command rather than at import so a caller that overrides
+    ``$HOME`` (the test suite does) is seen on every invocation, not pinned
+    to whatever home existed when the module loaded.
+    """
+    return Path.home() / ".anvil"
+
+
+@profile_app.command(name="list")
+def profile_list() -> None:
+    """List every saved profile, one line per name with its absolute path.
+
+    A read is a read: it never writes, and it prints only the record's own
+    fields - never a resolved token, so a token value is never echoed.
+    """
+    root = _profile_root()
+    names = piprofile.list_profiles(root)
+    if not names:
+        typer.echo("No profiles are saved.")
+        return
+    for name in names:
+        record = piprofile.load_profile(root, name)
+        typer.echo("{}\t{}".format(name, record["path"]))
+
+
+@profile_app.command(name="show")
+def profile_show(
+    name: str = typer.Argument(..., help="The profile name to show."),
+) -> None:
+    """Print one profile's record: path, owner, repo, base, the ``token_env``
+    key name, and the project block's values, verbatim.
+
+    Prints the ``token_env`` KEY name, never a token value: it reads only
+    the record's own fields and never resolves a token or reads a .env. A
+    name the store does not hold exits on the usage code with the store's
+    own message (behaviour 9); a record whose path has vanished raises
+    ``ProfileError`` untouched, for the entry point to map.
+    """
+    root = _profile_root()
+    try:
+        record = piprofile.load_profile(root, name)
+    except ProfileError as exc:
+        if name not in piprofile.list_profiles(root):
+            # Behaviour 9: the store does not hold this name - a typo the
+            # operator can fix from the message, which names the known
+            # profiles, or says none are saved.
+            raise _fail(str(exc), EXIT_USAGE) from exc
+        # The name IS held: a vanished path (behaviour 10) or a malformed
+        # store - a controlled failure the entry point maps to its own
+        # code, so the ProfileError propagates untouched.
+        raise
+    typer.echo("name: {}".format(name))
+    typer.echo("path: {}".format(record["path"]))
+    typer.echo("owner: {}".format(record["owner"]))
+    typer.echo("repo: {}".format(record["repo"]))
+    typer.echo("base: {}".format(record["base"]))
+    typer.echo("token_env: {}".format(record["token_env"]))
+    project = record.get("project")
+    for key, value in (project or {}).items():
+        typer.echo("project.{}: {}".format(key, value))
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
