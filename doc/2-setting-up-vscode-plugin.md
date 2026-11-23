@@ -17,7 +17,7 @@ Run the initialization command from your Anvil root directory to generate the re
 ./anvil setup-repo /path/to/your/target-repo
 ```
 
-*Follow the interactive prompts to automatically hook up directory paths, copy the `roo_template` folders, configure optional GitHub tokens and Oxylabs documentation access, and optionally bind **architect** and **orchestrator** modes to an Anthropic frontier model (the key is stored in `.env`).*
+*Follow the interactive prompts to automatically hook up directory paths, copy the `roo_template` folders, configure optional GitHub tokens and Oxylabs documentation access, choose an Anvil profile name, and optionally bind **architect** and **orchestrator** modes to an Anthropic frontier model (the key is stored in `.env`).*
 
 To run it unattended, supply the answers as flags — for example:
 
@@ -31,6 +31,26 @@ Use `--no-github`, `--no-anthropic` and `--no-oxylabs` to skip any integration
 explicitly, and `--dry-run` to see exactly which files would be written without
 writing any of them. See the [backend guide](1-setting-up-backend.md) for the full
 flag list.
+
+### Recording a profile
+
+On the path that runs the GitHub guards gate (every run except
+`--no-github`), `setup-repo` asks for a **profile name** before it provisions
+anything, defaulting to the target directory's basename, and — after the
+provisioning succeeds — records the repository in the local profile store at
+`~/.anvil/profiles.yaml`: the absolute path, the GitHub identity the gate
+resolved (`null` when it could not resolve one), the base branch the gate
+checked, and the token key name derived from the profile name. The record
+never holds a token value.
+
+- `--profile NAME` supplies the name without prompting; `--yes` accepts the
+  basename; `--dry-run` names what would be recorded and writes nothing.
+- Re-running `setup-repo` on the same repository updates the record in place —
+  one path, one profile.
+- `--no-github` records nothing: with no gate there is no identity to record.
+
+The naming rules, the record's fields and the `profile list` / `profile show`
+commands are in [working with run profiles](4-run-profiles.md).
 
 ### Documentation grounding with Oxylabs
 

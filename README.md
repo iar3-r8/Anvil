@@ -10,6 +10,8 @@ Anvil does two things: it runs local model inference behind the [llama-swap](htt
 
 **Turn a repo into an agentic pipeline.** `./anvil setup-repo PATH` installs Zoo Code settings, a team of agent modes, the MCP servers that fetch documentation and check package registries, and an optional devcontainer. What the provisioned agents do: [how the agents work](doc/how-the-agents-work.md); installation steps: [VS Code plugin setup guide](doc/2-setting-up-vscode-plugin.md).
 
+**One install, many repositories.** Each `setup-repo` records its target in a local profile store under `~/.anvil/profiles.yaml` — the repository path, its GitHub identity and the token key name, never the token value — so a run always knows which repository it is in. `./anvil profile list` and `./anvil profile show NAME` inspect the records: [working with run profiles](doc/4-run-profiles.md).
+
 ## Quick start
 
 * **Python 3.8+** — Anvil provisions its own virtual environment on first run; there is no manual `pip install`.
@@ -53,5 +55,6 @@ Commercial AI coding assistants bring two drawbacks to engineering teams: unpred
 
 * [Backend setup guide](doc/1-setting-up-backend.md) — running the local stack: commands, flags, exit codes, hardware sizing.
 * [VS Code plugin setup guide](doc/2-setting-up-vscode-plugin.md) — provisioning a repository with `setup-repo`.
+* [Working with run profiles](doc/4-run-profiles.md) — the per-repository profile store: what a record holds, the naming rules, and the `profile list` / `profile show` commands.
 * [How the agents work](doc/how-the-agents-work.md) — the agentic pipeline in depth: stages, loop mechanics, grounded planning.
 * [Testing](doc/3-testing.md) — dev-facing: how to run Anvil's own test suite.

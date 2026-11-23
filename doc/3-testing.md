@@ -29,6 +29,8 @@ Commands that inspect actual behaviour without starting or changing anything:
 ./anvil --dry-run up                             # the docker command that would run
 ./anvil --dry-run setup-repo /tmp/scratch --yes  # the files that would be written
 ./anvil --dry-run stress MODEL                   # the levels, port and log path that would be used
+./anvil profile list                             # every profile in the ~/.anvil store
+./anvil profile show NAME                        # one record, field by field
 ```
 
 ## When to run

@@ -1323,7 +1323,7 @@ def setup_repo(
         None,
         "--profile",
         help="Record the provisioning under this profile name in the Anvil "
-        "profile store (plans/pi-phase13-profiles.md behaviour 14).",
+        "profile store (default: the target's basename).",
     ),
     container: bool = typer.Option(
         False,
