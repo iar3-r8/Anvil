@@ -29,6 +29,19 @@ import click
 import typer
 
 from . import compose, config, env, health, prompts, provision, render, smoke
+from .cliexit import (
+    EXIT_CONFIG,
+    EXIT_DOCKER,
+    EXIT_ERROR,
+    EXIT_GUARDS_BLOCKED,
+    EXIT_OK,
+    EXIT_PROVISION,
+    EXIT_PROMPT,
+    EXIT_STRESS_FAILURES,
+    EXIT_STRESS_UNAVAILABLE,
+    EXIT_USAGE,
+    fail,
+)
 from .compose import Compose, ComposeError
 from .pi import pibakeoff
 from .config import ConfigError
@@ -57,23 +70,12 @@ from .stress import (
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# EXIT_USAGE uses click's own code (2) to avoid conflicting answers.
-EXIT_OK = 0
-EXIT_ERROR = 1
-EXIT_USAGE = 2
-EXIT_CONFIG = 3
-EXIT_DOCKER = 4
-EXIT_PROVISION = 5
-EXIT_PROMPT = 6
-# Stress: 7 means no results were produced at all; 8 means the run finished
-# and found failures, which is a successful measurement, so it gets its own
-# code rather than reusing EXIT_ERROR.
-EXIT_STRESS_UNAVAILABLE = 7
-EXIT_STRESS_FAILURES = 8
-# A blocked setup-repo guard gate: nothing was provisioned and nothing is
-# wrong with Anvil - the user's GitHub needs a fix (plans/setup-repo-guards.md
-# behaviour 9 pins the code and the message wording in a later cycle).
-EXIT_GUARDS_BLOCKED = 9
+# The exit vocabulary lives in ``cliexit`` (plans/cli-segmentation.md
+# behaviour 1); the names are imported above so ``cli.EXIT_*`` keeps
+# resolving for the tests and downstream callers.
+# ``_fail`` is the historical name for ``cliexit.fail`` — kept as an alias
+# for the ~20 pre-segmentation call sites.
+_fail = fail
 
 ENV_FILENAME = ".env"
 SETTINGS_FILENAME = "anvil.yaml"
@@ -225,11 +227,6 @@ def _context(ctx: typer.Context, assume_yes: bool = False) -> Context:
 
 def _banner(shared: Context) -> None:
     shared.echo(BANNER)
-
-
-def _fail(message: str, code: int) -> "typer.Exit":
-    typer.echo(message, err=True)
-    return typer.Exit(code)
 
 
 def _compose_for(shared: Context, profile: str) -> Compose:
@@ -450,7 +447,7 @@ def _run_compose_command(
     try:
         code = getattr(engine, operation)(extra_args=ctx.args, **kwargs)
     except ComposeError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_DOCKER) from exc
+        raise fail("❌ {}".format(exc), EXIT_DOCKER) from exc
 
     if code != 0:
         # docker's own status is the truth about docker; do not relabel it.
@@ -602,7 +599,7 @@ def status(
         gateway = health.check_gateway(port, timeout)
         shared.echo(health.format_status(gateway, use_color=shared.use_color))
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +636,7 @@ def _report_available_models(shared: Context, port: int) -> "typer.Exit":
         for model in status.models:
             lines.append("     - {}".format(model.id))
 
-    return _fail("\n".join(lines), EXIT_USAGE)
+    return fail("\n".join(lines), EXIT_USAGE)
 
 
 @app.command(name="test-model")
@@ -679,7 +676,7 @@ def test_model(
     try:
         port = shared.resolve_port(llm_port)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     # Checked here rather than by making the argument required, so the refusal
     # can name the ids that would have worked. It stays a usage error: no test
@@ -888,7 +885,7 @@ def stress(
     try:
         port = shared.resolve_port(llm_port)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     # Same reasoning as test-model: checked here so the refusal can list the
     # registry, and it precedes --dry-run for the same reason.
@@ -929,11 +926,11 @@ def stress(
             lines.append(
                 "   The registry on port {} is empty.".format(port)
             )
-        raise _fail("\n".join(lines), EXIT_USAGE)
+        raise fail("\n".join(lines), EXIT_USAGE)
 
     if availability.verdict == "unreachable":
         # The gateway's own text is the diagnosis; paraphrase would lose it.
-        raise _fail(
+        raise fail(
             "❌ The gateway on port {} could not be reached: {}".format(
                 port, availability.reason or "no reason reported"
             ),
@@ -968,7 +965,7 @@ def stress(
             on_attempt=None if as_json else lambda a: _print_warmup_attempt(shared, a),
         )
         if not warm_up_result.ok:
-            raise _fail(
+            raise fail(
                 "❌ Warm-up failed after {} attempt(s): {}".format(
                     warm_up_result.attempts,
                     warm_up_result.error or "no reason reported",
@@ -1046,7 +1043,7 @@ def init(
         # Bash never faced this: its bootstrap was guarded by '[ ! -f .env ]', so
         # it could only ever create. As an explicit command, refusing protects a
         # hand-tuned .env from a mistyped command.
-        raise _fail(
+        raise fail(
             "❌ {} already exists; pass --force to regenerate it.".format(
                 shared.env_path
             ),
@@ -1065,9 +1062,9 @@ def init(
     try:
         _bootstrap_env(shared, answers)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
     except PromptError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
+        raise fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1459,7 +1456,7 @@ def setup_repo(
         topology = config.read_models(shared.models_path)
         port = shared.resolve_port(llm_port)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     shared.detail("gateway port: {}".format(port))
     shared.detail("coder model: {}".format(topology.coder_id))
@@ -1481,7 +1478,7 @@ def setup_repo(
         )
         shared.echo("")
     except PromptError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
+        raise fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
     # Behaviour 21 (superseding behaviour 15's basename default): the
     # profile name is resolved BEFORE anything is provisioned, and only on
@@ -1500,7 +1497,7 @@ def setup_repo(
         try:
             profile_name = _resolve_profile_name(shared, profile)
         except PromptError as exc:
-            raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
+            raise fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
     repo_plan = RepoPlan(
         port=port,
@@ -1526,9 +1523,9 @@ def setup_repo(
             echo=shared.echo,
         )
     except ProvisionError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_PROVISION) from exc
+        raise fail("❌ {}".format(exc), EXIT_PROVISION) from exc
     except RenderError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     if profile_name is not None:
         _announce_or_record_profile(shared, path, profile_name, repository)
@@ -1558,7 +1555,7 @@ def _resolve_profile_name(shared: Context, supplied: Optional[str]) -> str:
     """
     if supplied is not None:
         if not piprofile.valid_name(supplied):
-            raise _fail(
+            raise fail(
                 "❌ invalid profile name {!r}: use only {}".format(
                     supplied, piprofile._ALLOWED_CHARSET
                 ),
@@ -2345,7 +2342,7 @@ def smoke_test(
     # docker, HTTP - regardless of --dry-run, so the failure cannot be
     # mistaken for a layer report (behaviour 19).
     if not target.is_dir():
-        raise _fail(
+        raise fail(
             "❌ --repo names no existing directory: {}".format(target),
             EXIT_USAGE,
         )
@@ -2357,7 +2354,7 @@ def smoke_test(
     try:
         port = shared.resolve_port(llm_port)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     docker_runner = _docker_runner_factory()
     runner = _pidriver_runner_factory()
@@ -2445,7 +2442,7 @@ def profile_show(
             # Behaviour 9: the store does not hold this name - a typo the
             # operator can fix from the message, which names the known
             # profiles, or says none are saved.
-            raise _fail(str(exc), EXIT_USAGE) from exc
+            raise fail(str(exc), EXIT_USAGE) from exc
         # The name IS held: a vanished path (behaviour 10) or a malformed
         # store - a controlled failure the entry point maps to its own
         # code, so the ProfileError propagates untouched.

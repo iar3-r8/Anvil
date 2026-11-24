@@ -15,6 +15,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `prompts.py` | interactive prompts, every one of which can be bypassed |
 | `provision.py` | provisioning a target repository — the `setup-repo` orchestration |
 | `cli.py` | the Anvil command line: subcommand dispatch, flags and exit codes |
+| `cliexit.py` | the CLI exit vocabulary: the per-class exit codes and the `fail` helper that builds a failing `typer.Exit` |
 | `pi/` | the Pi package: the bake-off, approval, sandbox and single-role pipeline (see below) |
 | `pi/piapproval.py` | phase-2 approval run driver — one job: drive the approval configurations |
 | `pi/piargv.py` | bake-off invocation argv builders — one job: turn inputs into `pi` command lines |
