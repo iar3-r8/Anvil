@@ -33,6 +33,7 @@ from . import (
     env,
     envsetup,
     health,
+    modelreport,
     prompts,
     provision,
     render,
@@ -413,40 +414,11 @@ def status(
 # ---------------------------------------------------------------------------
 # test-model
 # ---------------------------------------------------------------------------
-
-
-def _report_available_models(shared: Context, port: int) -> "typer.Exit":
-    """Explain which model ids ``test-model`` and ``stress`` would accept.
-
-    A model id is long, case-sensitive and easy to mistype, so refusing with a
-    bare "missing argument" would send the user to another command to find the
-    answer. The registry is the authority, so it is quoted rather than
-    config.yaml: llama-swap may be serving something the local file no longer
-    describes.
-    """
-    lines = ["❌ Missing argument 'MODEL_NAME'."]
-
-    status = health.check_gateway(port)
-
-    if not status.online:
-        lines.append(
-            "   The gateway on port {} could not be reached, so the available "
-            "models are unknown.".format(port)
-        )
-        if status.error:
-            lines.append("   ↳ {}".format(status.error))
-    elif not status.models:
-        lines.append(
-            "   The gateway on port {} has no registered models.".format(port)
-        )
-    else:
-        lines.append("   Available models on port {}:".format(port))
-        for model in status.models:
-            lines.append("     - {}".format(model.id))
-
-    return fail("\n".join(lines), EXIT_USAGE)
-
-
+#
+# The model-state reporting the test-model and stress handlers share (the
+# available-id list, the empty-registry wording, the unknown-model usage
+# error) moved to modelreport in plans/cli-segmentation.md behaviour 6; only
+# the handler stays here.
 @app.command(name="test-model")
 def test_model(
     ctx: typer.Context,
@@ -490,7 +462,7 @@ def test_model(
     # can name the ids that would have worked. It stays a usage error: no test
     # was run. It precedes --dry-run for the same reason.
     if model_name is None:
-        raise _report_available_models(shared, port)
+        raise modelreport.report_available_models(shared, port)
 
     if shared.dry_run:
         body = health.build_chat_request(model_name, prompt, max_tokens)
@@ -604,7 +576,7 @@ def stress(
     code = stressreport.run_stress_command(
         shared,
         _banner,
-        _report_available_models,
+        modelreport.report_available_models,
         model_name,
         max_concurrency,
         requests,

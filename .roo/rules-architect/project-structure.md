@@ -12,6 +12,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `compose.py` | driving `docker compose` and the container runtime |
 | `health.py` | health checks against the llama-swap gateway |
 | `stress.py` | stress testing against the llama-swap gateway |
+| `modelreport.py` | the model-state reporting shared by status and test-model - the available-id list, the empty-registry wording and the unknown-model usage error |
 | `stressreport.py` | the stress command's report logic — the warm-up and level event printing and the report stamping that the stress handler delegates to |
 | `prompts.py` | interactive prompts, every one of which can be bypassed |
 | `provision.py` | provisioning a target repository — the `setup-repo` orchestration |
