@@ -14,7 +14,9 @@ Resolution order for every function:
 3. otherwise                            -> prompt
 """
 
-from typing import Any, List, Mapping, Optional, Sequence, TextIO
+import contextlib
+import sys
+from typing import Any, Iterator, List, Mapping, Optional, Sequence, TextIO
 
 import click
 
@@ -223,14 +225,85 @@ def _read_line(
     """Single seam through which every keystroke arrives.
 
     Tests patch this to prove that a bypassed prompt never reads stdin.
+
+    Behaviour 22: a prompt with no default must terminate on an exhausted
+    stdin instead of re-prompting forever. click 8.1.7's own loop only
+    breaks out of an empty answer when a default is set, so on an
+    exhausted fake stdin (``CliRunner``'s reader returns ``""`` at EOF
+    rather than raising) it re-asks until the process is killed. The
+    read is therefore wrapped: an empty line while ``sys.stdin`` is
+    provably at its end raises :class:`click.Abort`, which the caller's
+    existing ``except click.Abort`` already maps (to the default for a
+    default-carrying prompt, to ``PromptError`` for ``ask_required``).
+    A blank line with more input behind it still re-prompts, and a real
+    terminal is untouched: ``input``/``getpass`` raise ``EOFError``
+    there, which click converts to ``Abort`` on its own (termui.py:141).
     """
-    return click.prompt(
-        prompt,
-        default=default,
-        hide_input=hide_input,
-        type=value_type,
-        show_default=True,
-    )
+    with _wrap_prompt_readers(default):
+        return click.prompt(
+            prompt,
+            default=default,
+            hide_input=hide_input,
+            type=value_type,
+            show_default=True,
+        )
+
+
+@contextlib.contextmanager
+def _wrap_prompt_readers(default: Optional[str]) -> "Iterator[None]":
+    """Wrap click's prompt readers so an empty read at stdin's end aborts.
+
+    click ``prompt`` has no ``prompt_func`` parameter (8.1.7), so the read is
+    wrapped the same way ``CliRunner.isolation`` itself wraps it: by
+    temporarily rebinding ``click.termui.visible_prompt_func`` /
+    ``hidden_prompt_func`` around the call. The wrapper still calls click's
+    reader, so no terminal I/O is re-implemented; it only inspects the line
+    the reader returned.
+    """
+    termui = click.termui
+
+    def guard(f):
+        def guarded(text: str) -> str:
+            value = f(text)
+            if not value and default is None and _stdin_exhausted():
+                raise click.Abort()
+            return value
+
+        return guarded
+
+    old_visible = termui.visible_prompt_func
+    old_hidden = termui.hidden_prompt_func
+    termui.visible_prompt_func = guard(old_visible)
+    termui.hidden_prompt_func = guard(old_hidden)
+    try:
+        yield
+    finally:
+        termui.visible_prompt_func = old_visible
+        termui.hidden_prompt_func = old_hidden
+
+
+def _stdin_exhausted() -> bool:
+    """True when ``sys.stdin`` has no more data, decided without consuming any.
+
+    A blank answer (``""``) at the end of a finite stream is exhaustion; the
+    same answer mid-stream is just a blank line and must re-prompt. The probe
+    reads one character and restores the position, so it costs the prompt
+    nothing. It is only ever reached after the reader has already returned at
+    the end of the stream, so it cannot block. A stream that cannot report
+    its position (a real terminal, whose reader raises ``EOFError`` on
+    exhaustion anyway) reports False, leaving that path on click's own
+    ``Abort`` handling.
+    """
+    stream = sys.stdin
+    if stream is None or stream.isatty():
+        return False
+    try:
+        position = stream.tell()
+        byte = stream.read(1)
+        stream.seek(position)
+    except (AttributeError, OSError, ValueError):
+        return False
+    return byte == ""
 
 
 def _read_confirmation(prompt: str, default: bool) -> bool:
