@@ -200,11 +200,11 @@ class ProjectDocumentAbsentFieldsTestCase(unittest.TestCase):
 
     def _assert_no_placeholder(self, document):
         match = re.search(r"<[^>]*>", document)
-        self.assertIsNone(
-            match,
-            "a <...> placeholder survives into the rendered document: %r"
-            % match.group(0),
-        )
+        if match is not None:
+            self.fail(
+                "a <...> placeholder survives into the rendered document: %r"
+                % match.group(0)
+            )
 
     def test_project_document_empty_block_renders_absent_lines_for_block_fields(
         self,
