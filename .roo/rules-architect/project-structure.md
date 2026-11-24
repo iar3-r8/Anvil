@@ -29,6 +29,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `pi/piguard.py` | checks over GitHub branch rules, returning findings |
 | `pi/piguardgate.py` | the setup-repo guard gate - the branch and token findings, the blocked-gate follow-ups (free plan, CODEOWNERS, ruleset and token recipe) and the sectioned report |
 | `pi/piguardrails.py` | guardrails document builder and validator — one job: build and validate the `.pi/extensions/guardrails.json` document for the `@aliou/pi-guardrails` package (one exception type: `GuardrailsError`); the write seam is `render.guardrails_settings` |
+| `pi/piprofileflow.py` | the setup-repo profile-record flow - resolve the name (no default, behaviour 21), record after a successful provision, and announce-or-record under --dry-run; writes through `piprofile` |
 | `pi/pirecord.py` | bake-off run-record builder (closed thirteen-key record, table rendering) |
 | `pi/piruleset.py` | GitHub ruleset builder — the importable main-branch guard ruleset |
 | `pi/pisandbox.py` | sandbox image argv builders — one job: turn inputs into `docker` command lines |
