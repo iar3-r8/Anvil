@@ -10649,7 +10649,7 @@ class TestFreePlanBoundary(CliCase):
         findings = self._file_paths_warn_findings()
         result = self._verify_guards_interactive(True, findings)
         with mock.patch.object(
-            cli, "_free_plan_followup", lambda *a, **k: None
+            cli.piguardgate, "free_plan_followup", lambda *a, **k: None
         ):
             baseline = self._verify_guards_interactive(True, findings)
 
@@ -10977,7 +10977,7 @@ class TestFreePlanBoundary(CliCase):
                 cli.piguard, "check_token_all", side_effect=boom
             ),
             mock.patch.object(
-                cli, "_free_plan_followup", side_effect=boom
+                cli.piguardgate, "free_plan_followup", side_effect=boom
             ),
         )
         for patcher in traps:
@@ -11432,7 +11432,7 @@ class TestFreePlanQuestionPositive(CliCase):
         findings = self._file_paths_warn_findings()
         result = self._verify_guards_interactive(True, findings)
         with mock.patch.object(
-            cli, "_free_plan_followup", lambda *a, **k: None
+            cli.piguardgate, "free_plan_followup", lambda *a, **k: None
         ):
             baseline = self._verify_guards_interactive(True, findings)
 
@@ -13643,7 +13643,7 @@ class TestCodeownersFlowWiring(CliCase):
         for patcher in self._guard_seams(findings, (self.OWNER, self.REPO)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             result = self.invoke(
                 ["verify-guards", str(self.project), "--branch", branch]
             )
@@ -13930,7 +13930,7 @@ class TestCodeownersFlowWiring(CliCase):
             "exactly one fallback line must print - {} such line(s) "
             "found:\n{}".format(len(fallback), result.output),
         )
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             baseline = self.invoke(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
@@ -14492,7 +14492,7 @@ class TestFilePresentNoFollowup(CliCase):
         for patcher in self._guard_seams((self.OWNER, self.REPO)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             result = self.invoke(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
@@ -15258,7 +15258,7 @@ class TestCodeownersFlowSkipBoundary(CliCase):
         for patcher in self._guard_seams(findings, (self.OWNER, self.REPO)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             result = self.invoke(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
@@ -15806,7 +15806,7 @@ class TestCodeownersFlowSkipBoundary(CliCase):
         result = self.invoke(
             ["verify-guards", str(self.project), "--branch", "main"]
         )
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             baseline = self.invoke(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
@@ -16258,7 +16258,7 @@ class TestCodeownersFallbackSkipAware(CliCase):
         # Byte-identical to today: removing that one line must leave the
         # same run with the follow-up wiring disabled (the
         # ``TestCodeownersFlowWiring`` byte-identity pattern).
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             baseline = self._run_dry_run()
         remaining = list(lines)
         remaining.remove(self.FREE_PLAN_LINE)
