@@ -18,6 +18,7 @@ the missing module.
 """
 
 import importlib
+import re
 import unittest
 
 
@@ -30,6 +31,9 @@ PROJECT_STRUCTURE = (
     "anvilkit/ holds one module per concern; templates/ holds scaffolding"
 )
 PROJECT_CONFIGURATION = "config.yaml is read-only; secrets live in .env"
+
+# The pinned wording an absent field renders on its labelled line.
+NOT_RECORDED = "not recorded"
 
 
 def _record():
@@ -67,6 +71,34 @@ def _labelled_lines(document, value):
         if stripped.endswith(value) and stripped != value:
             labelled.append(stripped)
     return labelled
+
+
+def _empty_block_record():
+    """Return a record whose ``project`` block is entirely empty."""
+    record = _record()
+    record["project"] = {}
+    return record
+
+
+def _missing_structure_record():
+    """Return a record whose ``project`` block has no ``structure`` key."""
+    record = _record()
+    del record["project"]["structure"]
+    return record
+
+
+def _none_owner_record():
+    """Return a record carrying ``None`` for ``owner``."""
+    record = _record()
+    record["owner"] = None
+    return record
+
+
+def _none_configuration_record():
+    """Return a record whose ``project`` block carries ``None`` for ``configuration``."""
+    record = _record()
+    record["project"]["configuration"] = None
+    return record
 
 
 class ProjectDocumentFromRecordTestCase(unittest.TestCase):
@@ -153,3 +185,129 @@ class ProjectDocumentFromRecordTestCase(unittest.TestCase):
                 1,
                 "one line carries several project facts: %r" % line,
             )
+
+
+class ProjectDocumentAbsentFieldsTestCase(unittest.TestCase):
+    """Absent project facts render the pinned absence wording, never a placeholder.
+
+    An absent field — a missing block key, an empty block, or a ``None``
+    value — renders the pinned line ``not recorded`` on its labelled line.
+    ``piproject.project_document`` never raises on an absent field; the
+    empty block is the common case ``piprofileflow.record_profile`` writes
+    today. No ``<...>`` placeholder the shared rule sources carry may
+    survive into the rendered document.
+    """
+
+    def _assert_no_placeholder(self, document):
+        match = re.search(r"<[^>]*>", document)
+        self.assertIsNone(
+            match,
+            "a <...> placeholder survives into the rendered document: %r"
+            % match.group(0),
+        )
+
+    def test_project_document_empty_block_renders_absent_lines_for_block_fields(
+        self,
+    ):
+        document = _document(_empty_block_record())
+        self.assertIsInstance(
+            document,
+            str,
+            "project_document must return the project.md text for an "
+            "empty project block, got %s" % type(document).__name__,
+        )
+        absent = _labelled_lines(document, NOT_RECORDED)
+        self.assertEqual(
+            len(absent),
+            3,
+            "an empty project block must render three absent labelled "
+            "lines (%r); found %r" % (NOT_RECORDED, absent),
+        )
+        for value in (OWNER, REPO):
+            self.assertTrue(
+                _labelled_lines(document, value),
+                "top-level value %r must still render for an empty "
+                "project block" % value,
+            )
+        self._assert_no_placeholder(document)
+
+    def test_project_document_missing_block_key_renders_absent_line_for_that_field(
+        self,
+    ):
+        document = _document(_missing_structure_record())
+        absent = _labelled_lines(document, NOT_RECORDED)
+        self.assertEqual(
+            len(absent),
+            1,
+            "a block missing one key must render exactly one absent "
+            "labelled line (%r); found %r" % (NOT_RECORDED, absent),
+        )
+        for value in (OWNER, REPO, PROJECT_NAME, PROJECT_CONFIGURATION):
+            self.assertTrue(
+                _labelled_lines(document, value),
+                "present value %r must still render when one block key "
+                "is missing" % value,
+            )
+        self._assert_no_placeholder(document)
+
+    def test_project_document_none_owner_renders_absent_line_for_owner(self):
+        document = _document(_none_owner_record())
+        absent = _labelled_lines(document, NOT_RECORDED)
+        self.assertEqual(
+            len(absent),
+            1,
+            "a record carrying None for owner must render exactly one "
+            "absent labelled line (%r); found %r" % (NOT_RECORDED, absent),
+        )
+        for value in (
+            REPO,
+            PROJECT_NAME,
+            PROJECT_STRUCTURE,
+            PROJECT_CONFIGURATION,
+        ):
+            self.assertTrue(
+                _labelled_lines(document, value),
+                "present value %r must still render when owner is None"
+                % value,
+            )
+        self._assert_no_placeholder(document)
+
+    def test_project_document_none_block_value_renders_absent_line_for_that_field(
+        self,
+    ):
+        document = _document(_none_configuration_record())
+        absent = _labelled_lines(document, NOT_RECORDED)
+        self.assertEqual(
+            len(absent),
+            1,
+            "a block value set to None must render exactly one absent "
+            "labelled line (%r); found %r" % (NOT_RECORDED, absent),
+        )
+        for value in (OWNER, REPO, PROJECT_NAME, PROJECT_STRUCTURE):
+            self.assertTrue(
+                _labelled_lines(document, value),
+                "present value %r must still render when one block "
+                "value is None" % value,
+            )
+        self._assert_no_placeholder(document)
+
+    def test_project_document_none_owner_and_none_block_value_render_each_absent_line(
+        self,
+    ):
+        record = _none_owner_record()
+        record["project"]["structure"] = None
+        document = _document(record)
+        absent = _labelled_lines(document, NOT_RECORDED)
+        self.assertEqual(
+            len(absent),
+            2,
+            "a None owner plus one None block value must render exactly "
+            "two absent labelled lines (%r); found %r" % (NOT_RECORDED, absent),
+        )
+        for value in (REPO, PROJECT_NAME, PROJECT_CONFIGURATION):
+            self.assertTrue(
+                _labelled_lines(document, value),
+                "present value %r must still render alongside None "
+                "values" % value,
+            )
+        self._assert_no_placeholder(document)
