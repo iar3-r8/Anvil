@@ -97,7 +97,7 @@ def valid_name(name: str) -> bool:
     lies in ``[A-Za-z0-9._-]``, and the first character is not ``-``,
     ``.`` or a digit. A leading hyphen would read as a CLI flag, a
     leading dot as a hidden file, and a leading digit as a number rather
-    than the repository basename the prompt defaults to.
+    than a name the operator intended.
     """
     if not name:
         return False

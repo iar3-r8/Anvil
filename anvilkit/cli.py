@@ -1437,7 +1437,8 @@ def setup_repo(
         None,
         "--profile",
         help="Record the provisioning under this profile name in the Anvil "
-        "profile store (default: the target's basename).",
+        "profile store. There is no default: a missing name is asked "
+        "interactively, or must be supplied here when non-interactive.",
     ),
     container: bool = typer.Option(
         False,
@@ -1482,19 +1483,24 @@ def setup_repo(
     except PromptError as exc:
         raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
-    # Behaviour 15: the profile name, resolved BEFORE anything is
-    # provisioned, and only on the path that records (the gate ran, i.e. not
-    # --no-github). --profile returns its name without prompting; otherwise
-    # the prompt seam defaults to the target basename. The resolved name is
-    # validated against the store's charset rule up front, so an invalid
-    # name is a usage error that stops the run before provisioning - an
-    # invalid name can no longer reach save_profile. A skipped gate
-    # (--no-github) has no identity to record, so no name is resolved.
+    # Behaviour 21 (superseding behaviour 15's basename default): the
+    # profile name is resolved BEFORE anything is provisioned, and only on
+    # the path that records (the gate ran, i.e. not --no-github).
+    # --profile returns its name without prompting; with no flag there
+    # is NO default, so --yes or a non-interactive run cannot answer
+    # the question and fails on the prompt code (6) naming
+    # --profile NAME as the fix, before provisioning. The resolved name
+    # is validated against the store's charset rule up front, so an
+    # invalid name is a usage error that stops the run before
+    # provisioning - an invalid name can no longer reach save_profile.
+    # A skipped gate (--no-github) has no identity to record, so no
+    # name is resolved.
     profile_name: Optional[str] = None
     if not no_github:
-        profile_name = _resolve_profile_name(
-            shared, profile, Path(path).resolve().name
-        )
+        try:
+            profile_name = _resolve_profile_name(shared, profile)
+        except PromptError as exc:
+            raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
     repo_plan = RepoPlan(
         port=port,
@@ -1528,43 +1534,73 @@ def setup_repo(
         _announce_or_record_profile(shared, path, profile_name, repository)
 
 
-def _resolve_profile_name(
-    shared: Context, supplied: Optional[str], basename: str
-) -> str:
-    """Resolve the profile name for the record (behaviour 15).
+def _resolve_profile_name(shared: Context, supplied: Optional[str]) -> str:
+    """Resolve the profile name for the record (behaviour 21).
 
     Runs BEFORE anything is provisioned, on the path that records (the
     guard gate ran). A supplied ``--profile`` name is returned without
-    prompting; otherwise the established prompt seam
-    (:func:`prompts.ask`) asks, defaulting to the target ``basename``.
-    ``--yes`` accepts the basename default without prompting. The resolved
-    name is then validated against the store's charset rule, and an
-    invalid name fails on the usage code - naming the allowed charset,
-    the way the store module names it - before the caller may provision.
+    prompting; a supplied name that fails the store's charset rule
+    fails on the usage code - naming the allowed charset, the way the
+    store module names it - before the caller may provision. With no
+    flag there is NO default: the question is asked through the house
+    seam, :func:`prompts.ask_required`, which asks with no default
+    and re-asks until a non-empty answer arrives (behaviour 22: the
+    read aborts cleanly on an exhausted stdin instead of re-prompting
+    forever); an answer that fails ``piprofile.valid_name`` is echoed
+    with the allowed charset named, and the question is asked again.
+    ``--yes`` and non-interactive runs cannot answer a no-default
+    question, so they raise :class:`PromptError` naming
+    ``--profile NAME`` as the fix before the seam is reached; so does
+    an interactive run whose stdin ends before the question is
+    answered, whose generic :class:`PromptError` is re-raised with
+    the same fix named. The caller maps the :class:`PromptError` to
+    the prompt exit code.
     """
     if supplied is not None:
-        name = supplied
-    elif shared.assume_yes:
-        # --yes accepts the default without prompting; the seam is never
-        # reached, so a non-interactive or booby-trapped run prompts no
-        # question.
-        name = basename
-    else:
-        name = prompts.ask(
-            "Profile name for the Anvil profile store",
-            default=basename,
-            supplied=None,
-            assume_yes=shared.assume_yes,
-            interactive=shared.interactive(),
+        if not piprofile.valid_name(supplied):
+            raise _fail(
+                "❌ invalid profile name {!r}: use only {}".format(
+                    supplied, piprofile._ALLOWED_CHARSET
+                ),
+                EXIT_USAGE,
+            )
+        return supplied
+
+    if shared.assume_yes or not shared.interactive():
+        # No default exists, so --yes has nothing to accept and a
+        # non-interactive run has no way to answer: fail on the prompt
+        # code before any provisioning, naming the fix. Checked before
+        # the seam so this message - not ask_required's generic one -
+        # is what the run fails with.
+        raise PromptError(
+            "no profile name was supplied and there is no default to "
+            "accept - pass --profile NAME to supply the name without "
+            "prompting."
         )
-    if not piprofile.valid_name(name):
-        raise _fail(
-            "❌ invalid profile name {!r}: use only {}".format(
-                name, piprofile._ALLOWED_CHARSET
-            ),
-            EXIT_USAGE,
-        )
-    return name
+
+    # The check above guarantees the interactive, non-yes path, so
+    # ask_required's defaults are the only ones reachable here.
+    prompt = "Profile name for the Anvil profile store"
+    try:
+        while True:
+            name = prompts.ask_required(prompt)
+            if piprofile.valid_name(name):
+                return name
+            shared.echo(
+                "invalid profile name {!r}: use only {}".format(
+                    name, piprofile._ALLOWED_CHARSET
+                )
+            )
+    except PromptError:
+        # ask_required's exhausted-stdin failure names the missing
+        # value but not the fix; re-raise with --profile NAME named,
+        # the way the --yes/non-interactive path does.
+        raise PromptError(
+            "{} is required but stdin provided no value. Pass "
+            "--profile NAME to supply the name without prompting.".format(
+                prompt
+            )
+        ) from None
 
 
 def _record_profile(
