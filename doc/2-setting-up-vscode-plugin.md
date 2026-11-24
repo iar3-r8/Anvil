@@ -19,10 +19,12 @@ Run the initialization command from your Anvil root directory to generate the re
 
 *Follow the interactive prompts to automatically hook up directory paths, copy the `roo_template` folders, configure optional GitHub tokens and Oxylabs documentation access, choose an Anvil profile name, and optionally bind **architect** and **orchestrator** modes to an Anthropic frontier model (the key is stored in `.env`).*
 
-To run it unattended, supply the answers as flags — for example:
+To run it unattended, supply the answers as flags — including the profile
+name, which has no default — for example:
 
 ```bash
 ./anvil setup-repo /path/to/your/target-repo --yes \
+    --profile project-x \
     --github-token "$GITHUB_TOKEN" --anthropic-key "$ANTHROPIC_API_KEY" \
     --oxylabs-username "$OXYLABS_USERNAME" --oxylabs-password "$OXYLABS_PASSWORD"
 ```
@@ -35,16 +37,18 @@ flag list.
 ### Recording a profile
 
 On the path that runs the GitHub guards gate (every run except
-`--no-github`), `setup-repo` asks for a **profile name** before it provisions
-anything, defaulting to the target directory's basename, and — after the
-provisioning succeeds — records the repository in the local profile store at
+`--no-github`), `setup-repo` asks for a **profile name** with no default,
+before it provisions anything, and — after the provisioning succeeds —
+records the repository in the local profile store at
 `~/.anvil/profiles.yaml`: the absolute path, the GitHub identity the gate
 resolved (`null` when it could not resolve one), the base branch the gate
 checked, and the token key name derived from the profile name. The record
 never holds a token value.
 
-- `--profile NAME` supplies the name without prompting; `--yes` accepts the
-  basename; `--dry-run` names what would be recorded and writes nothing.
+- `--profile NAME` supplies the name without prompting; `--yes` and
+  non-interactive runs have no default to accept, so they exit `6` naming the
+  flag before anything is provisioned; `--dry-run` names what would be
+  recorded and writes nothing.
 - Re-running `setup-repo` on the same repository updates the record in place —
   one path, one profile.
 - `--no-github` records nothing: with no gate there is no identity to record.

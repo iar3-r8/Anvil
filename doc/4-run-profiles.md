@@ -15,7 +15,7 @@ fields, so neither ever reveals a token.
 
 | Field | What `setup-repo` records |
 | --- | --- |
-| `name` | The profile name — the target directory's basename by default, or the value of `--profile NAME`. Letters, digits, dot, dash and underscore; it may not start with `-`, `.` or a digit, because a leading hyphen would read as a flag. |
+| `name` | The profile name — the value of `--profile NAME`, or the answer the run asks for interactively: there is no default. Letters, digits, dot, dash and underscore; it may not start with `-`, `.` or a digit, because a leading hyphen would read as a flag. |
 | `path` | The target repository's absolute path. |
 | `owner`, `repo` | The GitHub identity the guards gate resolved from the target's `origin` — `null` when no repository could be resolved, never a guess. |
 | `base` | The branch the guards gate checked: `main`. |
@@ -44,12 +44,17 @@ The store holds at most one record per repository path:
 ## When a record is written
 
 `setup-repo` asks for the profile name **before** it provisions anything, so a
-bad name is a usage error (exit code `2`) that stops the run clean; it then
-writes the record **after** the provisioning succeeds, from the identity the
-guards gate already resolved — never re-resolving it.
+bad `--profile NAME` is a usage error (exit code `2`) that stops the run clean
+and a bad answer given interactively is simply asked again. It then writes the
+record **after** the provisioning succeeds, from the identity the guards gate
+already resolved — never re-resolving it.
 
-- `--profile NAME` supplies the name without prompting; `--yes` accepts the
-  basename default.
+- `--profile NAME` supplies the name without prompting; an interactive run
+  without the flag is asked with no default, and re-asked until the name is
+  valid.
+- `--yes` and non-interactive runs cannot answer a question that has no
+  default: they fail on the prompt code `6`, naming `--profile NAME` as the
+  fix, and nothing is provisioned.
 - `--dry-run` names the store path and every field that would be recorded, and
   writes nothing — the store file is not created or modified.
 - A run with `--no-github` has no identity to record, so it writes no profile

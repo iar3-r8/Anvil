@@ -71,7 +71,9 @@ you would expect.
 Every interactive question has a corresponding flag, so Anvil can run in CI or a
 provisioning script. `--yes` accepts all defaults and never reads stdin; Anvil
 also detects a non-interactive stdin automatically and falls back to defaults
-rather than hanging.
+rather than hanging. The one exception is the `setup-repo` profile name,
+which has no default: an unattended run that was not given `--profile NAME`
+exits on code `6` naming the flag, rather than guessing or hanging.
 
 | Flag | Applies to | Purpose |
 | :--- | :--- | :--- |
@@ -87,7 +89,7 @@ rather than hanging.
 | `--anthropic-key KEY` / `--no-anthropic` | `setup-repo` | Supply or explicitly skip the Anthropic key. `--anthropic` reuses a key already in `.env`. |
 | `--anthropic-model ID` | `setup-repo` | Any model id, including one not on the menu. |
 | `--profile NAME` | lifecycle commands | Compose profile (default `coder`). |
-| `--profile NAME` | `setup-repo` | Record the provisioning under this profile name in the Anvil profile store (default: the target's basename). |
+| `--profile NAME` | `setup-repo` | Record the provisioning under this profile name in the Anvil profile store. There is no default: a missing name is asked interactively, or must be supplied here when non-interactive (exit `6` before provisioning, otherwise). |
 
 Global flags: `--dry-run` prints everything that would be written or executed
 without doing any of it, `--verbose` explains each step, and `--no-color`
