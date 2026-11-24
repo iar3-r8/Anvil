@@ -17,6 +17,7 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `cli.py` | the Anvil command line: subcommand dispatch, flags and exit codes |
 | `cliexit.py` | the CLI exit vocabulary: the per-class exit codes and the `fail` helper that builds a failing `typer.Exit` |
 | `envsetup.py` | the init command's .env bootstrap — the section table, the defaults and the ask-or-default collection |
+| `credentials.py` | the setup-repo credential resolution — the GitHub token, the Oxylabs pair and the Anthropic frontier choice, each prompted or bypassable, keys persisted to .env and never echoed |
 | `pi/` | the Pi package: the bake-off, approval, sandbox and single-role pipeline (see below) |
 | `pi/piapproval.py` | phase-2 approval run driver — one job: drive the approval configurations |
 | `pi/piargv.py` | bake-off invocation argv builders — one job: turn inputs into `pi` command lines |

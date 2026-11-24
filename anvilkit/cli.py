@@ -28,7 +28,18 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import click
 import typer
 
-from . import compose, config, env, envsetup, health, prompts, provision, render, smoke
+from . import (
+    compose,
+    config,
+    credentials,
+    env,
+    envsetup,
+    health,
+    prompts,
+    provision,
+    render,
+    smoke,
+)
 from .cliexit import (
     EXIT_CONFIG,
     EXIT_DOCKER,
@@ -93,10 +104,10 @@ BANNER = r"""
 
 _SEPARATOR = "-" * 60
 
-_UNSET_API_KEY = "to set"
-
-ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
-GITHUB_TOKEN_ENV = "GITHUB_TOKEN"
+# The credential resolution lives in ``credentials`` (plans/cli-segmentation.md
+# behaviour 3); the env-key name is re-exposed so ``cli.GITHUB_TOKEN_ENV``
+# keeps resolving for the tests.
+GITHUB_TOKEN_ENV = credentials.GITHUB_TOKEN_ENV
 PORT_ENV = "LLM_PORT"
 
 
@@ -880,218 +891,12 @@ def init(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_github_token(
-    shared: Context, token: Optional[str], no_github: bool
-) -> str:
-    """Decide the GitHub token."""
-    if no_github:
-        return ""
-
-    if token is not None:
-        # A flag-supplied value is authoritative; persist it so flag-less runs
-        # are not prompted forever. An explicit empty string returns as-is and
-        # never blanks a non-empty stored value.
-        _persist_github_token(shared, token)
-        return token
-
-    # Consult the .env store before prompting: a non-empty stored token is
-    # reused as-is so already-configured machines are not re-prompted. The
-    # lookup sits before the --yes / non-interactive guard, matching
-    # _resolve_oxylabs.
-    stored = env.get(shared.env_path, GITHUB_TOKEN_ENV)
-    if stored:
-        # The value itself is never echoed.
-        shared.echo("🔑 Reusing existing GITHUB_TOKEN from .env")
-        return stored
-
-    if shared.assume_yes or not shared.interactive():
-        return ""
-
-    wants_github = prompts.confirm(
-        "❓ Do you use GitHub and want to map a personal repository token for the agent?",
-        default=False,
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-    )
-
-    if not wants_github:
-        shared.echo("⚠️  Skipping interactive GitHub integration token.")
-        shared.echo("💡 Note: If you wish to set this up later, you must manually edit")
-        shared.echo("   '.env' and populate GITHUB_TOKEN.")
-        return ""
-
-    resolved = prompts.ask_required(
-        "🔑 Enter your GitHub Personal Access Token",
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-        hide_input=True,
-    )
-    _persist_github_token(shared, resolved)
-    return resolved
-
-
-def _persist_github_token(shared: Context, token: str) -> None:
-    """Store the token in .env, replacing any existing entry."""
-    if not token:
-        # --github-token "" reaches here via the flag path; treating an empty
-        # value as a no-op is what keeps it from blanking a stored token.
-        return
-
-    if shared.dry_run:
-        shared.echo("would store {} in {}".format(GITHUB_TOKEN_ENV, shared.env_path))
-        return
-
-    if env.get(shared.env_path, GITHUB_TOKEN_ENV) == token:
-        return
-
-    env.set_value(shared.env_path, GITHUB_TOKEN_ENV, token)
-    # The value itself is never echoed.
-    shared.echo("⚡ Token accepted and persisted to .env")
-
-
-def _resolve_oxylabs(
-    shared: Context,
-    username: Optional[str],
-    no_oxylabs: bool,
-    password: Optional[str] = None,
-) -> Tuple[str, str]:
-    """Decide the Oxylabs credentials, returning (username, password)."""
-    if no_oxylabs:
-        return ("", "")
-
-    if username is not None:
-        return (username, password if password is not None else "")
-
-    # Check .env for existing credentials.
-    env_username = env.get(shared.env_path, "OXYLABS_USERNAME")
-    env_password = env.get(shared.env_path, "OXYLABS_PASSWORD")
-    if env_username and env_password:
-        return (env_username, env_password)
-
-    if shared.assume_yes or not shared.interactive():
-        return ("", "")
-
-    wants_oxylabs = prompts.confirm(
-        "❓ Do you want to use Oxylabs web scraping for documentation lookups?\nSign up at https://dashboard.oxylabs.io/en/overview/scraper",
-        default=False,
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-    )
-
-    if not wants_oxylabs:
-        shared.echo("⚠️  Skipping Oxylabs web scraping setup.")
-        shared.echo("💡 Note: If you wish to set this up later, you must manually edit")
-        shared.echo("   '.env' and populate OXYLABS_USERNAME and OXYLABS_PASSWORD.")
-        return ("", "")
-
-    resolved_username = prompts.ask_required(
-        "🔑 Enter your Oxylabs Username",
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-        hide_input=False,
-    )
-    resolved_password = prompts.ask_required(
-        "🔑 Enter your Oxylabs Password",
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-        hide_input=True,
-    )
-    shared.echo("⚡ Credentials accepted and persisted to .env")
-    env.set_value(shared.env_path, "OXYLABS_USERNAME", resolved_username)
-    env.set_value(shared.env_path, "OXYLABS_PASSWORD", resolved_password)
-    return (resolved_username, resolved_password)
-
-
-class _Frontier:
-    """The resolved architect-mode provider settings."""
-
-    def __init__(self, api_key: str, model_id: str, use_anthropic: bool) -> None:
-        self.api_key = api_key
-        self.model_id = model_id
-        self.use_anthropic = use_anthropic
-
-
-def _resolve_frontier(
-    shared: Context,
-    settings: config.AnvilSettings,
-    anthropic_key: Optional[str],
-    no_anthropic: bool,
-    want_anthropic: bool,
-    anthropic_model: Optional[str],
-) -> _Frontier:
-    """Decide the architect provider."""
-    declined = _Frontier(
-        api_key=_UNSET_API_KEY,
-        model_id=settings.default_anthropic_model,
-        use_anthropic=False,
-    )
-
-    if no_anthropic:
-        return declined
-
-    # A supplied key, or an explicit --anthropic, is the consent itself.
-    enabled = want_anthropic or anthropic_key is not None
-    if not enabled:
-        enabled = prompts.confirm(
-            "❓ Do you want to use an Anthropic frontier model for architect and orchestrator modes?",
-            default=False,
-            assume_yes=shared.assume_yes,
-            interactive=shared.interactive(),
-        )
-
-    if not enabled:
-        shared.echo(
-            "⚠️  Skipping frontier model setup - architect and orchestrator modes "
-            "will use the local gateway."
-        )
-        shared.echo("💡 Note: If you wish to set this up later, edit")
-        shared.echo("   'zoo-code-settings.json' and point modeApiConfigs.architect")
-        shared.echo("   and modeApiConfigs.orchestrator at the '{}' id.".format(
-            settings.anthropic_profile_id))
-        return declined
-
-    api_key = anthropic_key
-    if api_key is None:
-        # An existing key in .env is reused rather than re-requested.
-        existing = env.get(shared.env_path, ANTHROPIC_KEY_ENV)
-        if existing:
-            shared.echo("🔑 Reusing existing {} from .env".format(ANTHROPIC_KEY_ENV))
-            api_key = existing
-
-    if api_key is None:
-        api_key = prompts.ask_required(
-            "🔑 Enter your Anthropic API Key",
-            assume_yes=shared.assume_yes,
-            interactive=shared.interactive(),
-            hide_input=True,
-        )
-
-    _persist_anthropic_key(shared, api_key)
-
-    model_id = prompts.choose(
-        "Available Anthropic models",
-        options=settings.anthropic_models,
-        default=settings.default_anthropic_model,
-        supplied=anthropic_model,
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-    )
-
-    return _Frontier(api_key=api_key, model_id=model_id, use_anthropic=True)
-
-
-def _persist_anthropic_key(shared: Context, api_key: str) -> None:
-    """Store the key in .env, replacing any existing entry."""
-    if shared.dry_run:
-        shared.echo("would store {} in {}".format(ANTHROPIC_KEY_ENV, shared.env_path))
-        return
-
-    if env.get(shared.env_path, ANTHROPIC_KEY_ENV) == api_key:
-        return
-
-    env.set_value(shared.env_path, ANTHROPIC_KEY_ENV, api_key)
-    # The value itself is never echoed.
-    shared.echo("⚡ Key accepted and persisted to .env")
+# The credential resolution lives in ``credentials`` (plans/cli-segmentation.md
+# behaviour 3); the private names are re-exposed as same-name aliases so the
+# direct ``cli._resolve_github_token(...)`` / ``cli._resolve_oxylabs(...)`` test
+# calls keep resolving. The CLI itself calls the public names qualified.
+_resolve_github_token = credentials.resolve_github_token
+_resolve_oxylabs = credentials.resolve_oxylabs
 
 
 def _guard_gate(
@@ -1102,7 +907,7 @@ def _guard_gate(
 ) -> Tuple[str, Optional[Tuple[str, str]]]:
     """Resolve the GitHub token and run the guard gate on ``path``; a
     blocked gate exits 9 without provisioning (behaviours 6, 7, 8 and 11)."""
-    token = _resolve_github_token(shared, token_flag, no_github)
+    token = credentials.resolve_github_token(shared, token_flag, no_github)
     shared.echo("")
     # The guard gate: after the token (the gate needs it) and before the
     # frontier/oxylabs prompts, so a blocked run asks no question it will
@@ -1272,7 +1077,7 @@ def setup_repo(
 
     try:
         token, repository = _guard_gate(shared, path, github_token, no_github)
-        frontier = _resolve_frontier(
+        frontier = credentials.resolve_frontier(
             shared,
             settings,
             anthropic_key,
@@ -1281,7 +1086,7 @@ def setup_repo(
             anthropic_model,
         )
         shared.echo("")
-        oxylabs_username, oxylabs_password = _resolve_oxylabs(
+        oxylabs_username, oxylabs_password = credentials.resolve_oxylabs(
             shared, oxylabs_username, no_oxylabs, oxylabs_password
         )
         shared.echo("")
