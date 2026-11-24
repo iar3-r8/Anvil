@@ -1542,19 +1542,19 @@ class TestStress(CliCase):
                 )
                 self.check_model = self._stack.enter_context(
                     mock.patch.object(
-                        cli,
+                        cli.stressreport.stress,
                         "check_model_available",
                         return_value=stress_available(available=self.available),
                     )
                 )
                 self.warm = self._stack.enter_context(
-                    mock.patch.object(cli, "warm_up", return_value=warmup_ok())
+                    mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok())
                 )
                 self.run = self._stack.enter_context(
-                    mock.patch.object(cli, "run_stress", return_value=report)
+                    mock.patch.object(cli.stressreport.stress, "run_stress", return_value=report)
                 )
                 self.log = self._stack.enter_context(
-                    mock.patch.object(cli, "log_path", return_value=log_file)
+                    mock.patch.object(cli.stressreport.stress, "log_path", return_value=log_file)
                 )
                 return self
 
@@ -1581,10 +1581,10 @@ class TestStress(CliCase):
     def test_dry_run_sends_nothing(self):
         """No warm-up and no measured request may go out under --dry-run."""
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()) as check, \
-             mock.patch.object(cli, "check_model_available") as check_model, \
-             mock.patch.object(cli, "warm_up") as warm, \
-             mock.patch.object(cli, "run_stress") as run, \
-             mock.patch.object(cli, "write_log") as write:
+             mock.patch.object(cli.stressreport.stress, "check_model_available") as check_model, \
+             mock.patch.object(cli.stressreport.stress, "warm_up") as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress") as run, \
+             mock.patch.object(cli.stressreport.stress, "write_log") as write:
             self.invoke(["--dry-run", "stress", self.MODEL])
         # Nothing is sent: the probe is itself a network request, and the
         # plan puts --dry-run (step 3) before the probe (step 4).
@@ -1719,10 +1719,10 @@ class TestStress(CliCase):
     def test_a_warmup_failure_exits_with_the_unavailable_code(self):
         """EXIT_STRESS_UNAVAILABLE is the literal 7 - the constant does not exist yet."""
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
-             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_failed()) as warm, \
-             mock.patch.object(cli, "run_stress") as run, \
-             mock.patch.object(cli, "write_log") as write:
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_failed()) as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress") as run, \
+             mock.patch.object(cli.stressreport.stress, "write_log") as write:
             result = self.invoke(["stress", self.MODEL])
         self.assertEqual(7, result.exit_code)
         run.assert_not_called()
@@ -1730,8 +1730,8 @@ class TestStress(CliCase):
 
     def test_a_warmup_failure_reports_the_reason(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
-             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_failed()):
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_failed()):
             result = self.invoke(["stress", self.MODEL])
         self.assertIn("connection refused", result.output)
 
@@ -1740,9 +1740,9 @@ class TestStress(CliCase):
     def test_a_missing_model_name_is_a_usage_error(self):
         """Exit 2 here must be earned from the real command, so the guard above applies."""
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_gateway_with_models()) as check, \
-             mock.patch.object(cli, "check_model_available") as check_model, \
-             mock.patch.object(cli, "warm_up") as warm, \
-             mock.patch.object(cli, "run_stress") as run:
+             mock.patch.object(cli.stressreport.stress, "check_model_available") as check_model, \
+             mock.patch.object(cli.stressreport.stress, "warm_up") as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress") as run:
             result = self.invoke(["stress"])
         self.assertEqual(2, result.exit_code)
         check_model.assert_not_called()
@@ -1761,9 +1761,9 @@ class TestStress(CliCase):
 
     def test_an_unknown_model_is_a_usage_error(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
-             mock.patch.object(cli, "check_model_available", return_value=stress_unknown_model(available=self.AVAILABLE)), \
-             mock.patch.object(cli, "warm_up") as warm, \
-             mock.patch.object(cli, "run_stress") as run:
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_unknown_model(available=self.AVAILABLE)), \
+             mock.patch.object(cli.stressreport.stress, "warm_up") as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress") as run:
             result = self.invoke(["stress", "org/not-registered"])
         self.assertEqual(2, result.exit_code)
         warm.assert_not_called()
@@ -1771,7 +1771,7 @@ class TestStress(CliCase):
 
     def test_an_unknown_model_names_the_model_and_lists_the_available_ids(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
-             mock.patch.object(cli, "check_model_available", return_value=stress_unknown_model(available=self.AVAILABLE)):
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_unknown_model(available=self.AVAILABLE)):
             result = self.invoke(["stress", "org/not-registered"])
         self.assertIn("org/not-registered", result.output)
         self.assertIn("org/alpha", result.output)
@@ -1779,7 +1779,7 @@ class TestStress(CliCase):
 
     def test_an_unknown_model_with_an_empty_registry_says_so(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
-             mock.patch.object(cli, "check_model_available", return_value=stress_unknown_model(available=[])):
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_unknown_model(available=[])):
             result = self.invoke(["stress", "org/not-registered"])
         self.assertEqual(2, result.exit_code)
         self.assertIn("org/not-registered", result.output)
@@ -1788,9 +1788,9 @@ class TestStress(CliCase):
 
     def test_an_unreachable_gateway_exits_with_the_unavailable_code(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
-             mock.patch.object(cli, "check_model_available", return_value=stress_unavailable(reason="connection refused")), \
-             mock.patch.object(cli, "warm_up") as warm, \
-             mock.patch.object(cli, "run_stress") as run:
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_unavailable(reason="connection refused")), \
+             mock.patch.object(cli.stressreport.stress, "warm_up") as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress") as run:
             result = self.invoke(["stress", self.MODEL])
         self.assertEqual(7, result.exit_code)
         warm.assert_not_called()
@@ -1798,7 +1798,7 @@ class TestStress(CliCase):
 
     def test_an_unreachable_gateway_reports_the_port_and_the_verbatim_reason(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
-             mock.patch.object(cli, "check_model_available", return_value=stress_unavailable(reason="connection refused")):
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_unavailable(reason="connection refused")):
             result = self.invoke(["stress", self.MODEL])
         self.assertIn("8000", result.output)
         self.assertIn("connection refused", result.output)
@@ -1807,30 +1807,30 @@ class TestStress(CliCase):
 
     def test_the_resolved_port_reaches_check_gateway(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()) as check, \
-             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
-             mock.patch.object(cli, "run_stress", return_value=clean_report()), \
-             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli.stressreport.stress, "run_stress", return_value=clean_report()), \
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=self._log_file()):
             self.invoke(["stress", self.MODEL])
         called = check.call_args
         self.assertEqual(8000, called[1]["port"] if called[1] else called[0][0])
 
     def test_the_flag_port_wins_over_env(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()) as check, \
-             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
-             mock.patch.object(cli, "run_stress", return_value=clean_report()), \
-             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_available(available=self.AVAILABLE)), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli.stressreport.stress, "run_stress", return_value=clean_report()), \
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=self._log_file()):
             self.invoke(["stress", self.MODEL, "--llm-port", "9002"])
         called = check.call_args
         self.assertEqual(9002, called[1]["port"] if called[1] else called[0][0])
 
     def test_the_named_model_reaches_check_model_available(self):
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
-             mock.patch.object(cli, "check_model_available", return_value=stress_available(available=self.AVAILABLE)) as check_model, \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
-             mock.patch.object(cli, "run_stress", return_value=clean_report()), \
-             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+             mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=stress_available(available=self.AVAILABLE)) as check_model, \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli.stressreport.stress, "run_stress", return_value=clean_report()), \
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=self._log_file()):
             self.invoke(["stress", self.MODEL])
         called = check_model.call_args
         self.assertEqual(self.MODEL, called[1]["model_id"] if "model_id" in (called[1] or {}) else called[0][1] if called[0] else None)
@@ -1936,15 +1936,15 @@ class TestStress(CliCase):
         ]
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
              mock.patch.object(
-                 cli, "warm_up",
+                 cli.stressreport.stress, "warm_up",
                  side_effect=self._warm_side_effect(events, warmup_failed()),
              ) as warm, \
-             mock.patch.object(cli, "run_stress"), \
-             mock.patch.object(cli, "write_log"):
+             mock.patch.object(cli.stressreport.stress, "run_stress"), \
+             mock.patch.object(cli.stressreport.stress, "write_log"):
             result = self.invoke(["stress", self.MODEL])
         warm_kwargs = (
             warm.call_args[1] if warm.call_args and warm.call_args[1] else {}
@@ -1974,15 +1974,15 @@ class TestStress(CliCase):
         ]
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
              mock.patch.object(
-                 cli, "warm_up",
+                 cli.stressreport.stress, "warm_up",
                  side_effect=self._warm_side_effect(events, warmup_failed()),
              ) as warm, \
-             mock.patch.object(cli, "run_stress"), \
-             mock.patch.object(cli, "write_log"):
+             mock.patch.object(cli.stressreport.stress, "run_stress"), \
+             mock.patch.object(cli.stressreport.stress, "write_log"):
             result = self.invoke(["stress", self.MODEL])
         warm_kwargs = (
             warm.call_args[1] if warm.call_args and warm.call_args[1] else {}
@@ -2029,15 +2029,15 @@ class TestStress(CliCase):
         ]
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
              mock.patch.object(
-                 cli, "warm_up",
+                 cli.stressreport.stress, "warm_up",
                  side_effect=self._warm_side_effect(events, warmup_failed()),
              ), \
-             mock.patch.object(cli, "run_stress") as run, \
-             mock.patch.object(cli, "write_log") as write:
+             mock.patch.object(cli.stressreport.stress, "run_stress") as run, \
+             mock.patch.object(cli.stressreport.stress, "write_log") as write:
             result = self.invoke(["stress", self.MODEL])
         output = result.output
         self.assertEqual(7, result.exit_code)
@@ -2068,8 +2068,8 @@ class TestStress(CliCase):
     def test_dry_run_prints_no_warmup_announcement_and_sends_nothing(self):
         """--dry-run returns before the probe: no announcement, nothing sent."""
         with mock.patch.object(cli.health, "check_gateway") as check, \
-             mock.patch.object(cli, "warm_up") as warm, \
-             mock.patch.object(cli, "run_stress") as run:
+             mock.patch.object(cli.stressreport.stress, "warm_up") as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress") as run:
             result = self.invoke(["--dry-run", "stress", self.MODEL])
         check.assert_not_called()
         warm.assert_not_called()
@@ -2080,15 +2080,15 @@ class TestStress(CliCase):
         """Start line before the requests go out, finish line from the summary."""
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()), \
              mock.patch.object(
-                 cli, "run_stress",
+                 cli.stressreport.stress, "run_stress",
                  side_effect=self._levels_side_effect(clean_report(), clean_report()),
              ) as run, \
-             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=self._log_file()):
             result = self.invoke(["stress", self.MODEL])
         run.assert_called_once()
         run_kwargs = (
@@ -2119,15 +2119,15 @@ class TestStress(CliCase):
         """Zero successes is a finding, not a reason to stay silent."""
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()), \
              mock.patch.object(
-                 cli, "run_stress",
+                 cli.stressreport.stress, "run_stress",
                  side_effect=self._levels_side_effect(failing_report(), failing_report()),
              ) as run, \
-             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=self._log_file()):
             result = self.invoke(["stress", self.MODEL])
         self.assertEqual(8, result.exit_code)
         run_kwargs = (
@@ -2151,15 +2151,15 @@ class TestStress(CliCase):
         # The request count in the start line follows --requests.
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()), \
              mock.patch.object(
-                 cli, "run_stress",
+                 cli.stressreport.stress, "run_stress",
                  side_effect=self._levels_side_effect(clean_report(), clean_report()),
              ), \
-             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=self._log_file()):
             result = self.invoke(["stress", self.MODEL, "--requests", "7"])
         self.assertIn(
             "Level 1: sending 7 requests", result.output,
@@ -2170,12 +2170,12 @@ class TestStress(CliCase):
         """--json: warm_up and run_stress receive None, so the document is first."""
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()) as warm, \
-             mock.patch.object(cli, "run_stress", return_value=clean_report()) as run, \
-             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()) as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress", return_value=clean_report()) as run, \
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=self._log_file()):
             result = self.invoke(["stress", self.MODEL, "--json"])
         warm.assert_called_once()
         run.assert_called_once()
@@ -2209,12 +2209,12 @@ class TestStress(CliCase):
         runner = CliRunner(mix_stderr=False)
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_failed()) as warm, \
-             mock.patch.object(cli, "run_stress") as run, \
-             mock.patch.object(cli, "write_log") as write:
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_failed()) as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress") as run, \
+             mock.patch.object(cli.stressreport.stress, "write_log") as write:
             result = runner.invoke(cli.app, ["stress", self.MODEL, "--json"])
         warm.assert_called_once()
         warm_kwargs = (
@@ -2242,18 +2242,18 @@ class TestStress(CliCase):
         target = self._log_file("progress.log")
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
              mock.patch.object(
-                 cli, "warm_up",
+                 cli.stressreport.stress, "warm_up",
                  side_effect=self._warm_side_effect(events, warmup_ok()),
              ), \
              mock.patch.object(
-                 cli, "run_stress",
+                 cli.stressreport.stress, "run_stress",
                  side_effect=self._levels_side_effect(failing_report(), failing_report()),
              ), \
-             mock.patch.object(cli, "log_path", return_value=target):
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=target):
             self.invoke(["stress", self.MODEL])
         self.assertTrue(target.is_file(), "the log file was not written")
         text = target.read_text(encoding="utf-8")
@@ -2279,18 +2279,18 @@ class TestStress(CliCase):
         ]
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=self.AVAILABLE),
              ), \
              mock.patch.object(
-                 cli, "warm_up",
+                 cli.stressreport.stress, "warm_up",
                  side_effect=self._warm_side_effect(events, warmup_ok()),
              ), \
              mock.patch.object(
-                 cli, "run_stress",
+                 cli.stressreport.stress, "run_stress",
                  side_effect=self._levels_side_effect(clean_report(), clean_report()),
              ), \
-             mock.patch.object(cli, "log_path", return_value=self._log_file()):
+             mock.patch.object(cli.stressreport.stress, "log_path", return_value=self._log_file()):
             verbose = self.invoke(["--verbose", "stress", self.MODEL])
         output = verbose.output
         self.assertIn(
@@ -2352,16 +2352,16 @@ class TestStress(CliCase):
         """run() with standalone_mode=False: the progress lines reach stdout."""
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=["org/alpha"]),
              ), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()), \
              mock.patch.object(
-                 cli, "run_stress",
+                 cli.stressreport.stress, "run_stress",
                  side_effect=self._levels_side_effect(clean_report(), clean_report()),
              ), \
              mock.patch.object(
-                 cli, "log_path",
+                 cli.stressreport.stress, "log_path",
                  side_effect=lambda *a, **k: Path(str(self.project / "logs" / "stress.log")),
              ):
             code, output = self.run_cli(["stress", "org/alpha"])
@@ -2379,13 +2379,13 @@ class TestStress(CliCase):
         """run() with --json: no progress line may precede the document."""
         with mock.patch.object(cli.health, "check_gateway", return_value=stress_ok()), \
              mock.patch.object(
-                 cli, "check_model_available",
+                 cli.stressreport.stress, "check_model_available",
                  return_value=stress_available(available=["org/alpha"]),
              ), \
-             mock.patch.object(cli, "warm_up", return_value=warmup_ok()) as warm, \
-             mock.patch.object(cli, "run_stress", return_value=clean_report()) as run, \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=warmup_ok()) as warm, \
+             mock.patch.object(cli.stressreport.stress, "run_stress", return_value=clean_report()) as run, \
              mock.patch.object(
-                 cli, "log_path",
+                 cli.stressreport.stress, "log_path",
                  side_effect=lambda *a, **k: Path(str(self.project / "logs" / "stress.log")),
              ):
             code, output = self.run_cli(["stress", "org/alpha", "--json"])
@@ -6227,10 +6227,10 @@ class TestRunEntryPoint(CliCase):
         defaults.update(patch_returns)
         with mock.patch.object(
             cli.health, "check_gateway", return_value=defaults.pop("status")
-        ), mock.patch.object(cli, "check_model_available", return_value=defaults.pop("check_model_available")), \
-             mock.patch.object(cli, "warm_up", return_value=defaults.pop("warm_up")), \
-             mock.patch.object(cli, "run_stress", return_value=defaults.pop("run_stress")), \
-             mock.patch.object(cli, "log_path", side_effect=defaults.pop("log_path")):
+        ), mock.patch.object(cli.stressreport.stress, "check_model_available", return_value=defaults.pop("check_model_available")), \
+             mock.patch.object(cli.stressreport.stress, "warm_up", return_value=defaults.pop("warm_up")), \
+             mock.patch.object(cli.stressreport.stress, "run_stress", return_value=defaults.pop("run_stress")), \
+             mock.patch.object(cli.stressreport.stress, "log_path", side_effect=defaults.pop("log_path")):
             return self.run_cli(argv)
 
     def test_stress_clean_run_exits_zero(self):
@@ -10649,7 +10649,7 @@ class TestFreePlanBoundary(CliCase):
         findings = self._file_paths_warn_findings()
         result = self._verify_guards_interactive(True, findings)
         with mock.patch.object(
-            cli, "_free_plan_followup", lambda *a, **k: None
+            cli.piguardgate, "free_plan_followup", lambda *a, **k: None
         ):
             baseline = self._verify_guards_interactive(True, findings)
 
@@ -10977,7 +10977,7 @@ class TestFreePlanBoundary(CliCase):
                 cli.piguard, "check_token_all", side_effect=boom
             ),
             mock.patch.object(
-                cli, "_free_plan_followup", side_effect=boom
+                cli.piguardgate, "free_plan_followup", side_effect=boom
             ),
         )
         for patcher in traps:
@@ -11432,7 +11432,7 @@ class TestFreePlanQuestionPositive(CliCase):
         findings = self._file_paths_warn_findings()
         result = self._verify_guards_interactive(True, findings)
         with mock.patch.object(
-            cli, "_free_plan_followup", lambda *a, **k: None
+            cli.piguardgate, "free_plan_followup", lambda *a, **k: None
         ):
             baseline = self._verify_guards_interactive(True, findings)
 
@@ -13643,7 +13643,7 @@ class TestCodeownersFlowWiring(CliCase):
         for patcher in self._guard_seams(findings, (self.OWNER, self.REPO)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             result = self.invoke(
                 ["verify-guards", str(self.project), "--branch", branch]
             )
@@ -13930,7 +13930,7 @@ class TestCodeownersFlowWiring(CliCase):
             "exactly one fallback line must print - {} such line(s) "
             "found:\n{}".format(len(fallback), result.output),
         )
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             baseline = self.invoke(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
@@ -14492,7 +14492,7 @@ class TestFilePresentNoFollowup(CliCase):
         for patcher in self._guard_seams((self.OWNER, self.REPO)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             result = self.invoke(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
@@ -15258,7 +15258,7 @@ class TestCodeownersFlowSkipBoundary(CliCase):
         for patcher in self._guard_seams(findings, (self.OWNER, self.REPO)):
             patcher.start()
             self.addCleanup(patcher.stop)
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             result = self.invoke(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
@@ -15806,7 +15806,7 @@ class TestCodeownersFlowSkipBoundary(CliCase):
         result = self.invoke(
             ["verify-guards", str(self.project), "--branch", "main"]
         )
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             baseline = self.invoke(
                 ["verify-guards", str(self.project), "--branch", "main"]
             )
@@ -16258,7 +16258,7 @@ class TestCodeownersFallbackSkipAware(CliCase):
         # Byte-identical to today: removing that one line must leave the
         # same run with the follow-up wiring disabled (the
         # ``TestCodeownersFlowWiring`` byte-identity pattern).
-        with mock.patch.object(cli, "_free_plan_followup", lambda *a, **k: None):
+        with mock.patch.object(cli.piguardgate, "free_plan_followup", lambda *a, **k: None):
             baseline = self._run_dry_run()
         remaining = list(lines)
         remaining.remove(self.FREE_PLAN_LINE)

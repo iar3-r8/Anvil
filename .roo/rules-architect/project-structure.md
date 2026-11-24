@@ -12,9 +12,14 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `compose.py` | driving `docker compose` and the container runtime |
 | `health.py` | health checks against the llama-swap gateway |
 | `stress.py` | stress testing against the llama-swap gateway |
+| `modelreport.py` | the model-state reporting shared by status and test-model - the available-id list, the empty-registry wording and the unknown-model usage error |
+| `stressreport.py` | the stress command's report logic — the warm-up and level event printing and the report stamping that the stress handler delegates to |
 | `prompts.py` | interactive prompts, every one of which can be bypassed |
 | `provision.py` | provisioning a target repository — the `setup-repo` orchestration |
 | `cli.py` | the Anvil command line: subcommand dispatch, flags and exit codes |
+| `cliexit.py` | the CLI exit vocabulary: the per-class exit codes and the `fail` helper that builds a failing `typer.Exit` |
+| `envsetup.py` | the init command's .env bootstrap — the section table, the defaults and the ask-or-default collection |
+| `credentials.py` | the setup-repo credential resolution — the GitHub token, the Oxylabs pair and the Anthropic frontier choice, each prompted or bypassable, keys persisted to .env and never echoed |
 | `pi/` | the Pi package: the bake-off, approval, sandbox and single-role pipeline (see below) |
 | `pi/piapproval.py` | phase-2 approval run driver — one job: drive the approval configurations |
 | `pi/piargv.py` | bake-off invocation argv builders — one job: turn inputs into `pi` command lines |
@@ -22,7 +27,9 @@ below are the first-paragraph job of each module, relative to `anvilkit/`.
 | `pi/pievents.py` | JSONL event-stream reader for `pi --mode json` streams |
 | `pi/pifixture.py` | generated bake-off fixture — the trivial red task for the Pi phase-1 bake-off |
 | `pi/piguard.py` | checks over GitHub branch rules, returning findings |
+| `pi/piguardgate.py` | the setup-repo guard gate - the branch and token findings, the blocked-gate follow-ups (free plan, CODEOWNERS, ruleset and token recipe) and the sectioned report |
 | `pi/piguardrails.py` | guardrails document builder and validator — one job: build and validate the `.pi/extensions/guardrails.json` document for the `@aliou/pi-guardrails` package (one exception type: `GuardrailsError`); the write seam is `render.guardrails_settings` |
+| `pi/piprofileflow.py` | the setup-repo profile-record flow - resolve the name (no default, behaviour 21), record after a successful provision, and announce-or-record under --dry-run; writes through `piprofile` |
 | `pi/pirecord.py` | bake-off run-record builder (closed thirteen-key record, table rendering) |
 | `pi/piruleset.py` | GitHub ruleset builder — the importable main-branch guard ruleset |
 | `pi/pisandbox.py` | sandbox image argv builders — one job: turn inputs into `docker` command lines |

@@ -17,63 +17,66 @@ down. Together with ``--yes`` this makes Anvil scriptable.
 """
 
 import json
-import os
 import subprocess
 import sys
-import time
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import click
 import typer
 
-from . import compose, config, env, health, prompts, provision, render, smoke
+from . import (
+    compose,
+    config,
+    credentials,
+    env,
+    envsetup,
+    health,
+    modelreport,
+    prompts,
+    provision,
+    render,
+    smoke,
+    stress,
+    stressreport,
+)
+from .cliexit import (
+    EXIT_CONFIG,
+    EXIT_DOCKER,
+    EXIT_ERROR,
+    EXIT_GUARDS_BLOCKED,
+    EXIT_OK,
+    EXIT_PROVISION,
+    EXIT_PROMPT,
+    EXIT_STRESS_FAILURES,
+    EXIT_STRESS_UNAVAILABLE,
+    EXIT_USAGE,
+    fail,
+)
 from .compose import Compose, ComposeError
-from .pi import pibakeoff
+from .pi import pibakeoff, piguardgate
 from .config import ConfigError
 from .pi import picodeowners, piguard, pitokenrecipe, piruleset, piprofile
-from .pi.piruleset import RulesetError
+from .pi import piprofileflow
 from .pi.piprofile import ProfileError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
 from .render import RenderError
-from .stress import (
-    DEFAULT_PROMPT,
-    LevelEvent,
-    StressError,
-    StressReport,
-    WarmUpAttempt,
-    WarmUpResult,
-    check_model_available,
-    concurrency_levels,
-    format_report,
-    format_report_json,
-    log_path,
-    run_stress,
-    warm_up,
-    write_log,
-)
+# Only StressError remains from-imported from the stress module: run() maps
+# it to EXIT_STRESS_UNAVAILABLE. The stress functions themselves are no longer
+# cli globals - the stress handler delegates its report logic to stressreport,
+# which imports the stress module qualified (plans/cli-segmentation.md
+# behaviour 5), so the suite patches stress.<name>, not cli.<name>.
+from .stress import StressError
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
-# EXIT_USAGE uses click's own code (2) to avoid conflicting answers.
-EXIT_OK = 0
-EXIT_ERROR = 1
-EXIT_USAGE = 2
-EXIT_CONFIG = 3
-EXIT_DOCKER = 4
-EXIT_PROVISION = 5
-EXIT_PROMPT = 6
-# Stress: 7 means no results were produced at all; 8 means the run finished
-# and found failures, which is a successful measurement, so it gets its own
-# code rather than reusing EXIT_ERROR.
-EXIT_STRESS_UNAVAILABLE = 7
-EXIT_STRESS_FAILURES = 8
-# A blocked setup-repo guard gate: nothing was provisioned and nothing is
-# wrong with Anvil - the user's GitHub needs a fix (plans/setup-repo-guards.md
-# behaviour 9 pins the code and the message wording in a later cycle).
-EXIT_GUARDS_BLOCKED = 9
+# The exit vocabulary lives in ``cliexit`` (plans/cli-segmentation.md
+# behaviour 1); the names are imported above so ``cli.EXIT_*`` keeps
+# resolving for the tests and downstream callers.
+# ``_fail`` is the historical name for ``cliexit.fail`` — kept as an alias
+# for the ~20 pre-segmentation call sites.
+_fail = fail
 
 ENV_FILENAME = ".env"
 SETTINGS_FILENAME = "anvil.yaml"
@@ -91,22 +94,10 @@ BANNER = r"""
 
 _SEPARATOR = "-" * 60
 
-# Section headings for .env, mapping keys to comment headings.
-_ENV_SECTIONS = {
-    "HF_HOME": "--- Host Storage Paths ---",
-    "LLM_PORT": "--- Networking Ports ---",
-    "LLM_DEVICE_ID_0": "--- GPU Device Allocation ---",
-}
-
-_DEFAULT_DATA_DIR = "./"
-_DEFAULT_GPU_GENERIC = "0"
-_DEFAULT_GPU_CODER = "0,1"
-_DEFAULT_GPU_EMBEDDER = "2"
-
-_UNSET_API_KEY = "to set"
-
-ANTHROPIC_KEY_ENV = "ANTHROPIC_API_KEY"
-GITHUB_TOKEN_ENV = "GITHUB_TOKEN"
+# The credential resolution lives in ``credentials`` (plans/cli-segmentation.md
+# behaviour 3); the env-key name is re-exposed so ``cli.GITHUB_TOKEN_ENV``
+# keeps resolving for the tests.
+GITHUB_TOKEN_ENV = credentials.GITHUB_TOKEN_ENV
 PORT_ENV = "LLM_PORT"
 
 
@@ -227,11 +218,6 @@ def _banner(shared: Context) -> None:
     shared.echo(BANNER)
 
 
-def _fail(message: str, code: int) -> "typer.Exit":
-    typer.echo(message, err=True)
-    return typer.Exit(code)
-
-
 def _compose_for(shared: Context, profile: str) -> Compose:
     return Compose(
         project_dir=shared.root,
@@ -239,186 +225,6 @@ def _compose_for(shared: Context, profile: str) -> Compose:
         dry_run=shared.dry_run,
         echo=shared.echo,
     )
-
-
-# ---------------------------------------------------------------------------
-# .env bootstrap
-# ---------------------------------------------------------------------------
-
-
-class EnvAnswers:
-    """The values the .env bootstrap needs, each overridable by a flag."""
-
-    def __init__(
-        self,
-        llm_port: Optional[int] = None,
-        hf_home: Optional[str] = None,
-        data_dir: Optional[str] = None,
-        gpu_generic: Optional[str] = None,
-        gpu_coder: Optional[str] = None,
-        gpu_embedder: Optional[str] = None,
-    ) -> None:
-        self.llm_port = llm_port
-        self.hf_home = hf_home
-        self.data_dir = data_dir
-        self.gpu_generic = gpu_generic
-        self.gpu_coder = gpu_coder
-        self.gpu_embedder = gpu_embedder
-
-    def fully_supplied(self) -> bool:
-        """True when no question remains, so prompting can be skipped entirely."""
-        return all(
-            value is not None
-            for value in (
-                self.llm_port,
-                self.hf_home,
-                self.data_dir,
-                self.gpu_generic,
-                self.gpu_coder,
-                self.gpu_embedder,
-            )
-        )
-
-
-def _default_hf_home() -> str:
-    """``$HOME/.cache/huggingface``."""
-    return str(Path(os.path.expanduser("~")) / ".cache" / "huggingface")
-
-
-def _split_coder_gpus(supplied: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
-    """Split ``--gpu-coder`` into the two device slots the compose file expects.
-
-    A single id is applied to both slots, which is the natural reading of
-    "--gpu-coder 5" and matches what a single-GPU host needs.
-    """
-    if supplied is None:
-        return None, None
-
-    parts = [part.strip() for part in str(supplied).split(",") if part.strip()]
-
-    if not parts:
-        raise typer.BadParameter("--gpu-coder needs at least one device id")
-
-    if len(parts) == 1:
-        return parts[0], parts[0]
-
-    if len(parts) == 2:
-        return parts[0], parts[1]
-
-    raise typer.BadParameter(
-        "--gpu-coder takes at most two device ids, got {}".format(len(parts))
-    )
-
-
-def _collect_env_values(
-    shared: Context, answers: EnvAnswers, default_port: int
-) -> List[Tuple[str, str]]:
-    """Ask for (or derive) every .env value in the expected order."""
-    interactive = shared.interactive()
-    coder_gpu_0, coder_gpu_1 = _split_coder_gpus(answers.gpu_coder)
-
-    hf_home = prompts.ask(
-        "Enter Hugging Face cache directory",
-        default=_default_hf_home(),
-        supplied=answers.hf_home,
-        assume_yes=shared.assume_yes,
-        interactive=interactive,
-    )
-
-    data_dir = prompts.ask(
-        "Enter local data storage directory",
-        default=_DEFAULT_DATA_DIR,
-        supplied=answers.data_dir,
-        assume_yes=shared.assume_yes,
-        interactive=interactive,
-    )
-
-    port = prompts.ask_port(
-        "Enter main LLM port",
-        default=default_port,
-        supplied=answers.llm_port,
-        assume_yes=shared.assume_yes,
-        interactive=interactive,
-    )
-
-    generic_gpu = prompts.ask(
-        "Enter Generic LLM GPU Device ID 1",
-        default=_DEFAULT_GPU_GENERIC,
-        supplied=answers.gpu_generic,
-        assume_yes=shared.assume_yes,
-        interactive=interactive,
-    )
-
-    default_coder_0, default_coder_1 = _DEFAULT_GPU_CODER.split(",")
-
-    coder_0 = prompts.ask(
-        "Enter Coder LLM GPU Device ID 1",
-        default=default_coder_0,
-        supplied=coder_gpu_0,
-        assume_yes=shared.assume_yes,
-        interactive=interactive,
-    )
-
-    coder_1 = prompts.ask(
-        "Enter Coder LLM GPU Device ID 2",
-        default=default_coder_1,
-        supplied=coder_gpu_1,
-        assume_yes=shared.assume_yes,
-        interactive=interactive,
-    )
-
-    embedder_gpu = prompts.ask(
-        "Enter Indexer GPU Device ID",
-        default=_DEFAULT_GPU_EMBEDDER,
-        supplied=answers.gpu_embedder,
-        assume_yes=shared.assume_yes,
-        interactive=interactive,
-    )
-
-    return [
-        ("HF_HOME", hf_home),
-        ("DATA_DIR", data_dir),
-        (PORT_ENV, str(port)),
-        ("LLM_DEVICE_ID_0", generic_gpu),
-        ("LLM_DEVICE_ID_1", coder_0),
-        ("LLM_DEVICE_ID_2", coder_1),
-        ("INDEXER_STORAGE_DEVICE_ID", embedder_gpu),
-    ]
-
-
-def _bootstrap_env(shared: Context, answers: EnvAnswers) -> None:
-    """Create ``.env`` interactively."""
-    shared.echo("⚠️  Configuration file (.env) not found.")
-    shared.echo("Let's set up your local Anvil backend environment variables now.")
-    shared.echo(_SEPARATOR)
-
-    values = _collect_env_values(shared, answers, shared.settings().default_port)
-
-    if shared.dry_run:
-        shared.echo("would write {}:".format(shared.env_path))
-        for key, value in values:
-            shared.echo("  {}={}".format(key, value))
-        return
-
-    env.write(shared.env_path, values, sections=_ENV_SECTIONS)
-
-    shared.echo(_SEPARATOR)
-    shared.echo("✅ Successfully generated your local .env configuration file!")
-    shared.echo("")
-
-
-def _ensure_env(shared: Context, answers: Optional[EnvAnswers] = None) -> None:
-    """Run the bootstrap when ``.env`` is absent.
-
-    Python does not need a pre-flight guard, but a fresh clone running
-    './anvil up' with no .env would hand docker an unset ${LLM_PORT} and fail
-    obscurely - so the convenience is kept, for the commands that actually need
-    the file.
-    """
-    if shared.env_path.is_file():
-        return
-
-    _bootstrap_env(shared, answers or EnvAnswers())
 
 
 # ---------------------------------------------------------------------------
@@ -441,7 +247,7 @@ def _run_compose_command(
     """
     _banner(shared)
     shared.echo(announcement)
-    _ensure_env(shared)
+    envsetup.ensure_env(shared)
 
     engine = _compose_for(shared, profile)
     shared.detail("profile: {}".format(profile))
@@ -450,7 +256,7 @@ def _run_compose_command(
     try:
         code = getattr(engine, operation)(extra_args=ctx.args, **kwargs)
     except ComposeError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_DOCKER) from exc
+        raise fail("❌ {}".format(exc), EXIT_DOCKER) from exc
 
     if code != 0:
         # docker's own status is the truth about docker; do not relabel it.
@@ -579,7 +385,7 @@ def status(
             return
 
         _banner(shared)
-        _ensure_env(shared)
+        envsetup.ensure_env(shared)
         port = shared.resolve_port(llm_port)
 
         shared.echo("Llama-Swap Daemon & Infrastructure Status:")
@@ -602,46 +408,17 @@ def status(
         gateway = health.check_gateway(port, timeout)
         shared.echo(health.format_status(gateway, use_color=shared.use_color))
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
 
 # ---------------------------------------------------------------------------
 # test-model
 # ---------------------------------------------------------------------------
-
-
-def _report_available_models(shared: Context, port: int) -> "typer.Exit":
-    """Explain which model ids ``test-model`` and ``stress`` would accept.
-
-    A model id is long, case-sensitive and easy to mistype, so refusing with a
-    bare "missing argument" would send the user to another command to find the
-    answer. The registry is the authority, so it is quoted rather than
-    config.yaml: llama-swap may be serving something the local file no longer
-    describes.
-    """
-    lines = ["❌ Missing argument 'MODEL_NAME'."]
-
-    status = health.check_gateway(port)
-
-    if not status.online:
-        lines.append(
-            "   The gateway on port {} could not be reached, so the available "
-            "models are unknown.".format(port)
-        )
-        if status.error:
-            lines.append("   ↳ {}".format(status.error))
-    elif not status.models:
-        lines.append(
-            "   The gateway on port {} has no registered models.".format(port)
-        )
-    else:
-        lines.append("   Available models on port {}:".format(port))
-        for model in status.models:
-            lines.append("     - {}".format(model.id))
-
-    return _fail("\n".join(lines), EXIT_USAGE)
-
-
+#
+# The model-state reporting the test-model and stress handlers share (the
+# available-id list, the empty-registry wording, the unknown-model usage
+# error) moved to modelreport in plans/cli-segmentation.md behaviour 6; only
+# the handler stays here.
 @app.command(name="test-model")
 def test_model(
     ctx: typer.Context,
@@ -679,13 +456,13 @@ def test_model(
     try:
         port = shared.resolve_port(llm_port)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     # Checked here rather than by making the argument required, so the refusal
     # can name the ids that would have worked. It stays a usage error: no test
     # was run. It precedes --dry-run for the same reason.
     if model_name is None:
-        raise _report_available_models(shared, port)
+        raise modelreport.report_available_models(shared, port)
 
     if shared.dry_run:
         body = health.build_chat_request(model_name, prompt, max_tokens)
@@ -729,108 +506,14 @@ def test_model(
 # ---------------------------------------------------------------------------
 # stress
 # ---------------------------------------------------------------------------
-
-# Warm-up paces its retry attempts; the interval is deliberately short because
-# a load in progress surfaces as a connection error within seconds, not a
-# long hang.
-_WARMUP_RETRY_INTERVAL = 5.0
-
-
-def _stress_send(
-    port: int,
-    model_id: str,
-    prompt: str,
-    max_tokens: int,
-    timeout: float,
-) -> "Callable[[], 'health.ChatOutcome']":
-    """The one-argument-free ``send`` that warm-up and the runner both call.
-
-    Binds the gateway call so the stress module never learns the wire format
-    or the port; ``chat_once`` already never raises for a failed request.
-    """
-    def send() -> "health.ChatOutcome":
-        return health.chat_once(
-            port=port,
-            model_id=model_id,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            timeout=timeout,
-        )
-
-    return send
-
-
-def _stamp_report(
-    report: "StressReport",
-    prompt: str,
-    max_tokens: int,
-    requests: int,
-) -> None:
-    """Fill the metadata fields the runner does not know.
-
-    ``run_stress`` builds the report without the run's parameters, so the CLI
-    stamps them in before rendering; the timestamp is the run's start, not the
-    print time, so the report reads identically however late it is shown.
-    """
-    report.started_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
-    report.prompt = prompt
-    report.max_tokens = max_tokens
-    report.requests_per_level = requests
-    clean = [
-        level.concurrency
-        for level in report.levels
-        if level.failed == 0
-    ]
-    report.max_clean_concurrency = max(clean) if clean else None
-
-
-def _any_level_failed(report: "StressReport") -> bool:
-    return any(level.failed for level in report.levels)
-
-
-def _print_warmup_attempt(
-    shared: Context, attempt: WarmUpAttempt
-) -> None:
-    """One indented line per failed warm-up attempt.
-
-    ``will_retry`` is the engine's own decision, so the line promises another
-    attempt only when one is really queued; a missing error reads as
-    ``no reason reported`` rather than an empty field.
-    """
-    line = "  warm-up attempt {} failed after {:.1f}s: {}".format(
-        attempt.attempt,
-        attempt.elapsed_seconds,
-        attempt.error or "no reason reported",
-    )
-    if attempt.will_retry:
-        line += "; retrying in {:g}s".format(_WARMUP_RETRY_INTERVAL)
-    shared.echo(line)
-
-
-def _print_level_event(shared: Context, event: LevelEvent) -> None:
-    """The default one-line-per-level start and finish.
-
-    The finish line is printed even for an all-failed level: zero successes
-    is a finding, not a reason to stay silent.
-    """
-    if event.phase == "start":
-        shared.echo(
-            "Level {}: sending {} requests".format(event.concurrency, event.requests)
-        )
-    else:
-        summary = event.summary
-        if summary is None:
-            # A finish always carries its summary; without one there is
-            # nothing truthful to print.
-            return
-        shared.echo(
-            "Level {}: {}/{} ok, {} failed".format(
-                event.concurrency,
-                summary.succeeded,
-                event.requests,
-                summary.failed,
-            )
-        )
+#
+# The report logic (warm-up pacing, the per-attempt and per-level printing,
+# the report stamping) moved to stressreport in plans/cli-segmentation.md
+# behaviour 5; only the handler and its flags stay here.
+# ``_WARMUP_RETRY_INTERVAL`` keeps resolving on the cli namespace - the
+# value lives in stressreport and the alias tracks it, so a reader of cli.py
+# sees the same number the moved code paces with.
+_WARMUP_RETRY_INTERVAL = stressreport._WARMUP_RETRY_INTERVAL
 
 
 @app.command()
@@ -848,7 +531,7 @@ def stress(
         20, "--requests", min=1, help="Requests sent at each level."
     ),
     prompt: str = typer.Option(
-        DEFAULT_PROMPT, "--prompt", help="Fixed prompt, identical for every request."
+        stress.DEFAULT_PROMPT, "--prompt", help="Fixed prompt, identical for every request."
     ),
     max_tokens: int = typer.Option(
         128, "--max-tokens", min=1, help="Reply token ceiling, identical for every request."
@@ -885,134 +568,29 @@ def stress(
     """
     shared = _context(ctx, assume_yes)
 
-    try:
-        port = shared.resolve_port(llm_port)
-    except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
-
-    # Same reasoning as test-model: checked here so the refusal can list the
-    # registry, and it precedes --dry-run for the same reason.
-    if model_name is None:
-        raise _report_available_models(shared, port)
-
-    if shared.dry_run:
-        # --dry-run precedes the probe: the probe itself is a network request,
-        # so announcing the plan must not touch the gateway at all.
-        body = health.build_chat_request(model_name, prompt, max_tokens)
-        derived = log_path(shared.root, model_name, datetime.utcnow())
-        shared.echo("Would stress {}:".format(model_name))
-        shared.echo("  levels: {}".format(", ".join(str(l) for l in concurrency_levels(max_concurrency))))
-        shared.echo("  requests per level: {}".format(requests))
-        shared.echo("  gateway port: {}".format(port))
-        shared.echo("  log file: {}".format(derived))
-        shared.echo(health.format_request(port, body))
-        return
-
-    # --json must be pipeable, so nothing decorative may precede it.
-    if not as_json:
-        _banner(shared)
-
-    status = health.check_gateway(port)
-    availability = check_model_available(status, model_id=model_name)
-
-    if availability.verdict == "unknown_model":
-        lines = [
-            "❌ Model {!r} is not registered on the gateway at port {}.".format(
-                model_name, port
-            )
-        ]
-        if availability.available:
-            lines.append("   Available models:")
-            for model_id in availability.available:
-                lines.append("     - {}".format(model_id))
-        else:
-            lines.append(
-                "   The registry on port {} is empty.".format(port)
-            )
-        raise _fail("\n".join(lines), EXIT_USAGE)
-
-    if availability.verdict == "unreachable":
-        # The gateway's own text is the diagnosis; paraphrase would lose it.
-        raise _fail(
-            "❌ The gateway on port {} could not be reached: {}".format(
-                port, availability.reason or "no reason reported"
-            ),
-            EXIT_STRESS_UNAVAILABLE,
-        )
-
-    send = _stress_send(port, model_name, prompt, max_tokens, timeout)
-
-    if no_warmup:
-        warm_up_result = WarmUpResult(
-            ok=True, attempts=0, elapsed_seconds=0.0, error=None
-        )
-    else:
-        shared.detail(
-            "warming up {} at http://localhost:{} (budget {}s)".format(
-                model_name, port, warmup_timeout
-            )
-        )
-        if not as_json:
-            shared.echo(
-                "Warming up {} at http://localhost:{}\u2026".format(model_name, port)
-            )
-        # --json passes None rather than a quiet printer: with nothing that
-        # could print, the JSON document being the first byte on stdout is
-        # structural, not a discipline.
-        warm_up_result = warm_up(
-            send=send,
-            timeout=warmup_timeout,
-            retry_interval=_WARMUP_RETRY_INTERVAL,
-            sleep=time.sleep,
-            now=time.monotonic,
-            on_attempt=None if as_json else lambda a: _print_warmup_attempt(shared, a),
-        )
-        if not warm_up_result.ok:
-            raise _fail(
-                "❌ Warm-up failed after {} attempt(s): {}".format(
-                    warm_up_result.attempts,
-                    warm_up_result.error or "no reason reported",
-                ),
-                EXIT_STRESS_UNAVAILABLE,
-            )
-
-    shared.detail(
-        "measuring {} at http://localhost:{} ({} requests per level, timeout {}s)".format(
-            model_name, port, requests, timeout
-        )
+    # The report logic raises its own ``typer.Exit`` on the failure paths; it
+    # only returns once a run has finished, with the code this handler turns
+    # back into the exit both entry paths surface: click's standalone mode
+    # discards a *returned* ``typer.Exit``, so it must be raised, and run()
+    # (standalone_mode=False) maps the raised code onto its return value.
+    code = stressreport.run_stress_command(
+        shared,
+        _banner,
+        modelreport.report_available_models,
+        model_name,
+        max_concurrency,
+        requests,
+        prompt,
+        max_tokens,
+        timeout,
+        warmup_timeout,
+        no_warmup,
+        log_file,
+        no_log_file,
+        llm_port,
+        as_json,
     )
-    report = run_stress(
-        send=send,
-        levels=concurrency_levels(max_concurrency),
-        request_count=requests,
-        warm_up_result=warm_up_result,
-        model_id=model_name,
-        port=port,
-        on_level=None if as_json else lambda e: _print_level_event(shared, e),
-    )
-    _stamp_report(report, prompt, max_tokens, requests)
-
-    if as_json:
-        shared.echo(format_report_json(report))
-    else:
-        shared.echo(format_report(report, use_color=shared.use_color))
-
-    if not no_log_file:
-        target = log_file if log_file is not None else log_path(
-            shared.root, model_name, datetime.utcnow()
-        )
-        write_log(
-            target,
-            format_report(report, use_color=False),
-            format_report_json(report),
-        )
-        shared.detail("log written to {}".format(target))
-
-    if _any_level_failed(report):
-        # A run that finished and found failures is a successful measurement;
-        # its own code says "I learned something bad" rather than "I learned
-        # nothing".
-        raise typer.Exit(EXIT_STRESS_FAILURES)
+    raise typer.Exit(code)
 
 
 # ---------------------------------------------------------------------------
@@ -1046,14 +624,14 @@ def init(
         # Bash never faced this: its bootstrap was guarded by '[ ! -f .env ]', so
         # it could only ever create. As an explicit command, refusing protects a
         # hand-tuned .env from a mistyped command.
-        raise _fail(
+        raise fail(
             "❌ {} already exists; pass --force to regenerate it.".format(
                 shared.env_path
             ),
             EXIT_USAGE,
         )
 
-    answers = EnvAnswers(
+    answers = envsetup.EnvAnswers(
         llm_port=llm_port,
         hf_home=hf_home,
         data_dir=data_dir,
@@ -1063,11 +641,11 @@ def init(
     )
 
     try:
-        _bootstrap_env(shared, answers)
+        envsetup.bootstrap_env(shared, answers)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
     except PromptError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
+        raise fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -1075,332 +653,23 @@ def init(
 # ---------------------------------------------------------------------------
 
 
-def _resolve_github_token(
-    shared: Context, token: Optional[str], no_github: bool
-) -> str:
-    """Decide the GitHub token."""
-    if no_github:
-        return ""
+# The credential resolution lives in ``credentials`` (plans/cli-segmentation.md
+# behaviour 3); the private names are re-exposed as same-name aliases so the
+# direct ``cli._resolve_github_token(...)`` / ``cli._resolve_oxylabs(...)`` test
+# calls keep resolving. The CLI itself calls the public names qualified.
+_resolve_github_token = credentials.resolve_github_token
+_resolve_oxylabs = credentials.resolve_oxylabs
 
-    if token is not None:
-        # A flag-supplied value is authoritative; persist it so flag-less runs
-        # are not prompted forever. An explicit empty string returns as-is and
-        # never blanks a non-empty stored value.
-        _persist_github_token(shared, token)
-        return token
-
-    # Consult the .env store before prompting: a non-empty stored token is
-    # reused as-is so already-configured machines are not re-prompted. The
-    # lookup sits before the --yes / non-interactive guard, matching
-    # _resolve_oxylabs.
-    stored = env.get(shared.env_path, GITHUB_TOKEN_ENV)
-    if stored:
-        # The value itself is never echoed.
-        shared.echo("🔑 Reusing existing GITHUB_TOKEN from .env")
-        return stored
-
-    if shared.assume_yes or not shared.interactive():
-        return ""
-
-    wants_github = prompts.confirm(
-        "❓ Do you use GitHub and want to map a personal repository token for the agent?",
-        default=False,
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-    )
-
-    if not wants_github:
-        shared.echo("⚠️  Skipping interactive GitHub integration token.")
-        shared.echo("💡 Note: If you wish to set this up later, you must manually edit")
-        shared.echo("   '.env' and populate GITHUB_TOKEN.")
-        return ""
-
-    resolved = prompts.ask_required(
-        "🔑 Enter your GitHub Personal Access Token",
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-        hide_input=True,
-    )
-    _persist_github_token(shared, resolved)
-    return resolved
-
-
-def _persist_github_token(shared: Context, token: str) -> None:
-    """Store the token in .env, replacing any existing entry."""
-    if not token:
-        # --github-token "" reaches here via the flag path; treating an empty
-        # value as a no-op is what keeps it from blanking a stored token.
-        return
-
-    if shared.dry_run:
-        shared.echo("would store {} in {}".format(GITHUB_TOKEN_ENV, shared.env_path))
-        return
-
-    if env.get(shared.env_path, GITHUB_TOKEN_ENV) == token:
-        return
-
-    env.set_value(shared.env_path, GITHUB_TOKEN_ENV, token)
-    # The value itself is never echoed.
-    shared.echo("⚡ Token accepted and persisted to .env")
-
-
-def _resolve_oxylabs(
-    shared: Context,
-    username: Optional[str],
-    no_oxylabs: bool,
-    password: Optional[str] = None,
-) -> Tuple[str, str]:
-    """Decide the Oxylabs credentials, returning (username, password)."""
-    if no_oxylabs:
-        return ("", "")
-
-    if username is not None:
-        return (username, password if password is not None else "")
-
-    # Check .env for existing credentials.
-    env_username = env.get(shared.env_path, "OXYLABS_USERNAME")
-    env_password = env.get(shared.env_path, "OXYLABS_PASSWORD")
-    if env_username and env_password:
-        return (env_username, env_password)
-
-    if shared.assume_yes or not shared.interactive():
-        return ("", "")
-
-    wants_oxylabs = prompts.confirm(
-        "❓ Do you want to use Oxylabs web scraping for documentation lookups?\nSign up at https://dashboard.oxylabs.io/en/overview/scraper",
-        default=False,
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-    )
-
-    if not wants_oxylabs:
-        shared.echo("⚠️  Skipping Oxylabs web scraping setup.")
-        shared.echo("💡 Note: If you wish to set this up later, you must manually edit")
-        shared.echo("   '.env' and populate OXYLABS_USERNAME and OXYLABS_PASSWORD.")
-        return ("", "")
-
-    resolved_username = prompts.ask_required(
-        "🔑 Enter your Oxylabs Username",
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-        hide_input=False,
-    )
-    resolved_password = prompts.ask_required(
-        "🔑 Enter your Oxylabs Password",
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-        hide_input=True,
-    )
-    shared.echo("⚡ Credentials accepted and persisted to .env")
-    env.set_value(shared.env_path, "OXYLABS_USERNAME", resolved_username)
-    env.set_value(shared.env_path, "OXYLABS_PASSWORD", resolved_password)
-    return (resolved_username, resolved_password)
-
-
-class _Frontier:
-    """The resolved architect-mode provider settings."""
-
-    def __init__(self, api_key: str, model_id: str, use_anthropic: bool) -> None:
-        self.api_key = api_key
-        self.model_id = model_id
-        self.use_anthropic = use_anthropic
-
-
-def _resolve_frontier(
-    shared: Context,
-    settings: config.AnvilSettings,
-    anthropic_key: Optional[str],
-    no_anthropic: bool,
-    want_anthropic: bool,
-    anthropic_model: Optional[str],
-) -> _Frontier:
-    """Decide the architect provider."""
-    declined = _Frontier(
-        api_key=_UNSET_API_KEY,
-        model_id=settings.default_anthropic_model,
-        use_anthropic=False,
-    )
-
-    if no_anthropic:
-        return declined
-
-    # A supplied key, or an explicit --anthropic, is the consent itself.
-    enabled = want_anthropic or anthropic_key is not None
-    if not enabled:
-        enabled = prompts.confirm(
-            "❓ Do you want to use an Anthropic frontier model for architect and orchestrator modes?",
-            default=False,
-            assume_yes=shared.assume_yes,
-            interactive=shared.interactive(),
-        )
-
-    if not enabled:
-        shared.echo(
-            "⚠️  Skipping frontier model setup - architect and orchestrator modes "
-            "will use the local gateway."
-        )
-        shared.echo("💡 Note: If you wish to set this up later, edit")
-        shared.echo("   'zoo-code-settings.json' and point modeApiConfigs.architect")
-        shared.echo("   and modeApiConfigs.orchestrator at the '{}' id.".format(
-            settings.anthropic_profile_id))
-        return declined
-
-    api_key = anthropic_key
-    if api_key is None:
-        # An existing key in .env is reused rather than re-requested.
-        existing = env.get(shared.env_path, ANTHROPIC_KEY_ENV)
-        if existing:
-            shared.echo("🔑 Reusing existing {} from .env".format(ANTHROPIC_KEY_ENV))
-            api_key = existing
-
-    if api_key is None:
-        api_key = prompts.ask_required(
-            "🔑 Enter your Anthropic API Key",
-            assume_yes=shared.assume_yes,
-            interactive=shared.interactive(),
-            hide_input=True,
-        )
-
-    _persist_anthropic_key(shared, api_key)
-
-    model_id = prompts.choose(
-        "Available Anthropic models",
-        options=settings.anthropic_models,
-        default=settings.default_anthropic_model,
-        supplied=anthropic_model,
-        assume_yes=shared.assume_yes,
-        interactive=shared.interactive(),
-    )
-
-    return _Frontier(api_key=api_key, model_id=model_id, use_anthropic=True)
-
-
-def _persist_anthropic_key(shared: Context, api_key: str) -> None:
-    """Store the key in .env, replacing any existing entry."""
-    if shared.dry_run:
-        shared.echo("would store {} in {}".format(ANTHROPIC_KEY_ENV, shared.env_path))
-        return
-
-    if env.get(shared.env_path, ANTHROPIC_KEY_ENV) == api_key:
-        return
-
-    env.set_value(shared.env_path, ANTHROPIC_KEY_ENV, api_key)
-    # The value itself is never echoed.
-    shared.echo("⚡ Key accepted and persisted to .env")
-
-
-def _guard_gate(
-    shared: Context,
-    path: str,
-    token_flag: Optional[str],
-    no_github: bool,
-) -> Tuple[str, Optional[Tuple[str, str]]]:
-    """Resolve the GitHub token and run the guard gate on ``path``; a
-    blocked gate exits 9 without provisioning (behaviours 6, 7, 8 and 11)."""
-    token = _resolve_github_token(shared, token_flag, no_github)
-    shared.echo("")
-    # The guard gate: after the token (the gate needs it) and before the
-    # frontier/oxylabs prompts, so a blocked run asks no question it will
-    # then discard. --no-github skips it entirely: with no GitHub there is
-    # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
-    # None unless the gate ran: the profile record (behaviour 14) reuses
-    # this identity rather than re-resolving it.
-    repository: Optional[Tuple[str, str]] = None
-    if not no_github:
-        branch_findings, token_findings, repository = _collect_guard_findings(
-            Path(path), token, "main"
-        )
-        # Behaviour 11: the report prints whenever ANY finding has
-        # status warn or fail - computed over the branch + token
-        # findings together, the same combined list the verdict and
-        # the renderers see - not only when the gate blocks, so a
-        # proceeding gate shows why the warn stands. The condition
-        # is status-only, piguard.render_fixes' own selection rule,
-        # and NEVER includes skipped: a clean gate of only
-        # passed/skipped findings prints nothing, as today (a plain
-        # target with no git origin is all-skipped).
-        if any(
-            finding.get("status") in ("warn", "fail")
-            for finding in branch_findings + token_findings
-        ):
-            shared.echo("")
-            # Behaviour 6: the sectioned report, the same blocks
-            # verify-guards prints - never re-derived. The findings
-            # carry no token value, so nothing secret is echoed.
-            _echo_guard_report(shared, branch_findings, token_findings)
-        if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
-            _free_plan_followup(
-                shared, branch_findings, repository, "main", Path(path)
-            )
-            shared.echo("")
-            remediation = piguard.gate_remediation(
-                branch_findings, token_findings
-            )
-            # Behaviour 7: the gate prepares the fix a junior can
-            # follow - the importable ruleset - after the report and
-            # before the final exit. The run still ends blocked; the
-            # prepared fix never masks the block.
-            if remediation["needs_ruleset"]:
-                _prepare_gate_ruleset(shared, Path(path))
-                shared.echo("")
-            # Behaviour 8: the gate prints the token fix a junior
-            # can follow - the pre-filled creation URL and the
-            # ordered steps - after the ruleset preparation (branch
-            # rules first, then the token fix) and before the final
-            # exit. Only a bad token (a token finding with status
-            # fail) earns the recipe (the warn asymmetry). The URL
-            # carries no token value, so nothing secret is echoed.
-            # ``repository`` is only None when no repository could be
-            # resolved, in which case the token probes never ran, so
-            # the guard is defensive and unreachable.
-            if remediation["needs_token_recipe"] and repository is not None:
-                _prepare_gate_token_recipe(shared, repository)
-                shared.echo("")
-            shared.echo(
-                "⛔ Fix the branch rules and token scope above, then "
-                "re-run setup-repo."
-            )
-            raise typer.Exit(EXIT_GUARDS_BLOCKED)
-    return token, repository
-
-
-def _announce_or_record_profile(
-    shared: Context,
-    path: str,
-    profile_name: str,
-    repository: Optional[Tuple[str, str]],
-) -> None:
-    """Announce (dry-run) or write the profile record after a successful
-    provisioning (behaviours 14 and 16)."""
-    # Behaviour 14: the record is written AFTER a successful provisioning,
-    # from values already resolved - the gate's identity, never re-resolved.
-    # A skipped gate (--no-github) has no identity to record, so the record
-    # runs only when the gate ran; the name was resolved and validated
-    # before provisioning (behaviour 15), so it is None exactly when the
-    # gate did not run. A gate that ran but could not resolve the identity
-    # still records - with owner/repo null rather than a guessed identity.
-    # Behaviour 16: under --dry-run the record is only NAMED, never written -
-    # the store path is computed at call time (Path.home()), so an overridden
-    # HOME names the location the operator would see. Only key names and
-    # facts are echoed; a token value never appears.
-    if shared.dry_run:
-        owner, repo = (
-            repository if repository is not None else (None, None)
-        )
-        shared.echo(
-            "would store profile {!r} in {} - path: {}, owner: {}, "
-            "repo: {}, base: {}, token_env: {}".format(
-                profile_name,
-                Path.home() / ".anvil" / "profiles.yaml",
-                os.path.abspath(path),
-                owner,
-                repo,
-                "main",
-                piprofile.token_env_for(profile_name),
-            )
-        )
-    else:
-        _record_profile(path, profile_name, repository)
+# The guard-gate flow lives in ``piguardgate`` (plans/cli-segmentation.md
+# behaviour 4); the same-name aliases keep the direct ``cli.<name>`` test
+# calls resolving. The CLI itself calls the public names qualified.
+# There is no alias for ``_free_plan_followup``: the test patch sites
+# retarget to ``cli.piguardgate.free_plan_followup`` because the internal
+# call now resolves in the new module's globals.
+_ask_free_plan = piguardgate.ask_free_plan
+_codeowners_flow = piguardgate.codeowners_flow
+_collect_guard_findings = piguardgate.collect_guard_findings
+_echo_guard_report = piguardgate.echo_guard_report
 
 
 @app.command(name="setup-repo")
@@ -1459,15 +728,17 @@ def setup_repo(
         topology = config.read_models(shared.models_path)
         port = shared.resolve_port(llm_port)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     shared.detail("gateway port: {}".format(port))
     shared.detail("coder model: {}".format(topology.coder_id))
     shared.detail("context window: {}".format(topology.coder_context_window))
 
     try:
-        token, repository = _guard_gate(shared, path, github_token, no_github)
-        frontier = _resolve_frontier(
+        token, repository = piguardgate.guard_gate(
+            shared, path, github_token, no_github
+        )
+        frontier = credentials.resolve_frontier(
             shared,
             settings,
             anthropic_key,
@@ -1476,12 +747,12 @@ def setup_repo(
             anthropic_model,
         )
         shared.echo("")
-        oxylabs_username, oxylabs_password = _resolve_oxylabs(
+        oxylabs_username, oxylabs_password = credentials.resolve_oxylabs(
             shared, oxylabs_username, no_oxylabs, oxylabs_password
         )
         shared.echo("")
     except PromptError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
+        raise fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
     # Behaviour 21 (superseding behaviour 15's basename default): the
     # profile name is resolved BEFORE anything is provisioned, and only on
@@ -1498,9 +769,9 @@ def setup_repo(
     profile_name: Optional[str] = None
     if not no_github:
         try:
-            profile_name = _resolve_profile_name(shared, profile)
+            profile_name = piprofileflow.resolve_profile_name(shared, profile)
         except PromptError as exc:
-            raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
+            raise fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
     repo_plan = RepoPlan(
         port=port,
@@ -1526,109 +797,12 @@ def setup_repo(
             echo=shared.echo,
         )
     except ProvisionError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_PROVISION) from exc
+        raise fail("❌ {}".format(exc), EXIT_PROVISION) from exc
     except RenderError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     if profile_name is not None:
-        _announce_or_record_profile(shared, path, profile_name, repository)
-
-
-def _resolve_profile_name(shared: Context, supplied: Optional[str]) -> str:
-    """Resolve the profile name for the record (behaviour 21).
-
-    Runs BEFORE anything is provisioned, on the path that records (the
-    guard gate ran). A supplied ``--profile`` name is returned without
-    prompting; a supplied name that fails the store's charset rule
-    fails on the usage code - naming the allowed charset, the way the
-    store module names it - before the caller may provision. With no
-    flag there is NO default: the question is asked through the house
-    seam, :func:`prompts.ask_required`, which asks with no default
-    and re-asks until a non-empty answer arrives (behaviour 22: the
-    read aborts cleanly on an exhausted stdin instead of re-prompting
-    forever); an answer that fails ``piprofile.valid_name`` is echoed
-    with the allowed charset named, and the question is asked again.
-    ``--yes`` and non-interactive runs cannot answer a no-default
-    question, so they raise :class:`PromptError` naming
-    ``--profile NAME`` as the fix before the seam is reached; so does
-    an interactive run whose stdin ends before the question is
-    answered, whose generic :class:`PromptError` is re-raised with
-    the same fix named. The caller maps the :class:`PromptError` to
-    the prompt exit code.
-    """
-    if supplied is not None:
-        if not piprofile.valid_name(supplied):
-            raise _fail(
-                "❌ invalid profile name {!r}: use only {}".format(
-                    supplied, piprofile._ALLOWED_CHARSET
-                ),
-                EXIT_USAGE,
-            )
-        return supplied
-
-    if shared.assume_yes or not shared.interactive():
-        # No default exists, so --yes has nothing to accept and a
-        # non-interactive run has no way to answer: fail on the prompt
-        # code before any provisioning, naming the fix. Checked before
-        # the seam so this message - not ask_required's generic one -
-        # is what the run fails with.
-        raise PromptError(
-            "no profile name was supplied and there is no default to "
-            "accept - pass --profile NAME to supply the name without "
-            "prompting."
-        )
-
-    # The check above guarantees the interactive, non-yes path, so
-    # ask_required's defaults are the only ones reachable here.
-    prompt = "Profile name for the Anvil profile store"
-    try:
-        while True:
-            name = prompts.ask_required(prompt)
-            if piprofile.valid_name(name):
-                return name
-            shared.echo(
-                "invalid profile name {!r}: use only {}".format(
-                    name, piprofile._ALLOWED_CHARSET
-                )
-            )
-    except PromptError:
-        # ask_required's exhausted-stdin failure names the missing
-        # value but not the fix; re-raise with --profile NAME named,
-        # the way the --yes/non-interactive path does.
-        raise PromptError(
-            "{} is required but stdin provided no value. Pass "
-            "--profile NAME to supply the name without prompting.".format(
-                prompt
-            )
-        ) from None
-
-
-def _record_profile(
-    path: str, name: str, repository: Optional[Tuple[str, str]]
-) -> None:
-    """Record a successful provisioning under ``name`` (behaviour 14).
-
-    Written after ``provision.setup_repo`` succeeds, from values already
-    resolved: the absolute target path, the guard gate's identity, and the
-    literal branch the gate checked. The store root is ``~/.anvil`` and is
-    read at call time via ``Path.home()`` so the suite can redirect ``HOME``
-    without touching the real home. ``repository`` may be ``None`` when the
-    identity was unresolvable; then owner and repo are recorded as null
-    rather than guessed. A ``ProfileError`` (for instance a name collision
-    at a different path) is left to escape: ``run()`` maps it to
-    ``EXIT_CONFIG``, so a failed record is never silently swallowed after
-    a success.
-    """
-    owner, repo = repository if repository is not None else (None, None)
-    piprofile.save_profile(
-        root=Path.home() / ".anvil",
-        name=name,
-        path=path,
-        owner=owner,
-        repo=repo,
-        base="main",
-        project={},
-    )
+        piprofileflow.announce_or_record_profile(shared, path, profile_name, repository)
 
 
 # ---------------------------------------------------------------------------
@@ -1717,36 +891,9 @@ def doctor(ctx: typer.Context) -> None:
         )
 
     _report_config_health(shared)
-    _report_guards(shared)
+    piguardgate.report_guards(shared)
 
     shared.echo(_SEPARATOR)
-
-
-def _report_guards(shared: Context) -> None:
-    """The Guards section: the piguard findings for the project's own repository.
-
-    Runs the same guard flow verify-guards uses, but always against this
-    project's directory, and reports rather than exits: the branch-rule
-    findings print first, then the token-scope findings from the same
-    ``check_token_all`` seam, doctor's exit status is unchanged by any
-    finding, and it still writes nothing.
-    """
-    shared.echo("")
-    shared.echo("Guards")
-
-    token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
-
-    # The same single flow verify-guards runs, with doctor's noun; a probe
-    # added to _collect_guard_findings reaches doctor with no edit here.
-    findings, token_findings, _repository = _collect_guard_findings(
-        shared.root, token, "main", noun="project"
-    )
-
-    # Behaviour 19: the findings print as wrapped blocks - a status-prefixed
-    # headline, the finding's substance at 80 columns, and an indented fix:/
-    # see: line - under a section header per source, so branch and token
-    # findings no longer run together as unbroken lines.
-    _echo_guard_report(shared, findings, token_findings)
 
 
 def _report_config_health(shared: Context) -> None:
@@ -1786,406 +933,6 @@ def _report_config_health(shared: Context) -> None:
                     MODELS_FILENAME + " parse", "{} {}".format(_mark(False), exc)
                 )
             )
-
-
-def _ask_free_plan(
-    shared: Context,
-    findings: List[Dict[str, Any]],
-    asker: Optional[Callable[..., bool]] = None,
-) -> bool:
-    """Ask the free-plan question once when a file_paths warn is present
-    (behaviour 4 of plans/file-path-interactive-free-plan.md): one
-    ``prompts.confirm`` with default False whose text asks whether the plan
-    offers "Restrict file paths" - the positive form, re-asked after the
-    double negative read as confusing (behaviour 9): the question is
-    positive and the caller inverts - a ``no`` answer means the plan lacks
-    the option, which is exactly when the walkthrough applies. The asker is
-    injectable for tests. ``shared`` is unused here: the gating
-    (non-interactive / ``assume_yes`` / ``dry_run``) and the printing happen
-    in the caller, ``_free_plan_followup``."""
-    if asker is None:
-        asker = prompts.confirm
-    if not picodeowners.wants_walkthrough(findings):
-        return False
-    # Behaviour 10 (plans/file-path-codeowners-interactive.md): the question
-    # names where the option lives, on its OWN line - the near-exact
-    # parenthetical from the saved rulesets page. The option sits under
-    # "Push protections" of a push ruleset, NOT under "Restrictions", so no
-    # section name is claimed beyond the UI path and the ruleset it lands in.
-    return asker(
-        'Does your GitHub plan offer "Restrict file paths" in the ruleset UI?\n'
-        "(Settings > Rulesets > Rulesets, then your main branch ruleset)",
-        default=False,
-    )
-
-
-def _free_plan_followup(
-    shared: Context,
-    branch_findings: List[Dict[str, Any]],
-    repository: Optional[Tuple[str, str]],
-    branch: str,
-    target: Path,
-) -> None:
-    """The free-plan follow-up, printed after the guard report at the two
-    call sites that prompt (behaviour 5 of
-    plans/file-path-interactive-free-plan.md; doctor reports and never
-    prompts, so it calls this nowhere).
-
-    Gated on a ``file_paths`` warn (behaviour 3's predicate) and on a
-    resolved repository: with neither, or an unresolvable repository, the
-    report is byte-identical to before the wiring - no line, no prompt,
-    no walkthrough (behaviour 6's error clause, landed early because the
-    follow-up needs the repository anyway).
-
-    Non-interactive, ``--yes`` and ``--dry-run`` runs never ask: they print
-    exactly one line, then return - no prompt, no stdin read, and the exit
-    code is untouched (behaviour 5). The line is a report line, one
-    sentence, built here, not in a module - and it is unconditional: the
-    file-present skip branches are gone (behaviour 1 of
-    plans/file-path-fallback-file-only.md), so a file at the path prints
-    the same free-plan line as an absent one.
-
-    An interactive run asks the behaviour-4 unit exactly once: the question
-    is positive (behaviour 9) and the caller inverts - a ``no`` answer means
-    the plan lacks the option, so it prints the six-step walkthrough
-    (behaviour 6) built by ``picodeowners`` from the resolved repository
-    and the checked ``branch`` - never re-derived here - after the
-    report's "To fix" section and bypass note, then ends in the
-    interactive CODEOWNERS flow (behaviour 20), the file present or
-    not: the file-present skip branches are gone (behaviour 1 of
-    plans/file-path-fallback-file-only.md), and it is safe because the
-    clobber guard is the write seam's ``CodeownersError``, never a skip
-    - and once the marker is the file alone (that plan's behaviour 2), a
-    file-present run never reaches this follow-up at all
-    (``wants_walkthrough`` is False). A ``yes`` answer keeps the
-    output byte-identical - no confirmation line (behaviour 7's polarity
-    under the positive question): the plan offers the option, and the
-    report's "To fix" line is the fix. A ``CodeownersError`` is
-    reported as one line and never raised, so the run is never masked
-    into success.
-    """
-    if not picodeowners.wants_walkthrough(branch_findings):
-        return
-    if repository is None:
-        return
-    if shared.dry_run or shared.assume_yes or not shared.interactive():
-        # Behaviour 5: the fallback prints the free-plan line
-        # unconditionally - the file-present skip branch is gone
-        # (behaviour 1 of plans/file-path-fallback-file-only.md), so a
-        # file at the path counts no different from an absent one.
-        # No prompt, no stdin read, the exit code untouched.
-        shared.echo(
-            "Your plan may not offer \"Restrict file paths\" - the "
-            "free-plan CODEOWNERS fix: re-run without --yes to see the "
-            "walkthrough."
-        )
-        return
-    answer = _ask_free_plan(shared, branch_findings)
-    if answer:
-        # A 'yes' means the plan offers the option: no walkthrough (the
-        # caller inverts, behaviour 9), but behaviour 10 of
-        # plans/file-path-codeowners-interactive.md replaces the silent
-        # return with exactly one locating line - tell the reader to tick
-        # it in that ruleset and that the report's "To fix" entry names
-        # the rule. One sentence, at most 80 characters.
-        shared.echo(
-            'Tick it in that ruleset; the "To fix" entry above names the rule.'
-        )
-        return
-    owner, repo = repository
-    try:
-        body = picodeowners.codeowners_body(owner)
-        steps = picodeowners.walkthrough_steps(owner, repo, branch, body)
-    except picodeowners.CodeownersError as exc:
-        shared.echo("could not build the walkthrough: {}".format(exc))
-        return
-    for step in steps:
-        shared.echo(step)
-    # The file-present skip is gone (behaviour 1 of
-    # plans/file-path-fallback-file-only.md): a present file falls through
-    # to the flow and is refused at the write seam, never at a skip.
-    # Behaviour 20 (plans/file-path-codeowners-interactive.md): the no
-    # branch ends in the interactive CODEOWNERS flow, using the SAME
-    # default seams (``prompts.ask`` / ``prompts.confirm``) the rest of
-    # the command uses - so both call sites (verify-guards, the blocked
-    # setup-repo gate) reach it with no per-site wiring, and it changes
-    # no exit code and never raises.
-    _codeowners_flow(shared, owner, repo, branch, target)
-
-
-def _codeowners_flow(
-    shared: Context,
-    owner: str,
-    repo: str,
-    branch: str,
-    target: Path,
-    ask: Optional[Callable[..., str]] = None,
-    confirm: Optional[Callable[..., bool]] = None,
-) -> None:
-    """The interactive CODEOWNERS follow-up for a free plan (behaviour 14
-    of plans/file-path-codeowners-interactive.md): ask the owner handles,
-    show the built content, confirm it.
-
-    One ``ask`` for the handles, defaulting to the pre-filled ``@owner``
-    (editable); the body ``picodeowners.codeowners_body`` builds from the
-    answered handles is echoed verbatim, line by line; then one
-    ``confirm`` "Use this CODEOWNERS content?" default True. A no ends the
-    flow with no write and no further prompt. A ``CodeownersError`` prints
-    exactly one line and ends the flow; no exception leaves the function
-    and no exit code changes.
-
-    Behaviour 15: between the body echoes and the confirm, each answered
-    handle token is checked with
-    ``picodeowners.self_approval_warning(token, owner)`` (behaviour 13:
-    case-insensitive, ``@`` stripped, a ``/`` team handle -> None); if any
-    is non-None, the first warning line and
-    ``picodeowners.last_push_step()`` are echoed once each, then the flow
-    continues to the confirm - the run is never blocked, and the token is
-    never compared: only handle-vs-``owner``, no env lookup.
-
-    Behaviour 18: after the content confirm passes, the flow makes the
-    write offer - one more ``confirm`` "Write .github/CODEOWNERS into
-    {target}?" default False. A yes writes through
-    ``picodeowners.write_codeowners`` (behaviour 17's seam) and echoes
-    the written path; a no echoes exactly one line saying nothing was
-    written; a ``CodeownersError`` from the seam echoes exactly one line
-    and lets no exception out.
-
-    Behaviour 19: all three write outcomes - written, write-failed and
-    offer-declined - fall through to one shared ending: one intro line
-    saying to run the git commands yourself, then each of
-    ``picodeowners.commit_commands()`` (behaviour 12) echoed in order.
-    The commands print identically in all three cases, and Anvil never
-    runs them; a declined CONTENT (behaviour 14) ends before the offer
-    and prints none.
-
-    ``ask``/``confirm`` are injected seams (the ``_ask_free_plan``
-    precedent) defaulting to ``prompts.ask``/``prompts.confirm``.
-    ``branch`` names the branch the commit step lands on - behaviour 20
-    added it to the intro line.
-    """
-    if ask is None:
-        ask = prompts.ask
-    if confirm is None:
-        confirm = prompts.confirm
-    handles = ask("CODEOWNERS owner handle(s), space-separated:", default="@" + owner)
-    try:
-        body = picodeowners.codeowners_body(handles)
-    except picodeowners.CodeownersError as exc:
-        shared.echo("could not build the CODEOWNERS content: {}".format(exc))
-        return
-    for line in body.splitlines():
-        shared.echo(line)
-    for token in handles.split():
-        warning = picodeowners.self_approval_warning(token, owner)
-        if warning is not None:
-            shared.echo(warning)
-            shared.echo(picodeowners.last_push_step())
-            break
-    if not confirm("Use this CODEOWNERS content?", default=True):
-        return
-    # behaviour 18: the write offer - explicit, default no.
-    if not confirm(
-        "Write .github/CODEOWNERS into {}?".format(target), default=False
-    ):
-        shared.echo(
-            "Nothing written: the offer was declined; .github/CODEOWNERS "
-            "is not written."
-        )
-    else:
-        try:
-            path = picodeowners.codeowners_path(target)
-            written = picodeowners.write_codeowners(path, body)
-            shared.echo(str(written))
-        except picodeowners.CodeownersError as exc:
-            shared.echo("could not write .github/CODEOWNERS: {}".format(exc))
-    # behaviour 19: the commands always print - after the written,
-    # failed and declined outcomes alike; Anvil never runs them.
-    # Behaviour 20: the intro line names the branch the commit lands on.
-    shared.echo(
-        "Run these yourself in the target repository (branch {}):".format(
-            branch
-        )
-    )
-    for command in picodeowners.commit_commands():
-        shared.echo(command)
-
-
-def _echo_guard_report(
-    shared: Context,
-    branch_findings: List[Dict[str, Any]],
-    token_findings: List[Dict[str, Any]],
-) -> None:
-    """The sectioned guards report: a "Branch rules" header, each branch
-    finding as a wrapped block, a "Token scope" header, each token finding
-    the same way - one blank line between blocks.
-
-    The blocks come from ``piguard.render_finding_block`` - the behaviour-19
-    blocks reused, never re-derived, so no line exceeds 80 characters.
-    The report ends with the numbered "To fix" section - the mitigations of
-    every warn and fail finding across BOTH sections in one sequence, from
-    ``piguard.render_fixes`` - printed only when such a finding exists, and
-    then always with ``piguard.BYPASS_NOTE`` as the final line, so the
-    bypass caveat survives exactly once per report (behaviour 9 of
-    plans/guard-finding-compact.md).
-    verify-guards, doctor's Guards section and the blocked setup-repo gate
-    all print through this, so the report shape cannot drift between them
-    (plans/setup-repo-guards.md behaviour 6).
-    """
-    shared.echo("Branch rules")
-    for index, finding in enumerate(branch_findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
-
-    shared.echo("")
-    shared.echo("Token scope")
-    for index, finding in enumerate(token_findings):
-        if index:
-            shared.echo("")
-        for line in piguard.render_finding_block(finding):
-            shared.echo(line)
-
-    shared.echo("")
-    fixes = piguard.render_fixes(branch_findings + token_findings, width=80)
-    if fixes:
-        for line in fixes:
-            shared.echo(line)
-        shared.echo("")
-    shared.echo(piguard.BYPASS_NOTE)
-
-
-def _prepare_gate_ruleset(shared: Context, target: Path) -> None:
-    """Prepare the importable ruleset a blocked gate reports on.
-
-    Writes ``target/.github-ruleset.json`` through the
-    ``piruleset.write_ruleset`` seam (the five-rule ruleset, rendered,
-    ``force=False``), then prints the written path and the manual import
-    steps, so a junior sees exactly what to import next.
-
-    An existing file is never overwritten: it is named as already
-    prepared and left untouched (``force`` is never passed true), but
-    the import steps still follow, since printing is not writing. A
-    ``RulesetError`` is reported, naming the path, and never raised -
-    the run still ends blocked, never masked into success. This
-    function raises no other exception type.
-
-    Under ``--dry-run`` nothing is written and no existing file is
-    claimed: the path the run would write is announced in the file's
-    ``would write`` phrasing, and the import steps still follow, since
-    printing is not writing (plans/setup-repo-guards.md behaviour 12).
-    """
-    path = piruleset.default_output_path(target)
-    if shared.dry_run:
-        shared.echo("would write {}:".format(path))
-        for line in piruleset.import_steps(None, path):
-            shared.echo("  - {}".format(line))
-        return
-    if path.exists():
-        shared.echo(
-            "the ruleset is already prepared at {} - import it as "
-            "below".format(path)
-        )
-        for line in piruleset.import_steps(None, path):
-            shared.echo("  - {}".format(line))
-        return
-    try:
-        written = piruleset.write_ruleset(
-            path,
-            piruleset.render_ruleset_json(piruleset.build_ruleset()),
-            force=False,
-        )
-    except RulesetError as exc:
-        shared.echo(
-            "could not write the ruleset to {}: {}".format(path, exc)
-        )
-        return
-    shared.echo("Wrote the ruleset to {}:".format(written))
-    for line in piruleset.import_steps(None, written):
-        shared.echo("  - {}".format(line))
-
-
-def _prepare_gate_token_recipe(
-    shared: Context, repository: Tuple[str, str]
-) -> None:
-    """Print the token fix a blocked gate reports on.
-
-    The pre-filled fine-grained creation URL as its own line, then the
-    ordered UI steps from ``pitokenrecipe.recipe_steps``, built by the
-    module and never re-derived. The URL carries no token value (the token
-    text is shown by GitHub's UI once and never passes through Anvil), so
-    nothing secret is echoed.
-
-    A ``TokenRecipeError`` is reported, naming the failure, and never
-    raised - the run still ends blocked, never masked into success. This
-    function raises no other exception type.
-    """
-    owner, repo = repository
-    try:
-        url = pitokenrecipe.build_recipe_url(owner, repo)
-    except pitokenrecipe.TokenRecipeError as exc:
-        shared.echo("could not build the token recipe: {}".format(exc))
-        return
-    shared.echo(url)
-    for step in pitokenrecipe.recipe_steps(owner, repo, url):
-        shared.echo(step)
-
-
-def _collect_guard_findings(
-    target: Path,
-    token: str,
-    branch: str,
-    other_repo: Optional[str] = None,
-    noun: str = "target",
-) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]], Optional[Tuple[str, str]]]:
-    """The shared guard flow: resolve -> fetch -> check_all -> check_token_all.
-
-    verify-guards and doctor's Guards section each ran this flow inline; this
-    is the single implementation. Returns ``(branch_findings, token_findings,
-    repository)``: the branch findings are ``check_all`` of the fetched rules,
-    or ``skipped_findings`` of the reason the repository could not be resolved
-    or the fetch failed, and the token findings are ``check_token_all``
-    whenever the repository resolves - even when the fetch failed. ``noun`` is
-    the word the unresolvable reason uses: "target" (verify-guards) or
-    "project" (doctor).
-
-    Once the repository resolves, the CODEOWNERS file's presence is
-    computed once - ``picodeowners.codeowners_path(target).is_file()``
-    - and passed through ``check_all`` to the file_paths check as its
-    fallback marker's file half (behaviour 7 of
-    plans/file-path-fallback-satisfied.md). That is the same predicate
-    the #109 skip uses, so the skip and the verdict cannot disagree. It
-    is computed after the repository check, so an unresolvable
-    repository yields ``skipped_findings`` before any of it.
-    """
-    repository = piguard.resolve_repository(target)
-    if repository is None:
-        reason = (
-            "owner/repo could not be resolved from the origin remote of "
-            "{}: the {} has no origin, or its remote is not a GitHub "
-            "repository, and the identity is never guessed".format(target, noun)
-        )
-        branch_findings: List[Dict[str, Any]] = piguard.skipped_findings(reason)
-        token_findings: List[Dict[str, Any]] = []
-    else:
-        owner, repo = repository
-        codeowners_present = picodeowners.codeowners_path(target).is_file()
-        rules, fetch_reason = piguard.fetch_branch_rules(
-            owner, repo, branch, token
-        )
-        if rules is None:
-            branch_findings = piguard.skipped_findings(fetch_reason)
-        else:
-            branch_findings = piguard.check_all(
-                rules, codeowners_present=codeowners_present
-            )
-        # The token probes run whenever the repository resolves, even when the
-        # branch-rules fetch failed.
-        token_findings = piguard.check_token_all(
-            owner, repo, token=token, other_repo=other_repo
-        )
-    return branch_findings, token_findings, repository
 
 
 # ---------------------------------------------------------------------------
@@ -2236,7 +983,7 @@ def verify_guards(
 
     token = env.get(shared.env_path, GITHUB_TOKEN_ENV)
 
-    findings, token_findings, repository = _collect_guard_findings(
+    findings, token_findings, repository = piguardgate.collect_guard_findings(
         target, token, branch, other_repo=other_repo
     )
 
@@ -2256,8 +1003,10 @@ def verify_guards(
     # branch and token findings no longer run together as unbroken
     # lines and no report line exceeds 80 characters.
     shared.echo("")
-    _echo_guard_report(shared, findings, token_findings)
-    _free_plan_followup(shared, findings, repository, branch, target)
+    piguardgate.echo_guard_report(shared, findings, token_findings)
+    piguardgate.free_plan_followup(
+        shared, findings, repository, branch, target
+    )
     shared.echo(_SEPARATOR)
 
     raise typer.Exit(piguard.summarize(findings + token_findings))
@@ -2345,7 +1094,7 @@ def smoke_test(
     # docker, HTTP - regardless of --dry-run, so the failure cannot be
     # mistaken for a layer report (behaviour 19).
     if not target.is_dir():
-        raise _fail(
+        raise fail(
             "❌ --repo names no existing directory: {}".format(target),
             EXIT_USAGE,
         )
@@ -2357,7 +1106,7 @@ def smoke_test(
     try:
         port = shared.resolve_port(llm_port)
     except ConfigError as exc:
-        raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+        raise fail("❌ {}".format(exc), EXIT_CONFIG) from exc
 
     docker_runner = _docker_runner_factory()
     runner = _pidriver_runner_factory()
@@ -2394,16 +1143,6 @@ profile_app = typer.Typer(
 app.add_typer(profile_app, name="profile")
 
 
-def _profile_root() -> Path:
-    """The profile store root: ``~/.anvil``, computed at call time.
-
-    Computed per command rather than at import so a caller that overrides
-    ``$HOME`` (the test suite does) is seen on every invocation, not pinned
-    to whatever home existed when the module loaded.
-    """
-    return Path.home() / ".anvil"
-
-
 @profile_app.command(name="list")
 def profile_list() -> None:
     """List every saved profile, one line per name with its absolute path.
@@ -2415,7 +1154,7 @@ def profile_list() -> None:
     stays a working discovery tool while ``show`` keeps behaviour 10's
     refusal.
     """
-    root = _profile_root()
+    root = piprofileflow.profile_root()
     names = piprofile.list_profiles(root)
     if not names:
         typer.echo("No profiles are saved.")
@@ -2437,7 +1176,7 @@ def profile_show(
     own message (behaviour 9); a record whose path has vanished raises
     ``ProfileError`` untouched, for the entry point to map.
     """
-    root = _profile_root()
+    root = piprofileflow.profile_root()
     try:
         record = piprofile.load_profile(root, name)
     except ProfileError as exc:
@@ -2445,7 +1184,7 @@ def profile_show(
             # Behaviour 9: the store does not hold this name - a typo the
             # operator can fix from the message, which names the known
             # profiles, or says none are saved.
-            raise _fail(str(exc), EXIT_USAGE) from exc
+            raise fail(str(exc), EXIT_USAGE) from exc
         # The name IS held: a vanished path (behaviour 10) or a malformed
         # store - a controlled failure the entry point maps to its own
         # code, so the ProfileError propagates untouched.
