@@ -1,8 +1,12 @@
-"""Safe YAML loading - the only module permitted to import ``yaml``.
+"""Safe YAML I/O - the only module permitted to import ``yaml``.
 
-Anvil reads YAML but never writes it: ``config.yaml`` is owned by llama-swap and
-stays hand-authored. This module therefore exposes a load-only surface, and
-routing every access through it keeps a future parser swap to a one-file change.
+Anvil reads YAML and writes its own YAML files, and routing every access
+through this module keeps a future parser swap to a one-file change.
+
+``config.yaml`` is owned by llama-swap and stays hand-authored: Anvil reads it
+and never writes it. ``save`` exists only for Anvil's own files (the profiles
+store, per ``plans/pi-phase13-profiles.md``), and ``safe_dump`` on the write
+side mirrors the safety property ``safe_load`` already gives on the read side.
 
 ``pyyaml`` is imported directly. The managed virtual environment provisioned by
 ``./anvil`` guarantees it is present, so there is no fallback path to maintain.
@@ -17,11 +21,11 @@ PathLike = Union[str, Path]
 
 
 class YamlError(Exception):
-    """Any failure to read a YAML document.
+    """Any failure to read or write a YAML document.
 
     A single exception type covers a missing file, unreadable bytes, invalid
-    syntax, an unsafe tag and a wrong top-level shape, so callers need only one
-    ``except`` clause.
+    syntax, an unsafe tag, a wrong top-level shape and an unwritable target
+    path, so callers need only one ``except`` clause.
     """
 
 
@@ -46,6 +50,35 @@ def load(path: PathLike) -> Dict[str, Any]:
 
 def loads(text: str) -> Dict[str, Any]:
     return _parse(text, source="<string>")
+
+
+def save(path: PathLike, mapping: Dict[str, Any]) -> None:
+    """Write ``mapping`` to ``path`` as a YAML document.
+
+    For Anvil's own files only - ``config.yaml`` is owned by llama-swap and is
+    never written. Missing parent directories are created.
+
+    Raises:
+        YamlError: the top level is not a mapping (checked before anything is
+            written), or the path cannot be created or written.
+    """
+    if not isinstance(mapping, dict):
+        raise YamlError(
+            "Expected a mapping to save to {}, got {}".format(
+                path, type(mapping).__name__
+            )
+        )
+
+    path = Path(path)
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        # safe_dump mirrors the safety property of safe_load: the output is a
+        # plain-data document, never a tag that could build arbitrary objects.
+        text = yaml.safe_dump(mapping, default_flow_style=False, sort_keys=False)
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        raise YamlError("Could not write {}: {}".format(path, exc)) from exc
 
 
 def _parse(text: str, source: str) -> Dict[str, Any]:

@@ -20,7 +20,11 @@ raises ``EOFError``. An earlier version of this file used ``isolation`` and hung
 so it simulated a condition that cannot occur. ``StringIO`` reproduces genuine
 EOF, which is what a CI runner with closed stdin actually presents.
 
-No test can block: every stdin is finite, and exhausting it raises.
+No test can block: every stdin is finite, and exhausting it raises. The
+``ExhaustedStdinTests`` class below is the one exception in kind - it must
+drive prompts through ``CliRunner``, because the no-default re-prompt loop it
+pins only exists under CliRunner's fake stdin; every invoke there is
+alarm-guarded, so it still cannot block.
 
 One intentional divergence from bash, asserted below: ``anvil:165`` matched
 ``^[Yy](es)?$``, so a typo like ``ya`` silently meant "no" and quietly skipped a
@@ -29,10 +33,14 @@ feature the user was trying to enable. ``click.confirm`` re-prompts instead.
 
 import contextlib
 import io
+import signal
 import sys
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import click
+from click.testing import CliRunner
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
@@ -519,6 +527,87 @@ class NonInteractiveGuardTests(PromptCase):
             ),
             "k",
         )
+
+
+@click.command(name="ask-profile-name")
+def ask_profile_name():
+    """The no-default prompt, read exactly as the CLI will read it."""
+    return prompts.ask_required("Profile name")
+
+
+@click.command(name="ask-profile-base")
+def ask_profile_base():
+    """The default-carrying prompt; an empty read must still take the default."""
+    return prompts.ask("Profile name", default="base")
+
+
+class ExhaustedStdinTests(PromptCase):
+    """A no-default prompt must terminate on an exhausted stdin, not loop.
+
+    Behaviour 22 pin (plans/pi-phase13-profiles.md): under the pinned click
+    8.1.7, ``click.prompt`` without a default re-prompts forever when stdin is
+    exhausted under ``CliRunner`` - its isolation installs a prompt function
+    whose ``readline()`` returns ``''`` at EOF, and with ``default is None``
+    the loop in ``prompt()`` re-asks forever. On a real terminal the same
+    exhausted stdin raises ``EOFError``, which click converts to ``Abort`` and
+    ``ask_required`` maps to ``PromptError`` - so the defect is only visible
+    through ``CliRunner``, the seam the CLI entry path runs under.
+
+    Every invoke here is guarded by a 5 s ``signal.alarm``: while the defect
+    exists, an unguarded invoke would hang the suite, and a hanging suite is
+    worse than a failing one. The alarm turns the hang into a loud
+    AssertionError and is cancelled in ``finally`` so it cannot leak into
+    another test.
+    """
+
+    def setUp(self):
+        self.runner = CliRunner()
+
+    def _guarded_invoke(self, command, stdin):
+        """Invoke ``command`` under a 5 s alarm; a hang becomes a failure.
+
+        ``standalone_mode=False`` is the entry path the CLI actually runs
+        (``cli.run()`` calls ``app(standalone_mode=False)``): a raised
+        ``PromptError`` propagates as itself, and the command's return value
+        is what ``Result.return_value`` reports.
+        """
+
+        def on_alarm(signum, frame):
+            raise AssertionError(
+                "HANG: no-default prompt re-prompted forever on exhausted stdin"
+            )
+
+        previous = signal.signal(signal.SIGALRM, on_alarm)
+        signal.alarm(5)
+        try:
+            return self.runner.invoke(
+                command,
+                input=stdin,
+                catch_exceptions=False,
+                standalone_mode=False,
+            )
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_ask_required_exhausted_stdin_fails_clean_not_hanging(self):
+        for label, stdin in (("input=None", None), ("input=''", "")):
+            with self.subTest(stdin=label):
+                with self.assertRaises(prompts.PromptError) as ctx:
+                    self._guarded_invoke(ask_profile_name, stdin)
+                message = str(ctx.exception)
+                self.assertIn("Profile name", message)
+                self.assertIn("stdin provided no value", message)
+
+    def test_ask_required_one_line_returns_it(self):
+        """Over-correction guard: the happy path must keep returning the line."""
+        result = self._guarded_invoke(ask_profile_name, "my-name\n")
+        self.assertEqual(result.return_value, "my-name")
+
+    def test_ask_with_default_exhausted_stdin_returns_default(self):
+        """Pin: the default-carrying path must still take its default on EOF."""
+        result = self._guarded_invoke(ask_profile_base, "")
+        self.assertEqual(result.return_value, "base")
 
 
 if __name__ == "__main__":

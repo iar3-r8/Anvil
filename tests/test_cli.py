@@ -28,7 +28,8 @@ Two environment notes that shaped these tests:
 
 Nothing here touches the network, the Docker daemon, or the real ``$HOME``: the
 repository root is redirected into a ``TemporaryDirectory`` and ``HOME`` is
-overridden whenever a default derived from it is asserted.
+always overridden by the base class, so code resolving ``Path.home()`` at call
+time can only ever write under a test-owned directory.
 """
 
 import contextlib
@@ -345,6 +346,19 @@ class CliCase(unittest.TestCase):
         self.project = Path(self._tmp.name)
         self.addCleanup(self._tmp.cleanup)
 
+        # A fresh, isolated suite home: production resolves Path.home() at call
+        # time (the profile store in anvilkit.cli), so every test must see a
+        # test-owned HOME. Named ``suite_home`` - not ``home`` - because the
+        # profile classes define their own per-test ``self.home`` and a
+        # collision would shadow this cleanup. A per-test override patches
+        # over this one and restores to it.
+        self._suite_home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._suite_home.cleanup)
+        self.suite_home = Path(self._suite_home.name)
+        home_patcher = mock.patch.dict(os.environ, {"HOME": str(self.suite_home)})
+        home_patcher.start()
+        self.addCleanup(home_patcher.stop)
+
         # Real configuration files, so config parsing is exercised rather than
         # mocked - they are tiny and this keeps the CLI honest about what it reads.
         shutil.copyfile(str(REPO_ROOT / "anvil.yaml"), str(self.project / "anvil.yaml"))
@@ -410,6 +424,7 @@ class TestSubcommandsExist(CliCase):
         "stress",
         "verify-guards",
         "smoke-test",
+        "profile",
     )
 
     def registered_names(self):
@@ -520,7 +535,8 @@ class TestDispatch(CliCase):
             with mock.patch.object(
                 cli.provision, "setup_repo", return_value=target
             ) as setup:
-                result = self.invoke(["setup-repo", target])
+                result = self.invoke(["setup-repo", "--profile", "proj", target])
+
 
         self.assertEqual(0, result.exit_code)
         self.assertEqual(1, setup.call_count)
@@ -653,7 +669,8 @@ class TestExitCodes(CliCase):
 
     def test_provisioning_failure_exits_with_the_provision_code(self):
         result = self.invoke_allowing_exception(
-            ["setup-repo", str(self.project / "nope"), "--yes"]
+            ["setup-repo", "--profile", "proj", str(self.project / "nope"), "--yes"]
+
         )
         self.assertEqual(cli.EXIT_PROVISION, result.exit_code)
 
@@ -662,7 +679,8 @@ class TestExitCodes(CliCase):
         # must fail loudly rather than write an empty credential.
         with tempfile.TemporaryDirectory() as target:
             result = self.invoke_allowing_exception(
-                ["setup-repo", target, "--yes", "--anthropic"]
+                ["setup-repo", "--profile", "proj", target, "--yes", "--anthropic"]
+
             )
         self.assertEqual(cli.EXIT_PROMPT, result.exit_code)
 
@@ -710,7 +728,8 @@ class TestDryRun(CliCase):
 
     def test_dry_run_setup_repo_writes_nothing_into_the_target(self):
         with tempfile.TemporaryDirectory() as target:
-            result = self.invoke(["--dry-run", "setup-repo", target, "--yes"])
+            result = self.invoke(["--dry-run", "setup-repo", "--profile", "proj", target, "--yes"])
+
             self.assertEqual(0, result.exit_code)
             self.assertEqual([], list(Path(target).rglob("*")))
 
@@ -720,6 +739,8 @@ class TestDryRun(CliCase):
                 [
                     "--dry-run",
                     "setup-repo",
+                    "--profile",
+                    "proj",
                     target,
                     "--yes",
                     "--anthropic-key",
@@ -771,7 +792,8 @@ class TestNonInteractive(CliCase):
     def test_yes_setup_repo_reads_no_stdin(self):
         self.write_env(LLM_PORT="8000")
         with tempfile.TemporaryDirectory() as target:
-            result = self.run_without_stdin(["setup-repo", target, "--yes"])
+            result = self.run_without_stdin(["setup-repo", "--profile", "proj", target, "--yes"])
+
         self.assertEqual(0, result.exit_code)
 
     def test_yes_status_reads_no_stdin_even_without_an_env_file(self):
@@ -961,7 +983,8 @@ class TestImplicitEnvBootstrap(CliCase):
 
     def test_setup_repo_does_not_create_an_env_file(self):
         with tempfile.TemporaryDirectory() as target:
-            self.invoke(["setup-repo", target, "--yes"])
+            self.invoke(["setup-repo", "--profile", "proj", target, "--yes"])
+
         self.assertFalse(self.env_path().exists())
 
     def test_the_bootstrap_is_announced(self):
@@ -2415,24 +2438,28 @@ class TestSetupRepo(CliCase):
         with mock.patch.object(
             cli.provision, "setup_repo", return_value=self.target
         ) as setup:
-            self.invoke(["setup-repo", self.target, "--yes"])
+            self.invoke(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
 
         first_positional = setup.call_args[0][0]
         self.assertEqual(self.target, str(first_positional))
 
     def test_plan_carries_the_resolved_port(self):
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(8000, plan.port)
 
     def test_container_target_defaults_to_false(self):
         """Host-side setup-repo keeps rendering localhost URLs."""
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
 
         self.assertFalse(plan.container_target)
 
     def test_container_flag_sets_container_target(self):
         """--container re-points the rendered URLs at the llm-network containers."""
-        plan = self.captured_plan(["setup-repo", self.target, "--yes", "--container"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes", "--container"])
+
 
         self.assertTrue(plan.container_target)
 
@@ -2440,14 +2467,16 @@ class TestSetupRepo(CliCase):
         from anvilkit import config
 
         topology = config.read_models(self.project / "config.yaml")
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(topology.coder_context_window, plan.context_window)
 
     def test_plan_carries_the_model_ids_from_config_yaml(self):
         from anvilkit import config
 
         topology = config.read_models(self.project / "config.yaml")
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(topology.coder_id, plan.coder_model_id)
         self.assertEqual(topology.embedder_id, plan.embedder_model_id)
 
@@ -2455,13 +2484,15 @@ class TestSetupRepo(CliCase):
         from anvilkit import config
 
         settings = config.read_settings(self.project / "anvil.yaml")
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(settings.local_profile_id, plan.local_profile_id)
         self.assertEqual(settings.anthropic_profile_id, plan.anthropic_profile_id)
 
     def test_declining_everything_matches_the_bash_defaults(self):
         # anvil:158-160: declined keeps the anthropic profile dormant but valid.
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertFalse(plan.use_anthropic_for_frontier_modes)
         self.assertEqual("to set", plan.anthropic_api_key)
         self.assertEqual("", plan.github_token)
@@ -2470,12 +2501,14 @@ class TestSetupRepo(CliCase):
         from anvilkit import config
 
         settings = config.read_settings(self.project / "anvil.yaml")
-        plan = self.captured_plan(["setup-repo", self.target, "--yes"])
+        plan = self.captured_plan(["setup-repo", "--profile", "proj", self.target, "--yes"])
+
         self.assertEqual(settings.default_anthropic_model, plan.anthropic_model_id)
 
     def test_github_token_flag_enables_github(self):
         plan = self.captured_plan(
-            ["setup-repo", self.target, "--yes", "--github-token", "ghp_abc"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes", "--github-token", "ghp_abc"]
+
         )
         self.assertEqual("ghp_abc", plan.github_token)
 
@@ -2485,7 +2518,8 @@ class TestSetupRepo(CliCase):
 
     def test_anthropic_key_flag_enables_anthropic_for_frontier_modes(self):
         plan = self.captured_plan(
-            ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-live"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", "sk-live"]
+
         )
         self.assertTrue(plan.use_anthropic_for_frontier_modes)
         self.assertEqual("sk-live", plan.anthropic_api_key)
@@ -2494,6 +2528,8 @@ class TestSetupRepo(CliCase):
         plan = self.captured_plan(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 self.target,
                 "--yes",
                 "--no-anthropic",
@@ -2507,6 +2543,8 @@ class TestSetupRepo(CliCase):
         plan = self.captured_plan(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 self.target,
                 "--yes",
                 "--anthropic-key",
@@ -2522,6 +2560,8 @@ class TestSetupRepo(CliCase):
         plan = self.captured_plan(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 self.target,
                 "--yes",
                 "--anthropic-key",
@@ -2537,7 +2577,8 @@ class TestSetupRepo(CliCase):
 
         with mock.patch.object(cli.provision, "setup_repo", return_value=self.target):
             self.invoke(
-                ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-persist"]
+                ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", "sk-persist"]
+
             )
 
         self.assertEqual(
@@ -2551,7 +2592,8 @@ class TestSetupRepo(CliCase):
 
         with mock.patch.object(cli.provision, "setup_repo", return_value=self.target):
             self.invoke(
-                ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-persist"]
+                ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", "sk-persist"]
+
             )
 
         values = env.read(self.env_path())
@@ -2562,7 +2604,8 @@ class TestSetupRepo(CliCase):
         # anvil:176: "Reusing existing ANTHROPIC_API_KEY from .env".
         self.write_env(LLM_PORT="8000", ANTHROPIC_API_KEY="sk-existing")
         plan = self.captured_plan(
-            ["setup-repo", self.target, "--yes", "--anthropic"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic"]
+
         )
         self.assertEqual("sk-existing", plan.anthropic_api_key)
 
@@ -2573,7 +2616,8 @@ class TestSetupRepo(CliCase):
         nasty = r"sk-a|b&c\d"
         with mock.patch.object(cli.provision, "setup_repo", return_value=self.target):
             self.invoke(
-                ["setup-repo", self.target, "--yes", "--anthropic-key", nasty]
+                ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", nasty]
+
             )
 
         self.assertEqual(nasty, env.get(self.env_path(), "ANTHROPIC_API_KEY"))
@@ -2581,7 +2625,8 @@ class TestSetupRepo(CliCase):
     def test_the_key_is_never_echoed(self):
         with mock.patch.object(cli.provision, "setup_repo", return_value=self.target):
             result = self.invoke(
-                ["setup-repo", self.target, "--yes", "--anthropic-key", "sk-secret"]
+                ["setup-repo", "--profile", "proj", self.target, "--yes", "--anthropic-key", "sk-secret"]
+
             )
         self.assertNotIn("sk-secret", result.output)
 
@@ -2589,13 +2634,15 @@ class TestSetupRepo(CliCase):
         with mock.patch.object(
             cli.provision, "setup_repo", return_value=self.target
         ) as setup:
-            self.invoke(["--dry-run", "setup-repo", self.target, "--yes"])
+            self.invoke(["--dry-run", "setup-repo", "--profile", "proj", self.target, "--yes"])
+
 
         self.assertTrue(setup.call_args[1]["dry_run"])
 
     def test_a_missing_target_is_reported_clearly(self):
         result = self.invoke_allowing_exception(
-            ["setup-repo", str(self.project / "absent"), "--yes"]
+            ["setup-repo", "--profile", "proj", str(self.project / "absent"), "--yes"]
+
         )
         self.assertIn("does not exist", result.output)
 
@@ -2716,7 +2763,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -2764,7 +2812,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(0, len(self._provision_calls), result.output)
@@ -2787,7 +2836,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._spy_provision(invoke_real=True)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(0, result.exit_code, result.output)
@@ -2897,7 +2947,8 @@ class TestSetupRepoGuardGate(CliCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         return self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
     def test_blocked_gate_prints_branch_rules_header_then_token_scope_header(
@@ -3099,7 +3150,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._blocked_run_wiring()
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3167,7 +3219,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._blocked_run_wiring(write_spy=write_spy)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3231,7 +3284,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._blocked_run_wiring(write_spy=write_spy)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         # The Error-clause guarantees of the never-overwrites test still
@@ -3304,7 +3358,8 @@ class TestSetupRepoGuardGate(CliCase):
         self._blocked_run_wiring(write_spy=write_spy)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3472,7 +3527,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(0, len(self._provision_calls), result.output)
@@ -3584,7 +3640,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3643,7 +3700,8 @@ class TestSetupRepoGuardGate(CliCase):
             self.addCleanup(patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target], input=""
+            ["setup-repo", "--profile", "proj", self.target], input=""
+
         )
 
         self.assertNotIn(
@@ -3720,7 +3778,8 @@ class TestSetupRepoGuardGate(CliCase):
         self.addCleanup(opener_patcher.stop)
 
         result = self.invoke_allowing_exception(
-            ["setup-repo", self.target, "--yes"]
+            ["setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
         self.assertEqual(
@@ -3783,7 +3842,8 @@ class TestSetupRepoGuardGate(CliCase):
             patcher.start()
             self.addCleanup(patcher.stop)
         return self.invoke_allowing_exception(
-            ["--dry-run", "setup-repo", self.target, "--yes"]
+            ["--dry-run", "setup-repo", "--profile", "proj", self.target, "--yes"]
+
         )
 
     def test_dry_run_blocked_gate_writes_nothing(self):
@@ -4338,7 +4398,8 @@ class TestGuardReportCrossSiteConsistency(CliCase):
         target = tempfile.TemporaryDirectory()
         self.addCleanup(target.cleanup)
         return self.invoke_allowing_exception(
-            ["setup-repo", target.name, "--yes"]
+            ["setup-repo", "--profile", "proj", target.name, "--yes"]
+
         )
 
     def run_verify(self, branch_findings, token_findings):
@@ -6086,7 +6147,8 @@ class TestRunEntryPoint(CliCase):
 
     def test_a_provisioning_failure_exits_with_the_provision_code(self):
         self.write_env(LLM_PORT="8000")
-        code, _ = self.run_cli(["setup-repo", str(self.project / "absent"), "--yes"])
+        code, _ = self.run_cli(["setup-repo", "--profile", "proj", str(self.project / "absent"), "--yes"])
+
         self.assertEqual(cli.EXIT_PROVISION, code)
 
     def test_a_compose_exit_code_is_propagated(self):
@@ -10509,7 +10571,8 @@ class TestFreePlanBoundary(CliCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        result = self.invoke(["setup-repo", target.name])
+        result = self.invoke(["setup-repo", "--profile", "proj", target.name])
+
         return result, Path(target.name), env_before
 
     def _spy_provision(self):
@@ -11172,7 +11235,8 @@ class TestFreePlanQuestionPositive(CliCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        return self.invoke(["setup-repo", target.name])
+        return self.invoke(["setup-repo", "--profile", "proj", target.name])
+
 
     def _fallback_lines(self, output):
         """The lines carrying ALL the non-interactive fallback line's
@@ -13567,7 +13631,8 @@ class TestCodeownersFlowWiring(CliCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        result = self.invoke(["setup-repo", target.name])
+        result = self.invoke(["setup-repo", "--profile", "proj", target.name])
+
         return result, asks, confirms, findings, Path(target.name)
 
     def _baseline_verify_guards(self, branch="main"):
@@ -15100,7 +15165,8 @@ class TestCodeownersFlowSkipBoundary(CliCase):
         for patcher in patchers:
             patcher.start()
             self.addCleanup(patcher.stop)
-        result = self.invoke(["setup-repo", str(target)])
+        result = self.invoke(["setup-repo", "--profile", "proj", str(target)])
+
         return result, asks, confirms, findings, target
 
     def _assert_flow_ran(self, result, asks, confirms, site):
@@ -15507,6 +15573,8 @@ class TestCodeownersFlowSkipBoundary(CliCase):
         return self.invoke(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 str(target),
                 "--yes",
                 "--no-anthropic",
@@ -16560,6 +16628,8 @@ class TestGuardFindingsCodeownersPresence(CliCase):
         result = self.invoke(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 target.name,
                 "--yes",
                 "--no-anthropic",
@@ -16903,6 +16973,8 @@ class TestAcceptanceSatisfiedFallback(CliCase):
         return self.invoke(
             [
                 "setup-repo",
+                "--profile",
+                "proj",
                 target,
                 "--yes",
                 "--no-anthropic",
@@ -17454,4 +17526,1477 @@ class TestAcceptanceSatisfiedFallback(CliCase):
             result.exit_code,
             "the file-absent warn blocks exactly as an ordinary warn "
             "does - exit 9:\n{}".format(out),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 14 of plans/pi-phase13-profiles.md - setup-repo-records-profile
+# ---------------------------------------------------------------------------
+#
+# ``setup-repo`` with GitHub enabled and a ``--profile <name>`` flag records
+# the provisioning into ``~/.anvil/profiles.yaml`` once it succeeds: the
+# absolute target path, ``owner``/``repo`` from the guard gate's
+# ``resolve_repository`` (the ``cli.piguard`` seam), ``base`` as the literal
+# branch the gate checked (``"main"``), ``token_env`` derived per the store
+# module, and an empty ``project`` block; the store also holds
+# ``version: 1``. An unresolvable identity records NO identity rather than
+# guessing one: the record still exists, ``owner`` and ``repo`` are absent
+# or null, ``base`` is still "main", and provisioning still succeeds.
+#
+# RED: ``--profile`` is an unknown option today (exit 2), and nothing ever
+# writes ``~/.anvil/profiles.yaml`` - the store assertions below fail on the
+# missing store. ``cli.piguard.resolve_repository`` is the seam the CLI uses
+# (it returns ``Optional[Tuple[str, str]]`` and never raises, so a None
+# return is the unresolvable case), and ``HOME`` is overridden to a fresh
+# temporary directory so the store lands at ``<home>/.anvil/profiles.yaml``.
+# ---------------------------------------------------------------------------
+
+
+class TestSetupRepoRecordsProfile(CliCase):
+    """``setup-repo --profile <name>`` records the provisioning (behaviour 14)."""
+
+    OWNER = "alpha"
+    REPO = "project-x"
+    PROFILE = "project-x"
+    TOKEN_ENV = "GITHUB_TOKEN_PROJECT_X"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.store_path = self.home / ".anvil" / "profiles.yaml"
+
+        # The guard gate's identity seam: the CLI resolves owner/repo through
+        # cli.piguard.resolve_repository, which never raises.
+        self._resolve = mock.patch.object(
+            cli.piguard, "resolve_repository", return_value=(self.OWNER, self.REPO)
+        )
+        self._resolve_mock = self._resolve.start()
+        self.addCleanup(self._resolve.stop)
+        # The network is never touched: no rules fetched, no token probes run.
+        self._fetch = mock.patch.object(
+            cli.piguard, "fetch_branch_rules", return_value=([], None)
+        )
+        self._fetch.start()
+        self.addCleanup(self._fetch.stop)
+        # With an empty rules list the real check_all still emits warn
+        # findings, which the verdict reads as blocked - pin it clean, the
+        # way the guard tests build their seams in the opposite direction.
+        self._check_all = mock.patch.object(
+            cli.piguard, "check_all", return_value=[]
+        )
+        self._check_all.start()
+        self.addCleanup(self._check_all.stop)
+        self._token = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=[]
+        )
+        self._token.start()
+        self.addCleanup(self._token.stop)
+
+    def _run(self, target, resolve_value):
+        """One non-interactive ``setup-repo --profile`` with the gate's
+        identity pinned to ``resolve_value`` and the store under a fresh
+        ``HOME`` override, so the store lands at ``<home>/.anvil``.
+
+        ``provision.setup_repo`` is NOT patched: the target is a real
+        directory and the store's ``path`` check (and the read-back of a
+        still-existing path) needs a real directory to point at. The gate
+        resolves, fetches nothing (no rules) and probes nothing (no token
+        findings), so the verdict is clean and provisioning proceeds -
+        exit 0 - for both a resolved and an unresolvable identity.
+        """
+        self._resolve_mock.return_value = resolve_value
+        env_values = {"LLM_PORT": "8000", "GITHUB_TOKEN": "ghp_profile_test"}
+        self.write_env(**env_values)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke(
+                [
+                    "setup-repo",
+                    target,
+                    "--profile",
+                    self.PROFILE,
+                    "--yes",
+                    "--no-anthropic",
+                    "--no-oxylabs",
+                ]
+            )
+
+    def _store(self):
+        """The store read back through yamlio (the honest way to assert
+        ``version`` and the record's fields); a missing file is ``None``."""
+        from anvilkit import yamlio
+
+        if not self.store_path.exists():
+            return None
+        try:
+            return yamlio.load(self.store_path)
+        except yamlio.YamlError as exc:
+            self.fail(
+                "the profile store at {} is not a readable mapping: {}".format(
+                    self.store_path, exc
+                )
+            )
+
+    def test_setup_repo_records_a_profile_on_success(self):
+        """A successful provisioning writes the full record: path, owner,
+        repo, base "main", the derived token_env, an empty project block,
+        and ``version: 1`` - under the overridden HOME."""
+        with tempfile.TemporaryDirectory() as target:
+            result = self._run(target, (self.OWNER, self.REPO))
+
+            # The store assertion leads: it is the behaviour under test, and
+            # the correct red reason is a missing store - not the usage
+            # error an unknown --profile option raises before it exists.
+            store = self._store()
+            self.assertIsNotNone(
+                store,
+                "the profile store at {} was not written - setup-repo "
+                "must record the profile on a successful provisioning".format(
+                    self.store_path
+                ),
+            )
+            self.assertEqual(
+                0,
+                result.exit_code,
+                "a clean gate must provision - exit 0:\n{}".format(
+                    result.output
+                ),
+            )
+            self.assertEqual(
+                1,
+                store.get("version"),
+                "the store must hold version: 1, got {!r}".format(
+                    store.get("version")
+                ),
+            )
+            record = store.get(self.PROFILE)
+            self.assertIsInstance(
+                record,
+                dict,
+                "the store must hold a record under {!r}, got {!r}".format(
+                    self.PROFILE, record
+                ),
+            )
+            self.assertEqual(
+                os.path.abspath(target),
+                record.get("path"),
+                "the record's path must be the absolute target path",
+            )
+            self.assertEqual(self.OWNER, record.get("owner"))
+            self.assertEqual(self.REPO, record.get("repo"))
+            self.assertEqual("main", record.get("base"))
+            self.assertEqual(
+                self.TOKEN_ENV,
+                record.get("token_env"),
+                "token_env must be derived per the store module",
+            )
+            self.assertEqual({}, record.get("project"))
+            # Cross-check the read side: the store module loads the record
+            # back with the same fields the CLI wrote.
+            from anvilkit.pi import piprofile
+
+            loaded = piprofile.load_profile(self.home / ".anvil", self.PROFILE)
+            self.assertEqual(os.path.abspath(target), loaded["path"])
+            self.assertEqual(self.OWNER, loaded["owner"])
+            self.assertEqual(self.REPO, loaded["repo"])
+            self.assertEqual("main", loaded["base"])
+            self.assertEqual(self.TOKEN_ENV, piprofile.token_env_for(self.PROFILE))
+
+    def test_setup_repo_records_in_place_on_rerun(self):
+        """Provisioning the same name at the same path twice updates the
+        record in place: the store holds exactly one profile."""
+        with tempfile.TemporaryDirectory() as target:
+            self._run(target, (self.OWNER, self.REPO))
+            result = self._run(target, (self.OWNER, self.REPO))
+
+        # The store assertion leads: the store must hold exactly one profile
+        # after a re-run, and the missing store is the correct red reason.
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} must exist after a re-run".format(
+                self.store_path
+            ),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a re-run must still provision - exit 0:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            [self.PROFILE],
+            [key for key in store if key != "version"],
+            "a re-run at the same path must update in place - the store "
+            "holds exactly one profile, got {!r}".format(
+                sorted(key for key in store if key != "version")
+            ),
+        )
+        self.assertEqual(1, store.get("version"))
+        self.assertEqual(os.path.abspath(target), store[self.PROFILE].get("path"))
+
+    def test_setup_repo_records_no_identity_when_unresolvable(self):
+        """An unresolvable identity records no identity rather than
+        guessing one: the record still exists, ``owner`` and ``repo`` are
+        absent or null, ``base`` is still "main", and provisioning still
+        succeeds (exit 0)."""
+        with tempfile.TemporaryDirectory() as target:
+            result = self._run(target, None)
+
+        # The store assertion leads: the record must exist even for an
+        # unresolvable identity, and the missing store is the correct red
+        # reason.
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written - an unresolvable "
+            "identity must still record the provisioning".format(
+                self.store_path
+            ),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "an unresolvable identity must not block provisioning - exit "
+            "0:\n{}".format(result.output),
+        )
+        self.assertEqual(1, store.get("version"))
+        record = store.get(self.PROFILE)
+        self.assertIsInstance(
+            record,
+            dict,
+            "the record must still exist for an unresolvable identity, "
+            "got {!r}".format(record),
+        )
+        self.assertEqual(
+            os.path.abspath(target),
+            record.get("path"),
+            "the record's path must still be the absolute target path",
+        )
+        self.assertTrue(
+            record.get("owner") is None
+            and record.get("repo") is None,
+            "an unresolvable identity must record no identity - owner and "
+            "repo must be absent or null, got {!r}".format(
+                (record.get("owner"), record.get("repo"))
+            ),
+        )
+        self.assertEqual("main", record.get("base"))
+        self.assertEqual(self.TOKEN_ENV, record.get("token_env"))
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 21 of plans/pi-phase13-profiles.md - profile-name-always-asked
+# ---------------------------------------------------------------------------
+#
+# ``setup-repo`` with GitHub enabled and NO ``--profile`` flag asks for the
+# profile name with NO default: an interactive run is prompted and re-prompts
+# until the name passes the store's charset rule (``piprofile.valid_name`` -
+# ``[A-Za-z0-9._-]``, no leading ``-``/``.``/digit); ``--yes`` or a
+# non-interactive run cannot answer a question with no default, so it fails
+# clean on the prompt code (``cli.EXIT_PROMPT`` = 6) naming ``--profile NAME``
+# as the fix, BEFORE anything is provisioned - no provision call, no store
+# record, an empty target. A supplied ``--profile <name>`` still bypasses
+# the prompt entirely (behaviour 14), and an invalid ``--profile`` value is
+# still a usage error (``cli.EXIT_USAGE``), unchanged from behaviour 15.
+#
+# This supersedes behaviour 15's basename default (user decision, 2026-11-23,
+# on PR #115): "we should not have a default for profiles, it should always
+# be asked by the cli".
+#
+# The contract is pinned through the observables, not the seam's identity:
+# the default-carrying seam (``cli.prompts.ask``) is booby-trapped where it
+# must not be reached, and the no-default seam (``cli.prompts.ask_required``
+# or its equivalent) is left REAL so the empty-stdin and re-prompt runs
+# exercise the genuine asking.
+#
+# RED: the CLI still resolves the no-flag name to the target basename -
+# ``--yes`` and non-interactive runs exit 0 and record under the basename
+# instead of failing on the prompt code, the interactive prompt carries a
+# default (the booby trap fires), and an invalid answered line is refused
+# once (usage 2) instead of re-prompting.
+# ---------------------------------------------------------------------------
+
+
+class TestSetupRepoProfileNamePrompt(CliCase):
+    """``setup-repo`` always asks for the profile name - no default
+    (behaviour 21)."""
+
+    OWNER = "alpha"
+    REPO = "project-x"
+    BASELINE = "project-x"
+    CHARSET = "[A-Za-z0-9._-]"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.store_path = self.home / ".anvil" / "profiles.yaml"
+
+        # The guard gate's identity seam: the CLI resolves owner/repo through
+        # cli.piguard.resolve_repository, which never raises. The network is
+        # never touched: no rules fetched, no token probes run. With an empty
+        # rules list the verdict is clean, so provisioning proceeds.
+        self._resolve = mock.patch.object(
+            cli.piguard, "resolve_repository",
+            return_value=(self.OWNER, self.REPO),
+        )
+        self._resolve.start()
+        self.addCleanup(self._resolve.stop)
+        self._fetch = mock.patch.object(
+            cli.piguard, "fetch_branch_rules", return_value=([], None),
+        )
+        self._fetch.start()
+        self.addCleanup(self._fetch.stop)
+        self._check_all = mock.patch.object(
+            cli.piguard, "check_all", return_value=[],
+        )
+        self._check_all.start()
+        self.addCleanup(self._check_all.stop)
+        self._token = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=[],
+        )
+        self._token.start()
+        self.addCleanup(self._token.stop)
+
+    # -- helpers ---------------------------------------------------------
+
+    def _target(self):
+        """A real, empty target directory whose basename is ``project-x`` -
+        deliberately distinct from every recorded name the pins expect, so a
+        run that falls back to the old basename default records under the
+        wrong key and fails the store assertion."""
+        parent = tempfile.TemporaryDirectory()
+        self.addCleanup(parent.cleanup)
+        target = Path(parent.name) / self.BASELINE
+        target.mkdir()
+        return str(target)
+
+    def _spy_provision(self):
+        """A recorder over ``provision.setup_repo`` that delegates to the real
+        provision (the same seam the behaviour-14 template relies on), so a
+        run that should not provision actually writes - the target then gains
+        the usual artifacts and the call count is the 'no provision' signal."""
+        self._provision_calls = []
+        real = cli.provision.setup_repo
+
+        def spy(target, repo_plan, **kwargs):
+            self._provision_calls.append((str(target), repo_plan, kwargs))
+            return real(target, repo_plan, **kwargs)
+
+        patcher = mock.patch.object(cli.provision, "setup_repo", spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _run(self, target, interactive, assume_yes, profile=None,
+             input_=None, trap_ask=True, trap_required=False):
+        """One ``setup-repo`` with the gate pinned clean, a fresh ``HOME``,
+        the real provision under a recorder, and the name-prompt seams
+        controlled or observed.
+
+        ``trap_ask`` booby-traps the default-carrying seam
+        (``cli.prompts.ask``): under behaviour 21 the name is asked with NO
+        default, so reaching that seam at all is the bug - a call fails the
+        run loudly. ``trap_required`` does the same for the no-default seam
+        (``cli.prompts.ask_required``) on the ``--profile`` runs, where no
+        question may be asked at all. Where neither is trapped the no-default
+        seam is REAL, so the empty-stdin and re-prompt runs exercise the
+        genuine asking; ``input_`` feeds stdin for those (``None`` = the
+        runner's default, a non-tty closed at EOF). The token is stored, the
+        frontier declined, oxylabs skipped, so no other prompt is on this
+        path."""
+        self._spy_provision()
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN="ghp_profile_test")
+
+        argv = ["setup-repo", target, "--no-anthropic", "--no-oxylabs"]
+        if profile is not None:
+            argv += ["--profile", profile]
+        if assume_yes:
+            argv.append("--yes")
+
+        if interactive:
+            inter = mock.patch.object(
+                cli, "_is_interactive", return_value=True,
+            )
+            inter.start()
+            self.addCleanup(inter.stop)
+
+        if trap_ask:
+            ask_patcher = mock.patch.object(
+                cli.prompts, "ask",
+                side_effect=AssertionError(
+                    "a default-carrying profile-name prompt was asked"),
+            )
+            self._ask_mock = ask_patcher.start()
+            self.addCleanup(ask_patcher.stop)
+        else:
+            self._ask_mock = None
+
+        if trap_required:
+            required_patcher = mock.patch.object(
+                cli.prompts, "ask_required",
+                side_effect=AssertionError(
+                    "a profile-name prompt was asked"),
+            )
+            required_patcher.start()
+            self.addCleanup(required_patcher.stop)
+
+        kwargs = {}
+        if input_ is not None:
+            kwargs["input"] = input_
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv, **kwargs)
+
+    def _store(self):
+        """The store read back through yamlio (the honest way to assert the
+        record); a missing file is ``None``."""
+        from anvilkit import yamlio
+
+        if not self.store_path.exists():
+            return None
+        try:
+            return yamlio.load(self.store_path)
+        except yamlio.YamlError as exc:
+            self.fail(
+                "the profile store at {} is not a readable mapping: {}".format(
+                    self.store_path, exc,
+                ),
+            )
+
+    # -- the no-default prompt and its clean failure -----------------------
+
+    def test_interactive_no_profile_no_value_fails_clean_before_provisioning(
+        self,
+    ):
+        """Interactive, no --profile, no --yes, stdin closed (no input):
+        the name cannot be answered, so the run fails clean on the prompt
+        code (6) naming ``--profile NAME`` as the fix, and provisions
+        nothing. The default-carrying seam (``prompts.ask``) is booby-
+        trapped: under behaviour 21 it must not be reached, and reaching it
+        fails the run loudly (exit 1) instead of silently taking a default
+        - which is exactly how this pin goes red on the old code."""
+        target = self._target()
+        result = self._run(target, interactive=True, assume_yes=False)
+        self.assertEqual(
+            cli.EXIT_PROMPT, result.exit_code,
+            "a no-default name that cannot be answered must fail on the "
+            "prompt code, got {}:\n{}".format(
+                result.exit_code, result.output),
+        )
+        self.assertIn(
+            "--profile",
+            result.output,
+            "the failure must name --profile NAME as the fix:\n{}".format(
+                result.output),
+        )
+        self.assertEqual(
+            0, len(self._provision_calls),
+            "a missing name must be refused BEFORE provisioning - "
+            "provision was called {} times".format(len(self._provision_calls)),
+        )
+        self.assertIsNone(
+            self._store(),
+            "a missing name must record nothing - the store at {} must "
+            "not exist".format(self.store_path),
+        )
+        self.assertEqual(
+            [], list(Path(target).rglob("*")),
+            "a missing name must provision nothing into the target",
+        )
+
+    def test_interactive_no_profile_records_the_typed_name_not_the_basename(
+        self,
+    ):
+        """Interactive, no --profile, one valid line on stdin: the ANSWERED
+        name is what gets recorded - never the target basename, which is no
+        longer a default. Guard: the answered-name half of behaviour 15's
+        contract that survives the change."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=False,
+            input_="typed-name\n", trap_ask=False,
+        )
+        self.assertEqual(
+            0, result.exit_code,
+            "a clean gate with an answered name must provision - exit 0:"
+            "\n{}".format(result.output),
+        )
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written - the answered name "
+            "must be recorded".format(self.store_path),
+        )
+        record = store.get("typed-name")
+        self.assertIsInstance(
+            record, dict,
+            "the record must land under the typed name 'typed-name', got "
+            "keys {!r}".format(sorted(store)),
+        )
+        self.assertNotIn(
+            self.BASELINE, store,
+            "the target basename {!r} must not become the record key - "
+            "there is no default anymore, got keys {!r}".format(
+                self.BASELINE, sorted(store)),
+        )
+        self.assertEqual(
+            os.path.abspath(target), record.get("path"),
+            "the record's path must be the absolute target path",
+        )
+
+    # -- the no-prompt paths ----------------------------------------------
+
+    def test_profile_flag_returns_flag_name_without_prompting(self):
+        """--profile <name>: the flag's name is used WITHOUT prompting -
+        both name seams booby-trapped, so any question fails the run loudly
+        - and the record lands under it (unchanged from behaviour 14)."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=True,
+            profile="chosen", trap_required=True,
+        )
+        self.assertFalse(
+            self._ask_mock.called,
+            "--profile must return the flag's name without prompting",
+        )
+        self.assertEqual(
+            0, result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written".format(self.store_path),
+        )
+        record = store.get("chosen")
+        self.assertIsInstance(
+            record, dict,
+            "the record must land under the flag's name 'chosen', got "
+            "keys {!r}".format(sorted(store)),
+        )
+        self.assertEqual(
+            os.path.abspath(target), record.get("path"),
+            "the record's path must be the absolute target path",
+        )
+
+    def test_yes_without_profile_fails_clean_before_provisioning(self):
+        """--yes, no --profile: --yes accepts defaults, but there is no
+        default to accept, so the run fails clean on the prompt code (6)
+        naming ``--profile NAME`` as the fix, and provisions nothing: no
+        files in the target, no store record under the overridden HOME."""
+        target = self._target()
+        result = self._run(target, interactive=True, assume_yes=True)
+        self.assertEqual(
+            cli.EXIT_PROMPT, result.exit_code,
+            "--yes cannot answer a no-default question - it must fail on "
+            "the prompt code, got {}:\n{}".format(
+                result.exit_code, result.output),
+        )
+        self.assertIn(
+            "--profile",
+            result.output,
+            "the failure must name --profile NAME as the fix:\n{}".format(
+                result.output),
+        )
+        self.assertEqual(
+            0, len(self._provision_calls),
+            "--yes without --profile must be refused BEFORE provisioning "
+            "- provision was called {} times".format(len(self._provision_calls)),
+        )
+        self.assertIsNone(
+            self._store(),
+            "--yes without --profile must record nothing - the store at "
+            "{} must not exist".format(self.store_path),
+        )
+        self.assertEqual(
+            [], list(Path(target).rglob("*")),
+            "--yes without --profile must provision nothing into the "
+            "target",
+        )
+
+    def test_non_interactive_without_profile_fails_clean_before_provisioning(
+        self,
+    ):
+        """Non-interactive (the runner's stdin is not a tty, unpatched), no
+        --yes, no --profile: the same clean failure as --yes - the prompt
+        code (6), ``--profile NAME`` named as the fix, nothing provisioned
+        or recorded."""
+        target = self._target()
+        result = self._run(target, interactive=False, assume_yes=False,
+                           trap_ask=False)
+        self.assertEqual(
+            cli.EXIT_PROMPT, result.exit_code,
+            "a non-interactive run without --profile must fail on the "
+            "prompt code, got {}:\n{}".format(
+                result.exit_code, result.output),
+        )
+        self.assertIn(
+            "--profile",
+            result.output,
+            "the failure must name --profile NAME as the fix:\n{}".format(
+                result.output),
+        )
+        self.assertEqual(
+            0, len(self._provision_calls),
+            "a non-interactive run without --profile must be refused "
+            "BEFORE provisioning - provision was called {} times".format(
+                len(self._provision_calls)),
+        )
+        self.assertIsNone(
+            self._store(),
+            "a non-interactive run without --profile must record nothing "
+            "- the store at {} must not exist".format(self.store_path),
+        )
+        self.assertEqual(
+            [], list(Path(target).rglob("*")),
+            "a non-interactive run without --profile must provision "
+            "nothing into the target",
+        )
+
+    # -- the charset refusal, before provisioning --------------------------
+
+    def test_invalid_profile_flag_exits_usage_before_provisioning(self):
+        """--profile with a charset violation: exit on the usage code naming
+        the charset, BEFORE anything is provisioned - no provision call, no
+        store record."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=True,
+            profile="bad name!", trap_required=True,
+        )
+        self.assertEqual(
+            cli.EXIT_USAGE, result.exit_code,
+            "an invalid --profile name must exit on the usage code, got "
+            "{}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            self.CHARSET, result.output,
+            "the usage message must name the allowed charset {!r}:\n{}".format(
+                self.CHARSET, result.output),
+        )
+        self.assertEqual(
+            0, len(self._provision_calls),
+            "an invalid name must be refused BEFORE provisioning - "
+            "provision was called {} times".format(len(self._provision_calls)),
+        )
+        self.assertIsNone(
+            self._store(),
+            "an invalid name must record nothing - the store at {} must "
+            "not exist".format(self.store_path),
+        )
+
+    def test_interactive_re_prompts_until_a_valid_name_is_recorded(self):
+        """Interactive, no --profile, no --yes: an invalid first line (a
+        charset violation) is rejected and the prompt is asked again - the
+        ANSWERED valid line is what gets recorded, never the target
+        basename. This is what 'no default' buys: the question cannot be
+        answered with nothing typed, and a bad answer cannot be accepted
+        (behaviour 21 supersedes behaviour 15's one-shot default)."""
+        target = self._target()
+        result = self._run(
+            target, interactive=True, assume_yes=False,
+            input_="bad name!\ngood-name\n", trap_ask=False,
+        )
+        self.assertEqual(
+            0, result.exit_code,
+            "an invalid first line must be re-prompted, not accepted or "
+            "refused once - exit 0 after the valid line:\n{}".format(
+                result.output),
+        )
+        self.assertIn(
+            self.CHARSET, result.output,
+            "the re-prompt must name the allowed charset {!r}:\n{}".format(
+                self.CHARSET, result.output),
+        )
+        self.assertEqual(
+            1, len(self._provision_calls),
+            "the valid re-prompted name must provision exactly once - "
+            "provision was called {} times".format(len(self._provision_calls)),
+        )
+        store = self._store()
+        self.assertIsNotNone(
+            store,
+            "the profile store at {} was not written - the re-prompted "
+            "name must be recorded".format(self.store_path),
+        )
+        record = store.get("good-name")
+        self.assertIsInstance(
+            record, dict,
+            "the record must land under the VALID re-prompted name "
+            "'good-name', got keys {!r}".format(sorted(store)),
+        )
+        self.assertNotIn(
+            self.BASELINE, store,
+            "the target basename {!r} must not become the record key - "
+            "there is no default anymore, got keys {!r}".format(
+                self.BASELINE, sorted(store)),
+        )
+        self.assertEqual(
+            os.path.abspath(target), record.get("path"),
+            "the record's path must be the absolute target path",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 16 of plans/pi-phase13-profiles.md - dry-run-writes-nothing
+# ---------------------------------------------------------------------------
+#
+# ``--dry-run`` is the global flag (before the subcommand, the shape the
+# established dry-run tests at ``test_dry_run_setup_repo_writes_nothing_into_
+# the_target`` use). A ``--dry-run setup-repo`` with GitHub enabled and a
+# ``--profile <name>`` flag reaches the profile step without any prompt. Its
+# contract: name the store path and every field it would record - the
+# profile name, the absolute target path, owner, repo, base and the
+# ``token_env`` key name - and never create or modify the store: neither
+# ``<home>/.anvil/profiles.yaml`` nor any ``.anvil`` directory comes into
+# existence, and a store that already exists is left byte-for-byte
+# unchanged. A dry run that wrote a profile would be the bug this pins.
+#
+# RED: ``_record_profile`` still runs under ``--dry-run`` after the (dry)
+# provisioning succeeds (``anvilkit/cli.py:1483``) - the store is created
+# where it must not exist, a seeded store is rewritten, and nothing names
+# the store path or its fields in the output.
+# ---------------------------------------------------------------------------
+
+
+class TestSetupRepoDryRunProfile(CliCase):
+    """``--dry-run setup-repo --profile`` names the record but writes nothing
+    (behaviour 16)."""
+
+    OWNER = "alpha"
+    REPO = "project-x"
+    PROFILE = "project-x"
+    BASE = "main"
+    TOKEN_ENV = "GITHUB_TOKEN_PROJECT_X"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store would land at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.store_path = self.home / ".anvil" / "profiles.yaml"
+
+        # The guard gate's identity seam: the CLI resolves owner/repo through
+        # cli.piguard.resolve_repository, which never raises. The network is
+        # never touched: no rules fetched, no token probes run. With an empty
+        # rules list the verdict is clean, so the run reaches the profile
+        # step.
+        self._resolve = mock.patch.object(
+            cli.piguard, "resolve_repository",
+            return_value=(self.OWNER, self.REPO),
+        )
+        self._resolve.start()
+        self.addCleanup(self._resolve.stop)
+        self._fetch = mock.patch.object(
+            cli.piguard, "fetch_branch_rules", return_value=([], None),
+        )
+        self._fetch.start()
+        self.addCleanup(self._fetch.stop)
+        self._check_all = mock.patch.object(
+            cli.piguard, "check_all", return_value=[],
+        )
+        self._check_all.start()
+        self.addCleanup(self._check_all.stop)
+        self._token = mock.patch.object(
+            cli.piguard, "check_token_all", return_value=[],
+        )
+        self._token.start()
+        self.addCleanup(self._token.stop)
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run_dry(self, target):
+        """One non-interactive ``--dry-run setup-repo --profile`` with the
+        gate pinned clean and the store under a fresh ``HOME`` override, so
+        the store would land at ``<home>/.anvil``.
+
+        ``provision.setup_repo`` is NOT patched: the (dry) provisioning must
+        still succeed, and the ``path`` the record would carry must be a real
+        directory. The gate resolves, fetches nothing and probes nothing, so
+        the verdict is clean and the run reaches the profile step - exit 0.
+        """
+        self.write_env(LLM_PORT="8000", GITHUB_TOKEN="ghp_profile_test")
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke(
+                [
+                    "--dry-run",
+                    "setup-repo",
+                    target,
+                    "--profile",
+                    self.PROFILE,
+                    "--yes",
+                    "--no-anthropic",
+                    "--no-oxylabs",
+                ]
+            )
+
+    # -- the dry run names what it would record --------------------------
+
+    def test_dry_run_setup_repo_names_the_store_and_fields_but_writes_nothing(self):
+        """A dry run names the store path and every field it would record -
+        the profile name, the absolute target path, owner, repo, base and
+        the ``token_env`` key - and creates neither the store file nor the
+        ``.anvil`` directory."""
+        with tempfile.TemporaryDirectory() as target:
+            result = self._run_dry(target)
+
+            # The no-write assertion leads: a dry run that wrote a profile is
+            # the bug this pins, and the correct red reason is a store that
+            # came into existence.
+            self.assertFalse(
+                self.store_path.exists(),
+                "a --dry-run must never create the profile store - {} "
+                "came into existence".format(self.store_path),
+            )
+            self.assertFalse(
+                (self.home / ".anvil").exists(),
+                "a --dry-run must never create the .anvil directory - {} "
+                "came into existence".format(self.home / ".anvil"),
+            )
+            self.assertEqual(
+                0,
+                result.exit_code,
+                "a clean gate must dry-run provision - exit 0:\n{}".format(
+                    result.output
+                ),
+            )
+            # The output names the store path and every field it would
+            # record.
+            self.assertIn(
+                str(self.store_path),
+                result.output,
+                "the dry run must name the store path {} - output:\n{}".format(
+                    self.store_path, result.output
+                ),
+            )
+            self.assertIn(
+                self.PROFILE,
+                result.output,
+                "the dry run must name the profile name {!r} - output:\n{}".format(
+                    self.PROFILE, result.output
+                ),
+            )
+            self.assertIn(
+                os.path.abspath(target),
+                result.output,
+                "the dry run must name the absolute target path - output:\n{}".format(
+                    result.output
+                ),
+            )
+            self.assertIn(
+                self.OWNER,
+                result.output,
+                "the dry run must name the owner {!r} - output:\n{}".format(
+                    self.OWNER, result.output
+                ),
+            )
+            self.assertIn(
+                self.REPO,
+                result.output,
+                "the dry run must name the repo {!r} - output:\n{}".format(
+                    self.REPO, result.output
+                ),
+            )
+            self.assertIn(
+                self.BASE,
+                result.output,
+                "the dry run must name the base branch {!r} - output:\n{}".format(
+                    self.BASE, result.output
+                ),
+            )
+            self.assertIn(
+                self.TOKEN_ENV,
+                result.output,
+                "the dry run must name the token_env key {!r} - output:\n{}".format(
+                    self.TOKEN_ENV, result.output
+                ),
+            )
+
+    # -- the dry run leaves an existing store untouched ------------------
+
+    def test_dry_run_setup_repo_leaves_an_existing_store_byte_for_byte_unchanged(self):
+        """A store that already exists is left byte-for-byte unchanged by a
+        dry run and still loads afterwards."""
+        seed = (
+            "version: 1\n"
+            "other-proj:\n"
+            "  path: /code/other\n"
+            "  owner: beta\n"
+            "  repo: other\n"
+            "  base: main\n"
+            "  token_env: GITHUB_TOKEN_OTHER\n"
+            "  project: {}\n"
+        )
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+        before = self.store_path.read_bytes()
+
+        with tempfile.TemporaryDirectory() as target:
+            result = self._run_dry(target)
+
+        after = self.store_path.read_bytes()
+        self.assertEqual(
+            before,
+            after,
+            "a --dry-run must leave the existing store at {} byte-for-byte "
+            "unchanged - it was rewritten".format(self.store_path),
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a clean gate must dry-run provision - exit 0:\n{}".format(
+                result.output
+            ),
+        )
+        from anvilkit import yamlio
+
+        store = yamlio.load(self.store_path)
+        self.assertIsInstance(
+            store,
+            dict,
+            "the seeded store must still load after the dry run",
+        )
+        self.assertEqual(1, store.get("version"))
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 17 of plans/pi-phase13-profiles.md - profile-list-and-show
+# ---------------------------------------------------------------------------
+#
+# ``profile`` is a typer sub-app (``add_typer``; the CLI is flat today,
+# ``anvilkit/cli.py:191``) holding two read-only commands. The store is at
+# ``<home>/.anvil/profiles.yaml`` and is seeded with
+# ``piprofile.save_profile`` against REAL temporary directories - behaviour 10
+# makes ``load_profile`` refuse a record whose path has vanished, so a seed
+# pointing at a missing directory would itself fail to load. ``profile list``
+# prints each name with its path; ``profile show <name>`` prints the record's
+# fields - the absolute path, owner, repo, base, the ``token_env`` KEY name and
+# the ``project`` block's values byte-for-byte - and never a token *value*: the
+# home ``.env`` carries a known value under the profile's ``token_env`` key and
+# a known ``GITHUB_TOKEN``. ``show`` of an unknown name exits on the usage code
+# with behaviour 9's message; ``show`` of a record whose path has vanished
+# surfaces as a ``ProfileError`` (the real entrypoint ``run()`` maps it to
+# ``EXIT_CONFIG`` - ``CliRunner`` cannot see that mapping, see
+# ``TestRunEntryPoint``).
+#
+# RED: ``profile`` is not a registered command - ``CliRunner`` reports
+# "No such command 'profile'" for ``["profile", "list"]``, and every
+# exit/output assertion below fails for exactly that reason.
+# ``TestSubcommandsExist.EXPECTED`` is extended in this red step with
+# ``"profile"``, so its three registration pins go red alongside the new tests.
+# ---------------------------------------------------------------------------
+
+
+class TestProfileListAndShow(CliCase):
+    """``profile list`` / ``profile show`` (behaviour 17)."""
+
+    PROFILE = "project-x"
+    SECOND = "api"
+    SECOND_OWNER = "beta"
+    OWNER = "alpha"
+    REPO = "project-x"
+    BASE = "main"
+    TOKEN_ENV = "GITHUB_TOKEN_PROJECT_X"
+    HOME_TOKEN_VALUE = "s3cret-project-x-home-token"
+    FALLBACK_TOKEN_VALUE = "s3cret-fallback-home-token"
+    PROJECT = {
+        "name": "project-x",
+        "structure": "src/\n  main.py\n  util.py\n",
+        "configuration": "llm: coder\nport: 8000\n",
+    }
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The home .env carries known token values - one under the profile's
+        # own token_env key and one under the GITHUB_TOKEN fallback. Neither
+        # value may ever appear in a command's output.
+        from anvilkit import env
+
+        env.write(
+            self.anvil_home / ".env",
+            [
+                (self.TOKEN_ENV, self.HOME_TOKEN_VALUE),
+                ("GITHUB_TOKEN", self.FALLBACK_TOKEN_VALUE),
+            ],
+        )
+
+        # Real target directories, one per profile: behaviour 10 makes
+        # load_profile refuse a vanished path, so the seeds must point at
+        # directories that exist.
+        second_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(second_dir.cleanup)
+        self.second_path = Path(second_dir.name)
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        # The most honest seeder: the production write path, so the store on
+        # disk is exactly what ``profile list`` / ``show`` will read.
+        from anvilkit.pi import piprofile
+
+        piprofile.save_profile(
+            self.anvil_home,
+            self.SECOND,
+            self.second_path,
+            self.SECOND_OWNER,
+            "api",
+            self.BASE,
+            {},
+        )
+        piprofile.save_profile(
+            self.anvil_home,
+            self.PROFILE,
+            self.profile_path,
+            self.OWNER,
+            self.REPO,
+            self.BASE,
+            self.PROJECT,
+        )
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``profile`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception: before the sub-app exists, click raises a
+        UsageError ("No such command 'profile'") at the app level."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _blank_store(self):
+        """Delete the seeded store file: no store at all."""
+        self.store_path.unlink()
+
+    # -- profile list ------------------------------------------------------
+
+    def test_profile_list_exits_zero_and_names_each_profile_with_its_path(self):
+        """``profile list`` prints a line per profile carrying both the name
+        and its path, and never a token value."""
+        result = self._run(["profile", "list"])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile list must exit 0:\n{}".format(result.output),
+        )
+        for name, path in (
+            (self.SECOND, self.second_path),
+            (self.PROFILE, self.profile_path),
+        ):
+            absolute = os.path.abspath(str(path))
+            lines = [
+                line
+                for line in result.output.splitlines()
+                if name in line and absolute in line
+            ]
+            self.assertTrue(
+                lines,
+                "profile list must print a line naming {!r} together with "
+                "its path {} - output:\n{}".format(name, absolute, result.output),
+            )
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by profile list",
+            )
+
+    # -- profile show ------------------------------------------------------
+
+    def test_profile_show_prints_the_record_fields_and_the_project_block(self):
+        """``profile show project-x`` prints the record's fields: the absolute
+        path, owner, repo, base, the ``token_env`` KEY name, and the
+        ``project`` block's values byte-for-byte."""
+        result = self._run(["profile", "show", self.PROFILE])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile show must exit 0:\n{}".format(result.output),
+        )
+        for value in (
+            os.path.abspath(str(self.profile_path)),
+            self.OWNER,
+            self.REPO,
+            self.BASE,
+            self.TOKEN_ENV,
+        ):
+            self.assertIn(
+                value,
+                result.output,
+                "profile show must print {!r} - output:\n{}".format(
+                    value, result.output
+                ),
+            )
+        for field_value in self.PROJECT.values():
+            self.assertIn(
+                field_value,
+                result.output,
+                "profile show must print the project block value {!r} "
+                "byte-for-byte - output:\n{}".format(field_value, result.output),
+            )
+
+    def test_profile_show_never_prints_a_token_value(self):
+        """Known token values are seeded in the home .env under the profile's
+        token_env key and GITHUB_TOKEN: neither may appear anywhere in the
+        show output - only the token_env key name is printed."""
+        result = self._run(["profile", "show", self.PROFILE])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile show must exit 0:\n{}".format(result.output),
+        )
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by profile show",
+            )
+
+    # -- show of an unknown name: behaviour 9's message ---------------------
+
+    def test_profile_show_unknown_name_exits_usage_naming_it_and_the_known_profiles(self):
+        """``show`` of a name the store does not hold exits on the usage code
+        with behaviour 9's message: the unknown name named, the known profile
+        names listed."""
+        result = self._run(["profile", "show", "ghost"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "show of an unknown name must exit on the usage code, got "
+            "{}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            "unknown profile",
+            result.output,
+            "the message must use behaviour 9's 'unknown profile' "
+            "phrasing - output:\n{}".format(result.output),
+        )
+        self.assertIn("ghost", result.output)
+        self.assertIn(self.PROFILE, result.output)
+        self.assertIn(self.SECOND, result.output)
+
+    def test_profile_show_unknown_name_with_no_profiles_saved_says_so(self):
+        """With a store holding no profiles at all, the message says no
+        profiles are saved."""
+        self._blank_store()
+        result = self._run(["profile", "show", "ghost"])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "show of an unknown name with no profiles saved must exit on "
+            "the usage code, got {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertIn(
+            "no profiles",
+            result.output,
+            "the message must say no profiles are saved - "
+            "output:\n{}".format(result.output),
+        )
+
+    # -- the controlled failures --------------------------------------------
+
+    def test_profile_show_vanished_path_raises_a_profile_error(self):
+        """``show`` of a record whose path has vanished is a controlled
+        failure: at the CliRunner level the exception is a ProfileError (the
+        real entrypoint maps it to EXIT_CONFIG, which CliRunner cannot see -
+        see TestRunEntryPoint) and the exit code is non-zero, never a raw
+        traceback."""
+        shutil.rmtree(str(self.profile_path))
+        result = self._run(["profile", "show", self.PROFILE])
+        from anvilkit.pi import piprofile
+
+        self.assertIsInstance(
+            result.exception,
+            piprofile.ProfileError,
+            "show of a vanished path must surface a ProfileError, got "
+            "{!r}".format(result.exception),
+        )
+        self.assertNotEqual(
+            0,
+            result.exit_code,
+            "show of a vanished path must exit non-zero, got {}: "
+            "output:\n{}".format(result.exit_code, result.output),
+        )
+
+    def test_profile_list_with_no_store_exits_zero(self):
+        """No store at all: list exits 0 (no crash)."""
+        self._blank_store()
+        result = self._run(["profile", "list"])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile list with no store must exit 0:\n{}".format(result.output),
+        )
+
+    # -- behaviour 19: list tolerates a vanished path -----------------------
+
+    def test_profile_list_over_a_vanished_path_still_lists_the_rest(self):
+        """``list`` stays a working discovery tool when one record's path
+        has vanished: exit 0, and BOTH names are printed - the healthy
+        record with its path, the vanished one with its stored path. This
+        is the pin that forces the implementation to use the raw accessor
+        (``piprofile.profile_path``) instead of ``load_profile``, which
+        behaviour 10 makes refuse a vanished path."""
+        shutil.rmtree(str(self.profile_path))
+        result = self._run(["profile", "list"])
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "profile list must exit 0 even when a stored path has "
+            "vanished:\n{}".format(result.output),
+        )
+        # Both names are printed: the discovery tool lists what is saved,
+        # not what still exists on disk.
+        self.assertIn(
+            self.SECOND,
+            result.output,
+            "profile list must still print the healthy profile {!r} - "
+            "output:\n{}".format(self.SECOND, result.output),
+        )
+        self.assertIn(
+            self.PROFILE,
+            result.output,
+            "profile list must still print the vanished profile {!r} - "
+            "output:\n{}".format(self.PROFILE, result.output),
+        )
+        # The healthy record keeps the behaviour 17 shape: a line naming it
+        # together with its path.
+        healthy = os.path.abspath(str(self.second_path))
+        healthy_lines = [
+            line
+            for line in result.output.splitlines()
+            if self.SECOND in line and healthy in line
+        ]
+        self.assertTrue(
+            healthy_lines,
+            "profile list must print a line naming the healthy profile "
+            "{!r} with its path {} - output:\n{}".format(
+                self.SECOND, healthy, result.output
+            ),
+        )
+        # The vanished record is printed with its stored path (the raw
+        # accessor's value); the exact line format is the implementer's
+        # choice, but the stored path must appear.
+        vanished = os.path.abspath(str(self.profile_path))
+        self.assertIn(
+            vanished,
+            result.output,
+            "profile list must print the vanished profile's stored path "
+            "{} - output:\n{}".format(vanished, result.output),
+        )
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by profile list",
+            )
+
+    def test_profile_show_still_refuses_a_vanished_path(self):
+        """Guard against over-correction: only ``list`` becomes tolerant
+        over a vanished path. ``show`` keeps behaviour 10's existence
+        check and still surfaces a ``ProfileError`` (the real entrypoint
+        maps it to EXIT_CONFIG, which CliRunner cannot see - see
+        TestRunEntryPoint)."""
+        shutil.rmtree(str(self.profile_path))
+        result = self._run(["profile", "show", self.PROFILE])
+        from anvilkit.pi import piprofile
+
+        self.assertIsInstance(
+            result.exception,
+            piprofile.ProfileError,
+            "show of a vanished path must still surface a ProfileError, "
+            "got {!r}".format(result.exception),
+        )
+        self.assertNotEqual(
+            0,
+            result.exit_code,
+            "show of a vanished path must still exit non-zero, got {}: "
+            "output:\n{}".format(result.exit_code, result.output),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 20 of plans/pi-phase13-profiles.md - suite-home-isolation (PIN)
+# ---------------------------------------------------------------------------
+#
+# The whole ``tests.test_cli`` suite must pass with no real home directory:
+# every ``setup-repo`` and profile command a test invokes must find a
+# test-owned ``HOME`` and land its ``~/.anvil`` store under it.
+# ``CliCase`` currently does not override ``HOME``, and the production
+# ``_record_profile`` resolves ``Path.home() / ".anvil"`` at call time, so
+# every clean-gate ``setup-repo`` run appends a record to the developer's
+# REAL ``~/.anvil/profiles.yaml``. The four newer profile test classes
+# override ``HOME`` per-test and did not leak; the rest of the suite did.
+#
+# RED: a clean-gate ``setup-repo`` (the gate's piguard seams pinned clean,
+# ``--yes``, a ``TemporaryDirectory`` target, no ``--no-github``) provokes
+# the write. Test 1 asserts the real store is byte-for-byte as the suite
+# found it (or still absent) - it fails while the run appends a record.
+# Test 2 asserts the suite's ``HOME`` is test-owned and distinct from the
+# real home, and the record lands under it - it fails on the first
+# conjunct while ``HOME`` is never overridden. ``tearDown`` pins the
+# creation half: a real ``.anvil`` directory that did not exist before the
+# test must not exist after it.
+# ---------------------------------------------------------------------------
+
+
+class TestSuiteNeverTouchesRealHome(CliCase):
+    """The suite never writes into the real ``$HOME`` (behaviour 20, PIN)."""
+
+    OWNER = "alpha"
+    REPO = "project-x"
+
+    def setUp(self):
+        # Capture the REAL home BEFORE ``super().setUp()``: the fix under
+        # test gives ``CliCase`` its own ``HOME`` there, so the real one is
+        # only still visible while it precedes the patch.
+        self.real_home = Path(os.environ["HOME"])
+        self.real_store = self.real_home / ".anvil" / "profiles.yaml"
+        self.real_store_before = (
+            self.real_store.read_bytes() if self.real_store.is_file() else None
+        )
+        self.real_anvil_dir_before = (self.real_home / ".anvil").exists()
+        super().setUp()
+
+    def tearDown(self):
+        super().tearDown()
+        # The creation half of the pin: a real ``.anvil`` that did not
+        # exist before the test must not exist after it, whichever command
+        # ran.
+        if not self.real_anvil_dir_before:
+            anvil_dir = self.real_home / ".anvil"
+            self.assertFalse(
+                anvil_dir.exists(),
+                "the suite created {} in the real home - the suite must "
+                "never write into the real home".format(anvil_dir),
+            )
+
+    # -- helpers -------------------------------------------------------------
+
+    def _clean_gate_run(self):
+        """One non-interactive clean-gate ``setup-repo``.
+
+        The piguard seams are pinned the clean variant of
+        ``TestSetupRepoGuardGate._blocked_seams``: the identity resolves,
+        the fetched rules are an empty array, and BOTH the branch check
+        and the token probes emit no findings, so the verdict is clean and
+        provisioning proceeds exactly as today - and the record is
+        written. ``--profile proj`` supplies the name (behaviour 21: there
+        is no default to take); no ``--no-github``, so the gate (and the
+        record) run.
+        """
+        self.write_env(LLM_PORT="8000")
+        patchers = (
+            mock.patch.object(
+                cli.piguard,
+                "resolve_repository",
+                return_value=(self.OWNER, self.REPO),
+            ),
+            mock.patch.object(
+                cli.piguard, "fetch_branch_rules", return_value=([], None)
+            ),
+            mock.patch.object(cli.piguard, "check_all", return_value=[]),
+            mock.patch.object(cli.piguard, "check_token_all", return_value=[]),
+        )
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        self._target = tempfile.TemporaryDirectory()
+        self.addCleanup(self._target.cleanup)
+        return self.invoke_allowing_exception(
+            ["setup-repo", self._target.name, "--profile", "proj", "--yes"]
+
+        )
+
+    # -- the pin --------------------------------------------------------------
+
+    def test_setup_repo_never_writes_into_the_real_home(self):
+        """A clean-gate ``setup-repo`` leaves the real profile store
+        byte-for-byte as the suite found it - or still absent if it never
+        existed: the DoD pin, 'the suite passes with no real home
+        directory'."""
+        result = self._clean_gate_run()
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+
+        if self.real_store_before is None:
+            self.assertFalse(
+                self.real_store.exists(),
+                "setup-repo created the real profile store {} - the "
+                "suite must never write into the real home".format(
+                    self.real_store
+                ),
+            )
+        else:
+            self.assertEqual(
+                self.real_store_before,
+                self.real_store.read_bytes(),
+                "setup-repo mutated the real profile store {} - the "
+                "suite must never write into the real home".format(
+                    self.real_store
+                ),
+            )
+
+    def test_setup_repo_store_lands_under_the_suite_home(self):
+        """After a clean-gate ``setup-repo`` the suite's ``HOME`` is a
+        test-owned directory distinct from the real home, and the record
+        lands under it: ``<HOME>/.anvil/profiles.yaml`` holds the ``proj``
+        record with the target's absolute path."""
+        result = self._clean_gate_run()
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a clean gate must provision - exit 0:\n{}".format(result.output),
+        )
+
+        self.assertNotEqual(
+            os.environ["HOME"],
+            str(self.real_home),
+            "the suite must run with its own HOME - setup-repo resolves "
+            "the store via Path.home() at call time, so a shared real "
+            "home is the leak",
+        )
+        store = Path(os.environ["HOME"]) / ".anvil" / "profiles.yaml"
+        self.assertTrue(
+            store.is_file(),
+            "the profile store {} under the suite's HOME was not written "
+            "after a successful provisioning".format(store),
+        )
+        from anvilkit import yamlio
+
+        loaded = yamlio.load(store)
+        name = "proj"
+        record = loaded.get(name)
+        self.assertIsInstance(
+            record,
+            dict,
+            "the store under the suite's HOME must hold a record under "
+            "the supplied --profile name {!r}, got {!r}".format(name, loaded),
+        )
+        self.assertEqual(
+            os.path.abspath(self._target.name),
+            record.get("path"),
+            "the record's path must be the absolute target path",
         )

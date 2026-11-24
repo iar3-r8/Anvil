@@ -32,8 +32,9 @@ from . import compose, config, env, health, prompts, provision, render, smoke
 from .compose import Compose, ComposeError
 from .pi import pibakeoff
 from .config import ConfigError
-from .pi import picodeowners, piguard, pitokenrecipe, piruleset
+from .pi import picodeowners, piguard, pitokenrecipe, piruleset, piprofile
 from .pi.piruleset import RulesetError
+from .pi.piprofile import ProfileError
 from .prompts import PromptError
 from .provision import ProvisionError, RepoPlan
 from .render import RenderError
@@ -1288,6 +1289,120 @@ def _persist_anthropic_key(shared: Context, api_key: str) -> None:
     shared.echo("⚡ Key accepted and persisted to .env")
 
 
+def _guard_gate(
+    shared: Context,
+    path: str,
+    token_flag: Optional[str],
+    no_github: bool,
+) -> Tuple[str, Optional[Tuple[str, str]]]:
+    """Resolve the GitHub token and run the guard gate on ``path``; a
+    blocked gate exits 9 without provisioning (behaviours 6, 7, 8 and 11)."""
+    token = _resolve_github_token(shared, token_flag, no_github)
+    shared.echo("")
+    # The guard gate: after the token (the gate needs it) and before the
+    # frontier/oxylabs prompts, so a blocked run asks no question it will
+    # then discard. --no-github skips it entirely: with no GitHub there is
+    # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
+    # None unless the gate ran: the profile record (behaviour 14) reuses
+    # this identity rather than re-resolving it.
+    repository: Optional[Tuple[str, str]] = None
+    if not no_github:
+        branch_findings, token_findings, repository = _collect_guard_findings(
+            Path(path), token, "main"
+        )
+        # Behaviour 11: the report prints whenever ANY finding has
+        # status warn or fail - computed over the branch + token
+        # findings together, the same combined list the verdict and
+        # the renderers see - not only when the gate blocks, so a
+        # proceeding gate shows why the warn stands. The condition
+        # is status-only, piguard.render_fixes' own selection rule,
+        # and NEVER includes skipped: a clean gate of only
+        # passed/skipped findings prints nothing, as today (a plain
+        # target with no git origin is all-skipped).
+        if any(
+            finding.get("status") in ("warn", "fail")
+            for finding in branch_findings + token_findings
+        ):
+            shared.echo("")
+            # Behaviour 6: the sectioned report, the same blocks
+            # verify-guards prints - never re-derived. The findings
+            # carry no token value, so nothing secret is echoed.
+            _echo_guard_report(shared, branch_findings, token_findings)
+        if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
+            _free_plan_followup(
+                shared, branch_findings, repository, "main", Path(path)
+            )
+            shared.echo("")
+            remediation = piguard.gate_remediation(
+                branch_findings, token_findings
+            )
+            # Behaviour 7: the gate prepares the fix a junior can
+            # follow - the importable ruleset - after the report and
+            # before the final exit. The run still ends blocked; the
+            # prepared fix never masks the block.
+            if remediation["needs_ruleset"]:
+                _prepare_gate_ruleset(shared, Path(path))
+                shared.echo("")
+            # Behaviour 8: the gate prints the token fix a junior
+            # can follow - the pre-filled creation URL and the
+            # ordered steps - after the ruleset preparation (branch
+            # rules first, then the token fix) and before the final
+            # exit. Only a bad token (a token finding with status
+            # fail) earns the recipe (the warn asymmetry). The URL
+            # carries no token value, so nothing secret is echoed.
+            # ``repository`` is only None when no repository could be
+            # resolved, in which case the token probes never ran, so
+            # the guard is defensive and unreachable.
+            if remediation["needs_token_recipe"] and repository is not None:
+                _prepare_gate_token_recipe(shared, repository)
+                shared.echo("")
+            shared.echo(
+                "⛔ Fix the branch rules and token scope above, then "
+                "re-run setup-repo."
+            )
+            raise typer.Exit(EXIT_GUARDS_BLOCKED)
+    return token, repository
+
+
+def _announce_or_record_profile(
+    shared: Context,
+    path: str,
+    profile_name: str,
+    repository: Optional[Tuple[str, str]],
+) -> None:
+    """Announce (dry-run) or write the profile record after a successful
+    provisioning (behaviours 14 and 16)."""
+    # Behaviour 14: the record is written AFTER a successful provisioning,
+    # from values already resolved - the gate's identity, never re-resolved.
+    # A skipped gate (--no-github) has no identity to record, so the record
+    # runs only when the gate ran; the name was resolved and validated
+    # before provisioning (behaviour 15), so it is None exactly when the
+    # gate did not run. A gate that ran but could not resolve the identity
+    # still records - with owner/repo null rather than a guessed identity.
+    # Behaviour 16: under --dry-run the record is only NAMED, never written -
+    # the store path is computed at call time (Path.home()), so an overridden
+    # HOME names the location the operator would see. Only key names and
+    # facts are echoed; a token value never appears.
+    if shared.dry_run:
+        owner, repo = (
+            repository if repository is not None else (None, None)
+        )
+        shared.echo(
+            "would store profile {!r} in {} - path: {}, owner: {}, "
+            "repo: {}, base: {}, token_env: {}".format(
+                profile_name,
+                Path.home() / ".anvil" / "profiles.yaml",
+                os.path.abspath(path),
+                owner,
+                repo,
+                "main",
+                piprofile.token_env_for(profile_name),
+            )
+        )
+    else:
+        _record_profile(path, profile_name, repository)
+
+
 @app.command(name="setup-repo")
 def setup_repo(
     ctx: typer.Context,
@@ -1318,6 +1433,13 @@ def setup_repo(
     no_oxylabs: bool = typer.Option(
         False, "--no-oxylabs", help="Skip Oxylabs documentation scraping entirely."
     ),
+    profile: Optional[str] = typer.Option(
+        None,
+        "--profile",
+        help="Record the provisioning under this profile name in the Anvil "
+        "profile store. There is no default: a missing name is asked "
+        "interactively, or must be supplied here when non-interactive.",
+    ),
     container: bool = typer.Option(
         False,
         "--container",
@@ -1344,67 +1466,7 @@ def setup_repo(
     shared.detail("context window: {}".format(topology.coder_context_window))
 
     try:
-        token = _resolve_github_token(shared, github_token, no_github)
-        shared.echo("")
-        # The guard gate: after the token (the gate needs it) and before the
-        # frontier/oxylabs prompts, so a blocked run asks no question it will
-        # then discard. --no-github skips it entirely: with no GitHub there is
-        # nothing to gate (plans/setup-repo-guards.md behaviours 4 and 10).
-        if not no_github:
-            branch_findings, token_findings, repository = _collect_guard_findings(
-                Path(path), token, "main"
-            )
-            # Behaviour 11: the report prints whenever ANY finding has
-            # status warn or fail - computed over the branch + token
-            # findings together, the same combined list the verdict and
-            # the renderers see - not only when the gate blocks, so a
-            # proceeding gate shows why the warn stands. The condition
-            # is status-only, piguard.render_fixes' own selection rule,
-            # and NEVER includes skipped: a clean gate of only
-            # passed/skipped findings prints nothing, as today (a plain
-            # target with no git origin is all-skipped).
-            if any(
-                finding.get("status") in ("warn", "fail")
-                for finding in branch_findings + token_findings
-            ):
-                shared.echo("")
-                # Behaviour 6: the sectioned report, the same blocks
-                # verify-guards prints - never re-derived. The findings
-                # carry no token value, so nothing secret is echoed.
-                _echo_guard_report(shared, branch_findings, token_findings)
-            if piguard.gate_verdict(branch_findings + token_findings) == "blocked":
-                _free_plan_followup(
-                    shared, branch_findings, repository, "main", Path(path)
-                )
-                shared.echo("")
-                remediation = piguard.gate_remediation(
-                    branch_findings, token_findings
-                )
-                # Behaviour 7: the gate prepares the fix a junior can
-                # follow - the importable ruleset - after the report and
-                # before the final exit. The run still ends blocked; the
-                # prepared fix never masks the block.
-                if remediation["needs_ruleset"]:
-                    _prepare_gate_ruleset(shared, Path(path))
-                    shared.echo("")
-                # Behaviour 8: the gate prints the token fix a junior
-                # can follow - the pre-filled creation URL and the
-                # ordered steps - after the ruleset preparation (branch
-                # rules first, then the token fix) and before the final
-                # exit. Only a bad token (a token finding with status
-                # fail) earns the recipe (the warn asymmetry). The URL
-                # carries no token value, so nothing secret is echoed.
-                # ``repository`` is only None when no repository could be
-                # resolved, in which case the token probes never ran, so
-                # the guard is defensive and unreachable.
-                if remediation["needs_token_recipe"] and repository is not None:
-                    _prepare_gate_token_recipe(shared, repository)
-                    shared.echo("")
-                shared.echo(
-                    "⛔ Fix the branch rules and token scope above, then "
-                    "re-run setup-repo."
-                )
-                raise typer.Exit(EXIT_GUARDS_BLOCKED)
+        token, repository = _guard_gate(shared, path, github_token, no_github)
         frontier = _resolve_frontier(
             shared,
             settings,
@@ -1420,6 +1482,25 @@ def setup_repo(
         shared.echo("")
     except PromptError as exc:
         raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
+
+    # Behaviour 21 (superseding behaviour 15's basename default): the
+    # profile name is resolved BEFORE anything is provisioned, and only on
+    # the path that records (the gate ran, i.e. not --no-github).
+    # --profile returns its name without prompting; with no flag there
+    # is NO default, so --yes or a non-interactive run cannot answer
+    # the question and fails on the prompt code (6) naming
+    # --profile NAME as the fix, before provisioning. The resolved name
+    # is validated against the store's charset rule up front, so an
+    # invalid name is a usage error that stops the run before
+    # provisioning - an invalid name can no longer reach save_profile.
+    # A skipped gate (--no-github) has no identity to record, so no
+    # name is resolved.
+    profile_name: Optional[str] = None
+    if not no_github:
+        try:
+            profile_name = _resolve_profile_name(shared, profile)
+        except PromptError as exc:
+            raise _fail("❌ {}".format(exc), EXIT_PROMPT) from exc
 
     repo_plan = RepoPlan(
         port=port,
@@ -1448,6 +1529,106 @@ def setup_repo(
         raise _fail("❌ {}".format(exc), EXIT_PROVISION) from exc
     except RenderError as exc:
         raise _fail("❌ {}".format(exc), EXIT_CONFIG) from exc
+
+    if profile_name is not None:
+        _announce_or_record_profile(shared, path, profile_name, repository)
+
+
+def _resolve_profile_name(shared: Context, supplied: Optional[str]) -> str:
+    """Resolve the profile name for the record (behaviour 21).
+
+    Runs BEFORE anything is provisioned, on the path that records (the
+    guard gate ran). A supplied ``--profile`` name is returned without
+    prompting; a supplied name that fails the store's charset rule
+    fails on the usage code - naming the allowed charset, the way the
+    store module names it - before the caller may provision. With no
+    flag there is NO default: the question is asked through the house
+    seam, :func:`prompts.ask_required`, which asks with no default
+    and re-asks until a non-empty answer arrives (behaviour 22: the
+    read aborts cleanly on an exhausted stdin instead of re-prompting
+    forever); an answer that fails ``piprofile.valid_name`` is echoed
+    with the allowed charset named, and the question is asked again.
+    ``--yes`` and non-interactive runs cannot answer a no-default
+    question, so they raise :class:`PromptError` naming
+    ``--profile NAME`` as the fix before the seam is reached; so does
+    an interactive run whose stdin ends before the question is
+    answered, whose generic :class:`PromptError` is re-raised with
+    the same fix named. The caller maps the :class:`PromptError` to
+    the prompt exit code.
+    """
+    if supplied is not None:
+        if not piprofile.valid_name(supplied):
+            raise _fail(
+                "❌ invalid profile name {!r}: use only {}".format(
+                    supplied, piprofile._ALLOWED_CHARSET
+                ),
+                EXIT_USAGE,
+            )
+        return supplied
+
+    if shared.assume_yes or not shared.interactive():
+        # No default exists, so --yes has nothing to accept and a
+        # non-interactive run has no way to answer: fail on the prompt
+        # code before any provisioning, naming the fix. Checked before
+        # the seam so this message - not ask_required's generic one -
+        # is what the run fails with.
+        raise PromptError(
+            "no profile name was supplied and there is no default to "
+            "accept - pass --profile NAME to supply the name without "
+            "prompting."
+        )
+
+    # The check above guarantees the interactive, non-yes path, so
+    # ask_required's defaults are the only ones reachable here.
+    prompt = "Profile name for the Anvil profile store"
+    try:
+        while True:
+            name = prompts.ask_required(prompt)
+            if piprofile.valid_name(name):
+                return name
+            shared.echo(
+                "invalid profile name {!r}: use only {}".format(
+                    name, piprofile._ALLOWED_CHARSET
+                )
+            )
+    except PromptError:
+        # ask_required's exhausted-stdin failure names the missing
+        # value but not the fix; re-raise with --profile NAME named,
+        # the way the --yes/non-interactive path does.
+        raise PromptError(
+            "{} is required but stdin provided no value. Pass "
+            "--profile NAME to supply the name without prompting.".format(
+                prompt
+            )
+        ) from None
+
+
+def _record_profile(
+    path: str, name: str, repository: Optional[Tuple[str, str]]
+) -> None:
+    """Record a successful provisioning under ``name`` (behaviour 14).
+
+    Written after ``provision.setup_repo`` succeeds, from values already
+    resolved: the absolute target path, the guard gate's identity, and the
+    literal branch the gate checked. The store root is ``~/.anvil`` and is
+    read at call time via ``Path.home()`` so the suite can redirect ``HOME``
+    without touching the real home. ``repository`` may be ``None`` when the
+    identity was unresolvable; then owner and repo are recorded as null
+    rather than guessed. A ``ProfileError`` (for instance a name collision
+    at a different path) is left to escape: ``run()`` maps it to
+    ``EXIT_CONFIG``, so a failed record is never silently swallowed after
+    a success.
+    """
+    owner, repo = repository if repository is not None else (None, None)
+    piprofile.save_profile(
+        root=Path.home() / ".anvil",
+        name=name,
+        path=path,
+        owner=owner,
+        repo=repo,
+        base="main",
+        project={},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2198,6 +2379,89 @@ def smoke_test(
 
 
 # ---------------------------------------------------------------------------
+# profile sub-app
+# ---------------------------------------------------------------------------
+
+# A flat CLI grows a sub-group the moment one command family carries more
+# than one verb; ``profile`` is that family. The commands here are
+# read-only and need no shared Context (no port, no compose), so they stay
+# standalone: no global callback, no prompts, no ``--yes``.
+profile_app = typer.Typer(
+    help="Inspect the profiles recorded in the ~/.anvil profile store.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(profile_app, name="profile")
+
+
+def _profile_root() -> Path:
+    """The profile store root: ``~/.anvil``, computed at call time.
+
+    Computed per command rather than at import so a caller that overrides
+    ``$HOME`` (the test suite does) is seen on every invocation, not pinned
+    to whatever home existed when the module loaded.
+    """
+    return Path.home() / ".anvil"
+
+
+@profile_app.command(name="list")
+def profile_list() -> None:
+    """List every saved profile, one line per name with its absolute path.
+
+    A read is a read: it never writes, and it prints only the record's own
+    fields - never a resolved token, so a token value is never echoed.
+    A record whose path has vanished still lists, with its stored path:
+    ``profile_path`` does no existence check (behaviour 19), so ``list``
+    stays a working discovery tool while ``show`` keeps behaviour 10's
+    refusal.
+    """
+    root = _profile_root()
+    names = piprofile.list_profiles(root)
+    if not names:
+        typer.echo("No profiles are saved.")
+        return
+    for name in names:
+        typer.echo("{}\t{}".format(name, piprofile.profile_path(root, name)))
+
+
+@profile_app.command(name="show")
+def profile_show(
+    name: str = typer.Argument(..., help="The profile name to show."),
+) -> None:
+    """Print one profile's record: path, owner, repo, base, the ``token_env``
+    key name, and the project block's values, verbatim.
+
+    Prints the ``token_env`` KEY name, never a token value: it reads only
+    the record's own fields and never resolves a token or reads a .env. A
+    name the store does not hold exits on the usage code with the store's
+    own message (behaviour 9); a record whose path has vanished raises
+    ``ProfileError`` untouched, for the entry point to map.
+    """
+    root = _profile_root()
+    try:
+        record = piprofile.load_profile(root, name)
+    except ProfileError as exc:
+        if name not in piprofile.list_profiles(root):
+            # Behaviour 9: the store does not hold this name - a typo the
+            # operator can fix from the message, which names the known
+            # profiles, or says none are saved.
+            raise _fail(str(exc), EXIT_USAGE) from exc
+        # The name IS held: a vanished path (behaviour 10) or a malformed
+        # store - a controlled failure the entry point maps to its own
+        # code, so the ProfileError propagates untouched.
+        raise
+    typer.echo("name: {}".format(name))
+    typer.echo("path: {}".format(record["path"]))
+    typer.echo("owner: {}".format(record["owner"]))
+    typer.echo("repo: {}".format(record["repo"]))
+    typer.echo("base: {}".format(record["base"]))
+    typer.echo("token_env: {}".format(record["token_env"]))
+    project = record.get("project")
+    for key, value in (project or {}).items():
+        typer.echo("project.{}: {}".format(key, value))
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -2256,6 +2520,9 @@ def run() -> int:
         typer.echo("❌ {}".format(exc), err=True)
         return EXIT_STRESS_UNAVAILABLE
     except RenderError as exc:
+        typer.echo("❌ {}".format(exc), err=True)
+        return EXIT_CONFIG
+    except ProfileError as exc:
         typer.echo("❌ {}".format(exc), err=True)
         return EXIT_CONFIG
     except KeyboardInterrupt:
