@@ -88,7 +88,7 @@ Behaviour 6 (``start-run-writes-meta``), pinned from the plan:
 
     start_run(root, run_id, intake, sessions, started_at) -> Path
 
-- creates ``root/logs/runs/<run-id>/``, returns it as a ``pathlib.Path``,
+- creates ``root/<run-id>/``, returns it as a ``pathlib.Path``,
   and writes ``meta.json`` with exactly seven keys - ``run_id``,
   ``started_at``, ``finished_at`` (``None``), ``intake`` (``{"issue",
   "text"}``), ``sessions``, ``outcome`` (``"unknown"``) and ``complete``
@@ -114,7 +114,7 @@ fetch step: the module attribute is not callable.
 Behaviour 7 (``start-run-refuses-overwrite``), pinned from the plan:
 
     start_run(root, run_id, intake, sessions, started_at) with an existing
-    logs/runs/<run-id>/ -> RunLogError naming the run id
+    <root>/<run-id>/ -> RunLogError naming the run id
 
 - a second ``start_run`` with the same run id raises ``RunLogError`` naming
   the run id - a past run is evidence and is never overwritten;
@@ -299,8 +299,8 @@ with the anti-vacuity positive control run against ``pibakeoff`` (which
 really imports ``subprocess``) before the scan is asserted clean;
 (b) writes nothing outside the run directory it was given - the whole
 writer set is exercised under a fresh tempdir root and every path that
-exists under the root is asserted to be under
-``root/logs/runs/<run-id>/``; and (c) exposes exactly one exception
+exists under the root is asserted to live inside
+``root/<run-id>/``; and (c) exposes exactly one exception
 type, and it is ``RunLogError``.
 """
 
@@ -945,7 +945,7 @@ class RunLogStartRunTestCase(unittest.TestCase):
 
     def _read_meta(self, root):
         """The parsed ``meta.json`` of the run directory under ``root``."""
-        meta_path = root / "logs" / "runs" / self.RUN_ID / "meta.json"
+        meta_path = root / self.RUN_ID / "meta.json"
         return json.loads(meta_path.read_text(encoding="utf-8"))
 
     def test_start_run_creates_run_dir_returns_path_writes_eight_key_meta(self):
@@ -954,8 +954,17 @@ class RunLogStartRunTestCase(unittest.TestCase):
             root = Path(tmp)
             run_dir = self._start(root)
             self.assertIsInstance(run_dir, Path)
-            self.assertEqual(run_dir, root / "logs" / "runs" / self.RUN_ID)
+            # Behaviour 1 (archive-root-is-the-run-parent): the archive is
+            # <root>/<run-id>/ directly - root is the run directory's
+            # parent, with no logs/runs/ segment.
+            self.assertEqual(run_dir, root / self.RUN_ID)
             self.assertTrue(run_dir.is_dir())
+            self.assertFalse(
+                (root / "logs" / "runs" / self.RUN_ID).exists(),
+                "start_run addressed the archive through the retired "
+                "logs/runs/ segment; the archive must be "
+                "<root>/<run-id>/ directly",
+            )
             self.assertTrue((run_dir / "meta.json").is_file())
             meta = self._read_meta(root)
             self.assertEqual(
@@ -1057,7 +1066,7 @@ class RunLogStartRunTestCase(unittest.TestCase):
             root = Path(tmp)
             with self.assertRaises(run_log_error):
                 self._start(root, intake={"issue": 58})
-            run_dir = root / "logs" / "runs" / self.RUN_ID
+            run_dir = root / self.RUN_ID
             self.assertTrue(
                 not run_dir.exists() or not (run_dir / "meta.json").exists(),
                 "start_run wrote to %s despite a validation error; a run "
@@ -1069,7 +1078,7 @@ class RunLogOverwriteRefusalTestCase(unittest.TestCase):
     """Behaviour 7 (``start-run-refuses-overwrite``): an existing archive is
     never overwritten.
 
-    The plan pins: given a ``logs/runs/<run-id>/`` that already exists,
+    The plan pins: given a ``<root>/<run-id>/`` that already exists,
     ``start_run`` called with that id touches nothing on disk and raises
     ``RunLogError`` naming the run id - a past run is evidence.
 
@@ -1083,7 +1092,7 @@ class RunLogOverwriteRefusalTestCase(unittest.TestCase):
     While the refusal is unimplemented, the two refusal tests are red at the
     second call: ``start_run`` currently succeeds with ``exist_ok=True`` and
     silently rewrites ``meta.json``. The cross-run test is a green-now guard
-    against a refusal that would lock the whole ``logs/runs/`` tree.
+    against a refusal that would lock the whole archive root.
     """
 
     RUN_ID = EXPECTED_ID
@@ -1139,7 +1148,7 @@ class RunLogOverwriteRefusalTestCase(unittest.TestCase):
     @staticmethod
     def _read_meta(root, run_id):
         """The parsed ``meta.json`` of run ``run_id`` under ``root``."""
-        meta_path = root / "logs" / "runs" / run_id / "meta.json"
+        meta_path = root / run_id / "meta.json"
         return json.loads(meta_path.read_text(encoding="utf-8"))
 
     @staticmethod
@@ -1214,11 +1223,9 @@ class RunLogOverwriteRefusalTestCase(unittest.TestCase):
                 self.OTHER_SESSIONS,
                 self.OTHER_STARTED_AT,
             )
-            first_dir = root / "logs" / "runs" / self.RUN_ID
+            first_dir = root / self.RUN_ID
             self.assertIsInstance(second_dir, Path)
-            self.assertEqual(
-                second_dir, root / "logs" / "runs" / self.OTHER_RUN_ID
-            )
+            self.assertEqual(second_dir, root / self.OTHER_RUN_ID)
             self.assertTrue(second_dir.is_dir())
             self.assertNotEqual(first_dir, second_dir)
             # The first run is untouched: its directory still exists and its
@@ -2977,11 +2984,12 @@ class RunLogOpenRunIncompleteTestCase(unittest.TestCase):
 class RunLogOpenRunUnknownIdTestCase(unittest.TestCase):
     """Behaviour 15 (``open-run-unknown-id``): ``open_run(run_id, root)``.
 
-    The plan pins: given a run id with no directory under
-    ``logs/runs/``, ``open_run`` renders nothing and raises
-    ``RunLogError`` naming the run id and the path searched, so a typo is
-    fixable without reading the source. The archive path convention is
-    behaviour 12's: ``root / "logs" / "runs" / run_id``.
+    The plan pins: given a run id with no directory under the archive
+    root, ``open_run`` renders nothing and raises ``RunLogError`` naming
+    the run id and the path searched, so a typo is fixable without
+    reading the source. The archive path convention is behaviour 1's of
+    ``plans/pi-phase14-run-command.md`` (archive-root-is-the-run-parent):
+    ``root / run_id``.
 
     While the guard is unimplemented, every test here is red at the
     assertion: today ``open_run`` on an unknown id renders a full
@@ -3042,8 +3050,8 @@ class RunLogOpenRunUnknownIdTestCase(unittest.TestCase):
         return ctx.exception
 
     def test_open_run_unknown_id_raises_run_log_error(self):
-        # A run id with no directory under logs/runs/ - while a sibling
-        # run's archive does exist - renders nothing and raises.
+        # A run id with no directory under the archive root - while a
+        # sibling run's archive does exist - renders nothing and raises.
         open_run = self._open_run()
         run_log_error = self._run_log_error()
         with tempfile.TemporaryDirectory() as tmp:
@@ -3068,8 +3076,8 @@ class RunLogOpenRunUnknownIdTestCase(unittest.TestCase):
         )
 
     def test_open_run_unknown_id_error_names_path_searched(self):
-        # The path searched is the archive path behaviour 12 reads:
-        # root/logs/runs/<run-id> - the message carries every component
+        # The path searched is the archive path open_run reads:
+        # root/<run-id> - the message carries every component
         # of that concrete path.
         open_run = self._open_run()
         run_log_error = self._run_log_error()
@@ -3077,7 +3085,7 @@ class RunLogOpenRunUnknownIdTestCase(unittest.TestCase):
             root = Path(tmp)
             self._seed_run(root)
             error = self._raise_on_unknown_id(open_run, run_log_error, root)
-        run_dir = root / "logs" / "runs" / self.UNKNOWN_ID
+            run_dir = root / self.UNKNOWN_ID
         for component in (str(run_dir), str(run_dir.parent), self.UNKNOWN_ID):
             with self.subTest(component=component):
                 self.assertIn(
@@ -3096,7 +3104,7 @@ class RunLogOpenRunUnknownIdTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             error = self._raise_on_unknown_id(open_run, run_log_error, root)
-        run_dir = root / "logs" / "runs" / self.UNKNOWN_ID
+        run_dir = root / self.UNKNOWN_ID
         for component in (str(run_dir), str(run_dir.parent), self.UNKNOWN_ID):
             with self.subTest(component=component):
                 self.assertIn(
@@ -3185,8 +3193,8 @@ class RunLogModuleDisciplinePinTestCase(unittest.TestCase):
     - no writes outside the run directory - the whole writer set
       (``start_run``, ``write_stream``, ``write_diff``, ``write_commits``,
       ``finish_run``) is exercised under a fresh tempdir root, and every
-      path that exists under the root is asserted to live under
-      ``root/logs/runs/<run-id>/``;
+      path that exists under the root is asserted to live inside
+      ``root/<run-id>/``;
     - exactly one exception type - the public namespace of the module
       carries one and only one Exception subclass defined by the module,
       and it is ``RunLogError``.
@@ -3283,13 +3291,11 @@ class RunLogModuleDisciplinePinTestCase(unittest.TestCase):
                 run_dir, [{"sha": "abc123", "subject": "subject"}]
             )
             runlog.finish_run(run_dir, "shipped", self.FINISHED_AT)
-            # Assert: every path that exists under the root is either
-            # inside the run directory or one of the run directory's own
-            # ancestor directories (the ``logs/`` and ``logs/runs/``
-            # levels the archive is addressed through, which ``start_run``
-            # must create to reach ``root/logs/runs/<run-id>/``) - no log,
-            # lock, cache or sibling run may appear anywhere else in the
-            # root the writers were given.
+            # Assert: every path that exists under the root is inside the
+            # run directory. Under the flat archive layout (behaviour 1 of
+            # plans/pi-phase14-run-command.md) the run directory's parent
+            # is the archive root itself, so no intermediate directory may
+            # exist anywhere else in the root the writers were given.
             self.assertTrue(run_dir.is_dir(), "the run directory is missing")
             created = sorted(root.rglob("*"))
             self.assertTrue(
@@ -3298,23 +3304,14 @@ class RunLogModuleDisciplinePinTestCase(unittest.TestCase):
                 "the run archive is missing, so the pin did not observe "
                 "the writers",
             )
-            ancestors = {
-                run_dir.parent: "root/logs/runs",
-                run_dir.parent.parent: "root/logs",
-            }
             offenders = [
-                p
-                for p in created
-                if not _is_under(p, run_dir)
-                and not (p.is_dir() and p in ancestors)
+                p for p in created if not _is_under(p, run_dir)
             ]
             self.assertEqual(
                 offenders,
                 [],
                 "runlog wrote outside the run directory it was given; "
-                "paths outside %r that are not the run directory's own "
-                "ancestor directories %r: %r"
-                % (run_dir, ancestors, offenders),
+                "paths outside %r: %r" % (run_dir, offenders),
             )
 
 
@@ -3889,6 +3886,195 @@ class RunLogOpenRunVersionAndPromptsTestCase(unittest.TestCase):
                     "an archive carrying the member must not render its "
                     "absence wording %r" % (line,),
                 )
+
+
+class RunLogArchiveRootTestCase(unittest.TestCase):
+    """Behaviour 1 of ``plans/pi-phase14-run-command.md``
+    (``archive-root-is-the-run-parent``): the archive root is the run
+    directory's parent.
+
+    Given a root and a run id, ``start_run`` writes the archive at
+    ``<root>/<run-id>/`` and ``open_run`` reads it back from that same
+    flat location - no ``logs/runs/`` segment anywhere. The existing-
+    directory refusal still applies, at the flat location: a pre-existing
+    ``<root>/<run-id>/`` is refused, while a pre-existing ``<root>/logs/
+    runs/<run-id>/`` is an ordinary subdirectory - it neither refuses a
+    new run nor is it readable by ``open_run``.
+
+    While the layout change is unimplemented, the tests are red at the
+    assertion: ``start_run`` still addresses the archive through
+    ``root/logs/runs/<run-id>/`` and ``open_run`` still reads it from
+    there - the red is the wrong archive path, not a collection error
+    of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 114, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; the archive "
+            "layout is implemented by start_run",
+        )
+        return start_run
+
+    def _open_run(self):
+        """Fetch ``anvilkit.pi.runlog.open_run``."""
+        runlog = self._runlog()
+        open_run = getattr(runlog, "open_run", None)
+        self.assertTrue(
+            callable(open_run),
+            "anvilkit.pi.runlog.open_run is not callable; the archive "
+            "layout is implemented by open_run",
+        )
+        return open_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type",
+        )
+        return run_log_error
+
+    def _start(self, root):
+        """Call ``start_run`` with valid inputs for ``self.RUN_ID``."""
+        return self._start_run()(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+
+    def _seed_nested_archive(self, root):
+        """Build a hand-built archive at the retired nested location."""
+        nested = root / "logs" / "runs" / self.RUN_ID
+        nested.mkdir(parents=True)
+        meta = {
+            "run_id": self.RUN_ID,
+            "started_at": self.STARTED_AT,
+            "finished_at": None,
+            "intake": self.INTAKE,
+            "sessions": self.SESSIONS,
+            "outcome": "unknown",
+            "complete": False,
+            "anvil_version": anvilkit.__version__,
+        }
+        (nested / "meta.json").write_text(
+            json.dumps(meta), encoding="utf-8"
+        )
+        return nested
+
+    def test_start_run_returns_run_dir_directly_under_root(self):
+        # root is the run directory's parent: the returned archive path
+        # is <root>/<run-id>/, with no logs/runs/ segment.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._start(root)
+        self.assertIsInstance(run_dir, Path)
+        self.assertEqual(
+            run_dir,
+            root / self.RUN_ID,
+            "start_run must address the archive at <root>/<run-id>/ "
+            "directly; root is the run directory's parent, not a "
+            "directory containing logs/runs/",
+        )
+
+    def test_start_run_writes_meta_at_flat_location(self):
+        # meta.json lands under <root>/<run-id>/, readable as the run's
+        # own record.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._start(root)
+            meta_path = root / self.RUN_ID / "meta.json"
+            self.assertTrue(
+                meta_path.is_file(),
+                "start_run did not write meta.json under "
+                "<root>/<run-id>/; nothing at %r" % (meta_path,),
+            )
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            self.assertEqual(meta["run_id"], self.RUN_ID)
+
+    def test_start_run_creates_no_logs_runs_segment(self):
+        # The retired segment must not be created at all: no logs/
+        # directory anywhere under the archive root.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._start(root)
+            self.assertFalse(
+                (root / "logs" / "runs").exists(),
+                "start_run still builds the archive through the retired "
+                "logs/runs/ segment; the archive must be "
+                "<root>/<run-id>/ directly",
+            )
+
+    def test_start_run_existing_flat_directory_is_refused(self):
+        # A pre-existing <root>/<run-id>/ directory is still refused,
+        # naming the run id - a past run is evidence.
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / self.RUN_ID).mkdir()
+            with self.assertRaisesRegex(run_log_error, re.escape(self.RUN_ID)):
+                self._start(root)
+
+    def test_start_run_existing_nested_directory_does_not_refuse(self):
+        # The retired nested location is an ordinary subdirectory: a
+        # pre-existing <root>/logs/runs/<run-id>/ must not refuse the
+        # run, which lands flat under the root.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_nested_archive(root)
+            run_dir = self._start(root)
+        self.assertEqual(
+            run_dir,
+            root / self.RUN_ID,
+            "a pre-existing archive at the retired logs/runs/ location "
+            "must not refuse the run; the run is refused only at the "
+            "flat location <root>/<run-id>/",
+        )
+
+    def test_open_run_reads_flat_location(self):
+        # Seeded through the genuine start_run, open_run must find the
+        # archive at <root>/<run-id>/ and render the report.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._start(root)
+            report = self._open_run()(self.RUN_ID, root)
+        self.assertIn(
+            self.RUN_ID,
+            report,
+            "open_run did not render the report for the flat archive "
+            "at <root>/<run-id>/",
+        )
+        self.assertIn(
+            self.STARTED_AT,
+            report,
+            "the open_run report does not carry the started_at stamp "
+            "from the flat archive's meta.json",
+        )
+
+    def test_open_run_ignores_retired_nested_location(self):
+        # An archive that exists only at the retired nested location is
+        # invisible to open_run: the flat location does not exist, so
+        # the run id is unknown.
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._seed_nested_archive(root)
+            with self.assertRaises(run_log_error):
+                self._open_run()(self.RUN_ID, root)
 
 
 if __name__ == "__main__":
