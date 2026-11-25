@@ -28,10 +28,32 @@ def branch_for(kind: str, issue_number: int) -> str:
     return "{}/issue-{}".format(kind, issue_number)
 
 
-def pr_fields_for(payload: Dict[str, Any]) -> Dict[str, str]:
+_TITLE_PLACEHOLDER = "(no title provided)"
+_BODY_PLACEHOLDER = "(no body provided)"
+
+
+def pr_fields_for(payload: Any) -> Dict[str, str]:
     """The PR title and body derived from an issue payload.
 
-    Placeholder for the red step of behaviour 4; the derivation lands in the
-    green step.
+    Returns ``{"title": <issue title>, "body": <issue body>}`` from the
+    payload returned by ``read_issue``. A field that is missing, ``None``, or
+    an empty/whitespace-only string yields a stated placeholder for that
+    field only: ``(no title provided)`` / ``(no body provided)`` — never the
+    string ``"None"``. A payload that is not a dict is treated as missing
+    both fields: both placeholders, and no exception is raised.
     """
-    return {"title": "", "body": ""}
+    if not isinstance(payload, dict):
+        return {"title": _TITLE_PLACEHOLDER, "body": _BODY_PLACEHOLDER}
+    return {
+        "title": _field(payload, "title", _TITLE_PLACEHOLDER),
+        "body": _field(payload, "body", _BODY_PLACEHOLDER),
+    }
+
+
+def _field(payload: Any, key: str, placeholder: str) -> str:
+    """The value at ``key`` as a string, or ``placeholder`` when it is not a
+    non-blank string in the payload."""
+    value = payload.get(key)
+    if isinstance(value, str) and value.strip():
+        return value
+    return placeholder
