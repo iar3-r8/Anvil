@@ -1431,5 +1431,173 @@ class SetupRepoModelsSeederTests(ProvisionCase):
         )
 
 
+class SetupRepoDryRunPiTests(ProvisionCase):
+    """Behaviour 20 (plans/pi-phase12-launch-gen.md):
+    dry-run-names-every-file-and-writes-none.
+
+    A ``dry_run=True`` run must *name* every Pi artifact it would touch —
+    ``<target>/.pi/mcp.json``, ``<target>/.pi/extensions/guardrails.json``,
+    the ``models.json`` volume destination, and the ``.pi/roles/``
+    ``.gitignore`` entry — and write *none* of them: ``<target>/.pi`` must
+    not exist afterwards, and an injected seeder seam must be invoked zero
+    times.
+
+    FLAG (wording pin for the green step): the Pi steps' current
+    placeholder lines (``   ↳ dry run: would write .pi/mcp.json`` and
+    ``   ↳ dry run: would write .pi/extensions/guardrails.json``) are
+    non-constraining and do not match the file's established dry-run style
+    — every other dry_run branch reports
+    ``   ↳ ⏭️  Dry-run: would {verb} {absolute path}`` (see
+    ``_merge_gitignore_step``'s ``would create`` and
+    ``_write_mcp_settings``'s ``would merge``). This class pins that style
+    with absolute paths:
+
+        ``   ↳ ⏭️  Dry-run: would write <target>/.pi/mcp.json``
+        ``   ↳ ⏭️  Dry-run: would write <target>/.pi/extensions/guardrails.json``
+        ``   ↳ ⏭️  Dry-run: would seed models.json into the sandbox-agent volume``
+
+    The gitignore step's dry-run report must additionally carry the
+    ``.pi/roles/`` entry; the current branch names only the file.
+    Proposal: one ``↳`` line per entry, e.g.
+    ``   ↳ ⏭️  Dry-run: would ensure .gitignore entry: .pi/roles/``
+    (the assertion pins the entry string, not the line shape).
+
+    Error path (FLAG — decision): the behaviour's Error clause says "a
+    malformed existing file still fails under dry-run, per the existing
+    validate-before-dry-run precedent". That precedent is
+    ``.roo``-specific (``_write_mcp_settings``'s malformed
+    ``.roo/mcp.json`` handling, pinned in
+    ``tests/test_provision_mcp_merge.py``), so this class pins it for
+    ``<target>/.pi/mcp.json`` — the file this behaviour owns: a
+    pre-existing malformed ``.pi/mcp.json`` must raise
+    ``ProvisionError`` naming the path under ``dry_run=True``, with the
+    file's bytes untouched. The green step's dry-run branch must therefore
+    validate the existing file, not just report.
+
+    Expected red reasons:
+    * the four report tests fail on their exact-line / entry assertions —
+      the current placeholders use different casing, no emoji and a
+      relative path; ``_seed_agent_volume`` has no dry-run branch (it
+      invokes the seam and reports the ``Seeded`` success line); and the
+      gitignore dry-run line does not carry ``.pi/roles/``;
+    * the zero-invocation test fails because the current
+      ``_seed_agent_volume`` invokes the seam exactly once even under
+      dry-run;
+    * the malformed-file test fails because ``_write_pi_mcp`` does not
+      validate a pre-existing file, so the run completes without raising
+      and the ``ProvisionError`` is never produced.
+    Green-at-write: the writes-none test — ``_create_directories`` never
+    creates ``.pi`` and both Pi placeholder branches already return before
+    writing, so ``<target>/.pi`` is absent after a dry run today. It stays
+    load-bearing: it fails the moment the green step's dry-run branches
+    write anything.
+    """
+
+    AGENT_VOLUME = "sandbox-agent"
+    ROLES_ENTRY = ".pi/roles/"
+
+    def _would_write_line(self, relative):
+        """The pinned dry-run line for a write step, in the file's
+        established style with the absolute destination path."""
+        return "   ↳ ⏭️  Dry-run: would write {}".format(
+            self.target.resolve() / relative
+        )
+
+    def test_dry_run_report_names_the_pi_mcp_json_destination(self):
+        self.provision(dry_run=True)
+
+        self.assertIn(
+            self._would_write_line(".pi/mcp.json"),
+            self.output,
+            "the dry-run report must name the absolute .pi/mcp.json "
+            "destination in the file's dry-run style",
+        )
+
+    def test_dry_run_report_names_the_pi_guardrails_destination(self):
+        self.provision(dry_run=True)
+
+        self.assertIn(
+            self._would_write_line(".pi/extensions/guardrails.json"),
+            self.output,
+            "the dry-run report must name the absolute "
+            ".pi/extensions/guardrails.json destination in the "
+            "file's dry-run style",
+        )
+
+    def test_dry_run_report_names_the_models_volume_destination(self):
+        def seeder(volume, models_text):
+            return (0, "", "")
+
+        self.provision(dry_run=True, seed_models_json=seeder)
+
+        self.assertIn(
+            "   ↳ ⏭️  Dry-run: would seed models.json into the {} volume".format(
+                self.AGENT_VOLUME
+            ),
+            self.output,
+            "the dry-run report must name the models.json volume "
+            "destination",
+        )
+
+    def test_dry_run_report_names_the_gitignore_roles_entry(self):
+        self.provision(dry_run=True)
+
+        self.assertIn(
+            self.ROLES_ENTRY,
+            self.output,
+            "the dry-run report must name the .pi/roles/ .gitignore "
+            "entry",
+        )
+
+    def test_dry_run_writes_nothing_under_dot_pi(self):
+        self.provision(dry_run=True)
+
+        self.assertFalse(
+            (self.target / ".pi").exists(),
+            "a dry run must not create <target>/.pi in any form — no "
+            "mcp.json, no extensions/",
+        )
+
+    def test_dry_run_invokes_the_seeder_zero_times(self):
+        calls = []
+
+        def seeder(volume, models_text):
+            calls.append((volume, models_text))
+            return (0, "", "")
+
+        self.provision(dry_run=True, seed_models_json=seeder)
+
+        self.assertEqual(
+            calls,
+            [],
+            "a dry run must not invoke the seeder seam at all",
+        )
+
+    def test_malformed_existing_pi_mcp_json_still_fails_under_dry_run(self):
+        """Error clause, per the validate-before-dry-run precedent: a
+        pre-existing malformed ``.pi/mcp.json`` must raise
+        ``ProvisionError`` naming the path under ``dry_run=True``, and a
+        dry run must not modify the file while reporting the fault."""
+        path = self.target / ".pi" / "mcp.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("not json at all", encoding="utf-8")
+        before = path.read_bytes()
+
+        with self.assertRaises(provision.ProvisionError) as ctx:
+            self.provision(dry_run=True)
+
+        self.assertIn(
+            str(path.resolve()),
+            str(ctx.exception),
+            "ProvisionError must name the offending path: "
+            "{}".format(ctx.exception),
+        )
+        self.assertEqual(
+            path.read_bytes(),
+            before,
+            "A dry run must not modify the file while reporting the fault",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
