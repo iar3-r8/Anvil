@@ -311,3 +311,84 @@ class ProjectDocumentAbsentFieldsTestCase(unittest.TestCase):
                 "values" % value,
             )
         self._assert_no_placeholder(document)
+
+
+class ProjectDocumentRejectsNonRecordTestCase(unittest.TestCase):
+    """A non-mapping record, or a record whose ``project`` value is not a mapping, is refused before any text is built.
+
+    ``piproject.project_document`` raises ``ProjectError`` naming the
+    offending field (``record`` or ``project``) and its actual type, so
+    an operator sees their mistake, not a bare traceback. The refusal is
+    pinned against acceptance: a record that IS a mapping carrying a
+    mapping ``project`` block still returns the rendered text.
+    """
+
+    def _assert_rejected(self, record, field, type_name):
+        module = importlib.import_module("anvilkit.pi.piproject")
+        with self.assertRaises(module.ProjectError) as context:
+            _document(record)
+        message = str(context.exception)
+        self.assertIn(
+            field,
+            message,
+            "the ProjectError message must name the offending field %r; "
+            "got %r" % (field, message),
+        )
+        self.assertIn(
+            type_name,
+            message,
+            "the ProjectError message must name the actual type %r of "
+            "field %r; got %r" % (type_name, field, message),
+        )
+
+    def test_project_document_none_record_raises_project_error_naming_record(
+        self,
+    ):
+        self._assert_rejected(None, "record", "NoneType")
+
+    def test_project_document_string_record_raises_project_error_naming_record(
+        self,
+    ):
+        self._assert_rejected("gearworks", "record", "str")
+
+    def test_project_document_list_record_raises_project_error_naming_record(
+        self,
+    ):
+        self._assert_rejected(["gearworks"], "record", "list")
+
+    def test_project_document_string_project_raises_project_error_naming_project(
+        self,
+    ):
+        record = _record()
+        record["project"] = "a single sentence of structure notes"
+        self._assert_rejected(record, "project", "str")
+
+    def test_project_document_none_project_raises_project_error_naming_project(
+        self,
+    ):
+        record = _record()
+        record["project"] = None
+        self._assert_rejected(record, "project", "NoneType")
+
+    def test_project_document_list_project_raises_project_error_naming_project(
+        self,
+    ):
+        record = _record()
+        record["project"] = ["name", "structure", "configuration"]
+        self._assert_rejected(record, "project", "list")
+
+    def test_project_document_mapping_record_with_mapping_project_is_accepted(
+        self,
+    ):
+        document = _document(_record())
+        self.assertIsInstance(
+            document,
+            str,
+            "a mapping record with a mapping project block must return "
+            "the project.md text, got %s" % type(document).__name__,
+        )
+        self.assertTrue(
+            document.strip(),
+            "a mapping record with a mapping project block must not be "
+            "rejected; the document came back empty",
+        )
