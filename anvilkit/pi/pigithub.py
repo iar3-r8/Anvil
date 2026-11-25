@@ -973,6 +973,8 @@ def run(
     opener: Optional[Callable[..., Any]] = None,
     timeout: Optional[float] = None,
     cycle: Callable[..., Dict[str, Any]] = picycle.run_cycle,
+    profile_name: Optional[str] = None,
+    profile_root: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compose the landed primitives into the intake loop, in pinned order.
 
@@ -991,7 +993,11 @@ def run(
     with the cycle inputs forwarded verbatim, ``number`` and ``issue``
     both the intake issue number, and a ``reason`` carrying the
     caller's ``reason`` AND ``quote_intake`` of the read issue - the
-    intake reaches the cycle as quoted data, not instructions.
+    intake reaches the cycle as quoted data, not instructions. The
+    optional ``profile_name`` and ``profile_root`` pass-throughs are
+    forwarded to the seam as keyword arguments only when set - the
+    omitted profile leaves the call byte-identical to the phase-10
+    one (seam kwargs exactly ``issue``).
 
     The result is one dict with a ``status``:
 
@@ -1057,6 +1063,14 @@ def run(
         runner,
         git,
         issue=issue_number,
+        **{
+            key: value
+            for key, value in (
+                ("profile_name", profile_name),
+                ("profile_root", profile_root),
+            )
+            if value is not None
+        },
     )
 
     if cycle_result.get("verdict") == "halted":
