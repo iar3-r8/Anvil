@@ -37,16 +37,19 @@ string; either violation, or a missing ``meta.json``, raises
 ``RunLogError`` before anything is written, so a refused call never
 half-rewrites the record.
 
-``write_stream`` (behaviour 8), ``write_diff`` (behaviour 9) and
-``write_commits`` (behaviour 10) keep what they were given: the
+``write_stream`` (behaviour 8), ``write_diff`` (behaviour 9),
+``write_commits`` (behaviour 10) and ``write_prompts`` (behaviour 11
+of ``plans/pi-phase12-launch-gen.md``) keep what they were given: the
 captured stream verbatim in ``<role>.jsonl`` byte-for-byte - an empty
 or unparseable stream is stored unchanged, since those are the runs
 worth reading; the diff text verbatim in ``diff.patch``, where an empty
 diff still lands as an empty file, so "changed nothing" stays
-distinguishable from "never recorded"; and the commit list in
-``commits.json`` via ``json.dumps``, in order. Every writer refuses an
-unknown role or a missing run directory with ``RunLogError`` naming
-the offender, before any file is created.
+distinguishable from "never recorded"; the commit list in
+``commits.json`` via ``json.dumps``, in order; and each role document
+verbatim in ``prompts/<stem>.md`` in UTF-8, no newline invented. Every
+writer refuses an unknown role, an empty document mapping or a missing
+run directory with ``RunLogError`` naming the offender, before any
+file is created.
 
 ``open_run`` renders a completed archive as a Markdown report
 (behaviour 12): the run id and stamps, the intake, one section per role
@@ -326,6 +329,29 @@ def write_commits(run_dir: Path, commits: List[Dict[str, str]]) -> None:
             )
     _require_run_dir(run_dir)
     (run_dir / "commits.json").write_text(json.dumps(commits), encoding="utf-8")
+
+
+def write_prompts(run_dir: Path, documents: Dict[str, str]) -> None:
+    """Write the run's role documents to ``prompts/<stem>.md`` verbatim.
+
+    Each entry of ``documents`` is written to ``<run-dir>/prompts/<stem>.md``
+    byte-for-byte in UTF-8 with no newline invented, matching the write
+    discipline of ``write_stream`` and the ``meta.json`` writer. An empty
+    mapping raises ``RunLogError`` naming the mapping, and a missing run
+    directory raises ``RunLogError`` naming the path - both before any
+    file or directory is created, so the ``prompts/`` directory does not
+    exist afterwards.
+    """
+    if not isinstance(documents, dict) or not documents:
+        raise RunLogError(
+            "documents must be a non-empty stem-to-text mapping, got %r"
+            % (documents,)
+        )
+    _require_run_dir(run_dir)
+    prompts_dir = run_dir / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    for stem, text in documents.items():
+        (prompts_dir / (stem + ".md")).write_text(text, encoding="utf-8")
 
 
 def _require_run_dir(run_dir: Path) -> None:
