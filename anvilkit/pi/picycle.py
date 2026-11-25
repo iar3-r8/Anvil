@@ -125,6 +125,7 @@ import unittest
 from typing import Any, Callable, Dict, List, Optional
 
 from anvilkit.pi import picommit
+from anvilkit.pi import pilaunch
 from anvilkit.pi import piverdict
 
 
@@ -268,6 +269,9 @@ def run_cycle(
     runner: Callable[[Dict[str, Any]], Dict[str, Any]],
     git: Callable[[List[str]], None],
     issue: Optional[int] = None,
+    generate: Callable[[str, str, str], Dict[str, str]] = pilaunch.generate,
+    profile_root: Optional[str] = None,
+    profile_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run one cycle: the red step, then the judged green step.
 
@@ -275,7 +279,11 @@ def run_cycle(
     ``reason``, ``runner`` and ``git`` mean the same as in
     :func:`red_step`; ``kind`` is the branch kind - ``"feature"`` or
     ``"bugfix"`` - handed to ``picommit.green_message`` to pick the
-    green subject prefix.
+    green subject prefix. ``generate`` is the injected generation seam
+    of Behaviour 21 - ``pilaunch.generate`` by default - a callable of
+    the same shape, ``(repo_path, profile_root, profile_name)``;
+    ``profile_root`` is the profile store root and ``profile_name`` the
+    name of the profile record in it.
 
     Behaviour 10 (run-cycle-commits-red-then-green): the RED half
     delegates verbatim to :func:`red_step` - a single commit path, so
@@ -321,11 +329,35 @@ def run_cycle(
     order and ``escalate_to`` the escalation target the manager's
     loop-control rule names for a second green failure.
 
+    Behaviour 21 (cycle-generates-the-documents-once-before-the-red-
+    step, ``plans/pi-phase12-launch-gen.md``): when ``profile_name`` is
+    supplied, the cycle invokes ``generate(repo_path, profile_root,
+    profile_name)`` EXACTLY ONCE, before the red step - before the
+    tester delegation and before any git call - so every delegation of
+    the cycle, four roles or one, reads documents generated this run;
+    the returned stem-to-text mapping is not archived here (the plan's
+    Assumptions assign that to the ``anvil pi run`` composition). When
+    ``profile_name`` is ``None`` the seam is invoked zero times and the
+    cycle is byte-identical to today's.
+
     Error: a red step that returns a verdict other than ``"red"``
     (``"reason_mismatch"`` or ``"wrong_kind"``) cannot be committed
     green on - a re-delegation is owed to the tester before any green
-    - and raises ``CycleError`` naming the verdict.
+    - and raises ``CycleError`` naming the verdict. A ``LaunchError``
+    from the generation seam is translated to ``CycleError`` naming the
+    offender and chained from it, raised before the tester delegation -
+    nothing is delegated, nothing is staged, nothing is committed, so
+    no red commit exists to stand or to roll back; a cycle must never
+    run agents against stale or missing prompts.
     """
+    if profile_name is not None:
+        try:
+            generate(repo_path, profile_root, profile_name)
+        except pilaunch.LaunchError as exc:
+            raise CycleError(
+                "run_cycle could not generate the role documents before "
+                "the red step: %s" % (exc,)
+            ) from exc
     red_result: Dict[str, Any] = red_step(
         repo_path,
         scope,
