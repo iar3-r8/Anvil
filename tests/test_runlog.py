@@ -319,6 +319,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import anvilkit
+
 from anvilkit.pi import pievents
 from anvilkit.pi import pirole
 
@@ -899,6 +901,7 @@ class RunLogStartRunTestCase(unittest.TestCase):
             "sessions",
             "outcome",
             "complete",
+            "anvil_version",
         ]
     )
 
@@ -945,7 +948,7 @@ class RunLogStartRunTestCase(unittest.TestCase):
         meta_path = root / "logs" / "runs" / self.RUN_ID / "meta.json"
         return json.loads(meta_path.read_text(encoding="utf-8"))
 
-    def test_start_run_creates_run_dir_returns_path_writes_seven_key_meta(self):
+    def test_start_run_creates_run_dir_returns_path_writes_eight_key_meta(self):
         self._start_run()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -958,7 +961,7 @@ class RunLogStartRunTestCase(unittest.TestCase):
             self.assertEqual(
                 sorted(meta),
                 self.META_KEYS,
-                "meta.json key set must be exactly the seven planned keys; "
+                "meta.json key set must be exactly the eight planned keys; "
                 "got %r" % (sorted(meta),),
             )
             self.assertEqual(meta["run_id"], self.RUN_ID)
@@ -968,6 +971,12 @@ class RunLogStartRunTestCase(unittest.TestCase):
             self.assertEqual(meta["sessions"], self.SESSIONS)
             self.assertEqual(meta["outcome"], "unknown")
             self.assertIs(meta["complete"], False)
+            self.assertEqual(
+                meta["anvil_version"],
+                anvilkit.__version__,
+                "the anvil_version key must hold anvilkit.__version__; "
+                "got %r" % (meta.get("anvil_version"),),
+            )
 
     def test_start_run_meta_json_round_trips(self):
         # JSON-native: a run that dies next is still readable, which holds
@@ -1768,7 +1777,9 @@ class RunLogFinishRunTestCase(unittest.TestCase):
     def _expected_meta(outcome, finished_at):
         """The full ``meta.json`` dict ``finish_run`` must leave on disk.
 
-        Every key ``start_run`` wrote is present and verbatim; only
+        Every key ``start_run`` wrote is present and verbatim - including
+        the eighth key ``anvil_version``, held live from
+        ``anvilkit.__version__`` exactly as ``start_run`` wrote it; only
         ``finished_at``, ``outcome`` and ``complete`` differ. Full-dict
         equality against this shape is what keeps any dropped, altered or
         added key red.
@@ -1781,6 +1792,7 @@ class RunLogFinishRunTestCase(unittest.TestCase):
             "sessions": {"coder": "run-20261119-134500-1a2b-coder"},
             "outcome": outcome,
             "complete": True,
+            "anvil_version": anvilkit.__version__,
         }
 
     @staticmethod
@@ -1898,6 +1910,30 @@ class RunLogFinishRunTestCase(unittest.TestCase):
             run_dir = self._seed_run_dir(root)
             with self.assertRaisesRegex(run_log_error, "finished_at"):
                 finish_run(run_dir, "shipped", 123)
+
+    def test_finish_run_preserves_anvil_version_verbatim(self):
+        # The anvil_version key start_run wrote must survive finish_run's
+        # read-modify-write of meta.json verbatim.
+        finish_run = self._finish_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            original_meta = self._read_meta(run_dir)
+            self.assertEqual(
+                original_meta["anvil_version"],
+                anvilkit.__version__,
+                "start_run must have written the anvil_version key with "
+                "anvilkit.__version__; got %r"
+                % (original_meta.get("anvil_version"),),
+            )
+            finish_run(run_dir, "shipped", self.FINISHED_AT)
+            meta = self._read_meta(run_dir)
+            self.assertEqual(
+                meta["anvil_version"],
+                original_meta["anvil_version"],
+                "finish_run must preserve anvil_version verbatim in its "
+                "read-modify-write of meta.json",
+            )
 
 
 class RunLogOpenRunCompleteTestCase(unittest.TestCase):
