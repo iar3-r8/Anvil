@@ -513,5 +513,68 @@ class TestGenerateErrorPaths(unittest.TestCase):
         self._assert_nothing_written_to_repo()
 
 
+class TestGenerateReturnsResolvedDocuments(unittest.TestCase):
+    """A successful generate returns the seven documents it wrote.
+
+    The return value is the stem-to-text record of the generation: its keys
+    are exactly the six ``piprompt.all_documents()`` stems plus ``project``,
+    and each value is byte-equal to the file ``render.role_prompts`` wrote
+    at ``<repo>/.pi/roles/<stem>.md`` — a caller can archive the return
+    value without touching the filesystem again.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.repo = base / "repo"
+        self.repo.mkdir()
+        self.root = base / ".anvil"
+        self.root.mkdir()
+        _save_profile(self.root, self.repo)
+        self.roles_dir = self.repo / ".pi" / "roles"
+
+    def _generate(self) -> Dict[str, str]:
+        """Run pilaunch.generate over the fresh repo and return its result."""
+        pilaunch = _load_module()
+        return pilaunch.generate(str(self.repo), self.root, PROFILE_NAME)
+
+    def test_generate_successful_generation_returns_six_stems_plus_project(self):
+        documents = self._generate()
+
+        expected = set(piprompt.all_documents())
+        expected.add("project")
+
+        self.assertEqual(
+            set(documents),
+            expected,
+            "the returned mapping carries the wrong stems: %r"
+            % sorted(documents),
+        )
+        for stem, text in documents.items():
+            with self.subTest(stem=stem):
+                self.assertIsInstance(
+                    text, str,
+                    "%r is not a text value" % stem,
+                )
+                self.assertNotEqual(
+                    text,
+                    "",
+                    "%r resolved to empty text" % stem,
+                )
+
+    def test_generate_returned_documents_byte_equal_to_files_on_disk(self):
+        documents = self._generate()
+
+        for stem, text in documents.items():
+            with self.subTest(stem=stem):
+                on_disk = (self.roles_dir / (stem + ".md")).read_bytes()
+                self.assertEqual(
+                    on_disk,
+                    text.encode("utf-8"),
+                    "the returned %r text differs from %r" % (stem, stem + ".md"),
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
