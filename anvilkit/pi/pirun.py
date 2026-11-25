@@ -50,6 +50,15 @@ def pr_fields_for(payload: Any) -> Dict[str, str]:
     }
 
 
+def kind_for(payload: Dict[str, Any]) -> str:
+    """The run kind (feature or bugfix) derived from an issue payload's labels.
+
+    Placeholder for the red step of behaviour 5; the derivation lands in the
+    green step.
+    """
+    return ""
+
+
 def _field(payload: Any, key: str, placeholder: str) -> str:
     """The value at ``key`` as a string, or ``placeholder`` when it is not a
     non-blank string in the payload."""
