@@ -72,9 +72,29 @@ targeted file is not a green branch. Manager-confirmed contract,
 manager-added beyond the plan's Given (flagged): a red TARGETED run
 refuses the same way, naming the targeted suite, so the gate cannot
 be one-sided; both results green returns ``True``. ``ship`` is PURE -
-it decides over the two given results, never acts; "the loop itself
-ran only the targeted file" is a property of the loop's running, and
-the tests pin that ``ship`` takes exactly the two results.
+it decides over the two given results, never acts; "the loop itself ran
+only the targeted file" is a property of the loop's running, and the
+tests pin that ``ship`` takes exactly the two results.
+
+``plans/pi-phase12-launch-gen.md``, behaviour 21
+(cycle-generates-the-documents-once-before-the-red-step): given a
+cycle whose profile root and name are supplied, with a recording
+generation seam (defaulting to ``pilaunch.generate``) and the
+recording runner and git seams this suite already uses, the seam is
+invoked exactly once, with ``repo_path``, the root and the name,
+BEFORE the tester delegation and before any git call - every
+delegation of the cycle, four roles or one, reads documents generated
+this run; called with no ``profile_name`` the seam is invoked zero
+times and the cycle is byte-identical to today's. Error: a
+``LaunchError`` from the seam is translated to ``CycleError`` naming
+the offender and chained from it, raised before the tester delegation
+- nothing is delegated, nothing is staged, nothing is committed, so no
+red commit exists to stand or to roll back; a cycle must never run
+agents against stale or missing prompts. The plan's Assumptions pin
+the parameter shape: the three parameters are appended after
+``run_cycle``'s ``issue=None`` with defaults
+(``generate=pilaunch.generate``, ``profile_root=None``,
+``profile_name=None``), so no existing call changes.
 
 The manager-confirmed design (do not re-litigate): a green attempt
 succeeds iff ``piverdict.classify(coder_result, reason)`` returns
@@ -164,14 +184,22 @@ shared.
 """
 
 import importlib
+import inspect
 import sys
 import unittest
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+# Imported only to pin run_cycle's default generate seam's identity
+# (the plan's Assumptions) and to construct the LaunchError the
+# error-path test raises - the real pilaunch.generate is never called
+# in this file.
+from anvilkit.pi import pilaunch  # noqa: E402
+from anvilkit.pi.pilaunch import LaunchError  # noqa: E402
 
 # The inputs of behaviour 8, each a module constant so the expected
 # message and argv below are reproducible by eye. The plan file is
@@ -452,6 +480,15 @@ SHIP_TARGETED_FAILURE_TEXT = (
     "AssertionError: 1 != 2\n"
 )
 
+# The inputs of behaviour 21 (cycle-generates-the-documents-once-
+# before-the-red-step) of plans/pi-phase12-launch-gen.md, each a
+# module constant so the expected calls below are reproducible by
+# eye. The cycle is behaviour 10's happy path - its CYCLE_* constants
+# are reused verbatim - with the profile root and name the generation
+# seam is pinned to receive added on top.
+GEN_PROFILE_ROOT = "/workspace/profiles"
+GEN_PROFILE_NAME = "anvil"
+
 
 def _suite_result(traceback_text: str) -> unittest.TestResult:
     """A real ``TestResult`` carrying exactly one failure entry and no
@@ -504,6 +541,79 @@ class FakeGit:
 
     def __call__(self, argv: List[str]) -> None:
         self.calls.append(list(argv))
+
+
+class RecordingGenerate:
+    """The injected generation seam for behaviour 21, shaped like
+    ``pilaunch.generate``.
+
+    Records every call as a ``(repo_path, root, profile_name)`` tuple
+    and appends a ``("generate",)`` record to the shared sequence, so
+    the test can pin WHERE the generation happened relative to the
+    delegations and the git calls. Built with an ``error`` it raises
+    it after recording the call - the error path under test. A
+    successful call returns a placeholder stem-to-text mapping; the
+    cycle's handling of the return value is not pinned by behaviour
+    21.
+    """
+
+    def __init__(
+        self,
+        sequence: List[tuple],
+        error: Optional[Exception] = None,
+    ) -> None:
+        self.calls: List[tuple] = []
+        self.sequence = sequence
+        self._error = error
+
+    def __call__(
+        self,
+        repo_path: str,
+        root: str,
+        profile_name: str,
+    ) -> Dict[str, str]:
+        self.calls.append((repo_path, root, profile_name))
+        self.sequence.append(("generate",))
+        if self._error is not None:
+            raise self._error
+        return {"generated": "documents"}
+
+
+class SequencedRunner:
+    """Wraps a delegation seam and appends a ``("runner", <role>)``
+    record to the shared sequence on each delegation, so the test can
+    pin where a delegation happened relative to the other recorded
+    steps. ``calls`` IS the wrapped runner's own record, shared, so
+    the test reads it through the wrapper.
+    """
+
+    def __init__(self, inner, sequence: List[tuple]) -> None:
+        self.calls = inner.calls
+        self.sequence = sequence
+        self._inner = inner
+
+    def __call__(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        result = self._inner(context)
+        self.sequence.append(("runner", context.get("role")))
+        return result
+
+
+class SequencedGit:
+    """Wraps a git seam and appends a ``("git", <argv>)`` record to
+    the shared sequence on each call, so the test can pin where a git
+    call happened relative to the other recorded steps. ``calls`` IS
+    the wrapped seam's own record, shared, so the test reads it
+    through the wrapper.
+    """
+
+    def __init__(self, inner, sequence: List[tuple]) -> None:
+        self.calls = inner.calls
+        self.sequence = sequence
+        self._inner = inner
+
+    def __call__(self, argv: List[str]) -> None:
+        self._inner(argv)
+        self.sequence.append(("git", list(argv)))
 
 
 class RedStepCommitsOnceOnGenuineRedTestCase(unittest.TestCase):
@@ -2099,6 +2209,335 @@ class ShipGateTestCase(unittest.TestCase):
             "the targeted-red refusal must not name the full suite as "
             "the offender (flagged fragments 'targeted' and 'full' "
             "are disjoint); got: %r" % message,
+        )
+
+
+class RunCycleGeneratesDocumentsTestCase(unittest.TestCase):
+    """Behaviour 21 of ``plans/pi-phase12-launch-gen.md``
+    (cycle-generates-the-documents-once-before-the-red-step): the
+    cycle generates the role documents exactly once, with the repo
+    path, the profile root and the profile name, BEFORE the tester
+    delegation and before any git call - every delegation of the
+    cycle, four roles or one, reads documents generated this run.
+
+    The plan's Assumptions pin the parameter shape: the three
+    parameters are appended after ``run_cycle``'s ``issue=None`` with
+    defaults (``generate=pilaunch.generate``, ``profile_root=None``,
+    ``profile_name=None``), so no existing call changes. The
+    generation seam is a recorder of the ``pilaunch.generate`` shape
+    (``repo_path, root, profile_name``); the tests never call the
+    real ``pilaunch.generate`` - it reads the profile store and
+    writes files, and this file's duty is the cycle's wiring.
+
+    The order is pinned on a SHARED sequence: the runner, the git
+    seam and the generate seam each append to one list as they are
+    invoked, so a single assertion reads where the generation
+    happened relative to the delegations and the git calls. The
+    cycle's identity is behaviour 10's (its ``CYCLE_*`` constants),
+    so the delegation and git pins below are the phase-9 suite's.
+
+    The import happens inside the test (``_picycle``) rather than at
+    module top level, per this file's standing pattern; the new
+    parameters are not on ``run_cycle`` yet, so the tests fail on
+    the ``TypeError`` they raise instead of breaking collection of
+    the file - the default-seam identity test fails on the
+    ``KeyError`` of the missing ``generate`` parameter, which is
+    the same right reason, read from the signature.
+    """
+
+    def _picycle(self):
+        """Import ``anvilkit.pi.picycle``."""
+        return importlib.import_module("anvilkit.pi.picycle")
+
+    def test_generate_default_seam_is_pilaunch_generate(self) -> None:
+        # The plan's Assumptions pin the default seam's IDENTITY -
+        # ``generate=pilaunch.generate`` - by the same pattern as the
+        # default-seam identity test at tests/test_pigithub.py:4143
+        # (signature default, import identity, never called).
+        picycle = self._picycle()
+        params = inspect.signature(picycle.run_cycle).parameters
+
+        self.assertIs(
+            params["generate"].default,
+            pilaunch.generate,
+            "the generate seam must default to pilaunch.generate "
+            "(the plan's Assumptions); got: {!r}".format(
+                params["generate"].default
+            ),
+        )
+
+    def test_generate_invoked_once_before_delegation_and_git(self) -> None:
+        # Arrange: the happy cycle (genuine red, then green) with a
+        # profile root and name, and a recording generation seam
+        # wired into one shared sequence with the runner and the git
+        # seam.
+        sequence: List[tuple] = []
+        runner = SequencedRunner(
+            CycleRunner(
+                _suite_result(CYCLE_RED_TRACEBACK),
+                unittest.TestResult(),
+                CYCLE_CODE_CHANGED_PATHS,
+            ),
+            sequence,
+        )
+        git = SequencedGit(FakeGit(), sequence)
+        generate = RecordingGenerate(sequence)
+
+        # Act
+        picycle = self._picycle()
+        picycle.run_cycle(
+            REPO,
+            CYCLE_SCOPE,
+            CYCLE_BEHAVIOUR,
+            CYCLE_NUMBER,
+            CYCLE_PLAN_SLUG,
+            CYCLE_REASON,
+            kind="feature",
+            runner=runner,
+            git=git,
+            issue=CYCLE_ISSUE,
+            generate=generate,
+            profile_root=GEN_PROFILE_ROOT,
+            profile_name=GEN_PROFILE_NAME,
+        )
+
+        # Assert: the seam was invoked EXACTLY ONCE, with the repo
+        # path, the root and the name - the ``pilaunch.generate``
+        # argument order.
+        self.assertEqual(
+            [(REPO, GEN_PROFILE_ROOT, GEN_PROFILE_NAME)],
+            generate.calls,
+            "the generation seam must be invoked exactly once, with "
+            "the repo path, the profile root and the profile name; "
+            "got: %r" % (generate.calls,),
+        )
+
+        # Assert: the generation PRECEDES every delegation and every
+        # git call in the shared sequence - the tester delegation and
+        # both of its git mutations, then the coder delegation and
+        # both of its git mutations: one generation up front, so
+        # every delegation of the cycle reads documents generated
+        # this run.
+        self.assertEqual(
+            [
+                ("generate",),
+                ("runner", "tester"),
+                ("git", ["git", "-C", REPO, "add", "--"] + list(CHANGED_PATHS)),
+                ("git", ["git", "-C", REPO, "commit", "-m",
+                         "test(%s): cover %s, failing\n\n"
+                         "Behaviour %d of plans/%s.md; fails: %s.\n\n"
+                         "Refs #56" % (
+                             CYCLE_SCOPE, CYCLE_BEHAVIOUR, CYCLE_NUMBER,
+                             CYCLE_PLAN_SLUG, CYCLE_REASON)]),
+                ("runner", "coder"),
+                ("git", ["git", "-C", REPO, "add", "--"] + list(CYCLE_CODE_CHANGED_PATHS)),
+                ("git", ["git", "-C", REPO, "commit", "-m",
+                         "feat(%s): %s\n\n"
+                         "Behaviour %d of plans/%s.md. Green.\n\n"
+                         "Refs #56" % (
+                             CYCLE_SCOPE, CYCLE_BEHAVIOUR, CYCLE_NUMBER,
+                             CYCLE_PLAN_SLUG)]),
+            ],
+            sequence,
+            "the generation must happen exactly once, BEFORE the "
+            "tester delegation and before any git call - the full "
+            "cycle sequence is pinned so no delegation or git call "
+            "may precede it; got: %r" % (sequence,),
+        )
+
+    def test_no_profile_name_invokes_generate_zero_times(self) -> None:
+        # Arrange: the same happy cycle, called EXACTLY as the
+        # phase-9 suite calls it - no generate, no profile_root, no
+        # profile_name: the cycle runs on the defaults, and the
+        # zero-calls claim is that nothing is generated at all, so
+        # the phase-9 call shape is what must stay byte-identical.
+        sequence: List[tuple] = []
+        runner = SequencedRunner(
+            CycleRunner(
+                _suite_result(CYCLE_RED_TRACEBACK),
+                unittest.TestResult(),
+                CYCLE_CODE_CHANGED_PATHS,
+            ),
+            sequence,
+        )
+        git = SequencedGit(FakeGit(), sequence)
+
+        # Act - the phase-9 call, byte-for-byte.
+        picycle = self._picycle()
+        result = picycle.run_cycle(
+            REPO,
+            CYCLE_SCOPE,
+            CYCLE_BEHAVIOUR,
+            CYCLE_NUMBER,
+            CYCLE_PLAN_SLUG,
+            CYCLE_REASON,
+            kind="feature",
+            runner=runner,
+            git=git,
+            issue=CYCLE_ISSUE,
+        )
+
+        # Assert: the cycle is BYTE-IDENTICAL to today's - the same
+        # happy-path result, the same delegations, the same git
+        # calls, in the same order, and no generation in the shared
+        # sequence at all: zero records of it.
+        self.assertEqual(
+            "green",
+            result.get("verdict"),
+            "a cycle without a profile_name must complete exactly as "
+            "today; got: %r" % (result,),
+        )
+        self.assertEqual(
+            ["tester", "coder"],
+            [call.get("role") for call in runner.calls],
+            "a cycle without a profile_name must delegate exactly as "
+            "today - tester then coder; got: %r" % (runner.calls,),
+        )
+        self.assertEqual(
+            [
+                ("runner", "tester"),
+                ("git", ["git", "-C", REPO, "add", "--"] + list(CHANGED_PATHS)),
+                ("git", ["git", "-C", REPO, "commit", "-m",
+                         "test(%s): cover %s, failing\n\n"
+                         "Behaviour %d of plans/%s.md; fails: %s.\n\n"
+                         "Refs #56" % (
+                             CYCLE_SCOPE, CYCLE_BEHAVIOUR, CYCLE_NUMBER,
+                             CYCLE_PLAN_SLUG, CYCLE_REASON)]),
+                ("runner", "coder"),
+                ("git", ["git", "-C", REPO, "add", "--"] + list(CYCLE_CODE_CHANGED_PATHS)),
+                ("git", ["git", "-C", REPO, "commit", "-m",
+                         "feat(%s): %s\n\n"
+                         "Behaviour %d of plans/%s.md. Green.\n\n"
+                         "Refs #56" % (
+                             CYCLE_SCOPE, CYCLE_BEHAVIOUR, CYCLE_NUMBER,
+                             CYCLE_PLAN_SLUG)]),
+            ],
+            sequence,
+            "a cycle without a profile_name must be byte-identical "
+            "to today's - no generation, the same delegations and "
+            "git calls in the same order; got: %r" % (sequence,),
+        )
+        self.assertEqual(
+            0,
+            sum(1 for record in sequence if record == ("generate",)),
+            "a cycle without a profile_name must invoke the "
+            "generation seam zero times; got: %r" % (sequence,),
+        )
+
+
+class RunCycleLaunchErrorTestCase(unittest.TestCase):
+    """Behaviour 21 of ``plans/pi-phase12-launch-gen.md``, error
+    path: a ``LaunchError`` from the generation seam is translated
+    to ``CycleError`` naming the offender and chained from it,
+    raised BEFORE the tester delegation - nothing is delegated,
+    nothing is staged, nothing is committed, so no red commit exists
+    to stand or to roll back; a cycle must never run agents against
+    stale or missing prompts.
+
+    The import happens inside the test (``_picycle``) per this
+    file's standing pattern; the ``LaunchError`` it raises is a real
+    ``anvilkit.pi.pilaunch.LaunchError`` (behaviours 5-10 landed, so
+    the module and its exception exist), constructed by the test and
+    raised by the injected seam.
+    """
+
+    def _picycle(self):
+        """Import ``anvilkit.pi.picycle``."""
+        return importlib.import_module("anvilkit.pi.picycle")
+
+    def test_launch_error_is_translated_chained_and_precedes_everything(
+        self,
+    ) -> None:
+        # Arrange: the happy cycle's runner and git seams, a
+        # generation seam that raises a pinned LaunchError, and the
+        # profile root and name that make generation the thing the
+        # cycle must do.
+        sequence: List[tuple] = []
+        runner = SequencedRunner(
+            CycleRunner(
+                _suite_result(CYCLE_RED_TRACEBACK),
+                unittest.TestResult(),
+                CYCLE_CODE_CHANGED_PATHS,
+            ),
+            sequence,
+        )
+        git = SequencedGit(FakeGit(), sequence)
+        offender = LaunchError(
+            "the profile 'anvil' cannot be loaded from "
+            "/workspace/profiles: the record is absent"
+        )
+        generate = RecordingGenerate(sequence, error=offender)
+
+        # Act
+        picycle = self._picycle()
+        with self.assertRaises(picycle.CycleError) as ctx:
+            picycle.run_cycle(
+                REPO,
+                CYCLE_SCOPE,
+                CYCLE_BEHAVIOUR,
+                CYCLE_NUMBER,
+                CYCLE_PLAN_SLUG,
+                CYCLE_REASON,
+                kind="feature",
+                runner=runner,
+                git=git,
+                issue=CYCLE_ISSUE,
+                generate=generate,
+                profile_root=GEN_PROFILE_ROOT,
+                profile_name=GEN_PROFILE_NAME,
+            )
+
+        # Assert: the translation is CHAINED from the exact offender
+        # - the CycleError's ``__cause__`` is that LaunchError.
+        self.assertIs(
+            offender,
+            ctx.exception.__cause__,
+            "the CycleError must be chained from the exact "
+            "LaunchError the seam raised; got cause: %r"
+            % (ctx.exception.__cause__,),
+        )
+
+        # Assert: the CycleError NAMES the offender - the offender's
+        # own message is what a debugging operator needs, and the
+        # plan's "naming the offender" is pinned on it.
+        self.assertIn(
+            "the profile 'anvil' cannot be loaded from "
+            "/workspace/profiles: the record is absent",
+            str(ctx.exception),
+            "the CycleError must name the offender; got: %r"
+            % (str(ctx.exception),),
+        )
+
+        # Assert: NOTHING was delegated - the runner was never
+        # invoked, the red step never ran, so no red commit exists to
+        # stand or to roll back.
+        self.assertEqual(
+            0,
+            len(runner.calls),
+            "a LaunchError from the seam must be raised before the "
+            "tester delegation - nothing is delegated; got %d "
+            "delegation(s): %r" % (len(runner.calls), runner.calls),
+        )
+
+        # Assert: NOTHING was staged or committed - ZERO git
+        # invocations, no add, no commit.
+        self.assertEqual(
+            0,
+            len(git.calls),
+            "a LaunchError from the seam must leave nothing staged "
+            "and nothing committed - zero git calls; got %d: %r"
+            % (len(git.calls), git.calls),
+        )
+
+        # Assert: the only thing that happened in the whole run was
+        # the failed generation itself - one record, and nothing
+        # after it.
+        self.assertEqual(
+            [("generate",)],
+            sequence,
+            "the failed generation must be the cycle's only step - "
+            "nothing is delegated, staged or committed after it; "
+            "got: %r" % (sequence,),
         )
 
 

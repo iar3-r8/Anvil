@@ -267,8 +267,11 @@ qna-tester and 2% for architect.
 `setup-repo` installs: the agent modes in `.roomodes`, the per-mode rules under
 `.roo/`, the four MCP servers in `.roo/mcp.json`, the eight provisioned chat
 commands under `.roo/commands/` — the anvil-only `/harvest-roo-templates` never
-crosses to a target — the devcontainer, and `.gitignore` protection for
-sensitive
-files. Re-running `setup-repo` upgrades a provisioned repo by **merging** rather
-than overwriting; the per-file merge semantics are documented in the
+crosses to a target — the devcontainer, the Pi project files under `.pi/`
+(`mcp.json` and `extensions/guardrails.json`), and `.gitignore` protection for
+sensitive files. Re-running `setup-repo` upgrades a provisioned repo by
+**merging** the user-owned files rather than overwriting them — the role
+documents in `.pi/roles/` are the exception: they are not installed but
+generated at launch, rebuilt from the profile record at the start of every
+red/green cycle; the per-file merge semantics are documented in the
 [VS Code plugin setup guide](2-setting-up-vscode-plugin.md).

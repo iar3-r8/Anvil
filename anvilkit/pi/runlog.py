@@ -37,35 +37,43 @@ string; either violation, or a missing ``meta.json``, raises
 ``RunLogError`` before anything is written, so a refused call never
 half-rewrites the record.
 
-``write_stream`` (behaviour 8), ``write_diff`` (behaviour 9) and
-``write_commits`` (behaviour 10) keep what they were given: the
+``write_stream`` (behaviour 8), ``write_diff`` (behaviour 9),
+``write_commits`` (behaviour 10) and ``write_prompts`` (behaviour 11
+of ``plans/pi-phase12-launch-gen.md``) keep what they were given: the
 captured stream verbatim in ``<role>.jsonl`` byte-for-byte - an empty
 or unparseable stream is stored unchanged, since those are the runs
 worth reading; the diff text verbatim in ``diff.patch``, where an empty
 diff still lands as an empty file, so "changed nothing" stays
-distinguishable from "never recorded"; and the commit list in
-``commits.json`` via ``json.dumps``, in order. Every writer refuses an
-unknown role or a missing run directory with ``RunLogError`` naming
-the offender, before any file is created.
+distinguishable from "never recorded"; the commit list in
+``commits.json`` via ``json.dumps``, in order; and each role document
+verbatim in ``prompts/<stem>.md`` in UTF-8, no newline invented. Every
+writer refuses an unknown role, an empty document mapping or a missing
+run directory with ``RunLogError`` naming the offender, before any
+file is created.
 
 ``open_run`` renders a completed archive as a Markdown report
-(behaviour 12): the run id and stamps, the intake, one section per role
+(behaviour 12): the run id and stamps, the ``anvil version`` from
+``meta.json``'s ``anvil_version``, the intake, one section per role
 carrying the session id, the stream file path and the settled/aborted
 state, tool-call counters, tokens and cost computed via ``pievents``,
-then the diff and commit sections. Raw stream bytes are never inlined -
-only the stream's file path, since a stream can hold prompts, tool
-arguments and file contents. A stream that parses to zero events - empty,
-truncated or not JSON - renders the pinned line ``stream unparseable: <n>
-malformed lines, no readable events`` instead of the facts, and never
-raises (behaviour 13). Every member is read through a guard that treats a
-missing or unreadable member as absent, so a half-written archive can
-never crash the renderer.
+then the diff and commit sections, then the prompts section naming each
+archived document under ``prompts/`` by its file path in ``pirole.ROLES``
+order with ``shared-agents`` and ``project`` after the roles (behaviour 13
+of ``plans/pi-phase12-launch-gen.md``). Raw stream bytes and raw prompt
+text are never inlined - only file paths, since a stream can hold prompts,
+tool arguments and file contents. A stream that parses to zero events -
+empty, truncated or not JSON - renders the pinned line ``stream
+unparseable: <n> malformed lines, no readable events`` instead of the
+facts, and never raises (behaviour 13). Every member is read through a
+guard that treats a missing or unreadable member as absent, so a
+half-written archive can never crash the renderer.
 
 A run whose ``meta.json`` is not marked complete - the run died mid-way
 and ``finish_run`` never ran - is rendered the same way and additionally
 carries the exact line ``status: INCOMPLETE`` (behaviour 14); each
 absent member renders its pinned wording (``no diff recorded``,
-``no commits recorded``, ``no stream recorded for <role>``) while
+``no commits recorded``, ``no stream recorded for <role>``,
+``no anvil version recorded``, ``no prompts recorded``) while
 whatever did land renders unchanged. A complete run carries no
 INCOMPLETE text at all. ``open_run`` never raises on such a half-written
 archive; it raises ``RunLogError`` only for an unknown run id, naming the
@@ -82,6 +90,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from anvilkit import __version__
 from anvilkit.pi import pievents, pirole
 
 
@@ -157,10 +166,11 @@ def start_run(
     overwritten).
 
     Creates ``root/logs/runs/<run-id>/`` and writes ``meta.json`` with exactly
-    the seven planned keys - ``run_id``, ``started_at``, ``finished_at`` (null),
-    ``intake``, ``sessions``, ``outcome`` (``"unknown"``) and ``complete``
-    (false) - so a run that dies mid-way leaves a readable record. Returns the
-    run directory's ``Path``.
+    the eight planned keys - ``run_id``, ``started_at``, ``finished_at`` (null),
+    ``intake``, ``sessions``, ``outcome`` (``"unknown"``), ``complete`` (false)
+    and ``anvil_version`` (``anvilkit.__version__``, read live, never
+    validated) - so a run that dies mid-way leaves a readable record. Returns
+    the run directory's ``Path``.
 
     ``run_id`` is taken as given (it is produced by ``new_run_id``). The other
     three inputs are validated before any filesystem I/O: ``intake`` must be a
@@ -185,6 +195,7 @@ def start_run(
         "sessions": sessions,
         "outcome": "unknown",
         "complete": False,
+        "anvil_version": __version__,
     }
     (run_dir / "meta.json").write_text(
         json.dumps(meta), encoding="utf-8"
@@ -328,6 +339,29 @@ def write_commits(run_dir: Path, commits: List[Dict[str, str]]) -> None:
     (run_dir / "commits.json").write_text(json.dumps(commits), encoding="utf-8")
 
 
+def write_prompts(run_dir: Path, documents: Dict[str, str]) -> None:
+    """Write the run's role documents to ``prompts/<stem>.md`` verbatim.
+
+    Each entry of ``documents`` is written to ``<run-dir>/prompts/<stem>.md``
+    byte-for-byte in UTF-8 with no newline invented, matching the write
+    discipline of ``write_stream`` and the ``meta.json`` writer. An empty
+    mapping raises ``RunLogError`` naming the mapping, and a missing run
+    directory raises ``RunLogError`` naming the path - both before any
+    file or directory is created, so the ``prompts/`` directory does not
+    exist afterwards.
+    """
+    if not isinstance(documents, dict) or not documents:
+        raise RunLogError(
+            "documents must be a non-empty stem-to-text mapping, got %r"
+            % (documents,)
+        )
+    _require_run_dir(run_dir)
+    prompts_dir = run_dir / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    for stem, text in documents.items():
+        (prompts_dir / (stem + ".md")).write_text(text, encoding="utf-8")
+
+
 def _require_run_dir(run_dir: Path) -> None:
     """Raise ``RunLogError`` naming the path if ``run_dir`` is not a directory.
 
@@ -346,12 +380,14 @@ def open_run(run_id: str, root: Path) -> str:
 
     Reads the archive at ``root/logs/runs/<run-id>/`` - ``meta.json``, one
     ``<role>.jsonl`` per role present in ``meta.json``'s sessions map
-    (in ``pirole.ROLES`` order), ``diff.patch`` and ``commits.json`` - and
-    renders them as a Markdown report: the run id and both stamps verbatim,
-    the intake, one section per role carrying the session id, the stream
-    file path and the settled/aborted state, tool-call counters, tokens
-    and cost computed via ``pievents``, then the diff and commit sections
-    in ``commits.json`` order.
+    (in ``pirole.ROLES`` order), ``diff.patch``, ``commits.json`` and the
+    archived documents under ``prompts/`` - and renders them as a Markdown
+    report: the run id and both stamps verbatim, the ``anvil version`` from
+    ``meta.json``'s ``anvil_version``, the intake, one section per role
+    carrying the session id, the stream file path and the settled/aborted
+    state, tool-call counters, tokens and cost computed via ``pievents``,
+    then the diff and commit sections in ``commits.json`` order, then the
+    prompts section naming each archived document by its file path.
 
     Raw stream bytes are never inlined - only the stream's file path, since
     a stream can hold prompts, tool arguments and file contents. Every
@@ -366,7 +402,8 @@ def open_run(run_id: str, root: Path) -> str:
     is half-written: the report carries the exact whole line
     ``status: INCOMPLETE`` next to the stamps, and each absent member
     renders its pinned absence wording (``no diff recorded``,
-    ``no commits recorded``, ``no stream recorded for <role>``) while
+    ``no commits recorded``, ``no stream recorded for <role>``,
+    ``no anvil version recorded``, ``no prompts recorded``) while
     whatever did land renders unchanged. A complete run carries no
     INCOMPLETE text at all. ``open_run`` never raises on a half-written
     archive: a run that died mid-way is still reopenable. An unknown run
@@ -396,6 +433,15 @@ def open_run(run_id: str, root: Path) -> str:
             # key: value style, reserved for runs finish_run never marked
             # complete. A complete run carries no INCOMPLETE text at all.
             lines.append("status: INCOMPLETE")
+        version = meta.get("anvil_version")
+        if version is None and not complete:
+            # The version never landed: the pinned absence wording, in
+            # the same absent-safe style as the other members.
+            lines.append("no anvil version recorded")
+        elif version is not None:
+            # The archive's own stored value, never a re-read of the
+            # running module: the report must reopen a past run.
+            lines.append("anvil version: %s" % (version,))
         lines.append("")
         intake = meta.get("intake")
         lines.extend(_intake_section(intake))
@@ -408,6 +454,7 @@ def open_run(run_id: str, root: Path) -> str:
                     )
     lines.extend(_diff_section(run_dir, complete))
     lines.extend(_commits_section(run_dir, complete))
+    lines.extend(_prompts_section(run_dir, complete))
     return "\n".join(lines) + "\n"
 
 
@@ -539,6 +586,44 @@ def _commits_section(run_dir: Path, complete: bool) -> List[str]:
                 lines.append(
                     "- %s %s" % (commit.get("sha"), commit.get("subject"))
                 )
+    lines.append("")
+    return lines
+
+
+def _prompts_section(run_dir: Path, complete: bool) -> List[str]:
+    """Render the prompts section from the ``prompts/`` directory.
+
+    Each archived document renders as ``prompt: <run-dir>/prompts/<stem>.md``
+    - the file's path only, never its contents, in the same style as the
+    report's ``stream:`` lines. The report order is fixed, whatever the
+    write order was: the stems in ``pirole.ROLES`` order first, then
+    ``shared-agents`` and ``project``, then any other stems alphabetically,
+    so the same archive reopens the same way. An absent or empty
+    ``prompts/`` directory in a half-written archive - one ``open_run``
+    marked INCOMPLETE - renders the pinned line ``no prompts recorded``.
+    """
+    lines = ["## Prompts", ""]
+    prompts_dir = run_dir / "prompts"
+    stems: List[str] = []
+    if prompts_dir.is_dir():
+        try:
+            stems = sorted(
+                path.stem for path in prompts_dir.iterdir() if path.is_file()
+            )
+        except OSError:
+            stems = []
+    ordered = [stem for stem in pirole.ROLES if stem in stems]
+    for stem in ("shared-agents", "project"):
+        if stem in stems:
+            ordered.append(stem)
+    ordered.extend(
+        stem for stem in stems if stem not in pirole.ROLES and stem not in ordered
+    )
+    if not ordered and not complete:
+        # The prompts never landed: the pinned absence wording.
+        lines.append("no prompts recorded")
+    for stem in ordered:
+        lines.append("prompt: %s" % (prompts_dir / (stem + ".md"),))
     lines.append("")
     return lines
 

@@ -319,6 +319,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import anvilkit
+
 from anvilkit.pi import pievents
 from anvilkit.pi import pirole
 
@@ -899,6 +901,7 @@ class RunLogStartRunTestCase(unittest.TestCase):
             "sessions",
             "outcome",
             "complete",
+            "anvil_version",
         ]
     )
 
@@ -945,7 +948,7 @@ class RunLogStartRunTestCase(unittest.TestCase):
         meta_path = root / "logs" / "runs" / self.RUN_ID / "meta.json"
         return json.loads(meta_path.read_text(encoding="utf-8"))
 
-    def test_start_run_creates_run_dir_returns_path_writes_seven_key_meta(self):
+    def test_start_run_creates_run_dir_returns_path_writes_eight_key_meta(self):
         self._start_run()
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -958,7 +961,7 @@ class RunLogStartRunTestCase(unittest.TestCase):
             self.assertEqual(
                 sorted(meta),
                 self.META_KEYS,
-                "meta.json key set must be exactly the seven planned keys; "
+                "meta.json key set must be exactly the eight planned keys; "
                 "got %r" % (sorted(meta),),
             )
             self.assertEqual(meta["run_id"], self.RUN_ID)
@@ -968,6 +971,12 @@ class RunLogStartRunTestCase(unittest.TestCase):
             self.assertEqual(meta["sessions"], self.SESSIONS)
             self.assertEqual(meta["outcome"], "unknown")
             self.assertIs(meta["complete"], False)
+            self.assertEqual(
+                meta["anvil_version"],
+                anvilkit.__version__,
+                "the anvil_version key must hold anvilkit.__version__; "
+                "got %r" % (meta.get("anvil_version"),),
+            )
 
     def test_start_run_meta_json_round_trips(self):
         # JSON-native: a run that dies next is still readable, which holds
@@ -1221,8 +1230,8 @@ class RunLogOverwriteRefusalTestCase(unittest.TestCase):
                 "opening a second run in the same root disturbed the first "
                 "run's archive",
             )
-    
-    
+
+
 class RunLogWriteStreamTestCase(unittest.TestCase):
     """Behaviour 8 (``write-stream-verbatim``): ``write_stream(run_dir, role, text)``.
 
@@ -1768,7 +1777,9 @@ class RunLogFinishRunTestCase(unittest.TestCase):
     def _expected_meta(outcome, finished_at):
         """The full ``meta.json`` dict ``finish_run`` must leave on disk.
 
-        Every key ``start_run`` wrote is present and verbatim; only
+        Every key ``start_run`` wrote is present and verbatim - including
+        the eighth key ``anvil_version``, held live from
+        ``anvilkit.__version__`` exactly as ``start_run`` wrote it; only
         ``finished_at``, ``outcome`` and ``complete`` differ. Full-dict
         equality against this shape is what keeps any dropped, altered or
         added key red.
@@ -1781,6 +1792,7 @@ class RunLogFinishRunTestCase(unittest.TestCase):
             "sessions": {"coder": "run-20261119-134500-1a2b-coder"},
             "outcome": outcome,
             "complete": True,
+            "anvil_version": anvilkit.__version__,
         }
 
     @staticmethod
@@ -1898,6 +1910,30 @@ class RunLogFinishRunTestCase(unittest.TestCase):
             run_dir = self._seed_run_dir(root)
             with self.assertRaisesRegex(run_log_error, "finished_at"):
                 finish_run(run_dir, "shipped", 123)
+
+    def test_finish_run_preserves_anvil_version_verbatim(self):
+        # The anvil_version key start_run wrote must survive finish_run's
+        # read-modify-write of meta.json verbatim.
+        finish_run = self._finish_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            original_meta = self._read_meta(run_dir)
+            self.assertEqual(
+                original_meta["anvil_version"],
+                anvilkit.__version__,
+                "start_run must have written the anvil_version key with "
+                "anvilkit.__version__; got %r"
+                % (original_meta.get("anvil_version"),),
+            )
+            finish_run(run_dir, "shipped", self.FINISHED_AT)
+            meta = self._read_meta(run_dir)
+            self.assertEqual(
+                meta["anvil_version"],
+                original_meta["anvil_version"],
+                "finish_run must preserve anvil_version verbatim in its "
+                "read-modify-write of meta.json",
+            )
 
 
 class RunLogOpenRunCompleteTestCase(unittest.TestCase):
@@ -3280,6 +3316,579 @@ class RunLogModuleDisciplinePinTestCase(unittest.TestCase):
                 "ancestor directories %r: %r"
                 % (run_dir, ancestors, offenders),
             )
+
+
+class RunLogWritePromptsTestCase(unittest.TestCase):
+    """Behaviour 11 of ``plans/pi-phase12-launch-gen.md`` (``archive-role-documents``):
+    ``write_prompts(run_dir, documents)``.
+
+    The plan pins: given an open run directory and a stem-to-text mapping,
+    ``<run-dir>/prompts/<stem>.md`` holds each document verbatim in UTF-8,
+    no newline invented - the same write discipline as ``write_stream`` and
+    the ``meta.json`` writer (byte-for-byte ``write_text`` in UTF-8). A
+    missing run directory raises ``RunLogError`` naming the path - the same
+    guard as ``write_stream`` and ``write_diff`` - and an empty mapping
+    raises ``RunLogError`` naming the mapping; both before any file is
+    created, so the ``prompts/`` directory does not exist afterwards.
+
+    The happy-path setup opens a real run through the genuine ``start_run``
+    (behaviour 6 of ``plans/pi-phase11-runlog.md``), so the run directory
+    being written is a real on-disk run directory. While ``write_prompts``
+    is absent, every test here is red at the fetch step (``_write_prompts``):
+    the module attribute is not callable, and the red is that missing
+    behaviour, not a collection error of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 113, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+
+    # Two distinct non-empty documents: one multi-line ending in a newline,
+    # one single-line ending without a newline (the "no newline invented"
+    # pin), and one carrying non-ASCII text (the UTF-8 pin).
+    CODER_TEXT = (
+        "# Coder role prompt\n"
+        "\n"
+        "You implement the task and keep the build green.\n"
+    )
+    SHARED_AGENTS_TEXT = (
+        "Shared conventions: h\u00e9llo \u2192 \u00fcn\u00efcode, no trailing newline"
+    )
+    DOCUMENTS = {
+        "coder": CODER_TEXT,
+        "shared-agents": SHARED_AGENTS_TEXT,
+    }
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _write_prompts(self):
+        """Fetch ``anvilkit.pi.runlog.write_prompts``."""
+        runlog = self._runlog()
+        write_prompts = getattr(runlog, "write_prompts", None)
+        self.assertTrue(
+            callable(write_prompts),
+            "anvilkit.pi.runlog.write_prompts is not callable; "
+            "archive-role-documents has not been implemented yet",
+        )
+        return write_prompts
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; start-run-writes-meta "
+            "has not been implemented yet",
+        )
+        return start_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "run-id-format has not been implemented yet",
+        )
+        return run_log_error
+
+    def _seed_run_dir(self, root):
+        """Open a real run through ``start_run`` and return its run directory."""
+        return self._start_run()(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+
+    @staticmethod
+    def _read_text(path):
+        """The file's exact bytes decoded as UTF-8, for verbatim pins."""
+        return path.read_bytes().decode("utf-8")
+
+    def test_write_prompts_documents_written_verbatim_no_newline_invented(self):
+        self._write_prompts()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_prompts()(run_dir, self.DOCUMENTS)
+            for stem, text in self.DOCUMENTS.items():
+                prompt_path = run_dir / "prompts" / (stem + ".md")
+                with self.subTest(stem=stem):
+                    self.assertTrue(
+                        prompt_path.is_file(),
+                        "write_prompts did not create %s" % prompt_path,
+                    )
+                    self.assertEqual(
+                        self._read_text(prompt_path),
+                        text,
+                        "%s does not hold the document verbatim: a "
+                        "trailing newline was invented or bytes were lost"
+                        % prompt_path,
+                    )
+
+    def test_write_prompts_documents_written_as_utf8_bytes(self):
+        # The non-ASCII document must round-trip through the file's bytes
+        # as UTF-8: byte equality is the pin, not a decoded re-encode.
+        self._write_prompts()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_prompts()(run_dir, {"shared-agents": self.SHARED_AGENTS_TEXT})
+            prompt_path = run_dir / "prompts" / "shared-agents.md"
+            self.assertEqual(
+                prompt_path.read_bytes(),
+                self.SHARED_AGENTS_TEXT.encode("utf-8"),
+                "shared-agents.md does not hold the document as UTF-8 "
+                "bytes verbatim",
+            )
+
+    def test_write_prompts_missing_run_dir_raises_naming_path_and_creates_nothing(self):
+        # The same guard as write_stream and write_diff: a missing run
+        # directory raises RunLogError naming the path, before any file is
+        # created.
+        self._write_prompts()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no-such-run"
+            with self.assertRaisesRegex(
+                run_log_error, re.escape(str(missing))
+            ):
+                self._write_prompts()(missing, self.DOCUMENTS)
+            self.assertFalse(
+                (missing / "prompts").exists(),
+                "write_prompts created %s for a missing run directory; "
+                "the guard must fire before any file is created"
+                % (missing / "prompts",),
+            )
+
+    def test_write_prompts_empty_mapping_raises_naming_mapping_and_creates_nothing(self):
+        # An empty mapping is a refusal, not an archive of nothing: the
+        # error names the mapping, and the run directory is left untouched.
+        self._write_prompts()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            with self.assertRaisesRegex(run_log_error, r"documents"):
+                self._write_prompts()(run_dir, {})
+            self.assertFalse(
+                (run_dir / "prompts").exists(),
+                "write_prompts created %s for an empty mapping; the "
+                "guard must fire before any file is created"
+                % (run_dir / "prompts",),
+                )
+
+
+class RunLogOpenRunVersionAndPromptsTestCase(unittest.TestCase):
+    """``open-run-names-version-and-prompts`` of
+    ``plans/pi-phase12-launch-gen.md``: ``open_run`` names the version and
+    the archived prompts in its report.
+
+    The plan pins: given an archive carrying ``anvil_version`` in
+    ``meta.json`` and a ``prompts/`` directory holding the role documents,
+    ``open_run`` renders the exact line ``anvil version: <value>`` (the
+    value the archive stores, never a re-read of the running module) and
+    one line per archived prompt naming its file path, in
+    ``pirole.ROLES`` order with ``shared-agents`` and ``project`` after
+    the roles - regardless of the order the files were written in. A
+    missing ``anvil_version`` or a missing ``prompts/`` renders the pinned
+    absence wording and never raises, matching the existing absent-safe
+    member reads: the same discipline as ``no diff recorded`` and
+    ``no commits recorded``, where the readable absence is what a
+    half-written archive renders for a member that never landed.
+
+    The rendering this class proposes and pins:
+
+    - the version is the exact whole line ``anvil version: <value>`` in
+      the report's ``key: value`` style, next to ``started_at:`` and
+      ``finished_at:``;
+    - each archived prompt is one exact whole line
+      ``prompt: <run-dir>/prompts/<stem>.md`` - the member's absolute
+      path, in the same style as the report's ``stream: <path>`` lines;
+    - a missing ``anvil_version`` renders the exact whole line
+      ``no anvil version recorded``; a missing ``prompts/`` directory
+      renders the exact whole line ``no prompts recorded``.
+
+    The archive is built with the genuine writers under a tempdir, the
+    same pattern as the complete archive's suite, plus the ``prompts/``
+    directory and the ``anvil_version`` meta key: ``start_run`` opens the
+    run, every role's stream is the repository's well-formed fixture,
+    ``write_diff`` and ``write_commits`` land the diff and the commit
+    list, ``write_prompts`` lands the documents in whatever order the
+    test asks for, and ``finish_run`` marks the run complete unless the
+    test leaves it half-written. While the version and prompt rendering
+    is absent, every presence pin is red at the assertion: today's
+    report carries no version line and no prompt lines at all, and the
+    half-written report carries neither absence wording.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    FINISHED_AT = "2026-11-19T14:00:00Z"
+    INTAKE = {"issue": 113, "text": "task body"}
+    SESSIONS = {role: EXPECTED_ID + "-" + role for role in pirole.ROLES}
+
+    # A stored version deliberately different from the live
+    # anvilkit.__version__: the report must carry the archive's own
+    # value, and a re-read of the running module would render a
+    # different line.
+    STORED_VERSION = "2.9.9-pin"
+
+    # The pinned absence wording, in the exact style of the report's
+    # existing absence lines (no diff recorded, no commits recorded).
+    NO_VERSION = "no anvil version recorded"
+    NO_PROMPTS = "no prompts recorded"
+
+    # The report's prompt member-line prefix, matching the key: value
+    # style of the report's stream lines.
+    PROMPT_LINE_PREFIX = "prompt: "
+
+    FIXTURE_TEXT = (
+        REPO_ROOT / "tests" / "fixtures" / "pi_events_sample.jsonl"
+    ).read_text(encoding="utf-8")
+
+    DIFF_TEXT = (
+        "diff --git a/anvilkit/pi/runlog.py b/anvilkit/pi/runlog.py\n"
+        "index 1a2b3c4..5d6e7f8 100644\n"
+        "--- a/anvilkit/pi/runlog.py\n"
+        "+++ b/anvilkit/pi/runlog.py\n"
+        "@@ -1,3 +1,4 @@\n"
+        " def open_run(run_id, root):\n"
+        "+    return report\n"
+    )
+
+    COMMITS = [
+        {"sha": "a1b2c3d9", "subject": "feat(runlog): open_run report"},
+        {"sha": "e4f5a6b7", "subject": "fix(runlog): absent archive guard"},
+    ]
+
+    # The three archived role documents the plan's example names. Their
+    # texts are the data the prompts/ directory holds; the report names
+    # the files, never the contents.
+    PROMPTS = {
+        "coder": (
+            "# Coder role prompt\n"
+            "\n"
+            "Implement the task and keep the build green.\n"
+        ),
+        "shared-agents": "Shared conventions for every role.",
+        "project": "# Project\n\nname: anvil\n",
+    }
+
+    # The report's canonical prompt order: the archived stems in
+    # pirole.ROLES order, with shared-agents and project after the
+    # roles - the order the report pins, whatever the write order.
+    # The three documents archived in these tests pin coder (the only
+    # stem in pirole.ROLES) first; the derivation of this order from
+    # pirole.ROLES is pinned by
+    # test_open_run_prompt_order_derives_from_pirole_roles.
+    CANONICAL_PROMPT_ORDER = ("coder", "shared-agents", "project")
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _open_run(self):
+        """Fetch ``anvilkit.pi.runlog.open_run``."""
+        runlog = self._runlog()
+        open_run = getattr(runlog, "open_run", None)
+        self.assertTrue(
+            callable(open_run),
+            "anvilkit.pi.runlog.open_run is not callable; the report for "
+            "a completed archive has not been implemented yet",
+        )
+        return open_run
+
+    def _writer(self, name):
+        """Fetch a green archive writer from the module under test."""
+        runlog = self._runlog()
+        writer = getattr(runlog, name, None)
+        self.assertTrue(
+            callable(writer),
+            "anvilkit.pi.runlog.%s is not callable; the archive writer "
+            "has not been implemented yet" % (name,),
+        )
+        return writer
+
+    def _build_archive(self, root, version=STORED_VERSION,
+                       prompt_stems=(), finish=True):
+        """Build the archive with the genuine writers; return the run
+        directory.
+
+        ``version`` None leaves ``meta.json`` without the
+        ``anvil_version`` key; a string stores that value in
+        ``meta.json``. ``prompt_stems`` are written in the given order -
+        the write order is deliberately free, since the report order is
+        what is pinned, never the write order. ``finish`` False leaves
+        the run half-written: ``finish_run`` is never called, so
+        ``complete`` stays ``false`` on disk.
+        """
+        start_run = self._writer("start_run")
+        write_stream = self._writer("write_stream")
+        write_diff = self._writer("write_diff")
+        write_commits = self._writer("write_commits")
+        write_prompts = self._writer("write_prompts")
+        finish_run = self._writer("finish_run")
+        run_dir = start_run(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+        meta_path = run_dir / "meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if version is None:
+            meta.pop("anvil_version", None)
+        else:
+            meta["anvil_version"] = version
+        meta_path.write_text(json.dumps(meta), encoding="utf-8")
+        for role in pirole.ROLES:
+            write_stream(run_dir, role, self.FIXTURE_TEXT)
+        write_diff(run_dir, self.DIFF_TEXT)
+        write_commits(run_dir, self.COMMITS)
+        if prompt_stems:
+            write_prompts(
+                run_dir, {stem: self.PROMPTS[stem] for stem in prompt_stems}
+            )
+        if finish:
+            finish_run(run_dir, "shipped", self.FINISHED_AT)
+        return run_dir
+
+    @staticmethod
+    def _prompt_path(run_dir, stem):
+        """The archived prompt file path for ``stem``."""
+        return run_dir / "prompts" / (stem + ".md")
+
+    def _prompt_lines(self, report):
+        """The report's prompt member lines, in report order, as paths."""
+        prefix = self.PROMPT_LINE_PREFIX
+        return [
+            line[len(prefix):]
+            for line in report.splitlines()
+            if line.startswith(prefix)
+        ]
+
+    def test_open_run_prompt_order_derives_from_pirole_roles(self):
+        # The pinned order must be pirole.ROLES order with shared-agents
+        # and project after the roles - not a hand-copied constant that
+        # could drift from the role table: of the stems archived in
+        # these tests, only coder is a member of pirole.ROLES, so the
+        # derivation of the report order from the role table pins the
+        # relative order of all three lines.
+        self.assertEqual(
+            tuple(role for role in pirole.ROLES if role in self.PROMPTS),
+            ("coder",),
+            "test-precondition: of the three archived stems, only coder "
+            "is a member of pirole.ROLES",
+        )
+        self.assertEqual(
+            self.CANONICAL_PROMPT_ORDER,
+            tuple(role for role in pirole.ROLES if role in self.PROMPTS)
+            + ("shared-agents", "project"),
+            "the canonical prompt order must be pirole.ROLES order with "
+            "shared-agents and project after the roles; the pinned "
+            "constant drifted from that derivation",
+        )
+
+    def test_open_run_archive_with_version_carries_exact_version_line(self):
+        # The stored value is deliberately not the live
+        # anvilkit.__version__, so the pin is about the archive's own
+        # value crossing into the report, not a re-read of the module.
+        self.assertNotEqual(
+            anvilkit.__version__,
+            self.STORED_VERSION,
+            "test-precondition: the stored version must differ from the "
+            "live anvilkit.__version__, or the pin could not tell the "
+            "archive's value from a re-read of the module",
+        )
+        open_run = self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._build_archive(root, version=self.STORED_VERSION)
+            report = open_run(self.RUN_ID, root)
+        self.assertIs(
+            type(report),
+            str,
+            "open_run must return the report as a plain str",
+        )
+        self.assertIn(
+            "anvil version: %s" % (self.STORED_VERSION,),
+            report.splitlines(),
+            "the report does not carry the exact line 'anvil version: "
+            "%s' for the anvil_version value stored in the archive's "
+            "meta.json" % (self.STORED_VERSION,),
+        )
+
+    def test_open_run_archive_with_prompts_carries_one_line_per_prompt_naming_path(self):
+        open_run = self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(
+                root, prompt_stems=("coder", "shared-agents", "project")
+            )
+            report = open_run(self.RUN_ID, root)
+        for stem in self.PROMPTS:
+            with self.subTest(stem=stem):
+                path = self._prompt_path(run_dir, stem)
+                expected = "prompt: %s" % (path,)
+                self.assertIn(
+                    expected,
+                    report.splitlines(),
+                    "the report does not carry the line %r naming the "
+                    "archived prompt's file path %s" % (expected, path),
+                )
+
+    def test_open_run_prompt_lines_in_roles_order_with_shared_agents_and_project_after(self):
+        # The prompts/ directory is written in a scrambled order -
+        # project first, shared-agents second, coder last - so neither
+        # the write order nor the alphabetical order matches the report
+        # order. The observable is the report: one line per archived
+        # prompt, in pirole.ROLES order with shared-agents and project
+        # after the roles.
+        open_run = self._open_run()
+        scrambled = ("project", "shared-agents", "coder")
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(root, prompt_stems=scrambled)
+            report = open_run(self.RUN_ID, root)
+        expected_paths = [
+            str(self._prompt_path(run_dir, stem))
+            for stem in self.CANONICAL_PROMPT_ORDER
+        ]
+        self.assertEqual(
+            self._prompt_lines(report),
+            expected_paths,
+            "the report does not name the archived prompts in "
+            "pirole.ROLES order with shared-agents and project after the "
+            "roles; the prompt lines read %r, expected %r"
+            % (self._prompt_lines(report), expected_paths),
+        )
+
+    def test_open_run_missing_anvil_version_renders_pinned_absence_and_never_raises(self):
+        # A half-written archive whose meta.json carries no
+        # anvil_version key: the readable absence is the pinned line,
+        # in the same style as the report's existing absence lines, and
+        # the reopen never breaks.
+        open_run = self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(
+                root, version=None, prompt_stems=("coder",), finish=False
+            )
+            meta = json.loads(
+                (run_dir / "meta.json").read_text(encoding="utf-8")
+            )
+            self.assertNotIn(
+                "anvil_version",
+                meta,
+                "test-precondition: the archive's meta.json must not "
+                "carry the anvil_version key",
+            )
+            self.assertIs(
+                meta["complete"],
+                False,
+                "test-precondition: the archive must be half-written, so "
+                "the absence wording is the member's readable absence",
+            )
+            report = open_run(self.RUN_ID, root)
+        self.assertIs(
+            type(report),
+            str,
+            "open_run must return a str on an archive missing the "
+            "anvil_version key; a half-written archive never breaks the "
+            "reopen",
+        )
+        self.assertIn(
+            self.NO_VERSION,
+            report.splitlines(),
+            "the report does not carry the pinned absence line %r for "
+            "the missing anvil_version" % (self.NO_VERSION,),
+        )
+        self.assertFalse(
+            any(
+                line.startswith("anvil version: ")
+                for line in report.splitlines()
+            ),
+            "the report carries a version line for an archive whose "
+            "meta.json has no anvil_version key",
+        )
+
+    def test_open_run_missing_prompts_directory_renders_pinned_absence_and_never_raises(self):
+        # A half-written archive with no prompts/ directory at all: the
+        # readable absence is the pinned line, and the reopen never
+        # breaks.
+        open_run = self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._build_archive(root, finish=False)
+            self.assertFalse(
+                (run_dir / "prompts").exists(),
+                "test-precondition: the archive must have no prompts/ "
+                "directory",
+            )
+            report = open_run(self.RUN_ID, root)
+        self.assertIs(
+            type(report),
+            str,
+            "open_run must return a str on an archive with no prompts/ "
+            "directory; a half-written archive never breaks the reopen",
+        )
+        self.assertIn(
+            self.NO_PROMPTS,
+            report.splitlines(),
+            "the report does not carry the pinned absence line %r for "
+            "the missing prompts/ directory" % (self.NO_PROMPTS,),
+        )
+        self.assertEqual(
+            self._prompt_lines(report),
+            [],
+            "the report carries prompt lines for an archive with no "
+            "prompts/ directory",
+        )
+
+    def test_open_run_complete_archive_missing_members_returns_str_without_raising(self):
+        # The never-raises discipline holds on a finished archive as
+        # well: a complete archive that predates the members - no
+        # anvil_version key and no prompts/ directory - still comes back
+        # as a report, not an exception.
+        open_run = self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._build_archive(
+                root, version=None, prompt_stems=(), finish=True
+            )
+            report = open_run(self.RUN_ID, root)
+        self.assertIs(
+            type(report),
+            str,
+            "open_run must return a str on a complete archive missing "
+            "the version and the prompts; the reopen never breaks",
+        )
+
+    def test_open_run_intact_archive_carries_no_absence_wording(self):
+        # An archive carrying both members must not render their
+        # absence wording: the wording is the readable absence, and a
+        # member that is present is not absent.
+        open_run = self._open_run()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self._build_archive(
+                root,
+                version=self.STORED_VERSION,
+                prompt_stems=("coder", "shared-agents", "project"),
+            )
+            report = open_run(self.RUN_ID, root)
+        for line in (self.NO_VERSION, self.NO_PROMPTS):
+            with self.subTest(line=line):
+                self.assertNotIn(
+                    line,
+                    report.splitlines(),
+                    "an archive carrying the member must not render its "
+                    "absence wording %r" % (line,),
+                )
 
 
 if __name__ == "__main__":

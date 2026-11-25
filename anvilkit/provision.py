@@ -33,6 +33,19 @@ DEVCONTAINER_DIR = ".devcontainer"
 
 _SEPARATOR = "-" * 70
 
+# The agent home volume seeded with Pi's models document: the sandbox
+# container binds its agent home to this named volume (anvilkit/pi/pisandbox.py).
+AGENT_VOLUME = "sandbox-agent"
+
+# In-network gateway address for the seeded models document
+# (plans/pi-phase12-launch-gen.md, Assumptions): ``sandbox-internal`` is
+# declared ``internal: true`` in docker-compose.yml, so the sandbox container
+# has no host route and a ``127.0.0.1`` document would be unreachable; the
+# compose precedents pin ``PI_GATEWAY_HOST=llama-swap`` / ``PI_GATEWAY_PORT=8080``.
+# These are fixed facts of the network, not plan values.
+SANDBOX_GATEWAY_HOST = "llama-swap"
+SANDBOX_GATEWAY_PORT = 8080
+
 
 class ProvisionError(Exception):
     """The target repository or the templates are unusable."""
@@ -82,12 +95,26 @@ def setup_repo(
     templates_dir: Optional[PathLike] = None,
     dry_run: bool = False,
     echo: Optional[Callable[[str], None]] = None,
+    seed_models_json: Optional[
+        Callable[[str, str], Tuple[int, str, str]]
+    ] = None,
 ) -> str:
     """Provision ``target``, returning its resolved absolute path.
 
+    ``seed_models_json`` is an injected seeder seam, ``None`` by default: when
+    provided it is called exactly once with ``(AGENT_VOLUME, models_text)`` —
+    the named agent-home volume and the ``render.pi_models_settings`` text
+    rendered from the plan's model and context window at the in-network
+    gateway address — and must return a docker-runner triple
+    ``(code, stdout, stderr)``; a non-zero ``code`` raises ``ProvisionError``.
+    When ``None`` (the default) no seeding happens, so this module stays
+    filesystem-only and never touches docker.
+
     Raises:
         ProvisionError: the target is missing, is not a directory, or a required
-            template is absent. Nothing is written when validation fails.
+            template is absent. Nothing is written when validation fails. A
+            seeder that reports a non-zero exit code names the volume it was
+            asked to seed; nothing further is written.
     """
     report = echo or (lambda _message: None)
 
@@ -111,6 +138,12 @@ def setup_repo(
     report("⚙️  Processing MCP context mappings and injecting into workspace...")
     _write_mcp_settings(resolved, repo_plan, dry_run, report)
 
+    report("📡 Generating Pi MCP configuration from the workspace...")
+    _write_pi_mcp(resolved, dry_run, report)
+
+    report("🛡️  Generating Pi guardrails configuration...")
+    _write_pi_guardrails(resolved, dry_run, report)
+
     report("💻 Verifying IDE configuration space...")
     _write_extensions(resolved, dry_run, report)
 
@@ -123,6 +156,10 @@ def setup_repo(
     report("🧩 Deploying mode definitions and rules...")
     _copy_root_roomodes(resolved, templates, dry_run, report)
     _deploy_mode_rules(resolved, templates, dry_run, report)
+
+    if seed_models_json is not None:
+        report("📦 Seeding the {} agent volume...".format(AGENT_VOLUME))
+        _seed_agent_volume(repo_plan, seed_models_json, dry_run, report)
 
     _report_completion(resolved, report)
 
@@ -231,6 +268,7 @@ _GITIGNORE_ENTRIES = (
     "zoo-code-settings.json",
     ".roo/mcp.json",
     ".venv/.anvil-requirements-stamp",
+    ".pi/roles/",
 )
 
 
@@ -285,6 +323,22 @@ def _merge_gitignore(existing_text: str, template_text: str) -> Optional[str]:
     body += "\n" + header + "\n"
     body += "\n".join(missing) + "\n"
     return body
+
+
+def _missing_gitignore_entries(existing_text: str) -> List[str]:
+    """Which of ``_GITIGNORE_ENTRIES`` the existing content lacks.
+
+    Mirrors the merge's entry parsing (stripped, non-blank, non-comment)
+    so the dry-run report names exactly the entries a real run would append.
+    """
+    existing_entries = set()
+    for line in existing_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        existing_entries.add(stripped)
+
+    return [entry for entry in _GITIGNORE_ENTRIES if entry not in existing_entries]
 
 
 def _preserve_stored_credential_values(incoming: dict, stored: dict) -> dict:
@@ -759,6 +813,10 @@ def _merge_gitignore_step(
 
     if dry_run:
         report("   ↳ ⏭️  Dry-run: would create {}".format(gitignore_path))
+        for entry in _missing_gitignore_entries(existing_content):
+            report(
+                "   ↳ ⏭️  Dry-run: would ensure .gitignore entry: {}".format(entry)
+            )
         return
 
     render.write_text(gitignore_path, new_content)
@@ -858,6 +916,55 @@ def _write_mcp_settings(
 
     render.write_text(mcp_path, merged_text)
     report("   ↳ ✅ Merged: {}".format(mcp_path))
+
+
+def _write_pi_mcp(target: Path, dry_run: bool, report) -> None:
+    pi_mcp_path = target / ".pi" / "mcp.json"
+
+    # The seam output lands on disk verbatim, byte for byte: the file is
+    # committed and its bytes are pinned against the renderer's own output,
+    # so no trailing newline is invented (render.write_text would append one).
+    content = render.pi_mcp_settings(workspace_folder=str(target))
+
+    if dry_run:
+        # Validation happens before the dry-run report, per the
+        # _write_mcp_settings precedent: a dry run must surface the same
+        # fault, so a malformed existing file is never silently clobbered.
+        if pi_mcp_path.exists():
+            try:
+                existing = pi_mcp_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raise ProvisionError(
+                    "Existing {} could not be read as UTF-8.".format(pi_mcp_path)
+                )
+            try:
+                json.loads(existing)
+            except json.JSONDecodeError as exc:
+                raise ProvisionError(
+                    "Existing {} is not valid JSON: {}".format(pi_mcp_path, exc)
+                ) from exc
+        report("   ↳ ⏭️  Dry-run: would write {}".format(pi_mcp_path))
+        return
+
+    pi_mcp_path.parent.mkdir(parents=True, exist_ok=True)
+    pi_mcp_path.write_text(content, encoding="utf-8")
+    report("   ↳ ✅ Injected: {}".format(pi_mcp_path))
+
+
+def _write_pi_guardrails(target: Path, dry_run: bool, report) -> None:
+    guardrails_path = target / ".pi" / "extensions" / "guardrails.json"
+
+    # No try/except: a RenderError from the seam must propagate out of
+    # setup_repo unwrapped, and nothing beyond this step is written.
+    content = render.guardrails_settings()
+
+    if dry_run:
+        report("   ↳ ⏭️  Dry-run: would write {}".format(guardrails_path))
+        return
+
+    guardrails_path.parent.mkdir(parents=True, exist_ok=True)
+    guardrails_path.write_text(content, encoding="utf-8")
+    report("   ↳ ✅ Injected: {}".format(guardrails_path))
 
 
 def _write_extensions(target: Path, dry_run: bool, report) -> None:
@@ -1060,6 +1167,52 @@ def _copy_devcontainer(
         shutil.copytree(str(templates.devcontainer), str(destination))
 
     report("   ↳ ✅ Deployed: {}".format(destination))
+
+
+def _seed_agent_volume(
+    repo_plan: RepoPlan,
+    seed_models_json: Callable[[str, str], Tuple[int, str, str]],
+    dry_run: bool,
+    report,
+) -> None:
+    """Seed the agent-home volume with Pi's models document via the seam.
+
+    The document carries the plan's model and context window at the
+    in-network gateway address: the sandbox container has no host route,
+    so the ``127.0.0.1`` the renderer defaults to would be unreachable
+    from inside the sandbox. The models document goes into the volume,
+    never under the target, so no ``models.json`` is written to disk
+    here. The seam is a docker argv runner; a non-zero exit code is its
+    failure report, translated to ``ProvisionError`` naming the volume
+    before anything further is written. A dry run names the volume
+    destination and invokes the seam zero times, so docker is never
+    touched.
+    """
+    if dry_run:
+        report(
+            "   ↳ ⏭️  Dry-run: would seed models.json into the {} volume".format(
+                AGENT_VOLUME
+            )
+        )
+        return
+
+    models_text = render.pi_models_settings(
+        repo_plan.coder_model_id,
+        SANDBOX_GATEWAY_PORT,
+        repo_plan.context_window,
+        host=SANDBOX_GATEWAY_HOST,
+    )
+
+    code, _stdout, stderr = seed_models_json(AGENT_VOLUME, models_text)
+
+    if code != 0:
+        raise ProvisionError(
+            "Seeding the {} agent volume failed (exit {}): {}".format(
+                AGENT_VOLUME, code, stderr
+            )
+        )
+
+    report("   ↳ ✅ Seeded: {}".format(AGENT_VOLUME))
 
 
 def _report_completion(target: Path, report) -> None:

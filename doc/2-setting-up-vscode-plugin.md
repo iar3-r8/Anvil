@@ -56,6 +56,29 @@ never holds a token value.
 The naming rules, the record's fields and the `profile list` / `profile show`
 commands are in [working with run profiles](4-run-profiles.md).
 
+### The Pi project files
+
+`setup-repo` also provisions the target for the Pi runtime, under `.pi/`:
+
+- **`.pi/mcp.json`** — the same four MCP servers (github, git, oxylabs,
+  package-registry) in Pi's format. The file carries no secret: the
+  credential values are left as the `${GITHUB_TOKEN}` / `${OXYLABS_USERNAME}`
+  / `${OXYLABS_PASSWORD}` placeholders that Pi interpolates from the
+  environment at request time, so the file is safe to commit. The `git`
+  server's argument is the target's absolute path.
+- **`.pi/extensions/guardrails.json`** — the guardrails policy: the
+  dangerous git operations (`git commit`, `git push`, `git reset`,
+  `git rebase`) are auto-denied, secret files (`.env`, `*.pem`, `*.key`)
+  get `noAccess`, and the guardrails document itself is `readOnly` so an
+  agent cannot edit its own gate.
+
+Both files are Anvil-owned and **rewritten on every run** — unlike the merged
+`.roo/mcp.json`, there is no merge: a hand edit is replaced on the next run.
+One asymmetry with the `.roo` merge: a pre-existing **malformed**
+`.pi/mcp.json` (invalid JSON or non-UTF-8) aborts the run, exit code `5`,
+even under `--dry-run`, so a dry run can never promise to clobber a broken
+file it would then silently overwrite.
+
 ### Documentation grounding with Oxylabs
 
 The agent modes are told that an unknown third-party interface is a **blocking
@@ -132,6 +155,7 @@ existing content is never truncated or reordered. The entries managed are:
 | `zoo-code-settings.json` | Anthropic API key, gateway URL |
 | `.roo/mcp.json` | GitHub personal access token |
 | `.venv/.anvil-requirements-stamp` | bootstrap state |
+| `.pi/roles/` | launch-time generated role documents — a build artifact, regenerated from the profile record at every run |
 
 If all entries are already present in the target's `.gitignore`, the file is
 left byte-for-byte unchanged (idempotent).
