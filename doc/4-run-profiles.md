@@ -66,6 +66,28 @@ A store failure after a successful provisioning — a name collision at a
 different path, an unwritable store — exits with the configuration code `3`:
 the provisioning succeeded, and the failure is reported, not swallowed.
 
+## What the record drives at launch
+
+The record is what a run consumes, not just what it stores. When a cycle is
+given a profile, it generates the repository's seven role documents before its
+first delegation — the six shared documents (`shared-agents`, `architect`,
+`coder`, `tester`, `docs`, `tdd-manager`) plus `project.md`, rendered from the
+record's `owner` and `repo` and the `project` block's `name`, `structure` and
+`configuration`:
+
+- The documents land in `<repo>/.pi/roles/` and are **regenerated at the start
+  of every red/green cycle**: a hand edit is a build artifact, overwritten
+  without warning or backup. That is why `setup-repo` gitignores `.pi/roles/`
+  in the target (see the
+  [VS Code plugin setup guide](2-setting-up-vscode-plugin.md)).
+- A field with no value renders the pinned line `not recorded` rather than
+  failing: the empty `project` block `setup-repo` records today is the common
+  case, so first-time operators see `not recorded`, not an error.
+- A generation failure (a name the store does not hold, an unwritable `.pi`)
+  halts the run **before anything is delegated or committed** — a cycle never
+  runs agents against stale or missing prompts, so there is no red commit to
+  stand or roll back.
+
 ## Inspecting the store
 
 ```bash
