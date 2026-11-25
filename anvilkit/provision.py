@@ -114,6 +114,9 @@ def setup_repo(
     report("📡 Generating Pi MCP configuration from the workspace...")
     _write_pi_mcp(resolved, dry_run, report)
 
+    report("🛡️  Generating Pi guardrails configuration...")
+    _write_pi_guardrails(resolved, dry_run, report)
+
     report("💻 Verifying IDE configuration space...")
     _write_extensions(resolved, dry_run, report)
 
@@ -878,6 +881,22 @@ def _write_pi_mcp(target: Path, dry_run: bool, report) -> None:
     pi_mcp_path.parent.mkdir(parents=True, exist_ok=True)
     pi_mcp_path.write_text(content, encoding="utf-8")
     report("   ↳ ✅ Injected: {}".format(pi_mcp_path))
+
+
+def _write_pi_guardrails(target: Path, dry_run: bool, report) -> None:
+    guardrails_path = target / ".pi" / "extensions" / "guardrails.json"
+
+    # No try/except: a RenderError from the seam must propagate out of
+    # setup_repo unwrapped, and nothing beyond this step is written.
+    content = render.guardrails_settings()
+
+    if dry_run:
+        report("   ↳ dry run: would write .pi/extensions/guardrails.json")
+        return
+
+    guardrails_path.parent.mkdir(parents=True, exist_ok=True)
+    guardrails_path.write_text(content, encoding="utf-8")
+    report("   ↳ ✅ Injected: {}".format(guardrails_path))
 
 
 def _write_extensions(target: Path, dry_run: bool, report) -> None:
