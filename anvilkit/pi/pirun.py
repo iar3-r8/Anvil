@@ -50,13 +50,25 @@ def pr_fields_for(payload: Any) -> Dict[str, str]:
     }
 
 
-def kind_for(payload: Dict[str, Any]) -> str:
+def kind_for(payload: Any) -> str:
     """The run kind (feature or bugfix) derived from an issue payload's labels.
 
-    Placeholder for the red step of behaviour 5; the derivation lands in the
-    green step.
+    Returns ``"bugfix"`` iff some label's ``"name"`` is exactly the string
+    ``"bug"`` (case-sensitive); returns ``"feature"`` in every other case —
+    including a payload that is not a dict, a missing, ``None`` or non-list
+    ``"labels"`` value, label entries that are not dicts, and a missing or
+    non-string ``"name"``. The derivation never raises and never returns
+    anything but the two words ``"feature"`` / ``"bugfix"``.
     """
-    return ""
+    if not isinstance(payload, dict):
+        return "feature"
+    labels = payload.get("labels")
+    if not isinstance(labels, list):
+        return "feature"
+    for label in labels:
+        if isinstance(label, dict) and label.get("name") == "bug":
+            return "bugfix"
+    return "feature"
 
 
 def _field(payload: Any, key: str, placeholder: str) -> str:
