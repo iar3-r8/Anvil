@@ -46,8 +46,26 @@ def project_document(record: Dict[str, Any]) -> str:
     pinned line ``not recorded`` instead — an absent field is never a
     refusal and never raises; the empty ``project`` block
     ``piprofileflow.record_profile`` writes today is the common case.
+
+    A record that is not a mapping, or a ``project`` value that is present
+    but not a mapping, is refused with ``ProjectError`` naming the field
+    (``record`` or ``project``) and its actual type, raised before any text
+    is built (``plans/pi-phase12-launch-gen.md``, behaviour 3). A missing
+    ``project`` key is an absent field, not a refusal.
     """
-    project = record["project"]
+    if not isinstance(record, dict):
+        raise ProjectError(
+            "record must be a mapping, got {}".format(type(record).__name__)
+        )
+    if "project" in record and not isinstance(record["project"], dict):
+        raise ProjectError(
+            "project must be a mapping, got {}".format(
+                type(record["project"]).__name__
+            )
+        )
+    project = record.get("project")
+    if project is None:
+        project = {}
     facts = (
         ("Repository", _value(record, "repo")),
         ("Github user", _value(record, "owner")),
