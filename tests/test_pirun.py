@@ -77,5 +77,107 @@ class BranchForTestCase(unittest.TestCase):
         )
 
 
+class PrFieldsForTestCase(unittest.TestCase):
+    """Behaviour 4: title-and-body-derived-from-the-issue.
+
+    ``pr_fields_for(payload)`` returns ``{"title": <issue title>,
+    "body": <issue body>}``; a missing, null, or empty (whitespace-only)
+    title yields ``(no title provided)`` and a missing, null, or empty body
+    yields ``(no body provided)`` — a stated placeholder, never the string
+    ``"None"``. A payload that is not a dict is treated the same as missing
+    fields: placeholders, no exception.
+
+    The derivation is pure: no opener, no mock and no fixture is needed.
+    """
+
+    def _payload(self, **overrides):
+        payload = {
+            "title": "Fix the gateway port fallback",
+            "body": "The fallback port is never honoured.",
+            "labels": ["bug"],
+            "number": 114,
+        }
+        payload.update(overrides)
+        return payload
+
+    def test_title_and_body_present_returned_verbatim(self):
+        self.assertEqual(
+            pirun.pr_fields_for(self._payload()),
+            {
+                "title": "Fix the gateway port fallback",
+                "body": "The fallback port is never honoured.",
+            },
+        )
+
+    def test_title_missing_key_yields_placeholder_and_body_still_derived(self):
+        payload = self._payload()
+        del payload["title"]
+
+        self.assertEqual(
+            pirun.pr_fields_for(payload),
+            {
+                "title": "(no title provided)",
+                "body": "The fallback port is never honoured.",
+            },
+        )
+
+    def test_title_null_yields_placeholder_and_body_still_derived(self):
+        self.assertEqual(
+            pirun.pr_fields_for(self._payload(title=None)),
+            {
+                "title": "(no title provided)",
+                "body": "The fallback port is never honoured.",
+            },
+        )
+
+    def test_title_whitespace_only_yields_placeholder_and_body_still_derived(self):
+        self.assertEqual(
+            pirun.pr_fields_for(self._payload(title="   \t\n  ")),
+            {
+                "title": "(no title provided)",
+                "body": "The fallback port is never honoured.",
+            },
+        )
+
+    def test_body_missing_key_yields_placeholder_and_title_still_derived(self):
+        payload = self._payload()
+        del payload["body"]
+
+        self.assertEqual(
+            pirun.pr_fields_for(payload),
+            {
+                "title": "Fix the gateway port fallback",
+                "body": "(no body provided)",
+            },
+        )
+
+    def test_body_null_yields_placeholder_and_title_still_derived(self):
+        self.assertEqual(
+            pirun.pr_fields_for(self._payload(body=None)),
+            {
+                "title": "Fix the gateway port fallback",
+                "body": "(no body provided)",
+            },
+        )
+
+    def test_body_whitespace_only_yields_placeholder_and_title_still_derived(self):
+        self.assertEqual(
+            pirun.pr_fields_for(self._payload(body="  \n\t ")),
+            {
+                "title": "Fix the gateway port fallback",
+                "body": "(no body provided)",
+            },
+        )
+
+    def test_non_dict_payload_yields_both_placeholders_without_raising(self):
+        self.assertEqual(
+            pirun.pr_fields_for(None),
+            {
+                "title": "(no title provided)",
+                "body": "(no body provided)",
+            },
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
