@@ -10,6 +10,11 @@ produces, ``project.md`` equal to ``piproject.project_document(record)``
 for the stored record, and the result passing
 ``smoke.check_role_prompt``.
 
+It also covers re-generation: a second ``generate`` over a repo whose
+``coder.md`` was hand-edited replaces the edit with the generated text and
+leaves no backup anywhere under ``<repo>/.pi/``, and a third call leaves
+every file byte-identical to the second call's result.
+
 ``anvilkit.pi.pilaunch`` is imported inside the helper rather than at
 collection time, so the file collects cleanly while the module is
 unimplemented and every test fails with the ``ModuleNotFoundError``
@@ -128,6 +133,99 @@ class TestGenerateWritesSevenDocuments(unittest.TestCase):
             smoke.STATE_OK,
             "layer %r failed: %s" % (result.name, result.detail),
         )
+
+
+class TestGenerateIsIdempotentAndOverwriting(unittest.TestCase):
+    """Re-generation overwrites a hand edit with no backup, and a third
+    call changes nothing on disk.
+
+    A hand edit is a build artifact: a second ``generate`` replaces it
+    without warning and leaves no ``.bak`` or renamed copy anywhere under
+    ``<repo>/.pi/``; a third call leaves every one of the seven files
+    byte-identical to the second call's result.
+    """
+
+    # The hand edit the tests write over the generated coder document.
+    HAND_EDIT = (
+        "# Coder\n"
+        "\n"
+        "Hand-edited by an operator after generation.\n"
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.repo = base / "repo"
+        self.repo.mkdir()
+        self.root = base / ".anvil"
+        self.root.mkdir()
+        _save_profile(self.root, self.repo)
+        self.pi_dir = self.repo / ".pi"
+        self.roles_dir = self.pi_dir / "roles"
+
+    def _generate(self) -> Dict[str, str]:
+        """Run pilaunch.generate over the repo and return its result."""
+        pilaunch = _load_module()
+        return pilaunch.generate(str(self.repo), self.root, PROFILE_NAME)
+
+    def _hand_edit_coder(self) -> None:
+        """Overwrite the generated coder.md with the test-owned HAND_EDIT."""
+        coder = self.roles_dir / "coder.md"
+        original = coder.read_text(encoding="utf-8")
+        self.assertNotEqual(
+            original,
+            self.HAND_EDIT,
+            "the hand edit must differ from the generated text",
+        )
+        coder.write_text(self.HAND_EDIT, encoding="utf-8")
+
+    def _iter_dot_pi_files(self):
+        """Yield every file under <repo>/.pi/, recursively."""
+        for path in sorted(self.pi_dir.rglob("*")):
+            if path.is_file():
+                yield path
+
+    def test_generate_hand_edited_coder_replaced_by_generated_text(self):
+        self._generate()
+        self._hand_edit_coder()
+
+        self._generate()
+
+        text = (self.roles_dir / "coder.md").read_text(encoding="utf-8")
+
+        self.assertEqual(text, piprompt.all_documents()["coder"])
+
+    def test_generate_hand_edited_coder_leaves_no_backup_under_dot_pi(self):
+        self._generate()
+        self._hand_edit_coder()
+
+        self._generate()
+
+        for path in self._iter_dot_pi_files():
+            with self.subTest(path=str(path)):
+                self.assertFalse(
+                    path.name.endswith(".bak")
+                    or path.name.endswith(".orig")
+                    or path.name.endswith("~"),
+                    "a backup file was left behind: %r" % path.name,
+                )
+                self.assertNotEqual(
+                    path.read_text(encoding="utf-8"),
+                    self.HAND_EDIT,
+                    "the hand edit survives at %r" % str(path),
+                )
+
+    def test_generate_third_call_byte_identical_to_second_call(self):
+        self._generate()
+        second = self._generate()
+        third = self._generate()
+
+        self.assertEqual(third, second, "the third call resolved different documents")
+        for stem, text in second.items():
+            with self.subTest(stem=stem):
+                on_disk = (self.roles_dir / (stem + ".md")).read_text(encoding="utf-8")
+                self.assertEqual(on_disk, text)
 
 
 if __name__ == "__main__":
