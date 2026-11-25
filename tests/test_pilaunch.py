@@ -15,6 +15,13 @@ It also covers re-generation: a second ``generate`` over a repo whose
 leaves no backup anywhere under ``<repo>/.pi/``, and a third call leaves
 every file byte-identical to the second call's result.
 
+It also covers a changed documents source: two distinct target directories,
+each generated once from the same profile root, with the
+``piprompt.all_documents`` seam's output altered after the first
+generation; the second directory's documents carry the change with no
+re-provisioning step between, and the first directory stays byte-identical
+to its first-generation result.
+
 ``anvilkit.pi.pilaunch`` is imported inside the helper rather than at
 collection time, so the file collects cleanly while the module is
 unimplemented and every test fails with the ``ModuleNotFoundError``
@@ -23,6 +30,7 @@ naming the missing module.
 
 import importlib
 import tempfile
+from unittest import mock
 import unittest
 from pathlib import Path
 from typing import Dict
@@ -226,6 +234,134 @@ class TestGenerateIsIdempotentAndOverwriting(unittest.TestCase):
             with self.subTest(stem=stem):
                 on_disk = (self.roles_dir / (stem + ".md")).read_text(encoding="utf-8")
                 self.assertEqual(on_disk, text)
+
+
+class TestGenerateReachesSecondRepo(unittest.TestCase):
+    """A changed documents source reaches a second repo's next generation.
+
+    Two distinct target directories are each generated once from the same
+    profile root, through two profiles that share it. After the first
+    generation the ``piprompt.all_documents`` seam is patched, as seen
+    through the ``anvilkit.pi.pilaunch`` namespace, to return one altered
+    document; the patch is scoped to the mock context manager so no other
+    test sees the changed documents. When ``generate`` is called again on
+    the second directory only, that directory's documents carry the change
+    with no re-provisioning step between, and the first directory's files
+    stay byte-identical to its first-generation result.
+    """
+
+    # The rule change the tests apply to the documents source after the
+    # first generation; it must differ from the generated coder text.
+    CHANGED_CODER = (
+        "# Coder\n"
+        "\n"
+        "Rule text updated in Anvil's templates after the first run.\n"
+    )
+
+    NAME_A = "gearworks-a"
+    NAME_B = "gearworks-b"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.repo_a = base / "repo-a"
+        self.repo_a.mkdir()
+        self.repo_b = base / "repo-b"
+        self.repo_b.mkdir()
+        self.root = base / ".anvil"
+        self.root.mkdir()
+        self._save(self.repo_a, self.NAME_A)
+        self._save(self.repo_b, self.NAME_B)
+        self.roles_a = self.repo_a / ".pi" / "roles"
+        self.roles_b = self.repo_b / ".pi" / "roles"
+
+    def _save(self, target: Path, name: str) -> None:
+        """Record a profile under ``name`` pointing at ``target``."""
+        piprofile.save_profile(
+            root=self.root,
+            name=name,
+            path=target,
+            owner=OWNER,
+            repo=REPO,
+            base=BASE,
+            project=dict(PROJECT_BLOCK),
+        )
+
+    def _generate(self, repo: Path, name: str) -> Dict[str, str]:
+        """Run pilaunch.generate over ``repo`` and return its result."""
+        pilaunch = _load_module()
+        return pilaunch.generate(str(repo), self.root, name)
+
+    def _changed_documents(self) -> Dict[str, str]:
+        """The documents source after the rule change: one altered document."""
+        changed = dict(piprompt.all_documents())
+        changed["coder"] = self.CHANGED_CODER
+        return changed
+
+    def _roles_bytes(self, roles_dir: Path) -> Dict[str, bytes]:
+        """Snapshot every file under ``roles_dir`` by name and raw bytes."""
+        return {p.name: p.read_bytes() for p in sorted(roles_dir.iterdir())}
+
+    def _assert_roles_unchanged(
+        self,
+        before: Dict[str, bytes],
+        after: Dict[str, bytes],
+    ) -> None:
+        self.assertEqual(
+            set(after),
+            set(before),
+            "the roles directory gained or lost files: %r" % sorted(after),
+        )
+        for name, data in before.items():
+            with self.subTest(file=name):
+                self.assertEqual(after[name], data, "%r changed" % name)
+
+    def test_generate_first_generation_before_source_change_writes_original_coder(self):
+        original = piprompt.all_documents()["coder"]
+        self.assertNotEqual(
+            original,
+            self.CHANGED_CODER,
+            "the rule change must alter the coder text",
+        )
+
+        self._generate(self.repo_a, self.NAME_A)
+
+        text = (self.roles_a / "coder.md").read_text(encoding="utf-8")
+
+        self.assertEqual(text, original)
+
+    def test_generate_second_repo_after_source_change_carries_changed_text(self):
+        self._generate(self.repo_a, self.NAME_A)
+        pilaunch = _load_module()
+        changed = self._changed_documents()
+
+        with mock.patch.object(
+            pilaunch.piprompt, "all_documents", return_value=changed
+        ):
+            self._generate(self.repo_b, self.NAME_B)
+
+        for stem, document in changed.items():
+            with self.subTest(stem=stem):
+                text = (self.roles_b / (stem + ".md")).read_text(encoding="utf-8")
+                self.assertEqual(text, document)
+        self.assertTrue(
+            (self.roles_b / "project.md").is_file(),
+            "project.md is missing from the second repo's roles directory",
+        )
+
+    def test_generate_second_repo_after_source_change_first_repo_untouched(self):
+        self._generate(self.repo_a, self.NAME_A)
+        before = self._roles_bytes(self.roles_a)
+        pilaunch = _load_module()
+        changed = self._changed_documents()
+
+        with mock.patch.object(
+            pilaunch.piprompt, "all_documents", return_value=changed
+        ):
+            self._generate(self.repo_b, self.NAME_B)
+
+        self._assert_roles_unchanged(before, self._roles_bytes(self.roles_a))
 
 
 if __name__ == "__main__":
