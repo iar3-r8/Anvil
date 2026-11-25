@@ -19,6 +19,10 @@ failure point for the error paths its later behaviours raise.
 from typing import Any, Dict, Tuple
 
 
+#: The pinned wording an absent field renders on its labelled line.
+_NOT_RECORDED = "not recorded"
+
+
 class ProjectError(Exception):
     """The profile record cannot be turned into the ``project.md`` text.
 
@@ -37,16 +41,31 @@ def project_document(record: Dict[str, Any]) -> str:
     labelled line, in that order, under a single ``# Project`` heading, so
     the shared sources' ``<Repository name>`` / ``<Github user>``
     placeholders are filled by real values.
+
+    A field whose key is missing or whose value is ``None`` renders the
+    pinned line ``not recorded`` instead — an absent field is never a
+    refusal and never raises; the empty ``project`` block
+    ``piprofileflow.record_profile`` writes today is the common case.
     """
     project = record["project"]
     facts = (
-        ("Repository", record["repo"]),
-        ("Github user", record["owner"]),
-        ("Name", project["name"]),
-        ("Structure", project["structure"]),
-        ("Configuration", project["configuration"]),
+        ("Repository", _value(record, "repo")),
+        ("Github user", _value(record, "owner")),
+        ("Name", _value(project, "name")),
+        ("Structure", _value(project, "structure")),
+        ("Configuration", _value(project, "configuration")),
     )
     return _render(facts)
+
+
+def _value(mapping: Dict[str, Any], key: str) -> str:
+    """Return ``mapping[key]``, or the pinned absence wording if absent.
+
+    A missing key and a ``None`` value are both absent; anything else is
+    rendered verbatim.
+    """
+    value = mapping.get(key)
+    return _NOT_RECORDED if value is None else value
 
 
 def _render(facts: Tuple[Tuple[str, str], ...]) -> str:
