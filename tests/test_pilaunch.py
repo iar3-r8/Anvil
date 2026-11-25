@@ -35,7 +35,9 @@ import unittest
 from pathlib import Path
 from typing import Dict
 
+from anvilkit import render
 from anvilkit import smoke
+from anvilkit import yamlio
 from anvilkit.pi import piprofile
 from anvilkit.pi import piproject
 from anvilkit.pi import piprompt
@@ -362,6 +364,153 @@ class TestGenerateReachesSecondRepo(unittest.TestCase):
             self._generate(self.repo_b, self.NAME_B)
 
         self._assert_roles_unchanged(before, self._roles_bytes(self.roles_a))
+
+
+class TestGenerateErrorPaths(unittest.TestCase):
+    """pilaunch.generate's error paths raise LaunchError and leave nothing
+    partial on disk.
+
+    Three failures are covered: a roles root that cannot be created
+    (``<repo>/.pi`` is a regular file, so ``render.role_prompts`` refuses),
+    a profile name the store does not hold, and a stored record whose
+    ``project`` value is not a mapping. Each case raises
+    ``LaunchError`` whose ``__cause__`` is the underlying ``RenderError``,
+    ``ProfileError`` or ``ProjectError`` — pinned to ``raise ... from exc``
+    so the offender stays identifiable from the raised message — and each
+    case leaves no ``.pi/roles/`` directory or file anywhere in the repo.
+    """
+
+    #: The name scenario two addresses: valid, but never saved to the store.
+    UNKNOWN_NAME = "never-saved"
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.repo = base / "repo"
+        self.repo.mkdir()
+        self.root = base / ".anvil"
+        self.root.mkdir()
+        self.pi_path = self.repo / ".pi"
+        self.roles_dir = self.pi_path / "roles"
+
+    def _generate(self, name: str) -> Dict[str, str]:
+        """Run pilaunch.generate over the repo with ``name``; return result."""
+        pilaunch = _load_module()
+        return pilaunch.generate(str(self.repo), self.root, name)
+
+    def _save_broken_project_record(self) -> None:
+        """Record a profile whose stored ``project`` block is a list.
+
+        ``save_profile`` refuses a non-mapping project block, so the store
+        file is written directly through ``yamlio`` — the load side reads
+        the record back exactly as written.
+        """
+        store = {
+            "version": 1,
+            PROFILE_NAME: {
+                "path": str(self.repo),
+                "owner": OWNER,
+                "repo": REPO,
+                "base": BASE,
+                "token_env": "GITHUB_TOKEN_" + PROFILE_NAME.upper(),
+                "project": ["not", "a", "mapping"],
+            },
+        }
+        yamlio.save(self.root / "profiles.yaml", store)
+
+    def _assert_nothing_written_to_repo(self) -> None:
+        self.assertFalse(
+            self.pi_path.exists(),
+            "a failed generate left %r behind in the repo" % self.pi_path,
+        )
+
+    def test_generate_unwritable_roles_root_raises_launch_error(self):
+        self.pi_path.write_text("not a directory", encoding="utf-8")
+        _save_profile(self.root, self.repo)
+        pilaunch = _load_module()
+
+        with self.assertRaises(pilaunch.LaunchError) as ctx:
+            self._generate(PROFILE_NAME)
+
+        cause = ctx.exception.__cause__
+        self.assertIsInstance(cause, render.RenderError)
+        self.assertIn(
+            str(self.roles_dir),
+            str(cause),
+            "the wrapped error must name the roles path: %s" % cause,
+        )
+
+    def test_generate_unwritable_roles_root_leaves_no_partial_files(self):
+        self.pi_path.write_text("not a directory", encoding="utf-8")
+        _save_profile(self.root, self.repo)
+        pilaunch = _load_module()
+
+        with self.assertRaises(pilaunch.LaunchError):
+            self._generate(PROFILE_NAME)
+
+        self.assertTrue(
+            self.pi_path.is_file(),
+            "the pre-existing .pi file was altered by the failed generate",
+        )
+        self.assertFalse(
+            self.roles_dir.exists(),
+            "a failed generate left the roles directory behind: %r"
+            % self.roles_dir,
+        )
+
+    def test_generate_unknown_profile_name_raises_launch_error(self):
+        _save_profile(self.root, self.repo)
+        pilaunch = _load_module()
+
+        with self.assertRaises(pilaunch.LaunchError) as ctx:
+            self._generate(self.UNKNOWN_NAME)
+
+        cause = ctx.exception.__cause__
+        self.assertIsInstance(cause, piprofile.ProfileError)
+        self.assertIn(
+            self.UNKNOWN_NAME,
+            str(cause),
+            "the wrapped error must name the unknown profile: %s" % cause,
+        )
+
+    def test_generate_unknown_profile_name_writes_nothing_to_repo(self):
+        _save_profile(self.root, self.repo)
+        pilaunch = _load_module()
+
+        with self.assertRaises(pilaunch.LaunchError):
+            self._generate(self.UNKNOWN_NAME)
+
+        self._assert_nothing_written_to_repo()
+
+    def test_generate_non_mapping_project_record_raises_launch_error(self):
+        self._save_broken_project_record()
+        pilaunch = _load_module()
+
+        with self.assertRaises(pilaunch.LaunchError) as ctx:
+            self._generate(PROFILE_NAME)
+
+        cause = ctx.exception.__cause__
+        self.assertIsInstance(cause, piproject.ProjectError)
+        self.assertIn(
+            "project must be a mapping",
+            str(cause),
+            "the wrapped error must name the offending field: %s" % cause,
+        )
+        self.assertIn(
+            "list",
+            str(cause),
+            "the wrapped error must name the actual type: %s" % cause,
+        )
+
+    def test_generate_non_mapping_project_record_writes_nothing_to_repo(self):
+        self._save_broken_project_record()
+        pilaunch = _load_module()
+
+        with self.assertRaises(pilaunch.LaunchError):
+            self._generate(PROFILE_NAME)
+
+        self._assert_nothing_written_to_repo()
 
 
 if __name__ == "__main__":
