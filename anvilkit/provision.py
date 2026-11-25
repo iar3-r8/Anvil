@@ -159,7 +159,7 @@ def setup_repo(
 
     if seed_models_json is not None:
         report("📦 Seeding the {} agent volume...".format(AGENT_VOLUME))
-        _seed_agent_volume(repo_plan, seed_models_json, report)
+        _seed_agent_volume(repo_plan, seed_models_json, dry_run, report)
 
     _report_completion(resolved, report)
 
@@ -323,6 +323,22 @@ def _merge_gitignore(existing_text: str, template_text: str) -> Optional[str]:
     body += "\n" + header + "\n"
     body += "\n".join(missing) + "\n"
     return body
+
+
+def _missing_gitignore_entries(existing_text: str) -> List[str]:
+    """Which of ``_GITIGNORE_ENTRIES`` the existing content lacks.
+
+    Mirrors the merge's entry parsing (stripped, non-blank, non-comment)
+    so the dry-run report names exactly the entries a real run would append.
+    """
+    existing_entries = set()
+    for line in existing_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        existing_entries.add(stripped)
+
+    return [entry for entry in _GITIGNORE_ENTRIES if entry not in existing_entries]
 
 
 def _preserve_stored_credential_values(incoming: dict, stored: dict) -> dict:
@@ -797,6 +813,10 @@ def _merge_gitignore_step(
 
     if dry_run:
         report("   ↳ ⏭️  Dry-run: would create {}".format(gitignore_path))
+        for entry in _missing_gitignore_entries(existing_content):
+            report(
+                "   ↳ ⏭️  Dry-run: would ensure .gitignore entry: {}".format(entry)
+            )
         return
 
     render.write_text(gitignore_path, new_content)
@@ -907,7 +927,23 @@ def _write_pi_mcp(target: Path, dry_run: bool, report) -> None:
     content = render.pi_mcp_settings(workspace_folder=str(target))
 
     if dry_run:
-        report("   ↳ dry run: would write .pi/mcp.json")
+        # Validation happens before the dry-run report, per the
+        # _write_mcp_settings precedent: a dry run must surface the same
+        # fault, so a malformed existing file is never silently clobbered.
+        if pi_mcp_path.exists():
+            try:
+                existing = pi_mcp_path.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                raise ProvisionError(
+                    "Existing {} could not be read as UTF-8.".format(pi_mcp_path)
+                )
+            try:
+                json.loads(existing)
+            except json.JSONDecodeError as exc:
+                raise ProvisionError(
+                    "Existing {} is not valid JSON: {}".format(pi_mcp_path, exc)
+                ) from exc
+        report("   ↳ ⏭️  Dry-run: would write {}".format(pi_mcp_path))
         return
 
     pi_mcp_path.parent.mkdir(parents=True, exist_ok=True)
@@ -923,7 +959,7 @@ def _write_pi_guardrails(target: Path, dry_run: bool, report) -> None:
     content = render.guardrails_settings()
 
     if dry_run:
-        report("   ↳ dry run: would write .pi/extensions/guardrails.json")
+        report("   ↳ ⏭️  Dry-run: would write {}".format(guardrails_path))
         return
 
     guardrails_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1136,6 +1172,7 @@ def _copy_devcontainer(
 def _seed_agent_volume(
     repo_plan: RepoPlan,
     seed_models_json: Callable[[str, str], Tuple[int, str, str]],
+    dry_run: bool,
     report,
 ) -> None:
     """Seed the agent-home volume with Pi's models document via the seam.
@@ -1147,8 +1184,18 @@ def _seed_agent_volume(
     never under the target, so no ``models.json`` is written to disk
     here. The seam is a docker argv runner; a non-zero exit code is its
     failure report, translated to ``ProvisionError`` naming the volume
-    before anything further is written.
+    before anything further is written. A dry run names the volume
+    destination and invokes the seam zero times, so docker is never
+    touched.
     """
+    if dry_run:
+        report(
+            "   ↳ ⏭️  Dry-run: would seed models.json into the {} volume".format(
+                AGENT_VOLUME
+            )
+        )
+        return
+
     models_text = render.pi_models_settings(
         repo_plan.coder_model_id,
         SANDBOX_GATEWAY_PORT,
