@@ -29,15 +29,17 @@ REQUIRED_ENTRIES = [
     ".env",
     "anvil.local.yaml",
     ".venv/.anvil-requirements-stamp",
+    ".pi/roles/",
 ]
 
-# The five entries in template order (without header/comments).
+# The six entries in template order (without header/comments).
 TEMPLATE_ENTRIES_ORDERED = [
     ".env",
     "anvil.local.yaml",
     "zoo-code-settings.json",
     ".roo/mcp.json",
     ".venv/.anvil-requirements-stamp",
+    ".pi/roles/",
 ]
 
 HEADER_LINES = [
@@ -300,7 +302,7 @@ class Behaviour5PartialOverlapTests(unittest.TestCase):
         )
 
     def test_missing_entries_are_appended(self):
-        """The four missing entries must be appended."""
+        """The five missing entries must be appended."""
         _provision(self._tmp, self.target)
         entries = _parse_gitignore(
             (self.target / ".gitignore").read_text(encoding="utf-8")
@@ -328,7 +330,7 @@ class Behaviour5PartialOverlapTests(unittest.TestCase):
         self.assertIn("node_modules/", lines[:env_idx])
 
     def test_only_missing_entries_in_appended_block(self):
-        """The appended block should contain only the four missing entries."""
+        """The appended block should contain only the five missing entries."""
         _provision(self._tmp, self.target)
         content = (self.target / ".gitignore").read_text(encoding="utf-8")
         # The appended block starts after the original content.
@@ -364,7 +366,7 @@ class Behaviour6AllEntriesPresentTests(unittest.TestCase):
         self.target = Path(self._tmp.name) / "repo"
         self.target.mkdir()
         self.template_root = _make_mini_templates(Path(self._tmp.name))
-        # Create an .gitignore with all five entries interleaved in different order.
+        # Create an .gitignore with all six entries interleaved in different order.
         self.original_content = (
             "# My project\n"
             "node_modules/\n"
@@ -375,6 +377,7 @@ class Behaviour6AllEntriesPresentTests(unittest.TestCase):
             ".env\n"
             "zoo-code-settings.json\n"
             ".roo/mcp.json\n"
+            ".pi/roles/\n"
         )
         (self.target / ".gitignore").write_text(
             self.original_content, encoding="utf-8"
@@ -877,7 +880,7 @@ class Behaviour14MergeHelperUnitTests(unittest.TestCase):
             self.assertIn(entry, entries)
 
     def test_merge_partial_overlap_appends_only_missing(self):
-        """If .env is present, only the other four are appended."""
+        """If .env is present, only the other five are appended."""
         from anvilkit.provision import _merge_gitignore
 
         existing = "node_modules/\n.env\n*.log\n"
@@ -941,6 +944,113 @@ class Behaviour14MergeHelperUnitTests(unittest.TestCase):
         result = _merge_gitignore(existing, template)
         self.assertIn("node_modules/\n", result)
         self.assertNotIn("node_modules/# Anvil", result)
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 18 — .gitignore carries the .pi/roles/ entry
+# ---------------------------------------------------------------------------
+
+ROLES_ENTRY = ".pi/roles/"
+
+MARKER_LINE = "# Setup-repo appends missing entries below this marker."
+
+# The five pre-existing entries, in template order, that a target .gitignore
+# may already hold before the roles entry is added.
+PRE_EXISTING_FIVE_ENTRIES = "\n".join(
+    [
+        ".env",
+        "anvil.local.yaml",
+        "zoo-code-settings.json",
+        ".roo/mcp.json",
+        ".venv/.anvil-requirements-stamp",
+    ]
+) + "\n"
+
+
+def _count_entry(content: str, entry: str) -> int:
+    """Count non-comment lines in *content* that are exactly *entry*."""
+    return sum(
+        1
+        for line in content.splitlines()
+        if line.strip() == entry
+    )
+
+
+class Behaviour18RolesEntryTests(unittest.TestCase):
+    """Behaviour 18: .pi/roles/ is carried exactly once in provisioned .gitignores.
+
+    Written before the implementation (TDD).
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.target = Path(self._tmp.name) / "repo"
+        self.target.mkdir()
+        self.template_root = _make_mini_templates(Path(self._tmp.name))
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_new_gitignore_roles_entry_present_exactly_once(self):
+        """A target with no .gitignore gets .pi/roles/ present exactly once."""
+        _provision(self._tmp, self.target)
+        content = (self.target / ".gitignore").read_text(encoding="utf-8")
+        count = _count_entry(content, ROLES_ENTRY)
+        self.assertEqual(
+            count,
+            1,
+            f".pi/roles/ appears {count} times in the created .gitignore; expected 1",
+        )
+
+    def test_existing_five_entries_roles_entry_appended_under_marker(self):
+        """A target holding the five pre-existing entries gets .pi/roles/ appended under the Anvil marker."""
+        (self.target / ".gitignore").write_text(
+            PRE_EXISTING_FIVE_ENTRIES, encoding="utf-8"
+        )
+        _provision(self._tmp, self.target)
+        content = (self.target / ".gitignore").read_text(encoding="utf-8")
+        count = _count_entry(content, ROLES_ENTRY)
+        self.assertEqual(
+            count,
+            1,
+            f".pi/roles/ appears {count} times after the merge; expected exactly 1",
+        )
+        lines = content.splitlines()
+        marker_idx = lines.index(MARKER_LINE)
+        roles_idx = lines.index(ROLES_ENTRY)
+        self.assertGreater(
+            roles_idx,
+            marker_idx,
+            ".pi/roles/ is not appended under the Anvil marker",
+        )
+        self.assertTrue(
+            content.startswith(PRE_EXISTING_FIVE_ENTRIES),
+            "The five pre-existing entries were not preserved as a prefix",
+        )
+
+    def test_provision_entries_tuple_carries_roles_entry(self):
+        """provision._GITIGNORE_ENTRIES carries .pi/roles/ (six entries total)."""
+        self.assertIn(
+            ROLES_ENTRY,
+            provision._GITIGNORE_ENTRIES,
+            "provision._GITIGNORE_ENTRIES is missing '.pi/roles/'",
+        )
+        self.assertEqual(
+            len(provision._GITIGNORE_ENTRIES),
+            6,
+            "provision._GITIGNORE_ENTRIES must hold six entries",
+        )
+
+    def test_shipped_gitignore_template_carries_roles_entry(self):
+        """templates/.gitignore.template carries the .pi/roles/ line exactly once."""
+        template_path = REPO_ROOT / "templates" / ".gitignore.template"
+        content = template_path.read_text(encoding="utf-8")
+        count = _count_entry(content, ROLES_ENTRY)
+        self.assertEqual(
+            count,
+            1,
+            f"templates/.gitignore.template carries .pi/roles/ {count} times; expected 1",
+        )
 
 
 if __name__ == "__main__":
