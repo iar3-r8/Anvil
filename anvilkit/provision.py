@@ -237,6 +237,7 @@ _GITIGNORE_ENTRIES = (
     "zoo-code-settings.json",
     ".roo/mcp.json",
     ".venv/.anvil-requirements-stamp",
+    ".pi/roles/",
 )
 
 
