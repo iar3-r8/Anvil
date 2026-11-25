@@ -3756,7 +3756,8 @@ class RunTests(unittest.TestCase):
       ``test_run_signature_is_pinned``: ``(owner, repo, issue_number,
       repo_path, remote, branch, title, base, context, changes,
       testing, example, scope, behaviour, plan_slug, reason, kind,
-      runner, git, token=None, opener=None, timeout=None, cycle=None)``.
+      runner, git, token=None, opener=None, timeout=None, cycle=None,
+      profile_name=None, profile_root=None)``.
       The first three are the issue identity; ``repo_path``, ``remote``
       and ``branch`` are the push identity (they feed ``push_argv`` and
       are never executed here - the plan's Assumptions); ``title``,
@@ -3765,8 +3766,10 @@ class RunTests(unittest.TestCase):
       set, not a subset); ``scope``, ``behaviour``, ``plan_slug``,
       ``reason``, ``kind``, ``runner`` and ``git`` are the cycle
       inputs; ``token``, ``opener`` and ``timeout`` are the recorded
-      REST seam shared by every call in the module; and ``cycle`` is
-      the cycle seam.
+      REST seam shared by every call in the module; ``cycle`` is
+      the cycle seam; and ``profile_name`` and ``profile_root`` are
+      the two defaulted pass-through parameters (phase 14, behaviour
+      2) forwarded verbatim to the cycle seam.
     - **The cycle inputs are explicit run() parameters, forwarded
       verbatim** (chosen over a pre-bound seam, so the tests can assert
       exactly what run hands the cycle): ``run_cycle(repo_path, scope,
@@ -3831,13 +3834,15 @@ class RunTests(unittest.TestCase):
 
     # The pinned run() parameter list (see the docstring): issue
     # identity, push identity, the PR inputs, the cycle inputs, then the
-    # four defaulted seams.
+    # four defaulted seams and the two defaulted profile pass-through
+    # parameters (phase 14, behaviour 2).
     RUN_PARAMS = [
         "owner", "repo", "issue_number",
         "repo_path", "remote", "branch",
         "title", "base", "context", "changes", "testing", "example",
         "scope", "behaviour", "plan_slug", "reason", "kind", "runner", "git",
         "token", "opener", "timeout", "cycle",
+        "profile_name", "profile_root",
     ]
 
     # The positional order of the seam's parameters, as
@@ -4129,8 +4134,9 @@ class RunTests(unittest.TestCase):
             "class docstring); got: {!r}".format(list(params)),
         )
         # The cycle inputs are required - run can never hand the seam a
-        # None - while the four seams are defaulted.
-        for name in self.RUN_PARAMS[:-4]:
+        # None - while the four seams and the two profile pass-through
+        # parameters are defaulted.
+        for name in self.RUN_PARAMS[:-6]:
             self.assertIs(
                 params[name].default,
                 inspect.Parameter.empty,
@@ -5410,3 +5416,205 @@ class TokenNeverEchoedTests(unittest.TestCase):
                     "{}: run must build the push argv but never execute "
                     "git - the caller runs it".format(label),
                 )
+
+
+class RunProfilePassthroughTests(unittest.TestCase):
+    """Behaviour 2 (cycle-generation-passthrough) of
+    plans/pi-phase14-run-command.md.
+
+    ``run(...)`` gains the ``profile_name`` and ``profile_root``
+    keyword parameters, forwarded verbatim to the cycle seam as keyword
+    arguments - the shape ``anvilkit/pi/picycle.run_cycle`` declares
+    them (anvilkit/pi/picycle.py:271-274) - so the launch-time
+    generation (``pilaunch.generate``, behaviour 21 of the cycle) can
+    fire before the red step when a profile is named.
+
+    The boundary pin: the params omitted (the default ``None``) leave
+    the cycle call byte-identical to the phase-10 one - the seam's
+    kwargs carry exactly ``issue``, no ``profile_name`` or
+    ``profile_root`` key at all.
+
+    Written before the implementation (TDD RED for behaviour 2):
+    ``run`` does not accept ``profile_name``/``profile_root`` yet, so
+    the passthrough test fails on the missing passthrough itself -
+    ``TypeError: run() got an unexpected keyword argument`` - not a
+    collection error. The boundary pin already passes: it guards the
+    default, and the class is red as a whole because of the
+    passthrough test.
+
+    No test performs real network I/O, real git, or touches a real
+    repository: the fakes are this file's
+    :class:`_RecordingSequenceOpener` and :class:`_RecordingCycle`,
+    with the recorded responses :class:`RunTests` pins.
+    """
+
+    # The push identity: feeds push_argv, never executed here (the
+    # plan's Assumptions).
+    REPO_PATH = "/workspace/target-repo"
+    REMOTE = "origin"
+    BRANCH = "feature/pi-phase14-run-command"
+
+    # The PR inputs, the full set pr_body (behaviour 8) takes.
+    TITLE = "Phase 14: run() gains the profile passthrough"
+    BASE = "pi"
+    CONTEXT = "run() forwards the profile to the cycle seam."
+    CHANGES = [("anvilkit/pi/pigithub.py", "adds the profile passthrough")]
+    TESTING = "./tests/run tests.test_pigithub"
+    EXAMPLE = "./tests/run tests.test_pigithub"
+
+    # The cycle inputs, forwarded verbatim to the seam.
+    SCOPE = "pigithub"
+    BEHAVIOUR = "cycle-generation-passthrough"
+    PLAN_SLUG = "pi-phase14-run-command"
+    REASON = (
+        "TypeError: run() got an unexpected keyword argument "
+        "'profile_name'"
+    )
+    KIND = "feature"
+
+    # The profile the loop must hand the cycle seam (and, through it,
+    # the launch-time generation of behaviour 21).
+    PROFILE_NAME = "p"
+    PROFILE_ROOT = "/some/root"
+
+    def setUp(self) -> None:
+        self.events: List[Any] = []
+        self.git_calls: List[List[str]] = []
+        self.runner_calls: List[Dict[str, Any]] = []
+        self.runner = self._make_runner()
+        self.git = self._make_git()
+
+    def _make_runner(self) -> Callable[[Dict[str, Any]], Dict[str, Any]]:
+        def runner(context: Dict[str, Any]) -> Dict[str, Any]:
+            self.runner_calls.append(context)
+            return {"result": None, "changed_paths": []}
+
+        return runner
+
+    def _make_git(self) -> Callable[[List[str]], None]:
+        def git(argv: List[str]) -> None:
+            self.git_calls.append(argv)
+
+        return git
+
+    def _run(self, opener: Any, cycle: Any, **extra: Any) -> Dict[str, Any]:
+        return pigithub.run(
+            owner=OWNER,
+            repo=REPO,
+            issue_number=ISSUE_NUMBER,
+            repo_path=self.REPO_PATH,
+            remote=self.REMOTE,
+            branch=self.BRANCH,
+            title=self.TITLE,
+            base=self.BASE,
+            context=self.CONTEXT,
+            changes=self.CHANGES,
+            testing=self.TESTING,
+            example=self.EXAMPLE,
+            scope=self.SCOPE,
+            behaviour=self.BEHAVIOUR,
+            plan_slug=self.PLAN_SLUG,
+            reason=self.REASON,
+            kind=self.KIND,
+            runner=self.runner,
+            git=self.git,
+            token=TOKEN,
+            opener=opener,
+            cycle=cycle,
+            **extra,
+        )
+
+    def _responses(self) -> Dict[str, List[Any]]:
+        # The happy-path recorded responses RunTests pins: a 200 issue,
+        # the two 201 comments, the 201 PR and the 200 CI envelope -
+        # exactly what the opened status makes run ask for.
+        return {
+            RunTests.ISSUE_URL: [
+                _FakeResponse(json.dumps(dict(INTAKE_ISSUE)).encode("utf-8"))
+            ],
+            RunTests.COMMENTS_URL: [
+                _FakeResponse(
+                    json.dumps(RunTests.START_COMMENT_BODY).encode("utf-8"),
+                    status=201,
+                ),
+                _FakeResponse(
+                    json.dumps(RunTests.FINAL_COMMENT_BODY).encode("utf-8"),
+                    status=201,
+                ),
+            ],
+            RunTests.PULLS_URL: [
+                _FakeResponse(json.dumps(RunTests.PULL_BODY).encode("utf-8"), status=201)
+            ],
+            RunTests.CI_URL: [
+                _FakeResponse(json.dumps(RunTests.CI_ENVELOPE).encode("utf-8"))
+            ],
+        }
+
+    def test_run_forwards_the_profile_to_the_cycle_as_keywords(self):
+        # Arrange: a completed cycle and the recorded happy-path
+        # responses, the profile named.
+        cycle = _RecordingCycle(RunTests.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._responses(), self.events)
+
+        # Act.
+        self._run(
+            opener,
+            cycle,
+            profile_name=self.PROFILE_NAME,
+            profile_root=self.PROFILE_ROOT,
+        )
+
+        # Assert: the cycle seam receives the profile as keyword
+        # arguments, the shape anvilkit/pi/picycle.run_cycle declares
+        # (anvilkit/pi/picycle.py:271-274), so the launch-time
+        # generation (pilaunch.generate, behaviour 21 of the cycle)
+        # can fire before the red step.
+        self.assertEqual(len(cycle.calls), 1)
+        call = cycle.calls[0]
+        self.assertIn(
+            "profile_name",
+            call["kwargs"],
+            "run must forward profile_name to the cycle seam as a "
+            "keyword argument (got kwargs: {!r})".format(call["kwargs"]),
+        )
+        self.assertEqual(
+            call["kwargs"]["profile_name"],
+            self.PROFILE_NAME,
+            "the cycle seam's profile_name must be run's, verbatim "
+            "(got: {!r})".format(call["kwargs"].get("profile_name")),
+        )
+        self.assertIn(
+            "profile_root",
+            call["kwargs"],
+            "run must forward profile_root to the cycle seam as a "
+            "keyword argument (got kwargs: {!r})".format(call["kwargs"]),
+        )
+        self.assertEqual(
+            call["kwargs"]["profile_root"],
+            self.PROFILE_ROOT,
+            "the cycle seam's profile_root must be run's, verbatim "
+            "(got: {!r})".format(call["kwargs"].get("profile_root")),
+        )
+
+    def test_run_omitted_profile_leaves_the_cycle_call_unchanged(self):
+        # Arrange: the same recorded happy path, the profile omitted.
+        cycle = _RecordingCycle(RunTests.GREEN_RESULT, self.events)
+        opener = _RecordingSequenceOpener(self._responses(), self.events)
+
+        # Act.
+        self._run(opener, cycle)
+
+        # Assert: byte-identical to the phase-10 call - the seam's
+        # kwargs carry exactly issue, no profile key at all. This pin
+        # already passes: it guards the default, and the class is red
+        # because of the passthrough test.
+        self.assertEqual(len(cycle.calls), 1)
+        call = cycle.calls[0]
+        self.assertEqual(
+            call["kwargs"],
+            {"issue": ISSUE_NUMBER},
+            "the omitted-profile cycle call must be byte-identical to "
+            "the phase-10 one (got kwargs: {!r})".format(call["kwargs"]),
+        )
+        self.assertNotIn("profile_name", call["kwargs"])
+        self.assertNotIn("profile_root", call["kwargs"])
