@@ -6,6 +6,8 @@ an exit code. This module derives, never executes: it performs no git, no
 GitHub call and no file write; the actor lives in ``anvilkit.cli``.
 """
 
+from typing import Any, Dict
+
 
 class RunError(Exception):
     """Raised when a run's derivation or outcome cannot be resolved."""
@@ -24,3 +26,12 @@ def branch_for(kind: str, issue_number: int) -> str:
             "issue number must be positive, got {}".format(issue_number)
         )
     return "{}/issue-{}".format(kind, issue_number)
+
+
+def pr_fields_for(payload: Dict[str, Any]) -> Dict[str, str]:
+    """The PR title and body derived from an issue payload.
+
+    Placeholder for the red step of behaviour 4; the derivation lands in the
+    green step.
+    """
+    return {"title": "", "body": ""}
