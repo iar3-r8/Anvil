@@ -22,13 +22,14 @@ import json
 import sys
 import tempfile
 import unittest
+import unittest.mock as mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from anvilkit import provision  # noqa: E402
+from anvilkit import provision, render  # noqa: E402
 
 CODER_MODEL = "Qwen/Qwen3.6-35B-A3B-FP8"
 EMBEDDER_MODEL = "nomic-ai/nomic-embed-text-v1.5"
@@ -956,6 +957,120 @@ class ImplementNextIssueCommandDeliveryTests(ProvisionCase):
         ).read_bytes()
 
         self.assertEqual(copied, source)
+
+
+class SetupRepoPiMcpJsonTests(ProvisionCase):
+    """Behaviour 15 (plans/pi-phase12-launch-gen.md): setup-repo-writes-pi-mcp-json.
+
+    ``provision.setup_repo`` must write ``<target>/.pi/mcp.json`` holding
+    ``render.pi_mcp_settings(str(target))`` — the git server's argv carries the
+    resolved target path, and the ``${GITHUB_TOKEN}`` / ``${OXYLABS_*}`` tokens
+    stay verbatim (the renderer takes no credential, so nothing else can leak).
+
+    The load-bearing assertion is byte-equality with the seam's own output —
+    ``render.pi_mcp_settings(str(resolved_target))`` — plus the parsed pin that
+    the git server's ``--repository`` argument is the target path. The golden
+    fixture pin (seam vs ``tests/fixtures/golden_pi_mcp.json``) already lives in
+    ``tests/test_render.py::TestPiMcpGoldenParity`` and is not repeated here.
+
+    Expected red reason: ``setup_repo`` currently touches no ``.pi/`` at all,
+    so the fresh target carries no ``.pi/mcp.json``. The first positive test
+    fails on the absence assertion (``assertTrue``); the second fails with a
+    ``FileNotFoundError`` when reading ``.pi/mcp.json``.
+
+    The error-path test drives the same entry point through a faulted seam:
+    ``render.pi_mcp_settings`` is patched to raise ``render.RenderError``, which
+    is the only way to fail the pi-mcp step without touching production code
+    (the renderer is a pure template read and always succeeds on this checkout).
+    The patch is on the ``render`` module attribute that ``provision`` resolves
+    at call time (``provision`` does ``from . import render``), so no private
+    import site is forced.
+    """
+
+    def test_setup_repo_writes_pi_mcp_json_holding_the_rendered_seam_output(self):
+        """Fresh target, one ``setup_repo`` run: ``.pi/mcp.json`` holds exactly
+        ``render.pi_mcp_settings(str(resolved_target))``."""
+        resolved = self.provision()
+
+        pi_mcp = self.target / ".pi" / "mcp.json"
+        self.assertTrue(
+            pi_mcp.is_file(),
+            "setup_repo left no {}".format(pi_mcp),
+        )
+
+        on_disk = pi_mcp.read_text(encoding="utf-8")
+        expected = render.pi_mcp_settings(str(self.target))
+
+        self.assertEqual(
+            on_disk,
+            expected,
+            "<target>/.pi/mcp.json must hold render.pi_mcp_settings(str(target)) verbatim",
+        )
+
+    def test_pi_mcp_json_git_server_argv_carries_the_target_path(self):
+        """Parsed pin: the git server's ``--repository`` argument is the
+        resolved target path — ``${workspaceFolder}`` is substituted, not left
+        for the IDE."""
+        self.provision()
+
+        config = self.read_json(".pi/mcp.json")
+        git_args = config["mcpServers"]["git"]["args"]
+
+        self.assertNotIn("${workspaceFolder}", git_args)
+        self.assertIn(str(self.target), git_args)
+
+    def test_render_error_from_the_pi_mcp_seam_propagates_and_writes_nothing_further(self):
+        """Error clause: a ``RenderError`` from the ``pi_mcp_settings`` seam
+        propagates out of ``setup_repo`` — not swallowed, not translated — and
+        nothing is written beyond that step.
+
+        Three pins:
+
+        * the seam is actually called with the resolved target path (the patch
+          records the argument), so a green ``setup_repo`` cannot pass by never
+          reaching the pi-mcp step at all;
+        * the raised exception is the *very same* ``render.RenderError``
+          instance the seam raised — object identity proves it was propagated,
+          not caught and re-raised as a ``ProvisionError`` wrapper or any other
+          exception type;
+        * the run never reaches its completion report: a mid-run failure at the
+          pi-mcp step means ``setup_repo`` cannot finish, whatever order the
+          steps land in. The positive steps before the failure (directories,
+          ``.gitignore``, ``zoo-code-settings.json``) are expected to have
+          written their files — the behaviour only guarantees nothing
+          *further* is written, so the completion report is the right
+          position-independent marker.
+
+        The seam is faulted by patching ``render.pi_mcp_settings`` on the
+        ``render`` module attribute that ``provision`` resolves at call time
+        (``provision`` does ``from . import render``); the real renderer is a
+        pure template read and always succeeds on this checkout, so a patch is
+        the only way to make this step fail without touching production code.
+        """
+        boom = render.RenderError("render failed")
+        seam_calls = []
+
+        def faulted_seam(workspace_folder):
+            seam_calls.append(workspace_folder)
+            raise boom
+
+        with mock.patch.object(render, "pi_mcp_settings", side_effect=faulted_seam):
+            with self.assertRaises(render.RenderError) as ctx:
+                self.provision()
+
+        # The seam was reached with the resolved target path.
+        self.assertEqual(seam_calls, [str(self.target)])
+
+        # Propagation: the same object, not a translated or wrapped exception.
+        self.assertIs(ctx.exception, boom)
+        self.assertNotIsInstance(ctx.exception, provision.ProvisionError)
+
+        # Nothing further was written: the run never finished.
+        self.assertNotIn(
+            "IMPORTANT NEXT STEP",
+            self.output,
+            "a mid-run RenderError must not reach the completion report",
+        )
 
 
 if __name__ == "__main__":
