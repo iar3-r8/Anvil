@@ -1252,5 +1252,184 @@ class SetupRepoGuardrailsJsonTests(ProvisionCase):
         )
 
 
+class SetupRepoModelsSeederTests(ProvisionCase):
+    """Behaviour 19 (plans/pi-phase12-launch-gen.md):
+    models-json-seeds-the-agent-volume-only.
+
+    ``provision.setup_repo`` must seed the ``sandbox-agent`` docker
+    volume — the sandbox container's agent home, where Pi reads
+    ``models.json`` (``anvilkit/pi/pisandbox.py``) — through an
+    **injected** seeder seam, never through docker itself. The suite
+    injects a recorder, so no test touches the docker daemon.
+
+    Seam shape pinned here (design decision, flagged to the green step):
+    ``setup_repo`` gains an appended, defaulted parameter
+    ``seed_models_json=None``. When a seeder is provided it is called
+    exactly once with ``(volume_name, models_text)`` — the named volume
+    and the ``render.pi_models_settings`` text — and returns the docker
+    runner triple ``(code, stdout, stderr)``, matching the product of
+    ``cli._docker_runner_factory()`` (anvilkit/cli.py:1018-1040), which
+    the production seeder executes its seeding argv through. A
+    non-zero exit code is the failure report — the way a docker argv
+    runner reports failure, so that is what this class pins (not a
+    raised exception). ``None`` (the default) skips seeding entirely:
+    the 123 pre-existing tests call ``setup_repo`` without the
+    parameter and the suite must never touch docker, and
+    ``provision`` cannot import ``cli`` (``cli`` imports
+    ``provision``), so the production docker seeder must be passed in
+    by ``cli.setup_repo`` when it is wired. FLAG: the default path
+    therefore seeds nothing until that wiring lands.
+
+    The models document's arguments: ``model_id`` and ``context_window``
+    source from the plan; the host and port are the IN-NETWORK gateway
+    address ``llama-swap:8080`` — the manager-confirmed decision recorded
+    under Assumptions in the plan: ``sandbox-internal`` is declared
+    ``internal: true`` in ``docker-compose.yml`` (the sandbox container
+    has no host route, so a ``127.0.0.1`` document would be
+    unreachable), and the compose precedents pin
+    ``PI_GATEWAY_HOST=llama-swap`` / ``PI_GATEWAY_PORT=8080``. They are
+    fixed facts of the network, not plan values.
+
+    The two negative pins: no ``models.json`` may exist anywhere under
+    the target (the document lives in the volume, not the repo), and
+    the seeder must receive the models document — never the bytes of a
+    project-local file (``.pi/mcp.json``, ``.pi/extensions/
+    guardrails.json``, any role document).
+
+    Expected red reason: ``setup_repo`` takes no ``seed_models_json``
+    parameter yet, so every test in this class fails with
+    ``TypeError: setup_repo() got an unexpected keyword argument
+    'seed_models_json'`` — not a collection error, and the pre-existing
+    tests (which pass no such parameter) stay green.
+    """
+
+    AGENT_VOLUME = "sandbox-agent"
+    # In-network gateway address — plan assumption (pi-phase12-launch-gen.md):
+    # the sandbox-internal network has no host route, so 127.0.0.1 is unreachable.
+    SANDBOX_GATEWAY_HOST = "llama-swap"
+    SANDBOX_GATEWAY_PORT = 8080
+
+    def _expected_models_text(self, repo_plan):
+        """The models document seeded into the agent volume: plan values
+        for model and context, the in-network address for host/port."""
+        return render.pi_models_settings(
+            repo_plan.coder_model_id,
+            self.SANDBOX_GATEWAY_PORT,
+            repo_plan.context_window,
+            host=self.SANDBOX_GATEWAY_HOST,
+        )
+
+    def test_setup_repo_invokes_the_seeder_once_with_the_models_document_for_the_sandbox_agent_volume(self):
+        """Positive: with a recording seeder injected, one
+        ``setup_repo`` run invokes the seam exactly once, with the
+        ``sandbox-agent`` volume and the ``render.pi_models_settings``
+        text rendered from the plan's values."""
+        repo_plan = plan()
+        calls = []
+
+        def seeder(volume, models_text):
+            calls.append((volume, models_text))
+            return (0, "", "")
+
+        self.provision(repo_plan=repo_plan, seed_models_json=seeder)
+
+        expected = self._expected_models_text(repo_plan)
+        self.assertEqual(
+            calls,
+            [(self.AGENT_VOLUME, expected)],
+            "the seeder must be invoked exactly once with "
+            "(sandbox-agent, render.pi_models_settings text for the plan's values)",
+        )
+
+    def test_no_models_json_exists_anywhere_under_the_target(self):
+        """[PIN] the models document goes into the agent volume, not the
+        repository: after a successful seeded run, no file named
+        ``models.json`` exists anywhere under ``<target>``."""
+        def seeder(volume, models_text):
+            return (0, "", "")
+
+        self.provision(seed_models_json=seeder)
+
+        offenders = sorted(
+            str(path.relative_to(self.target))
+            for path in self.target.rglob("models.json")
+        )
+        self.assertEqual(
+            offenders,
+            [],
+            "no models.json may exist anywhere under <target> — it "
+            "lives in the {} volume".format(self.AGENT_VOLUME),
+        )
+
+    def test_the_seeder_receives_the_models_document_not_project_local_files(self):
+        """[PIN] what the seeder is asked to seed is the models document:
+        it equals the renderer's own output for the plan's values, and
+        it differs from the on-disk bytes of every project-local file
+        the run wrote — ``.pi/mcp.json``, ``.pi/extensions/
+        guardrails.json``, and any role document under ``.pi/roles/``."""
+        repo_plan = plan()
+        calls = []
+
+        def seeder(volume, models_text):
+            calls.append((volume, models_text))
+            return (0, "", "")
+
+        self.provision(repo_plan=repo_plan, seed_models_json=seeder)
+
+        self.assertEqual(len(calls), 1, "the seeder must be invoked exactly once")
+        volume, models_text = calls[0]
+
+        self.assertEqual(
+            models_text,
+            self._expected_models_text(repo_plan),
+            "the recorded payload must be the render.pi_models_settings "
+            "output for the plan's values",
+        )
+
+        roles_dir = self.target / ".pi" / "roles"
+        project_local = [
+            self.target / ".pi" / "mcp.json",
+            self.target / ".pi" / "extensions" / "guardrails.json",
+        ]
+        if roles_dir.is_dir():
+            project_local.extend(sorted(roles_dir.glob("*.md")))
+
+        for path in project_local:
+            if path.is_file():
+                self.assertNotEqual(
+                    models_text,
+                    path.read_text(encoding="utf-8"),
+                    "the seeder must never receive the bytes of the "
+                    "project-local file {}".format(path),
+                )
+
+    def test_a_seeder_that_reports_failure_raises_provision_error_naming_the_volume(self):
+        """Error clause: a seeder that reports failure — a non-zero exit
+        code, the way the production docker argv runner reports it —
+        makes ``setup_repo`` raise ``ProvisionError`` naming the
+        ``sandbox-agent`` volume, and the run never reaches its
+        completion report."""
+        calls = []
+
+        def failing_seeder(volume, models_text):
+            calls.append((volume, models_text))
+            return (1, "", "docker: seeding the agent volume failed")
+
+        with self.assertRaises(provision.ProvisionError) as ctx:
+            self.provision(seed_models_json=failing_seeder)
+
+        self.assertEqual(len(calls), 1, "the seeder must have been invoked")
+        self.assertIn(
+            self.AGENT_VOLUME,
+            str(ctx.exception),
+            "the ProvisionError must name the {} volume".format(self.AGENT_VOLUME),
+        )
+        self.assertNotIn(
+            "IMPORTANT NEXT STEP",
+            self.output,
+            "a failed seeder must not reach the completion report",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
