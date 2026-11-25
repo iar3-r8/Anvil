@@ -1221,8 +1221,8 @@ class RunLogOverwriteRefusalTestCase(unittest.TestCase):
                 "opening a second run in the same root disturbed the first "
                 "run's archive",
             )
-    
-    
+
+
 class RunLogWriteStreamTestCase(unittest.TestCase):
     """Behaviour 8 (``write-stream-verbatim``): ``write_stream(run_dir, role, text)``.
 
@@ -3280,6 +3280,172 @@ class RunLogModuleDisciplinePinTestCase(unittest.TestCase):
                 "ancestor directories %r: %r"
                 % (run_dir, ancestors, offenders),
             )
+
+
+class RunLogWritePromptsTestCase(unittest.TestCase):
+    """Behaviour 11 of ``plans/pi-phase12-launch-gen.md`` (``archive-role-documents``):
+    ``write_prompts(run_dir, documents)``.
+
+    The plan pins: given an open run directory and a stem-to-text mapping,
+    ``<run-dir>/prompts/<stem>.md`` holds each document verbatim in UTF-8,
+    no newline invented - the same write discipline as ``write_stream`` and
+    the ``meta.json`` writer (byte-for-byte ``write_text`` in UTF-8). A
+    missing run directory raises ``RunLogError`` naming the path - the same
+    guard as ``write_stream`` and ``write_diff`` - and an empty mapping
+    raises ``RunLogError`` naming the mapping; both before any file is
+    created, so the ``prompts/`` directory does not exist afterwards.
+
+    The happy-path setup opens a real run through the genuine ``start_run``
+    (behaviour 6 of ``plans/pi-phase11-runlog.md``), so the run directory
+    being written is a real on-disk run directory. While ``write_prompts``
+    is absent, every test here is red at the fetch step (``_write_prompts``):
+    the module attribute is not callable, and the red is that missing
+    behaviour, not a collection error of this file.
+    """
+
+    RUN_ID = EXPECTED_ID
+    STARTED_AT = "2026-11-19T13:45:00Z"
+    INTAKE = {"issue": 113, "text": "task body"}
+    SESSIONS = {"coder": "run-20261119-134500-1a2b-coder"}
+
+    # Two distinct non-empty documents: one multi-line ending in a newline,
+    # one single-line ending without a newline (the "no newline invented"
+    # pin), and one carrying non-ASCII text (the UTF-8 pin).
+    CODER_TEXT = (
+        "# Coder role prompt\n"
+        "\n"
+        "You implement the task and keep the build green.\n"
+    )
+    SHARED_AGENTS_TEXT = (
+        "Shared conventions: h\u00e9llo \u2192 \u00fcn\u00efcode, no trailing newline"
+    )
+    DOCUMENTS = {
+        "coder": CODER_TEXT,
+        "shared-agents": SHARED_AGENTS_TEXT,
+    }
+
+    def _runlog(self):
+        from anvilkit.pi import runlog
+
+        return runlog
+
+    def _write_prompts(self):
+        """Fetch ``anvilkit.pi.runlog.write_prompts``."""
+        runlog = self._runlog()
+        write_prompts = getattr(runlog, "write_prompts", None)
+        self.assertTrue(
+            callable(write_prompts),
+            "anvilkit.pi.runlog.write_prompts is not callable; "
+            "archive-role-documents has not been implemented yet",
+        )
+        return write_prompts
+
+    def _start_run(self):
+        """Fetch ``anvilkit.pi.runlog.start_run``."""
+        runlog = self._runlog()
+        start_run = getattr(runlog, "start_run", None)
+        self.assertTrue(
+            callable(start_run),
+            "anvilkit.pi.runlog.start_run is not callable; start-run-writes-meta "
+            "has not been implemented yet",
+        )
+        return start_run
+
+    def _run_log_error(self):
+        """Fetch ``anvilkit.pi.runlog.RunLogError``."""
+        runlog = self._runlog()
+        run_log_error = getattr(runlog, "RunLogError", None)
+        self.assertTrue(
+            isinstance(run_log_error, type)
+            and issubclass(run_log_error, Exception),
+            "anvilkit.pi.runlog.RunLogError is not an exception type; "
+            "run-id-format has not been implemented yet",
+        )
+        return run_log_error
+
+    def _seed_run_dir(self, root):
+        """Open a real run through ``start_run`` and return its run directory."""
+        return self._start_run()(
+            root, self.RUN_ID, self.INTAKE, self.SESSIONS, self.STARTED_AT
+        )
+
+    @staticmethod
+    def _read_text(path):
+        """The file's exact bytes decoded as UTF-8, for verbatim pins."""
+        return path.read_bytes().decode("utf-8")
+
+    def test_write_prompts_documents_written_verbatim_no_newline_invented(self):
+        self._write_prompts()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_prompts()(run_dir, self.DOCUMENTS)
+            for stem, text in self.DOCUMENTS.items():
+                prompt_path = run_dir / "prompts" / (stem + ".md")
+                with self.subTest(stem=stem):
+                    self.assertTrue(
+                        prompt_path.is_file(),
+                        "write_prompts did not create %s" % prompt_path,
+                    )
+                    self.assertEqual(
+                        self._read_text(prompt_path),
+                        text,
+                        "%s does not hold the document verbatim: a "
+                        "trailing newline was invented or bytes were lost"
+                        % prompt_path,
+                    )
+
+    def test_write_prompts_documents_written_as_utf8_bytes(self):
+        # The non-ASCII document must round-trip through the file's bytes
+        # as UTF-8: byte equality is the pin, not a decoded re-encode.
+        self._write_prompts()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            self._write_prompts()(run_dir, {"shared-agents": self.SHARED_AGENTS_TEXT})
+            prompt_path = run_dir / "prompts" / "shared-agents.md"
+            self.assertEqual(
+                prompt_path.read_bytes(),
+                self.SHARED_AGENTS_TEXT.encode("utf-8"),
+                "shared-agents.md does not hold the document as UTF-8 "
+                "bytes verbatim",
+            )
+
+    def test_write_prompts_missing_run_dir_raises_naming_path_and_creates_nothing(self):
+        # The same guard as write_stream and write_diff: a missing run
+        # directory raises RunLogError naming the path, before any file is
+        # created.
+        self._write_prompts()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "no-such-run"
+            with self.assertRaisesRegex(
+                run_log_error, re.escape(str(missing))
+            ):
+                self._write_prompts()(missing, self.DOCUMENTS)
+            self.assertFalse(
+                (missing / "prompts").exists(),
+                "write_prompts created %s for a missing run directory; "
+                "the guard must fire before any file is created"
+                % (missing / "prompts",),
+            )
+
+    def test_write_prompts_empty_mapping_raises_naming_mapping_and_creates_nothing(self):
+        # An empty mapping is a refusal, not an archive of nothing: the
+        # error names the mapping, and the run directory is left untouched.
+        self._write_prompts()
+        run_log_error = self._run_log_error()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            run_dir = self._seed_run_dir(root)
+            with self.assertRaisesRegex(run_log_error, r"documents"):
+                self._write_prompts()(run_dir, {})
+            self.assertFalse(
+                (run_dir / "prompts").exists(),
+                "write_prompts created %s for an empty mapping; the "
+                "guard must fire before any file is created"
+                % (run_dir / "prompts",),
+                )
 
 
 if __name__ == "__main__":
