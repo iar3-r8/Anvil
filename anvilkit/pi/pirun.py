@@ -14,7 +14,13 @@ class RunError(Exception):
 def branch_for(kind: str, issue_number: int) -> str:
     """The branch the run works on, derived from the kind and the issue number.
 
-    Placeholder for the red step of behaviour 3; the derivation lands in the
-    green step.
+    Returns ``"<kind>/issue-<issue_number>"`` — ``feature/issue-114`` for the
+    feature kind, ``bugfix/issue-114`` for the bugfix kind.
+
+    Raises ``RunError`` naming the number when ``issue_number`` is not positive.
     """
-    return ""
+    if issue_number <= 0:
+        raise RunError(
+            "issue number must be positive, got {}".format(issue_number)
+        )
+    return "{}/issue-{}".format(kind, issue_number)
