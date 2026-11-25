@@ -179,5 +179,68 @@ class PrFieldsForTestCase(unittest.TestCase):
         )
 
 
+class KindForTestCase(unittest.TestCase):
+    """Behaviour 5: kind-derived-from-the-labels.
+
+    ``kind_for(payload)`` returns ``"bugfix"`` iff some label's ``"name"`` is
+    exactly ``"bug"`` (case-sensitive); everything else returns ``"feature"``.
+    Absent, null, or malformed labels — not a list, entries not dicts, missing
+    or non-string ``"name"`` — give ``"feature"``; the derivation never raises
+    and never returns anything but the two words ``"feature"`` / ``"bugfix"``.
+
+    The derivation is pure: no opener, no mock and no fixture is needed.
+    """
+
+    def test_payload_with_bug_label_among_others_returns_bugfix(self):
+        payload = {
+            "labels": [
+                {"name": "enhancement"},
+                {"name": "bug"},
+                {"name": "backend"},
+            ],
+        }
+
+        self.assertEqual(pirun.kind_for(payload), "bugfix")
+
+    def test_payload_with_only_non_bug_labels_returns_feature(self):
+        payload = {
+            "labels": [
+                {"name": "enhancement"},
+                {"name": "backend"},
+            ],
+        }
+
+        self.assertEqual(pirun.kind_for(payload), "feature")
+
+    def test_payload_without_labels_key_returns_feature(self):
+        self.assertEqual(pirun.kind_for({}), "feature")
+
+    def test_payload_with_null_labels_returns_feature(self):
+        self.assertEqual(pirun.kind_for({"labels": None}), "feature")
+
+    def test_payload_with_labels_as_string_returns_feature_without_raising(self):
+        self.assertEqual(pirun.kind_for({"labels": "bug"}), "feature")
+
+    def test_payload_with_labels_as_dict_returns_feature_without_raising(self):
+        self.assertEqual(pirun.kind_for({"labels": {"name": "bug"}}), "feature")
+
+    def test_labels_list_with_non_dict_entries_and_bug_dict_returns_bugfix(self):
+        payload = {"labels": ["bug", {"name": "bug"}]}
+
+        self.assertEqual(pirun.kind_for(payload), "bugfix")
+
+    def test_labels_list_with_only_non_dict_entries_returns_feature(self):
+        self.assertEqual(pirun.kind_for({"labels": ["bug", 42]}), "feature")
+
+    def test_label_dict_missing_name_returns_feature(self):
+        self.assertEqual(pirun.kind_for({"labels": [{"area": "backend"}]}), "feature")
+
+    def test_label_dict_with_non_string_name_returns_feature(self):
+        self.assertEqual(pirun.kind_for({"labels": [{"name": 42}]}), "feature")
+
+    def test_label_with_wrong_case_name_returns_feature(self):
+        self.assertEqual(pirun.kind_for({"labels": [{"name": "Bug"}]}), "feature")
+
+
 if __name__ == "__main__":
     unittest.main()
