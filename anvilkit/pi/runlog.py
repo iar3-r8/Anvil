@@ -2,8 +2,8 @@
 
 The concern: an unattended Pi run must stay reopenable after it ends, whether
 it finished or died mid-way. This module owns what that takes - the run id and
-the ``<run-id>-<role>`` session ids, the archive written under
-``logs/runs/<run-id>/``, and the Markdown report that reopens it. It never
+the ``<run-id>-<role>`` session ids, the archive written at
+``<root>/<run-id>/``, and the Markdown report that reopens it. It never
 drives Pi and executes no process; it reads and writes the archive and nothing
 else.
 
@@ -20,7 +20,7 @@ omitted it is computed at call time from the module's own references -
 the suffix (behaviour 2) - never local time, never a counter. Those
 references are module-level names exactly so callers can patch them.
 
-``start_run`` opens a run's archive directory ``logs/runs/<run-id>/`` and
+``start_run`` opens a run's archive directory ``<root>/<run-id>/`` and
 writes ``meta.json`` before anything else runs (behaviour 6): a run that
 dies mid-way leaves a readable record, with ``finished_at`` null,
 ``outcome`` unknown and ``complete`` false. Validation of ``intake``,
@@ -160,12 +160,12 @@ def start_run(
 ) -> Path:
     """Open the archive directory for run ``run_id`` and write its ``meta.json``.
 
-    If ``root/logs/runs/<run-id>/`` already exists the run is refused before
+    If ``<root>/<run-id>/`` already exists the run is refused before
     any validation or I/O: ``RunLogError`` names the run id and nothing on
     disk is touched (behaviour 7 - a past run is evidence and is never
     overwritten).
 
-    Creates ``root/logs/runs/<run-id>/`` and writes ``meta.json`` with exactly
+    Creates ``<root>/<run-id>/`` and writes ``meta.json`` with exactly
     the eight planned keys - ``run_id``, ``started_at``, ``finished_at`` (null),
     ``intake``, ``sessions``, ``outcome`` (``"unknown"``), ``complete`` (false)
     and ``anvil_version`` (``anvilkit.__version__``, read live, never
@@ -179,7 +179,7 @@ def start_run(
     ``str``. Any violation raises ``RunLogError`` naming the offending field
     (or role) and leaves no ``meta.json`` behind.
     """
-    run_dir = root / "logs" / "runs" / run_id
+    run_dir = root / run_id
     if run_dir.exists():
         raise RunLogError(
             "run %r already has an archive at %s and will not be "
@@ -378,7 +378,7 @@ def _require_run_dir(run_dir: Path) -> None:
 def open_run(run_id: str, root: Path) -> str:
     """Return the Markdown report of the run ``run_id`` under ``root``.
 
-    Reads the archive at ``root/logs/runs/<run-id>/`` - ``meta.json``, one
+    Reads the archive at ``<root>/<run-id>/`` - ``meta.json``, one
     ``<role>.jsonl`` per role present in ``meta.json``'s sessions map
     (in ``pirole.ROLES`` order), ``diff.patch``, ``commits.json`` and the
     archived documents under ``prompts/`` - and renders them as a Markdown
@@ -411,7 +411,7 @@ def open_run(run_id: str, root: Path) -> str:
     the run id and the path searched before anything is rendered
     (behaviour 15): a typo is fixable without reading the source.
     """
-    run_dir = root / "logs" / "runs" / run_id
+    run_dir = root / run_id
     if not run_dir.is_dir():
         # First failure mode: an unknown id must never fall through to the
         # half-written rendering. The message carries the run id verbatim,
