@@ -18,8 +18,9 @@ The function returns the resolved stem-to-text mapping it wrote, so a run
 log can archive exactly what was used without re-reading disk.
 
 Stdlib only. One exception type: ``LaunchError``, the module's single
-failure point for the error paths its later behaviours raise; nothing in
-behaviour 5 raises it yet.
+failure point for every error path: the underlying ``RenderError``,
+``ProfileError`` and ``ProjectError`` are wrapped and chained, so callers
+need only one ``except`` clause.
 """
 
 from typing import Dict, Union
@@ -35,9 +36,9 @@ class LaunchError(Exception):
     """The role documents cannot be generated into the target repository.
 
     A single exception type will cover every refusal this module raises, so
-    callers need only one ``except`` clause. The wrapping of the underlying
-    ``RenderError``, ``ProfileError`` and ``ProjectError`` arrives with the
-    error-path behaviour; no code in this module raises it yet.
+    callers need only one ``except`` clause. The three delegate failures —
+    ``RenderError``, ``ProfileError`` and ``ProjectError`` — are wrapped and
+    chained with ``from exc`` so the offender stays identifiable.
     """
 
 
@@ -58,8 +59,17 @@ def generate(
     Returns the seven-entry stem-to-text mapping that was written, so the
     caller can archive the resolved text without re-reading disk.
     """
-    record = piprofile.load_profile(root, profile_name)
+    try:
+        record = piprofile.load_profile(root, profile_name)
+    except piprofile.ProfileError as exc:
+        raise LaunchError(str(exc)) from exc
     documents = dict(piprompt.all_documents())
-    documents["project"] = piproject.project_document(record)
-    render.role_prompts(repo_path, documents)
+    try:
+        documents["project"] = piproject.project_document(record)
+    except piproject.ProjectError as exc:
+        raise LaunchError(str(exc)) from exc
+    try:
+        render.role_prompts(repo_path, documents)
+    except render.RenderError as exc:
+        raise LaunchError(str(exc)) from exc
     return documents
