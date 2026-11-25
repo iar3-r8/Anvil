@@ -33,6 +33,19 @@ DEVCONTAINER_DIR = ".devcontainer"
 
 _SEPARATOR = "-" * 70
 
+# The agent home volume seeded with Pi's models document: the sandbox
+# container binds its agent home to this named volume (anvilkit/pi/pisandbox.py).
+AGENT_VOLUME = "sandbox-agent"
+
+# In-network gateway address for the seeded models document
+# (plans/pi-phase12-launch-gen.md, Assumptions): ``sandbox-internal`` is
+# declared ``internal: true`` in docker-compose.yml, so the sandbox container
+# has no host route and a ``127.0.0.1`` document would be unreachable; the
+# compose precedents pin ``PI_GATEWAY_HOST=llama-swap`` / ``PI_GATEWAY_PORT=8080``.
+# These are fixed facts of the network, not plan values.
+SANDBOX_GATEWAY_HOST = "llama-swap"
+SANDBOX_GATEWAY_PORT = 8080
+
 
 class ProvisionError(Exception):
     """The target repository or the templates are unusable."""
@@ -82,12 +95,26 @@ def setup_repo(
     templates_dir: Optional[PathLike] = None,
     dry_run: bool = False,
     echo: Optional[Callable[[str], None]] = None,
+    seed_models_json: Optional[
+        Callable[[str, str], Tuple[int, str, str]]
+    ] = None,
 ) -> str:
     """Provision ``target``, returning its resolved absolute path.
 
+    ``seed_models_json`` is an injected seeder seam, ``None`` by default: when
+    provided it is called exactly once with ``(AGENT_VOLUME, models_text)`` —
+    the named agent-home volume and the ``render.pi_models_settings`` text
+    rendered from the plan's model and context window at the in-network
+    gateway address — and must return a docker-runner triple
+    ``(code, stdout, stderr)``; a non-zero ``code`` raises ``ProvisionError``.
+    When ``None`` (the default) no seeding happens, so this module stays
+    filesystem-only and never touches docker.
+
     Raises:
         ProvisionError: the target is missing, is not a directory, or a required
-            template is absent. Nothing is written when validation fails.
+            template is absent. Nothing is written when validation fails. A
+            seeder that reports a non-zero exit code names the volume it was
+            asked to seed; nothing further is written.
     """
     report = echo or (lambda _message: None)
 
@@ -129,6 +156,10 @@ def setup_repo(
     report("🧩 Deploying mode definitions and rules...")
     _copy_root_roomodes(resolved, templates, dry_run, report)
     _deploy_mode_rules(resolved, templates, dry_run, report)
+
+    if seed_models_json is not None:
+        report("📦 Seeding the {} agent volume...".format(AGENT_VOLUME))
+        _seed_agent_volume(repo_plan, seed_models_json, report)
 
     _report_completion(resolved, report)
 
@@ -1100,6 +1131,41 @@ def _copy_devcontainer(
         shutil.copytree(str(templates.devcontainer), str(destination))
 
     report("   ↳ ✅ Deployed: {}".format(destination))
+
+
+def _seed_agent_volume(
+    repo_plan: RepoPlan,
+    seed_models_json: Callable[[str, str], Tuple[int, str, str]],
+    report,
+) -> None:
+    """Seed the agent-home volume with Pi's models document via the seam.
+
+    The document carries the plan's model and context window at the
+    in-network gateway address: the sandbox container has no host route,
+    so the ``127.0.0.1`` the renderer defaults to would be unreachable
+    from inside the sandbox. The models document goes into the volume,
+    never under the target, so no ``models.json`` is written to disk
+    here. The seam is a docker argv runner; a non-zero exit code is its
+    failure report, translated to ``ProvisionError`` naming the volume
+    before anything further is written.
+    """
+    models_text = render.pi_models_settings(
+        repo_plan.coder_model_id,
+        SANDBOX_GATEWAY_PORT,
+        repo_plan.context_window,
+        host=SANDBOX_GATEWAY_HOST,
+    )
+
+    code, _stdout, stderr = seed_models_json(AGENT_VOLUME, models_text)
+
+    if code != 0:
+        raise ProvisionError(
+            "Seeding the {} agent volume failed (exit {}): {}".format(
+                AGENT_VOLUME, code, stderr
+            )
+        )
+
+    report("   ↳ ✅ Seeded: {}".format(AGENT_VOLUME))
 
 
 def _report_completion(target: Path, report) -> None:
