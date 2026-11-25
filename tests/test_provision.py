@@ -1072,6 +1072,61 @@ class SetupRepoPiMcpJsonTests(ProvisionCase):
             "a mid-run RenderError must not reach the completion report",
         )
 
+    def test_pi_mcp_json_carries_no_credential_value(self):
+        """Behaviour 16 (plans/pi-phase12-launch-gen.md):
+        pi-mcp-json-carries-no-credential-value [PIN] [SKIP].
+
+        A plan carrying a non-empty ``github_token`` and a non-empty
+        Oxylabs username/password pair is provisioned; the rendered
+        ``.pi/mcp.json`` still holds ``${GITHUB_TOKEN}``,
+        ``${OXYLABS_USERNAME}`` and ``${OXYLABS_PASSWORD}`` verbatim,
+        and none of the three credential values appears anywhere in the
+        file text.
+
+        Boundary pin: ``render.pi_mcp_settings`` takes no credential
+        parameter at all, so the invariant holds by construction and the
+        test is green at write. It turns red if a future change ever
+        substitutes plan credentials into the Pi file — the placeholders
+        are asserted present and the values asserted absent, so a
+        regression in either direction is caught.
+        """
+        token = "ghp_pin_4f7c9e2a1b8d"
+        username = "pin-oxylabs-user"
+        password = "pin-oxylabs-secret"
+
+        repo_plan = plan(
+            github_token=token,
+            oxylabs_username=username,
+            oxylabs_password=password,
+        )
+        self.provision(repo_plan=repo_plan)
+
+        # The Given is real: the plan the run carried the non-empty values.
+        self.assertEqual(repo_plan.github_token, token)
+        self.assertEqual(repo_plan.oxylabs_username, username)
+        self.assertEqual(repo_plan.oxylabs_password, password)
+
+        text = (self.target / ".pi" / "mcp.json").read_text(encoding="utf-8")
+
+        for placeholder in (
+            "${GITHUB_TOKEN}",
+            "${OXYLABS_USERNAME}",
+            "${OXYLABS_PASSWORD}",
+        ):
+            self.assertIn(
+                placeholder,
+                text,
+                "pi-mcp.json must keep {} verbatim for Pi runtime "
+                "interpolation".format(placeholder),
+            )
+
+        for value in (token, username, password):
+            self.assertNotIn(
+                value,
+                text,
+                "a credential value leaked into .pi/mcp.json",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
