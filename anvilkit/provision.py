@@ -111,6 +111,9 @@ def setup_repo(
     report("⚙️  Processing MCP context mappings and injecting into workspace...")
     _write_mcp_settings(resolved, repo_plan, dry_run, report)
 
+    report("📡 Generating Pi MCP configuration from the workspace...")
+    _write_pi_mcp(resolved, dry_run, report)
+
     report("💻 Verifying IDE configuration space...")
     _write_extensions(resolved, dry_run, report)
 
@@ -858,6 +861,23 @@ def _write_mcp_settings(
 
     render.write_text(mcp_path, merged_text)
     report("   ↳ ✅ Merged: {}".format(mcp_path))
+
+
+def _write_pi_mcp(target: Path, dry_run: bool, report) -> None:
+    pi_mcp_path = target / ".pi" / "mcp.json"
+
+    # The seam output lands on disk verbatim, byte for byte: the file is
+    # committed and its bytes are pinned against the renderer's own output,
+    # so no trailing newline is invented (render.write_text would append one).
+    content = render.pi_mcp_settings(workspace_folder=str(target))
+
+    if dry_run:
+        report("   ↳ dry run: would write .pi/mcp.json")
+        return
+
+    pi_mcp_path.parent.mkdir(parents=True, exist_ok=True)
+    pi_mcp_path.write_text(content, encoding="utf-8")
+    report("   ↳ ✅ Injected: {}".format(pi_mcp_path))
 
 
 def _write_extensions(target: Path, dry_run: bool, report) -> None:
