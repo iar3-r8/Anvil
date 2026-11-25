@@ -85,6 +85,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from anvilkit import __version__
 from anvilkit.pi import pievents, pirole
 
 
@@ -160,10 +161,11 @@ def start_run(
     overwritten).
 
     Creates ``root/logs/runs/<run-id>/`` and writes ``meta.json`` with exactly
-    the seven planned keys - ``run_id``, ``started_at``, ``finished_at`` (null),
-    ``intake``, ``sessions``, ``outcome`` (``"unknown"``) and ``complete``
-    (false) - so a run that dies mid-way leaves a readable record. Returns the
-    run directory's ``Path``.
+    the eight planned keys - ``run_id``, ``started_at``, ``finished_at`` (null),
+    ``intake``, ``sessions``, ``outcome`` (``"unknown"``), ``complete`` (false)
+    and ``anvil_version`` (``anvilkit.__version__``, read live, never
+    validated) - so a run that dies mid-way leaves a readable record. Returns
+    the run directory's ``Path``.
 
     ``run_id`` is taken as given (it is produced by ``new_run_id``). The other
     three inputs are validated before any filesystem I/O: ``intake`` must be a
@@ -188,6 +190,7 @@ def start_run(
         "sessions": sessions,
         "outcome": "unknown",
         "complete": False,
+        "anvil_version": __version__,
     }
     (run_dir / "meta.json").write_text(
         json.dumps(meta), encoding="utf-8"
