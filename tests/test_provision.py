@@ -1128,5 +1128,129 @@ class SetupRepoPiMcpJsonTests(ProvisionCase):
             )
 
 
+class SetupRepoGuardrailsJsonTests(ProvisionCase):
+    """Behaviour 17 (plans/pi-phase12-launch-gen.md):
+    setup-repo-writes-guardrails.
+
+    ``provision.setup_repo`` must write ``<target>/.pi/extensions/
+    guardrails.json`` holding ``render.guardrails_settings()`` — the seam
+    takes no arguments, builds the document, and re-validates it, so the
+    file on disk is the validated document by construction.
+
+    The load-bearing assertion is byte-equality with the seam's own
+    output — ``render.guardrails_settings()`` — plus the parsed pin that
+    the file decodes as JSON. The golden fixture pin (seam vs
+    ``tests/fixtures/golden_pi_guardrails.json``) already lives in
+    ``tests/test_piguardrails.py`` and is not repeated here.
+
+    Expected red reason: ``setup_repo`` currently touches no
+    ``.pi/extensions/`` at all, so the fresh target carries no
+    ``guardrails.json``. The existence test fails on the absence
+    assertion (``assertTrue``); the parse test fails with a
+    ``FileNotFoundError`` reading ``.pi/extensions/guardrails.json``.
+
+    The error-path test drives the same entry point through a faulted
+    seam: ``render.guardrails_settings`` is patched to raise
+    ``render.RenderError`` (no arguments — the seam takes none), which is
+    the only way to fail the guardrails step without touching production
+    code (the renderer re-validates and always succeeds on this checkout).
+    The patch is on the ``render`` module attribute that ``provision``
+    resolves at call time (``provision`` does ``from . import render``).
+    """
+
+    def test_setup_repo_writes_guardrails_json_holding_the_rendered_seam_output(self):
+        """Fresh target, one ``setup_repo`` run:
+        ``.pi/extensions/guardrails.json`` holds exactly
+        ``render.guardrails_settings()``."""
+        resolved = self.provision()
+
+        guardrails = self.target / ".pi" / "extensions" / "guardrails.json"
+        self.assertTrue(
+            guardrails.is_file(),
+            "setup_repo left no {}".format(guardrails),
+        )
+
+        on_disk = guardrails.read_text(encoding="utf-8")
+        expected = render.guardrails_settings()
+
+        self.assertEqual(
+            on_disk,
+            expected,
+            "<target>/.pi/extensions/guardrails.json must hold "
+            "render.guardrails_settings() verbatim",
+        )
+
+    def test_guardrails_json_parses_as_the_validated_document(self):
+        """Parsed pin: the file on disk decodes as JSON and equals the
+        seam's own parsed output — the document the renderer re-validated
+        before returning it."""
+        self.provision()
+
+        on_disk = (
+            self.target / ".pi" / "extensions" / "guardrails.json"
+        ).read_text(encoding="utf-8")
+        parsed = json.loads(on_disk)
+
+        self.assertIsInstance(parsed, dict)
+        self.assertEqual(
+            parsed,
+            json.loads(render.guardrails_settings()),
+            "the on-disk document must be the validated guardrails document",
+        )
+
+    def test_render_error_from_the_guardrails_seam_propagates_and_writes_nothing_further(self):
+        """Error clause: a ``RenderError`` from the ``guardrails_settings``
+        seam propagates out of ``setup_repo`` — not swallowed, not
+        translated — and nothing is written beyond that step.
+
+        Three pins:
+
+        * the seam is actually called (the patch records the call), so a
+          green ``setup_repo`` cannot pass by never reaching the
+          guardrails step at all;
+        * the raised exception is the *very same* ``render.RenderError``
+          instance the seam raised — object identity proves it was
+          propagated, not caught and re-raised as a ``ProvisionError``
+          wrapper or any other exception type;
+        * the run never reaches its completion report: a mid-run failure
+          at the guardrails step means ``setup_repo`` cannot finish,
+          whatever order the steps land in. The positive steps before the
+          failure are expected to have written their files — the behaviour
+          only guarantees nothing *further* is written, so the completion
+          report is the right position-independent marker.
+
+        The seam is faulted by patching ``render.guardrails_settings`` on
+        the ``render`` module attribute that ``provision`` resolves at
+        call time (``provision`` does ``from . import render``); the real
+        renderer is a pure build-plus-validate and always succeeds on
+        this checkout, so a patch is the only way to make this step fail
+        without touching production code.
+        """
+        boom = render.RenderError("render failed")
+        seam_calls = []
+
+        def faulted_seam():
+            seam_calls.append(None)
+            raise boom
+
+        with mock.patch.object(render, "guardrails_settings", side_effect=faulted_seam):
+            with self.assertRaises(render.RenderError) as ctx:
+                self.provision()
+
+        # The seam was reached.
+        self.assertEqual(seam_calls, [None])
+
+        # Propagation: the same object, not a translated or wrapped exception.
+        self.assertIs(ctx.exception, boom)
+        self.assertNotIsInstance(ctx.exception, provision.ProvisionError)
+
+        # Nothing further was written: the run never finished.
+        self.assertNotIn(
+            "IMPORTANT NEXT STEP",
+            self.output,
+            "a mid-run RenderError must not reach the completion report",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
