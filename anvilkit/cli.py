@@ -1259,6 +1259,7 @@ app.add_typer(pi_app, name="pi")
 
 @pi_app.command(name="run")
 def pi_run(
+    ctx: typer.Context,
     profile: str = typer.Argument(..., help="The profile name to run."),
     issue: int = typer.Argument(..., help="The GitHub issue number to run."),
 ) -> None:
@@ -1304,9 +1305,15 @@ def pi_run(
     anything runs: no ``pigithub.run``, no subprocess. The run is
     finished on the terminal its status maps to: ``opened`` ships,
     ``halted`` halts; a failed push (exit 1) and a failed intake read
-    (exit 12) exit before the finish. ``--dry-run`` (behaviour 12) is
-    not built yet.
+    (exit 12) exit before the finish.
+
+    Under ``--dry-run`` (behaviour 12) the command performs the
+    read-only issue read and then stops: it names the profile, the
+    derived branch, the archive path that would be written and the
+    seams it does not invoke, then exits 0. An unknown profile still
+    exits 2 first and a failed read still exits 12.
     """
+    shared = _context(ctx)
     root = piprofileflow.profile_root()
     try:
         record = piprofile.load_profile(root, profile)
@@ -1347,6 +1354,24 @@ def pi_run(
 
     kind = pirun.kind_for(payload)
     branch = pirun.branch_for(kind, issue)
+
+    if shared.dry_run:
+        # The dry-run stop (behaviour 12): the read-only read already
+        # happened, so the announcement names the REAL derived branch;
+        # the run-id dir is generated locally by ``new_run_id`` - no
+        # file is written and ``~/.anvil/runs`` is never created. Every
+        # loop seam below - the run cycle, the push and the archive -
+        # is named, not invoked; a command that returns None exits 0.
+        would_be = Path.home() / ".anvil" / "runs" / profile / runlog.new_run_id()
+        typer.echo(
+            "dry run: profile {prof}, branch {branch}; would write "
+            "archive {archive}; not invoked: the run cycle, the push, "
+            "the archive".format(
+                prof=profile, branch=branch, archive=would_be
+            )
+        )
+        return
+
     fields = pirun.pr_fields_for(payload)
     title = fields["title"]
     # ``example`` is the issue body verbatim, or the literal when the body
