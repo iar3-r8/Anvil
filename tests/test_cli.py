@@ -19239,3 +19239,223 @@ class TestPiRunProfileGate(CliCase):
             "output:\n{}".format(result.output),
         )
         self._assert_nothing_ran(result)
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 8 of plans/pi-phase14-run-command.md -
+# token-never-leaves-the-host
+# ---------------------------------------------------------------------------
+#
+# After the profile gate, ``pi run`` resolves the GitHub token: the home
+# ``.env``'s value under the profile's own ``token_env`` key outranks the
+# install ``.env``'s literal ``GITHUB_TOKEN``, and a token missing from both
+# resolves to the empty string - the run still proceeds, unauthenticated,
+# and says so. The token must reach only the ``token`` parameter of the
+# ``pigithub`` seams - never stdout, stderr, the archive, or the container.
+#
+# The record below carries ``token_env: GH_TOKEN_P`` - a key the profile
+# name does not derive - so a resolution that derives the key from the name
+# instead of reading the record resolves nothing. The store is therefore
+# seeded directly in the shape ``save_profile`` records, because
+# ``save_profile`` derives ``token_env`` from the name and cannot hold this
+# pin. The ``pigithub`` seams are booby-trapped at the module
+# (``anvilkit.pi.pigithub``) - the same object the command reaches - so no
+# network function ever runs and every call is observable.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunToken(CliCase):
+    """``pi run`` resolves the token and hands it only to ``pigithub``
+    (behaviour 8: token-never-leaves-the-host)."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    FALLBACK_TOKEN_VALUE = "ghp_fallback_456"
+    ISSUE = "7"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store and the home .env land at
+        # <home>/.anvil, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: behaviour 10 refuses a vanished
+        # path before the run phase could be reached.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _home_env_path(self):
+        """The home ``.env`` ``resolve_token`` reads: ``<home>/.anvil/.env``."""
+        return self.anvil_home / ".env"
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self):
+        """Booby-trap both ``pigithub`` seams: any call is observable and
+        neither network function ever runs.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value={
+                "title": "Fix the widget",
+                "body": "The widget is broken.\n\nSteps:\ndo x",
+            },
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value={
+                "status": "opened",
+                "issue_number": 7,
+                "pr": None,
+                "push_argv": None,
+            },
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _assert_run_called_once(self, run_mock, result):
+        """The gate passed and the run phase ran: exactly one call."""
+        self.assertEqual(
+            1,
+            run_mock.call_count,
+            "pigithub.run must be called exactly once after the profile "
+            "gate passes - output:\n{}".format(result.output),
+        )
+
+    def _assert_token_kwarg(self, run_mock, expected):
+        """The resolved token reached ``run`` as its ``token`` parameter,
+        unchanged."""
+        self.assertIn(
+            "token",
+            run_mock.call_args.kwargs,
+            "pigithub.run must receive the token as its token parameter - "
+            "call: {}".format(run_mock.call_args),
+        )
+        self.assertEqual(
+            expected,
+            run_mock.call_args.kwargs["token"],
+            "the resolved token must reach the token parameter unchanged - "
+            "call: {}".format(run_mock.call_args),
+        )
+
+    # -- the resolved token reaches only the token parameter --------------
+
+    def test_home_env_token_reaches_only_the_token_parameter(self):
+        """The home .env's value under the profile's own token_env key is
+        resolved and reaches pigithub.run's token parameter."""
+        from anvilkit import env
+
+        env.write(self._home_env_path(), [(self.TOKEN_ENV, self.TOKEN_VALUE)])
+        read_mock, run_mock = self._trap_github_seams()
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self._assert_run_called_once(run_mock, result)
+        self._assert_token_kwarg(run_mock, self.TOKEN_VALUE)
+
+    def test_install_env_fallback_token_reaches_the_token_parameter(self):
+        """With no home .env, the install .env's literal GITHUB_TOKEN is
+        the fallback and reaches the token parameter."""
+        self.assertFalse(
+            self._home_env_path().exists(),
+            "this test needs no home .env - remove the seed",
+        )
+        self.write_env(GITHUB_TOKEN=self.FALLBACK_TOKEN_VALUE)
+        read_mock, run_mock = self._trap_github_seams()
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self._assert_run_called_once(run_mock, result)
+        self._assert_token_kwarg(run_mock, self.FALLBACK_TOKEN_VALUE)
+
+    # -- the token never reaches stdout or stderr --------------------------
+
+    def test_token_is_never_echoed(self):
+        """A resolved token is never printed on stdout or stderr.
+
+        Boundary pin: with the run phase unimplemented nothing is echoed
+        today, so this may pass on the red - it pins the boundary for the
+        green."""
+        from anvilkit import env
+
+        env.write(self._home_env_path(), [(self.TOKEN_ENV, self.TOKEN_VALUE)])
+        read_mock, run_mock = self._trap_github_seams()
+        runner = CliRunner(mix_stderr=False)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            result = runner.invoke(cli.app, ["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertTrue(
+            result.exception is None
+            or isinstance(result.exception, SystemExit),
+            "the command must complete before the echo pin can mean "
+            "anything: {!r}".format(result.exception),
+        )
+        self.assertNotIn(
+            self.TOKEN_VALUE,
+            result.stdout,
+            "a token value must never be printed on stdout",
+        )
+        self.assertNotIn(
+            self.TOKEN_VALUE,
+            result.stderr,
+            "a token value must never be printed on stderr",
+        )
+
+    # -- an empty token runs unauthenticated, reported as such ------------
+
+    def test_empty_token_still_runs_and_is_reported_unauthenticated(self):
+        """With no .env holding a token anywhere, the run still proceeds
+        with an empty token and stdout reports it as unauthenticated."""
+        self.assertFalse(self._home_env_path().exists())
+        self.assertFalse(self.env_path().exists())
+        read_mock, run_mock = self._trap_github_seams()
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self._assert_run_called_once(run_mock, result)
+        self._assert_token_kwarg(run_mock, "")
+        self.assertIn(
+            "unauthenticated",
+            result.stdout,
+            "an unauthenticated run must be reported as such - "
+            "output:\n{}".format(result.output),
+        )
