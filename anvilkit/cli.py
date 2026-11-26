@@ -56,7 +56,15 @@ from .cliexit import (
 from .compose import Compose, ComposeError
 from .pi import pibakeoff, piguardgate
 from .config import ConfigError
-from .pi import picodeowners, piguard, pitokenrecipe, piruleset, piprofile
+from .pi import (
+    picodeowners,
+    piguard,
+    pigithub,
+    pitokenrecipe,
+    piruleset,
+    piprofile,
+    pirun,
+)
 from .pi import piprofileflow
 from .pi.piprofile import ProfileError
 from .prompts import PromptError
@@ -1051,6 +1059,36 @@ def _pidriver_runner_factory() -> Callable[[Dict[str, Any]], Dict[str, Any]]:
     return pibakeoff.subprocess_runner
 
 
+def _pirun_git_factory() -> Callable[[List[str]], None]:
+    """The production git seam for ``pi run``: one list-form argv in, nothing out.
+
+    Follows :func:`_pidriver_runner_factory`'s factory pattern: a module-level
+    private factory returning the production callable. The argv is executed
+    verbatim through list-form ``subprocess`` - no ``shell=True``, so no
+    argument is ever re-parsed by a shell. On a non-zero exit it raises
+    ``pirun.RunError`` naming the command and the exit code, so the run
+    never believes a git step that failed (behaviour 9's pin arrives with
+    the push execution; until then the seam simply must not swallow a
+    failure).
+    """
+
+    def git(argv: List[str]) -> None:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise pirun.RunError(
+                "git exited {}: {}".format(
+                    completed.returncode, " ".join(argv)
+                )
+            )
+
+    return git
+
+
 @app.command(name="smoke-test")
 def smoke_test(
     ctx: typer.Context,
@@ -1222,17 +1260,101 @@ def pi_run(
 ) -> None:
     """Run one Pi cycle for ``profile`` against issue number ``issue``.
 
-    The profile gate runs first and is, for now, the only act: the store
-    is loaded and a record that cannot load - an unknown name, or a held
-    name whose path has vanished - fails on the usage code with the
-    store's own message, before any run seam is touched. After the gate
-    passes, the run phase is still being built, so the command exits 0.
+    The profile gate runs first: the store is loaded and a record that
+    cannot load - an unknown name, or a held name whose path has vanished
+    - fails on the usage code with the store's own message, before any run
+    seam is touched. After the gate, the run phase resolves the GitHub
+    token (the home ``.env``'s value under the record's ``token_env`` key,
+    falling back to the install ``.env``'s ``GITHUB_TOKEN``), reads the
+    issue host-side with it, and - when the read succeeded - calls
+    ``pigithub.run`` with the plan-pinned parameter mapping. The token
+    reaches only the ``token`` parameter of ``pigithub.read_issue`` and
+    ``pigithub.run`` (behaviour 8): never stdout, the archive, or any
+    other argument. An empty token does not stop the run: a line
+    containing ``unauthenticated`` is printed and the run proceeds. When
+    the host-side read fails, the read's reason is reported and
+    ``pigithub.run`` is called zero times.
+
+    Until behaviour 10 lands the outcome is not yet mapped to an exit
+    code, so every path that reaches this far - read failure and a
+    returned ``run`` alike - exits 0; that temporary is what the test
+    suite asserts today. Executing ``push_argv`` (behaviour 9), the
+    archive (behaviour 11) and ``--dry-run`` (behaviour 12) are not built
+    yet either.
     """
     root = piprofileflow.profile_root()
     try:
-        piprofile.load_profile(root, profile)
+        record = piprofile.load_profile(root, profile)
     except ProfileError as exc:
         raise fail(str(exc), EXIT_USAGE) from exc
+
+    # The token resolves after the gate (behaviour 8). Both env paths are
+    # computed at call time: the home root is ``profile_root()`` and the
+    # install env is ``REPO_ROOT / .env`` - ``REPO_ROOT`` read from the
+    # module global, never captured at import, so a test-redirected root
+    # is seen.
+    token = piprofile.resolve_token(
+        record,
+        home_env=root / ".env",
+        install_env=REPO_ROOT / ENV_FILENAME,
+    )
+    if not token:
+        typer.echo(
+            "no GitHub token resolved - the run proceeds unauthenticated"
+        )
+
+    # The derivation needs the payload, so the issue is read host-side
+    # first; ``pigithub.run`` re-reads the intake internally by design.
+    # The real seam returns ``(issue, reason)`` - the unpack writes the
+    # real tuple's shape, and the derivation helpers are defensive for
+    # any payload ``read_issue`` can return. The payload is held in
+    # ``payload`` so it does not shadow the CLI's ``issue`` number, which
+    # ``branch_for`` and the ``run`` call below need as an int.
+    payload, reason = pigithub.read_issue(
+        record["owner"], record["repo"], issue, token=token
+    )
+    if payload is None:
+        typer.echo("intake failed: {}".format(reason))
+        return
+
+    kind = pirun.kind_for(payload)
+    branch = pirun.branch_for(kind, issue)
+    fields = pirun.pr_fields_for(payload)
+    title = fields["title"]
+    # ``example`` is the issue body verbatim, or the literal when the body
+    # is missing, null or blank - the plan's blank-check rule, applied to
+    # the raw body rather than ``pr_fields_for``'s placeholder, so a blank
+    # body is reported as the literal and never as the placeholder text.
+    raw_body = payload.get("body") if isinstance(payload, dict) else None
+    example = (
+        raw_body
+        if isinstance(raw_body, str) and raw_body.strip()
+        else "see the intake issue body"
+    )
+    pigithub.run(
+        record["owner"],
+        record["repo"],
+        issue,
+        record["path"],
+        "origin",
+        branch,
+        title,
+        record["base"],
+        title,
+        (),
+        "covered by the repository's existing test suite",
+        example,
+        record["repo"],
+        title,
+        "issue-{}".format(issue),
+        "issue {}: {}".format(issue, title),
+        kind,
+        _pidriver_runner_factory(),
+        _pirun_git_factory(),
+        token=token,
+        profile_name=profile,
+        profile_root=str(root),
+    )
 
 
 # ---------------------------------------------------------------------------
