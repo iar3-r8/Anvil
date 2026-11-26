@@ -1201,6 +1201,41 @@ def profile_show(
 
 
 # ---------------------------------------------------------------------------
+# pi sub-app
+# ---------------------------------------------------------------------------
+
+# The ``pi`` family grows one verb at a time (``run`` first); like
+# ``profile`` it is standalone: no global callback, no shared Context,
+# because nothing here needs a port or a compose project.
+pi_app = typer.Typer(
+    help="Drive a Pi run for a recorded profile.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(pi_app, name="pi")
+
+
+@pi_app.command(name="run")
+def pi_run(
+    profile: str = typer.Argument(..., help="The profile name to run."),
+    issue: int = typer.Argument(..., help="The GitHub issue number to run."),
+) -> None:
+    """Run one Pi cycle for ``profile`` against issue number ``issue``.
+
+    The profile gate runs first and is, for now, the only act: the store
+    is loaded and a record that cannot load - an unknown name, or a held
+    name whose path has vanished - fails on the usage code with the
+    store's own message, before any run seam is touched. After the gate
+    passes, the run phase is still being built, so the command exits 0.
+    """
+    root = piprofileflow.profile_root()
+    try:
+        piprofile.load_profile(root, profile)
+    except ProfileError as exc:
+        raise fail(str(exc), EXIT_USAGE) from exc
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
