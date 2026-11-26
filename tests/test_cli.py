@@ -19906,3 +19906,366 @@ class TestPiRunOutcome(CliCase):
                 result.output
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 11 of plans/pi-phase14-run-command.md -
+# archive-is-outside-the-target-repo
+#
+# Everything the run records lands under
+# ``~/.anvil/runs/<profile>/<run-id>/`` - the ``meta.json`` the command
+# opens via ``runlog.start_run`` before ``pigithub.run`` (intake from the
+# host-side read, one session per ``pirole.ROLES``, the live
+# ``anvil_version``), the role documents written verbatim by
+# ``runlog.write_prompts``, and the ``finish_run`` completion - and
+# nothing inside the target repository (the record's ``path``). A run id
+# whose archive already exists is refused with the error exit before the
+# run is called. The fixture shape is the behaviour-9 one: an isolated
+# HOME, the store seeded directly, the ``pigithub`` seams booby-trapped
+# at the module, and the real ``runlog`` exercised against the isolated
+# home so the archive layout is what is tested - only ``new_run_id`` is
+# pinned, and only for the refusal boundary.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunArchive(CliCase):
+    """``pi run`` archives the run outside the target repo (behaviour
+    11): one run dir per profile under ``~/.anvil/runs/``, a complete
+    ``meta.json``, verbatim role documents, an untouched target, and a
+    refusal when the run id's archive already exists."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    ISSUE = "7"
+
+    # The stem-to-text map the cycle's ``documents`` key carries in the
+    # trapped ``pigithub.run`` result; the archive must keep it verbatim.
+    DOCS = {"coder": "CODER-DOC-TEXT", "tester": "TESTER-DOC-TEXT"}
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store and the archive land at
+        # <home>/.anvil, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: a vanished path fails the profile
+        # gate before the run phase could be reached. It is a separate
+        # temp dir from the home, so the target is snapshotted by hand.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self, run_result):
+        """Booby-trap both ``pigithub`` seams with scripted results: any
+        call is observable and neither network function ever runs.
+
+        The ``read_issue`` seam returns the real tuple shape - the issue
+        payload and ``None`` reason - and the ``run`` seam returns the
+        given result, which carries the cycle's ``documents`` map for the
+        archive to pick up.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value=({"title": "Fix the widget", "body": "B"}, None),
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value=run_result,
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _trap_subprocess_run(self, returncode, stdout="", stderr=""):
+        """Script ``subprocess.run`` where the git seam resolves it.
+
+        ``cli`` imported ``subprocess`` as a module global and the
+        ``git`` ``_pirun_git_factory`` returns reads ``subprocess.run``
+        from that module at call time, so the patch target is
+        ``cli.subprocess.run`` - the same stdlib module object. The return
+        is a real ``CompletedProcess`` so the seam sees the true shape."""
+        import subprocess
+
+        patcher = mock.patch.object(
+            cli.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["git"],
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        run_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run_mock
+
+    def _opened_result(self):
+        """The ``opened`` shape ``pigithub.run`` returns: no
+        ``push_argv`` so the push phase stays out of scope, plus the
+        cycle's ``documents`` map the archive must keep verbatim."""
+        return {
+            "status": "opened",
+            "issue_number": 7,
+            "pr": {"number": 9, "html_url": "http://x", "head_sha": "abc"},
+            "push_argv": None,
+            "documents": dict(self.DOCS),
+        }
+
+    def _archived_meta(self):
+        """Return ``(run_dir, meta)`` for the single run under the
+        profile archive root.
+
+        Every red here fails for the right reason - the command never
+        opens the archive - so a missing root, a missing or doubled run
+        dir, or a missing ``meta.json`` all fail with the on-disk state
+        reported."""
+        profile_root = self.home / ".anvil" / "runs" / self.PROFILE
+        run_dirs = (
+            sorted(p for p in profile_root.iterdir() if p.is_dir())
+            if profile_root.is_dir()
+            else []
+        )
+        self.assertEqual(
+            1,
+            len(run_dirs),
+            "one run directory is expected under the profile archive "
+            "root {} - found: {}".format(
+                profile_root, [p.name for p in run_dirs]
+            ),
+        )
+        run_dir = run_dirs[0]
+        meta_path = run_dir / "meta.json"
+        self.assertTrue(
+            meta_path.is_file(),
+            "the run directory {} must carry a meta.json - contents: "
+            "{}".format(
+                run_dir, sorted(p.name for p in run_dir.rglob("*"))
+            ),
+        )
+        return run_dir, json.loads(meta_path.read_text(encoding="utf-8"))
+
+    def _snapshot_target(self):
+        """Every file under the record's path, mapped to its bytes.
+
+        The target is a separate temp dir from the project root, so it
+        is snapshotted by hand in the same shape as ``CliCase.
+        snapshot()``."""
+        return {
+            str(path.relative_to(self.profile_path)): path.read_bytes()
+            for path in sorted(self.profile_path.rglob("*"))
+            if path.is_file()
+        }
+
+    # -- the archive lives outside the target -----------------------------
+
+    def test_an_opened_run_archives_meta_outside_the_target(self):
+        """An ``opened`` run creates exactly one run dir under
+        ``~/.anvil/runs/<profile>/`` whose ``meta.json`` carries a
+        ``run_id`` equal to the dir name, the live ``anvil_version``,
+        the ``shipped`` outcome and ``complete`` true."""
+        self._trap_github_seams(self._opened_result())
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        profile_root = self.home / ".anvil" / "runs" / self.PROFILE
+        self.assertTrue(
+            profile_root.is_dir(),
+            "the profile archive root must exist under the isolated "
+            "home - home tree: {}".format(
+                sorted(str(p) for p in self.home.rglob("*"))
+            ),
+        )
+        run_dir, meta = self._archived_meta()
+        self.assertEqual(
+            run_dir.name,
+            meta["run_id"],
+            "meta.json's run_id must equal the run directory's name",
+        )
+        import anvilkit
+
+        self.assertEqual(
+            anvilkit.__version__,
+            meta["anvil_version"],
+            "meta.json must record the live anvilkit.__version__",
+        )
+        self.assertEqual(
+            "shipped",
+            meta["outcome"],
+            "an opened run must be archived with the shipped outcome",
+        )
+        self.assertIs(
+            True,
+            meta["complete"],
+            "a finished run's meta.json must be complete",
+        )
+
+    def test_the_archive_meta_carries_the_issue_and_four_role_sessions(
+        self,
+    ):
+        """The ``meta.json``'s intake carries the issue number and the
+        issue title from the host-side read, and its sessions cover
+        exactly the four ``pirole.ROLES`` with ``<run-id>-<role>`` ids."""
+        self._trap_github_seams(self._opened_result())
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        from anvilkit.pi import pirole
+
+        _, meta = self._archived_meta()
+        self.assertEqual(
+            {"issue": 7, "text": "Fix the widget"},
+            meta["intake"],
+            "the intake must carry the issue number and the issue "
+            "title from the host-side read",
+        )
+        self.assertEqual(
+            set(pirole.ROLES),
+            set(meta["sessions"].keys()),
+            "the sessions must cover exactly the four pirole.ROLES",
+        )
+        for role in pirole.ROLES:
+            self.assertTrue(
+                meta["sessions"][role].endswith("-" + role),
+                "the {} session id must end in -{} - got: {}".format(
+                    role, role, meta["sessions"][role]
+                ),
+            )
+
+    def test_the_role_documents_are_archived_verbatim(self):
+        """The cycle's ``documents`` map is archived byte-for-byte as
+        ``prompts/<stem>.md`` under the run dir."""
+        self._trap_github_seams(self._opened_result())
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        run_dir, _ = self._archived_meta()
+        prompts_dir = run_dir / "prompts"
+        for stem, text in self.DOCS.items():
+            path = prompts_dir / (stem + ".md")
+            self.assertTrue(
+                path.is_file(),
+                "the {} role document must be archived - prompts: "
+                "{}".format(
+                    stem,
+                    sorted(str(p) for p in prompts_dir.rglob("*"))
+                    if prompts_dir.is_dir()
+                    else "missing",
+                ),
+            )
+            self.assertEqual(
+                text,
+                path.read_text(encoding="utf-8"),
+                "the {} document must be archived verbatim".format(stem),
+            )
+
+    # -- the target repo stays untouched ----------------------------------
+
+    def test_nothing_is_written_inside_the_target_repo(self):
+        """Boundary pin: the record's path holds exactly the same file
+        set - byte for byte - after the run as before it. May pass on
+        the red, since nothing is written anywhere today; it pins the
+        boundary that the archive never lands inside the target."""
+        self._trap_github_seams(self._opened_result())
+        before = self._snapshot_target()
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        after = self._snapshot_target()
+        self.assertEqual(
+            before,
+            after,
+            "the target repo must hold exactly the same file set after "
+            "the run as before - before: {}, after: {}".format(
+                sorted(before), sorted(after)
+            ),
+        )
+
+    # -- a colliding run id refuses before the run -------------------------
+
+    def test_an_existing_archive_for_the_run_id_refuses_and_never_runs(
+        self,
+    ):
+        """A run id whose archive already exists is refused with the
+        error exit before the run is called: no ``pigithub.run``, no
+        subprocess. ``new_run_id`` is pinned to a fixed id - the
+        collision is deterministic, never a time pin.
+
+        The patch goes at the ``runlog`` module attribute - the very
+        object ``cli.runlog`` resolves to at call time once the command
+        imports the module - because at the red ``cli.runlog`` does not
+        exist yet and patching it would raise AttributeError, a wrong
+        red."""
+        from anvilkit.pi import runlog
+
+        fixed_id = "run-20260101-000000-aaaa"
+        patcher = mock.patch.object(
+            runlog, "new_run_id", return_value=fixed_id
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        (
+            self.home / ".anvil" / "runs" / self.PROFILE / fixed_id
+        ).mkdir(parents=True)
+        _, run_mock = self._trap_github_seams(self._opened_result())
+        subprocess_run = self._trap_subprocess_run(0)
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            1,
+            result.exit_code,
+            "an existing archive for the run id must be refused with "
+            "the error exit - output:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            run_mock.call_count,
+            "a refused run must never call pigithub.run - call: {}".format(
+                run_mock.call_args
+            ),
+        )
+        self.assertEqual(
+            0,
+            subprocess_run.call_count,
+            "a refused run must execute nothing - call: {}".format(
+                subprocess_run.call_args
+            ),
+        )
