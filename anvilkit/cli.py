@@ -1071,9 +1071,8 @@ def _pirun_git_factory() -> Callable[[List[str]], None]:
     verbatim through list-form ``subprocess`` - no ``shell=True``, so no
     argument is ever re-parsed by a shell. On a non-zero exit it raises
     ``pirun.RunError`` naming the command and the exit code, so the run
-    never believes a git step that failed (behaviour 9's pin arrives with
-    the push execution; until then the seam simply must not swallow a
-    failure).
+    never believes a git step that failed: the caller's push reports it and
+    exits 1, and the cycle's driver git raises.
     """
 
     def git(argv: List[str]) -> None:

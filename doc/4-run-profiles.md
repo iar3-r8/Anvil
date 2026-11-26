@@ -2,11 +2,12 @@
 
 One Anvil installation can serve many repositories, and a run must be able to
 tell which one it is in. `setup-repo` records each provisioned repository as a
-**profile** in the store at `~/.anvil/profiles.yaml`, and the two `profile`
-commands read it back. A record is the identity a run consumes: the absolute
-repository path, the GitHub identity the guards gate resolved, the base branch
-the gate checked, and the name of the environment variable that holds the
-repository's token — never the token's value.
+**profile** in the store at `~/.anvil/profiles.yaml`; the two `profile`
+commands read it back, and `pi run` drives a run from a record — see
+[running a task end to end](5-run-command.md). A record is the identity a run
+consumes: the absolute repository path, the GitHub identity the guards gate
+resolved, the base branch the gate checked, and the name of the environment
+variable that holds the repository's token — never the token's value.
 
 Nothing in the store is a secret: both commands print only the record's own
 fields, so neither ever reveals a token.
@@ -106,6 +107,14 @@ record's `owner` and `repo` and the `project` block's `name`, `structure` and
   were.
 - Both commands are read-only, and both print only the record's own fields.
   `show` prints the `token_env` key name — never a resolved token value.
+
+## The record drives a run
+
+A record is what `pi run` consumes: the target path, the GitHub identity and
+the base branch all come from it, and the run's token is resolved from the
+`token_env` key it names. The invocation, what a run does end to end, its
+outcome exit codes, the run archive and `--dry-run` are in
+[running a task end to end](5-run-command.md).
 
 For the `setup-repo` side — the name prompt and what the record captures —
 see the [VS Code plugin setup guide](2-setting-up-vscode-plugin.md).
