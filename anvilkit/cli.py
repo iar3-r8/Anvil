@@ -1275,12 +1275,19 @@ def pi_run(
     the host-side read fails, the read's reason is reported and
     ``pigithub.run`` is called zero times.
 
+    When ``run`` returns, the command executes the result's
+    ``push_argv`` (behaviour 9): only when it is truthy - the
+    ``opened`` shape carries it, while ``halted`` and ``intake_failed``
+    carry ``None`` and a falsy argv is never executed - verbatim, as a
+    list-form subprocess, through the behaviour-8 git seam. A non-zero
+    push exit is reported as ``push failed: <reason>`` and exits
+    ``EXIT_ERROR`` (1), never 0 and never an outcome code.
+
     Until behaviour 10 lands the outcome is not yet mapped to an exit
-    code, so every path that reaches this far - read failure and a
-    returned ``run`` alike - exits 0; that temporary is what the test
-    suite asserts today. Executing ``push_argv`` (behaviour 9), the
-    archive (behaviour 11) and ``--dry-run`` (behaviour 12) are not built
-    yet either.
+    code, so every path that reaches this far - read failure, a returned
+    ``run`` and a successful push alike - exits 0; that temporary is
+    what the test suite asserts today. The archive (behaviour 11) and
+    ``--dry-run`` (behaviour 12) are not built yet either.
     """
     root = piprofileflow.profile_root()
     try:
@@ -1331,7 +1338,7 @@ def pi_run(
         if isinstance(raw_body, str) and raw_body.strip()
         else "see the intake issue body"
     )
-    pigithub.run(
+    result = pigithub.run(
         record["owner"],
         record["repo"],
         issue,
@@ -1355,6 +1362,21 @@ def pi_run(
         profile_name=profile,
         profile_root=str(root),
     )
+
+    # The push runs only when the result carries a truthy ``push_argv`` -
+    # the ``opened`` shape does; ``halted`` and ``intake_failed`` carry
+    # ``None`` and a falsy argv is never executed (behaviour 9). It goes
+    # through the behaviour-8 git seam, so the same list-form subprocess
+    # discipline and the same non-zero -> ``RunError`` translation cover
+    # the caller's push as the cycle's driver git.
+    push = result.get("push_argv") if isinstance(result, dict) else None
+    if push:
+        try:
+            _pirun_git_factory()(push)
+        except pirun.RunError as exc:
+            raise fail(
+                "push failed: {}".format(exc), EXIT_ERROR
+            ) from exc
 
 
 # ---------------------------------------------------------------------------
