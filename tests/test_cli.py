@@ -425,6 +425,7 @@ class TestSubcommandsExist(CliCase):
         "verify-guards",
         "smoke-test",
         "profile",
+        "pi",
     )
 
     def registered_names(self):
@@ -19000,3 +19001,241 @@ class TestSuiteNeverTouchesRealHome(CliCase):
             record.get("path"),
             "the record's path must be the absolute target path",
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviours 6 and 7 of plans/pi-phase14-run-command.md - the profile gate
+# ---------------------------------------------------------------------------
+#
+# ``pi run <profile> <issue>`` is added to a new ``pi`` typer sub-app
+# (``add_typer``; the CLI is flat today, ``anvilkit/cli.py:1143``). The
+# command's first act is ``piprofile.load_profile(anvil_home, profile_name)``;
+# an unknown name raises ``ProfileError`` naming the known profiles (or
+# "no profiles are saved" for an empty store) and a record whose path has
+# vanished raises ``ProfileError`` naming both the profile and the path.
+# The handler catches that single exception once and fails with
+# ``cli.EXIT_USAGE`` carrying the message verbatim - the exit-2
+# distinction between the two behaviours is the message text, not a
+# different seam. Nothing else runs: the ``pigithub.run`` and
+# ``pibakeoff.subprocess_runner`` seams are booby-trapped, and no ``runs``
+# directory is created under the test HOME's ``.anvil``.
+#
+# Seeding reuses ``TestProfileListAndShow``'s pattern verbatim: a fresh
+# ``tempfile.TemporaryDirectory`` HOME via
+# ``mock.patch.dict(os.environ, {"HOME": ...})``, the store at
+# ``<home>/.anvil/profiles.yaml`` seeded with
+# ``piprofile.save_profile`` against real temporary directories, and the
+# home ``.env`` written with known token values that must never appear in
+# any output.
+#
+# RED: the ``pi`` sub-app does not exist yet - ``CliRunner`` reports
+# "No such command 'pi'" for ``["pi", "run", ...]``, and every
+# exit/output assertion below fails for exactly that reason.
+# ``TestSubcommandsExist.EXPECTED`` is extended in this red step with
+# ``"pi"``, so its three registration pins go red alongside the new tests.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunProfileGate(CliCase):
+    """``pi run <profile> <issue>`` treats an unknown profile and a
+    vanished profile path as usage errors (behaviours 6 and 7)."""
+
+    PROFILE = "project-x"
+    OWNER = "alpha"
+    REPO = "project-x"
+    BASE = "main"
+    TOKEN_ENV = "GITHUB_TOKEN_PROJECT_X"
+    HOME_TOKEN_VALUE = "s3cret-project-x-home-token"
+    FALLBACK_TOKEN_VALUE = "s3cret-fallback-home-token"
+    ISSUE = "114"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The home .env carries known token values - one under the profile's
+        # own token_env key and one under the GITHUB_TOKEN fallback. Neither
+        # value may ever appear in a command's output.
+        from anvilkit import env
+
+        env.write(
+            self.anvil_home / ".env",
+            [
+                (self.TOKEN_ENV, self.HOME_TOKEN_VALUE),
+                ("GITHUB_TOKEN", self.FALLBACK_TOKEN_VALUE),
+            ],
+        )
+
+        # Real target directories: behaviour 7's gate only fires for a
+        # record whose path exists at load time, so the seed must point at
+        # a directory that exists.
+        profile_dir = tempfile.TemporaryDirectory()
+        self._profile_dir = profile_dir
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        # The most honest seeder: the production write path, so the store
+        # on disk is exactly what ``pi run`` will read.
+        from anvilkit.pi import piprofile
+
+        piprofile.save_profile(
+            self.anvil_home,
+            self.PROFILE,
+            self.profile_path,
+            self.OWNER,
+            self.REPO,
+            self.BASE,
+            {},
+        )
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception: before the sub-app exists, click raises
+        a UsageError ("No such command 'pi'") at the app level."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _blank_store(self):
+        """Delete the seeded store file: no store at all."""
+        self.store_path.unlink()
+
+    def _trap_run_seams(self):
+        """Context manager: both run seams raise on any call."""
+        def explode(*args, **kwargs):
+            raise AssertionError(
+                "the profile gate must fail before any run seam is "
+                "touched - the profile never loads"
+            )
+
+        from anvilkit.pi import pigithub
+
+        runner_patch = mock.patch.object(
+            cli.pibakeoff, "subprocess_runner", side_effect=explode
+        )
+        github_patch = mock.patch.object(
+            pigithub, "run", side_effect=explode
+        )
+        runner_cm = runner_patch.start()
+        github_cm = github_patch.start()
+        self.addCleanup(github_patch.stop)
+        self.addCleanup(runner_patch.stop)
+        return runner_cm, github_cm
+
+    def _assert_nothing_ran(self, result):
+        """The traps held: no run seam was called, and no ``runs``
+        directory was created under the test HOME's ``.anvil``."""
+        self.assertFalse(
+            self._runner_mock.called,
+            "pibakeoff.subprocess_runner must never be called when the "
+            "profile gate fails - output:\n{}".format(result.output),
+        )
+        self.assertFalse(
+            self._github_mock.called,
+            "pigithub.run must never be called when the profile gate "
+            "fails - output:\n{}".format(result.output),
+        )
+        runs_dir = self.anvil_home / "runs"
+        self.assertFalse(
+            runs_dir.exists(),
+            "a usage error must create no archive - {} must not "
+            "exist".format(runs_dir),
+        )
+
+    # -- behaviour 6: unknown profile is a usage error -------------------
+
+    def test_pi_run_unknown_profile_exits_usage_naming_it_and_the_known_profiles(self):
+        """A name the store does not hold exits 2 with behaviour 9's
+        message: the unknown name named, the known profile names listed,
+        and no run seam touched and no archive created."""
+        self._runner_mock, self._github_mock = self._trap_run_seams()
+        result = self._run(["pi", "run", "ghost", self.ISSUE])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "pi run of an unknown profile must exit on the usage code, "
+            "got {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            "unknown profile",
+            result.output,
+            "the message must use the 'unknown profile' phrasing - "
+            "output:\n{}".format(result.output),
+        )
+        self.assertIn("ghost", result.output)
+        self.assertIn(self.PROFILE, result.output)
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by pi run",
+            )
+        self._assert_nothing_ran(result)
+
+    def test_pi_run_unknown_profile_with_no_profiles_saved_says_so(self):
+        """With a store holding no profiles at all, the message says no
+        profiles are saved rather than inventing names."""
+        self._blank_store()
+        self._runner_mock, self._github_mock = self._trap_run_seams()
+        result = self._run(["pi", "run", "anything", self.ISSUE])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "pi run of an unknown profile with no profiles saved must "
+            "exit on the usage code, got {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertIn(
+            "no profiles are saved",
+            result.output,
+            "the message must say no profiles are saved - "
+            "output:\n{}".format(result.output),
+        )
+        self.assertIn("anything", result.output)
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by pi run",
+            )
+        self._assert_nothing_ran(result)
+
+    # -- behaviour 7: vanished path is a usage error ----------------------
+
+    def test_pi_run_vanished_path_exits_usage_naming_the_profile_and_the_path(self):
+        """A record whose path no longer exists exits 2 naming both the
+        profile and the vanished path, before any seam is touched and
+        with no archive created."""
+        shutil.rmtree(str(self.profile_path))
+        self._runner_mock, self._github_mock = self._trap_run_seams()
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "pi run of a record whose path has vanished must exit on the "
+            "usage code, got {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            self.PROFILE,
+            result.output,
+            "the message must name the profile - "
+            "output:\n{}".format(result.output),
+        )
+        self.assertIn(
+            os.path.abspath(str(self.profile_path)),
+            result.output,
+            "the message must name the vanished path - "
+            "output:\n{}".format(result.output),
+        )
+        self._assert_nothing_ran(result)
