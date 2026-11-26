@@ -10,7 +10,7 @@ Anvil does two things: it runs local model inference behind the [llama-swap](htt
 
 **Turn a repo into an agentic pipeline.** `./anvil setup-repo PATH` installs Zoo Code settings, a team of agent modes, the MCP servers that fetch documentation and check package registries, and an optional devcontainer. What the provisioned agents do: [how the agents work](doc/how-the-agents-work.md); installation steps: [VS Code plugin setup guide](doc/2-setting-up-vscode-plugin.md).
 
-**One install, many repositories.** Each `setup-repo` records its target in a local profile store under `~/.anvil/profiles.yaml` — the repository path, its GitHub identity and the token key name, never the token value — so a run always knows which repository it is in. `./anvil profile list` and `./anvil profile show NAME` inspect the records: [working with run profiles](doc/4-run-profiles.md).
+**One install, many repositories.** Each `setup-repo` records its target in a local profile store under `~/.anvil/profiles.yaml` — the repository path, its GitHub identity and the token key name, never the token value — so a run always knows which repository it is in. `./anvil profile list` and `./anvil profile show NAME` inspect the records: [working with run profiles](doc/4-run-profiles.md). And `./anvil pi run PROFILE ISSUE` takes a recorded repository from one GitHub issue to an open pull request: [running a task end to end](doc/5-run-command.md).
 
 ## Quick start
 
@@ -23,6 +23,7 @@ Anvil does two things: it runs local model inference behind the [llama-swap](htt
 ./anvil status               # gateway health and model state
 ./anvil stress MODEL         # measure latency and failures at increasing concurrency
 ./anvil setup-repo PATH      # provision your coding repository
+./anvil pi run PROFILE ISSUE # run one GitHub issue from intake to pull request
 ```
 
 `./anvil doctor` reports what Anvil found on your machine — run it whenever something looks wrong.
@@ -56,5 +57,6 @@ Commercial AI coding assistants bring two drawbacks to engineering teams: unpred
 * [Backend setup guide](doc/1-setting-up-backend.md) — running the local stack: commands, flags, exit codes, hardware sizing.
 * [VS Code plugin setup guide](doc/2-setting-up-vscode-plugin.md) — provisioning a repository with `setup-repo`.
 * [Working with run profiles](doc/4-run-profiles.md) — the per-repository profile store: what a record holds, the naming rules, and the `profile list` / `profile show` commands.
+* [Running a task end to end](doc/5-run-command.md) — `pi run`: the invocation, what a run does, its outcome exit codes, the run archive, and `--dry-run`.
 * [How the agents work](doc/how-the-agents-work.md) — the agentic pipeline in depth: stages, loop mechanics, grounded planning.
 * [Testing](doc/3-testing.md) — dev-facing: how to run Anvil's own test suite.

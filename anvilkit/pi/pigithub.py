@@ -973,6 +973,8 @@ def run(
     opener: Optional[Callable[..., Any]] = None,
     timeout: Optional[float] = None,
     cycle: Callable[..., Dict[str, Any]] = picycle.run_cycle,
+    profile_name: Optional[str] = None,
+    profile_root: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Compose the landed primitives into the intake loop, in pinned order.
 
@@ -991,7 +993,11 @@ def run(
     with the cycle inputs forwarded verbatim, ``number`` and ``issue``
     both the intake issue number, and a ``reason`` carrying the
     caller's ``reason`` AND ``quote_intake`` of the read issue - the
-    intake reaches the cycle as quoted data, not instructions.
+    intake reaches the cycle as quoted data, not instructions. The
+    optional ``profile_name`` and ``profile_root`` pass-throughs are
+    forwarded to the seam as keyword arguments only when set - the
+    omitted profile leaves the call byte-identical to the phase-10
+    one (seam kwargs exactly ``issue``).
 
     The result is one dict with a ``status``:
 
@@ -999,17 +1005,23 @@ def run(
       ``pr`` (exactly ``open_pull_request``'s return: ``number``,
       ``html_url``, ``head_sha``), ``push_argv`` (the value
       ``push_argv`` built), ``ci`` (``runs``, ``verdict`` and the
-      ``render_ci`` report) and ``final_comment_url``.
+      ``render_ci`` report), ``final_comment_url`` and ``documents``
+      (the cycle result's ``"documents"`` - the generation seam's
+      stem-to-text map, carried so the ``anvil pi run`` composition can
+      archive it; ``None`` when the cycle generated no profile).
     - ``"halted"``: a ``"halted"`` cycle result pushes nothing and
       opens nothing - no pull request, no CI read - and posts exactly
       one comment naming the halt and the behaviour: ``issue_number``,
       the cycle result ``cycle`` verbatim, ``pr: None``,
-      ``push_argv: None`` and ``halt_comment_url``.
+      ``push_argv: None``, ``halt_comment_url`` and ``documents``
+      (the cycle result's ``"documents"`` key, as the ``"opened"``
+      result carries it).
     - ``"intake_failed"``: an intake read that failed makes exactly one
       request (the intake GET) - no comment (the issue is unreadable,
       so a comment POST would fail for the same reason), the cycle
       never reached: ``issue_number``, the read's ``reason``,
-      ``pr: None``, ``push_argv: None``.
+      ``pr: None``, ``push_argv: None`` (and no ``documents`` - the
+      cycle that would carry them was never run).
 
     Every failure the read functions name as a ``reason`` is translated
     into ``GitHubError`` when it happens on a write the loop cannot
@@ -1057,6 +1069,14 @@ def run(
         runner,
         git,
         issue=issue_number,
+        **{
+            key: value
+            for key, value in (
+                ("profile_name", profile_name),
+                ("profile_root", profile_root),
+            )
+            if value is not None
+        },
     )
 
     if cycle_result.get("verdict") == "halted":
@@ -1084,6 +1104,7 @@ def run(
             "pr": None,
             "push_argv": None,
             "halt_comment_url": halt_url,
+            "documents": cycle_result.get("documents"),
         }
 
     push_argv_list = push_argv(repo_path, remote, branch)
@@ -1137,4 +1158,5 @@ def run(
         "push_argv": push_argv_list,
         "ci": {"runs": runs, "verdict": verdict, "report": report},
         "final_comment_url": final_url,
+        "documents": cycle_result.get("documents"),
     }

@@ -425,6 +425,7 @@ class TestSubcommandsExist(CliCase):
         "verify-guards",
         "smoke-test",
         "profile",
+        "pi",
     )
 
     def registered_names(self):
@@ -18999,4 +19000,1594 @@ class TestSuiteNeverTouchesRealHome(CliCase):
             os.path.abspath(self._target.name),
             record.get("path"),
             "the record's path must be the absolute target path",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviours 6 and 7 of plans/pi-phase14-run-command.md - the profile gate
+# ---------------------------------------------------------------------------
+#
+# ``pi run <profile> <issue>`` is added to a new ``pi`` typer sub-app
+# (``add_typer``; the CLI is flat today, ``anvilkit/cli.py:1143``). The
+# command's first act is ``piprofile.load_profile(anvil_home, profile_name)``;
+# an unknown name raises ``ProfileError`` naming the known profiles (or
+# "no profiles are saved" for an empty store) and a record whose path has
+# vanished raises ``ProfileError`` naming both the profile and the path.
+# The handler catches that single exception once and fails with
+# ``cli.EXIT_USAGE`` carrying the message verbatim - the exit-2
+# distinction between the two behaviours is the message text, not a
+# different seam. Nothing else runs: the ``pigithub.run`` and
+# ``pibakeoff.subprocess_runner`` seams are booby-trapped, and no ``runs``
+# directory is created under the test HOME's ``.anvil``.
+#
+# Seeding reuses ``TestProfileListAndShow``'s pattern verbatim: a fresh
+# ``tempfile.TemporaryDirectory`` HOME via
+# ``mock.patch.dict(os.environ, {"HOME": ...})``, the store at
+# ``<home>/.anvil/profiles.yaml`` seeded with
+# ``piprofile.save_profile`` against real temporary directories, and the
+# home ``.env`` written with known token values that must never appear in
+# any output.
+#
+# RED: the ``pi`` sub-app does not exist yet - ``CliRunner`` reports
+# "No such command 'pi'" for ``["pi", "run", ...]``, and every
+# exit/output assertion below fails for exactly that reason.
+# ``TestSubcommandsExist.EXPECTED`` is extended in this red step with
+# ``"pi"``, so its three registration pins go red alongside the new tests.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunProfileGate(CliCase):
+    """``pi run <profile> <issue>`` treats an unknown profile and a
+    vanished profile path as usage errors (behaviours 6 and 7)."""
+
+    PROFILE = "project-x"
+    OWNER = "alpha"
+    REPO = "project-x"
+    BASE = "main"
+    TOKEN_ENV = "GITHUB_TOKEN_PROJECT_X"
+    HOME_TOKEN_VALUE = "s3cret-project-x-home-token"
+    FALLBACK_TOKEN_VALUE = "s3cret-fallback-home-token"
+    ISSUE = "114"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at
+        # <home>/.anvil/profiles.yaml, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The home .env carries known token values - one under the profile's
+        # own token_env key and one under the GITHUB_TOKEN fallback. Neither
+        # value may ever appear in a command's output.
+        from anvilkit import env
+
+        env.write(
+            self.anvil_home / ".env",
+            [
+                (self.TOKEN_ENV, self.HOME_TOKEN_VALUE),
+                ("GITHUB_TOKEN", self.FALLBACK_TOKEN_VALUE),
+            ],
+        )
+
+        # Real target directories: behaviour 7's gate only fires for a
+        # record whose path exists at load time, so the seed must point at
+        # a directory that exists.
+        profile_dir = tempfile.TemporaryDirectory()
+        self._profile_dir = profile_dir
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        # The most honest seeder: the production write path, so the store
+        # on disk is exactly what ``pi run`` will read.
+        from anvilkit.pi import piprofile
+
+        piprofile.save_profile(
+            self.anvil_home,
+            self.PROFILE,
+            self.profile_path,
+            self.OWNER,
+            self.REPO,
+            self.BASE,
+            {},
+        )
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception: before the sub-app exists, click raises
+        a UsageError ("No such command 'pi'") at the app level."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _blank_store(self):
+        """Delete the seeded store file: no store at all."""
+        self.store_path.unlink()
+
+    def _trap_run_seams(self):
+        """Context manager: both run seams raise on any call."""
+        def explode(*args, **kwargs):
+            raise AssertionError(
+                "the profile gate must fail before any run seam is "
+                "touched - the profile never loads"
+            )
+
+        from anvilkit.pi import pigithub
+
+        runner_patch = mock.patch.object(
+            cli.pibakeoff, "subprocess_runner", side_effect=explode
+        )
+        github_patch = mock.patch.object(
+            pigithub, "run", side_effect=explode
+        )
+        runner_cm = runner_patch.start()
+        github_cm = github_patch.start()
+        self.addCleanup(github_patch.stop)
+        self.addCleanup(runner_patch.stop)
+        return runner_cm, github_cm
+
+    def _assert_nothing_ran(self, result):
+        """The traps held: no run seam was called, and no ``runs``
+        directory was created under the test HOME's ``.anvil``."""
+        self.assertFalse(
+            self._runner_mock.called,
+            "pibakeoff.subprocess_runner must never be called when the "
+            "profile gate fails - output:\n{}".format(result.output),
+        )
+        self.assertFalse(
+            self._github_mock.called,
+            "pigithub.run must never be called when the profile gate "
+            "fails - output:\n{}".format(result.output),
+        )
+        runs_dir = self.anvil_home / "runs"
+        self.assertFalse(
+            runs_dir.exists(),
+            "a usage error must create no archive - {} must not "
+            "exist".format(runs_dir),
+        )
+
+    # -- behaviour 6: unknown profile is a usage error -------------------
+
+    def test_pi_run_unknown_profile_exits_usage_naming_it_and_the_known_profiles(self):
+        """A name the store does not hold exits 2 with behaviour 9's
+        message: the unknown name named, the known profile names listed,
+        and no run seam touched and no archive created."""
+        self._runner_mock, self._github_mock = self._trap_run_seams()
+        result = self._run(["pi", "run", "ghost", self.ISSUE])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "pi run of an unknown profile must exit on the usage code, "
+            "got {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            "unknown profile",
+            result.output,
+            "the message must use the 'unknown profile' phrasing - "
+            "output:\n{}".format(result.output),
+        )
+        self.assertIn("ghost", result.output)
+        self.assertIn(self.PROFILE, result.output)
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by pi run",
+            )
+        self._assert_nothing_ran(result)
+
+    def test_pi_run_unknown_profile_with_no_profiles_saved_says_so(self):
+        """With a store holding no profiles at all, the message says no
+        profiles are saved rather than inventing names."""
+        self._blank_store()
+        self._runner_mock, self._github_mock = self._trap_run_seams()
+        result = self._run(["pi", "run", "anything", self.ISSUE])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "pi run of an unknown profile with no profiles saved must "
+            "exit on the usage code, got {}:\n{}".format(
+                result.exit_code, result.output
+            ),
+        )
+        self.assertIn(
+            "no profiles are saved",
+            result.output,
+            "the message must say no profiles are saved - "
+            "output:\n{}".format(result.output),
+        )
+        self.assertIn("anything", result.output)
+        for value in (self.HOME_TOKEN_VALUE, self.FALLBACK_TOKEN_VALUE):
+            self.assertNotIn(
+                value,
+                result.output,
+                "a token value must never be printed by pi run",
+            )
+        self._assert_nothing_ran(result)
+
+    # -- behaviour 7: vanished path is a usage error ----------------------
+
+    def test_pi_run_vanished_path_exits_usage_naming_the_profile_and_the_path(self):
+        """A record whose path no longer exists exits 2 naming both the
+        profile and the vanished path, before any seam is touched and
+        with no archive created."""
+        shutil.rmtree(str(self.profile_path))
+        self._runner_mock, self._github_mock = self._trap_run_seams()
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            cli.EXIT_USAGE,
+            result.exit_code,
+            "pi run of a record whose path has vanished must exit on the "
+            "usage code, got {}:\n{}".format(result.exit_code, result.output),
+        )
+        self.assertIn(
+            self.PROFILE,
+            result.output,
+            "the message must name the profile - "
+            "output:\n{}".format(result.output),
+        )
+        self.assertIn(
+            os.path.abspath(str(self.profile_path)),
+            result.output,
+            "the message must name the vanished path - "
+            "output:\n{}".format(result.output),
+        )
+        self._assert_nothing_ran(result)
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 8 of plans/pi-phase14-run-command.md -
+# token-never-leaves-the-host
+# ---------------------------------------------------------------------------
+#
+# After the profile gate, ``pi run`` resolves the GitHub token: the home
+# ``.env``'s value under the profile's own ``token_env`` key outranks the
+# install ``.env``'s literal ``GITHUB_TOKEN``, and a token missing from both
+# resolves to the empty string - the run still proceeds, unauthenticated,
+# and says so. The token must reach only the ``token`` parameter of the
+# ``pigithub`` seams - never stdout, stderr, the archive, or the container.
+#
+# The record below carries ``token_env: GH_TOKEN_P`` - a key the profile
+# name does not derive - so a resolution that derives the key from the name
+# instead of reading the record resolves nothing. The store is therefore
+# seeded directly in the shape ``save_profile`` records, because
+# ``save_profile`` derives ``token_env`` from the name and cannot hold this
+# pin. The ``pigithub`` seams are booby-trapped at the module
+# (``anvilkit.pi.pigithub``) - the same object the command reaches - so no
+# network function ever runs and every call is observable.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunToken(CliCase):
+    """``pi run`` resolves the token and hands it only to ``pigithub``
+    (behaviour 8: token-never-leaves-the-host)."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    FALLBACK_TOKEN_VALUE = "ghp_fallback_456"
+    ISSUE = "7"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store and the home .env land at
+        # <home>/.anvil, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: behaviour 10 refuses a vanished
+        # path before the run phase could be reached.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _home_env_path(self):
+        """The home ``.env`` ``resolve_token`` reads: ``<home>/.anvil/.env``."""
+        return self.anvil_home / ".env"
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self):
+        """Booby-trap both ``pigithub`` seams: any call is observable and
+        neither network function ever runs.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value={
+                "title": "Fix the widget",
+                "body": "The widget is broken.\n\nSteps:\ndo x",
+            },
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value={
+                "status": "opened",
+                "issue_number": 7,
+                "pr": None,
+                "push_argv": None,
+            },
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _assert_run_called_once(self, run_mock, result):
+        """The gate passed and the run phase ran: exactly one call."""
+        self.assertEqual(
+            1,
+            run_mock.call_count,
+            "pigithub.run must be called exactly once after the profile "
+            "gate passes - output:\n{}".format(result.output),
+        )
+
+    def _assert_token_kwarg(self, run_mock, expected):
+        """The resolved token reached ``run`` as its ``token`` parameter,
+        unchanged."""
+        self.assertIn(
+            "token",
+            run_mock.call_args.kwargs,
+            "pigithub.run must receive the token as its token parameter - "
+            "call: {}".format(run_mock.call_args),
+        )
+        self.assertEqual(
+            expected,
+            run_mock.call_args.kwargs["token"],
+            "the resolved token must reach the token parameter unchanged - "
+            "call: {}".format(run_mock.call_args),
+        )
+
+    # -- the resolved token reaches only the token parameter --------------
+
+    def test_home_env_token_reaches_only_the_token_parameter(self):
+        """The home .env's value under the profile's own token_env key is
+        resolved and reaches pigithub.run's token parameter."""
+        from anvilkit import env
+
+        env.write(self._home_env_path(), [(self.TOKEN_ENV, self.TOKEN_VALUE)])
+        read_mock, run_mock = self._trap_github_seams()
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self._assert_run_called_once(run_mock, result)
+        self._assert_token_kwarg(run_mock, self.TOKEN_VALUE)
+
+    def test_install_env_fallback_token_reaches_the_token_parameter(self):
+        """With no home .env, the install .env's literal GITHUB_TOKEN is
+        the fallback and reaches the token parameter."""
+        self.assertFalse(
+            self._home_env_path().exists(),
+            "this test needs no home .env - remove the seed",
+        )
+        self.write_env(GITHUB_TOKEN=self.FALLBACK_TOKEN_VALUE)
+        read_mock, run_mock = self._trap_github_seams()
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self._assert_run_called_once(run_mock, result)
+        self._assert_token_kwarg(run_mock, self.FALLBACK_TOKEN_VALUE)
+
+    # -- the token never reaches stdout or stderr --------------------------
+
+    def test_token_is_never_echoed(self):
+        """A resolved token is never printed on stdout or stderr.
+
+        Boundary pin: with the run phase unimplemented nothing is echoed
+        today, so this may pass on the red - it pins the boundary for the
+        green."""
+        from anvilkit import env
+
+        env.write(self._home_env_path(), [(self.TOKEN_ENV, self.TOKEN_VALUE)])
+        read_mock, run_mock = self._trap_github_seams()
+        runner = CliRunner(mix_stderr=False)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            result = runner.invoke(cli.app, ["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertTrue(
+            result.exception is None
+            or isinstance(result.exception, SystemExit),
+            "the command must complete before the echo pin can mean "
+            "anything: {!r}".format(result.exception),
+        )
+        self.assertNotIn(
+            self.TOKEN_VALUE,
+            result.stdout,
+            "a token value must never be printed on stdout",
+        )
+        self.assertNotIn(
+            self.TOKEN_VALUE,
+            result.stderr,
+            "a token value must never be printed on stderr",
+        )
+
+    # -- an empty token runs unauthenticated, reported as such ------------
+
+    def test_empty_token_still_runs_and_is_reported_unauthenticated(self):
+        """With no .env holding a token anywhere, the run still proceeds
+        with an empty token and stdout reports it as unauthenticated."""
+        self.assertFalse(self._home_env_path().exists())
+        self.assertFalse(self.env_path().exists())
+        read_mock, run_mock = self._trap_github_seams()
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self._assert_run_called_once(run_mock, result)
+        self._assert_token_kwarg(run_mock, "")
+        self.assertIn(
+            "unauthenticated",
+            result.stdout,
+            "an unauthenticated run must be reported as such - "
+            "output:\n{}".format(result.output),
+        )
+
+
+# ---------------------------------------------------------------------------
+# ``pi run`` executes the ``push_argv`` that ``pigithub.run`` returned
+# (behaviour 9: push-argv-is-executed-as-a-list).
+#
+# The fixture shape is copied from ``TestPiRunToken``: HOME isolated, the
+# store seeded directly, both ``pigithub`` seams booby-trapped - plus
+# ``subprocess.run`` scripted where the command resolves it. The git seam
+# ``_pirun_git_factory``'s ``git`` reads ``subprocess`` from the module
+# global at call time, so the patch target is ``cli.subprocess.run`` -
+# the same stdlib module object. Every cleanup is registered on the
+# PATCHER (never the mock), so no patch leaks suite-wide.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunPush(CliCase):
+    """``pi run`` executes the ``opened`` result's ``push_argv`` as a
+    list-form subprocess, no ``shell=True``, argv unchanged (behaviour 9)."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    ISSUE = "7"
+
+    # The exact list ``push_argv()`` builds - the command passes the
+    # trapped result's argv verbatim.
+    PUSH_ARGV = [
+        "git",
+        "-C",
+        "/tmp/target",
+        "push",
+        "--set-upstream",
+        "origin",
+        "feature/issue-7",
+    ]
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at <home>/.anvil, never
+        # the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: a vanished path fails the profile
+        # gate before the run phase could be reached.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self, run_result):
+        """Booby-trap both ``pigithub`` seams with a scripted ``run``
+        result: any call is observable and neither network function ever
+        runs.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value={
+                "title": "Fix the widget",
+                "body": "The widget is broken.\n\nSteps:\ndo x",
+            },
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value=run_result,
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _trap_subprocess_run(self, returncode, stdout="", stderr=""):
+        """Script ``subprocess.run`` where the git seam resolves it.
+
+        ``cli`` imported ``subprocess`` as a module global and the
+        ``git`` ``_pirun_git_factory`` returns reads ``subprocess.run``
+        from that module at call time, so the patch target is
+        ``cli.subprocess.run`` - the same stdlib module object. The return
+        is a real ``CompletedProcess`` so the seam sees the true shape."""
+        import subprocess
+
+        patcher = mock.patch.object(
+            cli.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["git"],
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        run_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run_mock
+
+    def _opened_result(self, push_argv):
+        """The ``opened`` shape ``pigithub.run`` returns, carrying the
+        given ``push_argv``."""
+        return {
+            "status": "opened",
+            "issue_number": 7,
+            "pr": {"number": 9, "html_url": "http://x", "head_sha": "abc"},
+            "push_argv": push_argv,
+        }
+
+    # -- the push runs as a list-form subprocess --------------------------
+
+    def test_opened_result_executes_the_push_argv_unchanged(self):
+        """The ``opened`` result's ``push_argv`` is executed exactly once,
+        verbatim as list form, no shell."""
+        self._trap_github_seams(self._opened_result(self.PUSH_ARGV))
+        subprocess_run = self._trap_subprocess_run(0)
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            1,
+            subprocess_run.call_count,
+            "the opened result's push_argv must be executed exactly once - "
+            "the push phase runs after pigithub.run returns",
+        )
+        self.assertEqual(
+            self.PUSH_ARGV,
+            subprocess_run.call_args.args[0],
+            "the argv must reach the subprocess unchanged, element for "
+            "element - call: {}".format(subprocess_run.call_args),
+        )
+        self.assertIsNot(
+            subprocess_run.call_args.kwargs.get("shell"),
+            True,
+            "the push must run as list-form subprocess, never through a "
+            "shell - call: {}".format(subprocess_run.call_args),
+        )
+
+    # -- a failed push is a reported failure, not a success ---------------
+
+    def test_a_nonzero_push_exit_is_reported_and_not_a_success(self):
+        """A non-zero push exit takes the error code and reports
+        ``push failed`` - never 0, never the behaviour-10 outcome codes."""
+        self._trap_github_seams(self._opened_result(self.PUSH_ARGV))
+        self._trap_subprocess_run(128, stderr="fatal: could not read remote")
+        runner = CliRunner(mix_stderr=False)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            result = runner.invoke(
+                cli.app, ["pi", "run", self.PROFILE, self.ISSUE]
+            )
+        self.assertEqual(
+            1,
+            result.exit_code,
+            "a failed push must exit the error code (1), not success and "
+            "not an outcome code - stderr:\n{}".format(result.stderr),
+        )
+        self.assertIn(
+            "push",
+            result.stderr,
+            "a failed push must be reported - stderr:\n{}".format(
+                result.stderr
+            ),
+        )
+        self.assertIn(
+            "128",
+            result.stderr,
+            "the push's exit code must be reported - stderr:\n{}".format(
+                result.stderr
+            ),
+        )
+        self.assertIn(
+            "push failed",
+            result.stderr,
+            "the report must name the failure - stderr:\n{}".format(
+                result.stderr
+            ),
+        )
+
+    # -- a falsy push_argv is never executed ------------------------------
+
+    def test_halted_result_pushes_nothing(self):
+        """Boundary pin: the ``halted`` result's ``push_argv`` is
+        ``None`` - nothing is executed. May pass on the red, since the
+        push phase does not exist yet; it pins the boundary for the
+        green."""
+        self._trap_github_seams(
+            {
+                "status": "halted",
+                "issue_number": 7,
+                "cycle": {},
+                "pr": None,
+                "push_argv": None,
+            }
+        )
+        subprocess_run = self._trap_subprocess_run(0)
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            subprocess_run.call_count,
+            "a falsy push_argv must never be executed",
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 10 of plans/pi-phase14-run-command.md -
+# outcome-maps-to-its-own-exit-code
+#
+# The command exits ``pirun.exit_code_for(result["status"])`` at both
+# exits of the run phase: after a successful push with the code for the
+# returned status, and on the pre-read-failure path with the code for
+# ``intake_failed``. ``opened`` is 10, ``halted`` is 11 and
+# ``intake_failed`` is 12 - never 0. The fixture shape is the behaviour-9
+# one: an isolated HOME, the store seeded directly, the ``pigithub``
+# seams booby-trapped at the module, and the outcome results'
+# ``push_argv`` set to ``None`` so the push phase stays out of scope.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunOutcome(CliCase):
+    """``pi run`` exits on the outcome's own code (behaviour 10):
+    ``opened`` 10, ``halted`` 11, ``intake_failed`` 12."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    ISSUE = "7"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at <home>/.anvil, never
+        # the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: a vanished path fails the profile
+        # gate before the run phase could be reached.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self, read_result, run_result):
+        """Booby-trap both ``pigithub`` seams with scripted results: any
+        call is observable and neither network function ever runs.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value=read_result,
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value=run_result,
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _trap_subprocess_run(self, returncode, stdout="", stderr=""):
+        """Script ``subprocess.run`` where the git seam resolves it.
+
+        ``cli`` imported ``subprocess`` as a module global and the
+        ``git`` ``_pirun_git_factory`` returns reads ``subprocess.run``
+        from that module at call time, so the patch target is
+        ``cli.subprocess.run`` - the same stdlib module object. The return
+        is a real ``CompletedProcess`` so the seam sees the true shape."""
+        import subprocess
+
+        patcher = mock.patch.object(
+            cli.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["git"],
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        run_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run_mock
+
+    # -- the opened result exits 10 --------------------------------------
+
+    def test_opened_result_exits_10(self):
+        """An ``opened`` result exits the outcome code 10 - never 0."""
+        self._trap_github_seams(
+            ({"title": "T", "body": "B"}, None),
+            {
+                "status": "opened",
+                "issue_number": 7,
+                "pr": {"number": 9, "html_url": "http://x", "head_sha": "abc"},
+                "push_argv": None,
+            },
+        )
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            10,
+            result.exit_code,
+            "an opened result must exit 10 - output:\n{}".format(
+                result.output
+            ),
+        )
+
+    # -- the halted result exits 11 and pushes nothing --------------------
+
+    def test_halted_result_exits_11_and_pushes_nothing(self):
+        """A ``halted`` result exits 11 and its ``push_argv`` of
+        ``None`` is never executed - nothing reaches the subprocess."""
+        self._trap_github_seams(
+            ({"title": "T", "body": "B"}, None),
+            {
+                "status": "halted",
+                "issue_number": 7,
+                "cycle": {"verdict": "halted"},
+                "pr": None,
+                "push_argv": None,
+                "halt_comment_url": "http://x",
+            },
+        )
+        subprocess_run = self._trap_subprocess_run(0)
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            subprocess_run.call_count,
+            "a halted result must push nothing - call: {}".format(
+                subprocess_run.call_args
+            ),
+        )
+        self.assertEqual(
+            11,
+            result.exit_code,
+            "a halted result must exit 11 - output:\n{}".format(
+                result.output
+            ),
+        )
+
+    # -- the unreadable issue exits 12 and never reaches run --------------
+
+    def test_an_unreadable_issue_exits_12_and_never_reaches_run(self):
+        """A host-side ``read_issue`` failure exits 12 with the read's
+        reason reported, and ``pigithub.run`` is called zero times."""
+        _, run_mock = self._trap_github_seams(
+            (None, "404: not readable there"),
+            {},
+        )
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            run_mock.call_count,
+            "an unreadable issue must not call pigithub.run - call: {}".format(
+                run_mock.call_args
+            ),
+        )
+        self.assertIn(
+            "404: not readable there",
+            result.output,
+            "the read's reason must be reported - output:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            12,
+            result.exit_code,
+            "an unreadable issue must exit 12 - output:\n{}".format(
+                result.output
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 11 of plans/pi-phase14-run-command.md -
+# archive-is-outside-the-target-repo
+#
+# Everything the run records lands under
+# ``~/.anvil/runs/<profile>/<run-id>/`` - the ``meta.json`` the command
+# opens via ``runlog.start_run`` before ``pigithub.run`` (intake from the
+# host-side read, one session per ``pirole.ROLES``, the live
+# ``anvil_version``), the role documents written verbatim by
+# ``runlog.write_prompts``, and the ``finish_run`` completion - and
+# nothing inside the target repository (the record's ``path``). A run id
+# whose archive already exists is refused with the error exit before the
+# run is called. The fixture shape is the behaviour-9 one: an isolated
+# HOME, the store seeded directly, the ``pigithub`` seams booby-trapped
+# at the module, and the real ``runlog`` exercised against the isolated
+# home so the archive layout is what is tested - only ``new_run_id`` is
+# pinned, and only for the refusal boundary.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunArchive(CliCase):
+    """``pi run`` archives the run outside the target repo (behaviour
+    11): one run dir per profile under ``~/.anvil/runs/``, a complete
+    ``meta.json``, verbatim role documents, an untouched target, and a
+    refusal when the run id's archive already exists."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    ISSUE = "7"
+
+    # The stem-to-text map the cycle's ``documents`` key carries in the
+    # trapped ``pigithub.run`` result; the archive must keep it verbatim.
+    DOCS = {"coder": "CODER-DOC-TEXT", "tester": "TESTER-DOC-TEXT"}
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store and the archive land at
+        # <home>/.anvil, never the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: a vanished path fails the profile
+        # gate before the run phase could be reached. It is a separate
+        # temp dir from the home, so the target is snapshotted by hand.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self, run_result):
+        """Booby-trap both ``pigithub`` seams with scripted results: any
+        call is observable and neither network function ever runs.
+
+        The ``read_issue`` seam returns the real tuple shape - the issue
+        payload and ``None`` reason - and the ``run`` seam returns the
+        given result, which carries the cycle's ``documents`` map for the
+        archive to pick up.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value=({"title": "Fix the widget", "body": "B"}, None),
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value=run_result,
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _trap_subprocess_run(self, returncode, stdout="", stderr=""):
+        """Script ``subprocess.run`` where the git seam resolves it.
+
+        ``cli`` imported ``subprocess`` as a module global and the
+        ``git`` ``_pirun_git_factory`` returns reads ``subprocess.run``
+        from that module at call time, so the patch target is
+        ``cli.subprocess.run`` - the same stdlib module object. The return
+        is a real ``CompletedProcess`` so the seam sees the true shape."""
+        import subprocess
+
+        patcher = mock.patch.object(
+            cli.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["git"],
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        run_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run_mock
+
+    def _opened_result(self):
+        """The ``opened`` shape ``pigithub.run`` returns: no
+        ``push_argv`` so the push phase stays out of scope, plus the
+        cycle's ``documents`` map the archive must keep verbatim."""
+        return {
+            "status": "opened",
+            "issue_number": 7,
+            "pr": {"number": 9, "html_url": "http://x", "head_sha": "abc"},
+            "push_argv": None,
+            "documents": dict(self.DOCS),
+        }
+
+    def _archived_meta(self):
+        """Return ``(run_dir, meta)`` for the single run under the
+        profile archive root.
+
+        Every red here fails for the right reason - the command never
+        opens the archive - so a missing root, a missing or doubled run
+        dir, or a missing ``meta.json`` all fail with the on-disk state
+        reported."""
+        profile_root = self.home / ".anvil" / "runs" / self.PROFILE
+        run_dirs = (
+            sorted(p for p in profile_root.iterdir() if p.is_dir())
+            if profile_root.is_dir()
+            else []
+        )
+        self.assertEqual(
+            1,
+            len(run_dirs),
+            "one run directory is expected under the profile archive "
+            "root {} - found: {}".format(
+                profile_root, [p.name for p in run_dirs]
+            ),
+        )
+        run_dir = run_dirs[0]
+        meta_path = run_dir / "meta.json"
+        self.assertTrue(
+            meta_path.is_file(),
+            "the run directory {} must carry a meta.json - contents: "
+            "{}".format(
+                run_dir, sorted(p.name for p in run_dir.rglob("*"))
+            ),
+        )
+        return run_dir, json.loads(meta_path.read_text(encoding="utf-8"))
+
+    def _snapshot_target(self):
+        """Every file under the record's path, mapped to its bytes.
+
+        The target is a separate temp dir from the project root, so it
+        is snapshotted by hand in the same shape as ``CliCase.
+        snapshot()``."""
+        return {
+            str(path.relative_to(self.profile_path)): path.read_bytes()
+            for path in sorted(self.profile_path.rglob("*"))
+            if path.is_file()
+        }
+
+    # -- the archive lives outside the target -----------------------------
+
+    def test_an_opened_run_archives_meta_outside_the_target(self):
+        """An ``opened`` run creates exactly one run dir under
+        ``~/.anvil/runs/<profile>/`` whose ``meta.json`` carries a
+        ``run_id`` equal to the dir name, the live ``anvil_version``,
+        the ``shipped`` outcome and ``complete`` true."""
+        self._trap_github_seams(self._opened_result())
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        profile_root = self.home / ".anvil" / "runs" / self.PROFILE
+        self.assertTrue(
+            profile_root.is_dir(),
+            "the profile archive root must exist under the isolated "
+            "home - home tree: {}".format(
+                sorted(str(p) for p in self.home.rglob("*"))
+            ),
+        )
+        run_dir, meta = self._archived_meta()
+        self.assertEqual(
+            run_dir.name,
+            meta["run_id"],
+            "meta.json's run_id must equal the run directory's name",
+        )
+        import anvilkit
+
+        self.assertEqual(
+            anvilkit.__version__,
+            meta["anvil_version"],
+            "meta.json must record the live anvilkit.__version__",
+        )
+        self.assertEqual(
+            "shipped",
+            meta["outcome"],
+            "an opened run must be archived with the shipped outcome",
+        )
+        self.assertIs(
+            True,
+            meta["complete"],
+            "a finished run's meta.json must be complete",
+        )
+
+    def test_the_archive_meta_carries_the_issue_and_four_role_sessions(
+        self,
+    ):
+        """The ``meta.json``'s intake carries the issue number and the
+        issue title from the host-side read, and its sessions cover
+        exactly the four ``pirole.ROLES`` with ``<run-id>-<role>`` ids."""
+        self._trap_github_seams(self._opened_result())
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        from anvilkit.pi import pirole
+
+        _, meta = self._archived_meta()
+        self.assertEqual(
+            {"issue": 7, "text": "Fix the widget"},
+            meta["intake"],
+            "the intake must carry the issue number and the issue "
+            "title from the host-side read",
+        )
+        self.assertEqual(
+            set(pirole.ROLES),
+            set(meta["sessions"].keys()),
+            "the sessions must cover exactly the four pirole.ROLES",
+        )
+        for role in pirole.ROLES:
+            self.assertTrue(
+                meta["sessions"][role].endswith("-" + role),
+                "the {} session id must end in -{} - got: {}".format(
+                    role, role, meta["sessions"][role]
+                ),
+            )
+
+    def test_the_role_documents_are_archived_verbatim(self):
+        """The cycle's ``documents`` map is archived byte-for-byte as
+        ``prompts/<stem>.md`` under the run dir."""
+        self._trap_github_seams(self._opened_result())
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        run_dir, _ = self._archived_meta()
+        prompts_dir = run_dir / "prompts"
+        for stem, text in self.DOCS.items():
+            path = prompts_dir / (stem + ".md")
+            self.assertTrue(
+                path.is_file(),
+                "the {} role document must be archived - prompts: "
+                "{}".format(
+                    stem,
+                    sorted(str(p) for p in prompts_dir.rglob("*"))
+                    if prompts_dir.is_dir()
+                    else "missing",
+                ),
+            )
+            self.assertEqual(
+                text,
+                path.read_text(encoding="utf-8"),
+                "the {} document must be archived verbatim".format(stem),
+            )
+
+    # -- the target repo stays untouched ----------------------------------
+
+    def test_nothing_is_written_inside_the_target_repo(self):
+        """Boundary pin: the record's path holds exactly the same file
+        set - byte for byte - after the run as before it. May pass on
+        the red, since nothing is written anywhere today; it pins the
+        boundary that the archive never lands inside the target."""
+        self._trap_github_seams(self._opened_result())
+        before = self._snapshot_target()
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        after = self._snapshot_target()
+        self.assertEqual(
+            before,
+            after,
+            "the target repo must hold exactly the same file set after "
+            "the run as before - before: {}, after: {}".format(
+                sorted(before), sorted(after)
+            ),
+        )
+
+    # -- a colliding run id refuses before the run -------------------------
+
+    def test_an_existing_archive_for_the_run_id_refuses_and_never_runs(
+        self,
+    ):
+        """A run id whose archive already exists is refused with the
+        error exit before the run is called: no ``pigithub.run``, no
+        subprocess. ``new_run_id`` is pinned to a fixed id - the
+        collision is deterministic, never a time pin.
+
+        The patch goes at the ``runlog`` module attribute - the very
+        object ``cli.runlog`` resolves to at call time once the command
+        imports the module - because at the red ``cli.runlog`` does not
+        exist yet and patching it would raise AttributeError, a wrong
+        red."""
+        from anvilkit.pi import runlog
+
+        fixed_id = "run-20260101-000000-aaaa"
+        patcher = mock.patch.object(
+            runlog, "new_run_id", return_value=fixed_id
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+        (
+            self.home / ".anvil" / "runs" / self.PROFILE / fixed_id
+        ).mkdir(parents=True)
+        _, run_mock = self._trap_github_seams(self._opened_result())
+        subprocess_run = self._trap_subprocess_run(0)
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            1,
+            result.exit_code,
+            "an existing archive for the run id must be refused with "
+            "the error exit - output:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            run_mock.call_count,
+            "a refused run must never call pigithub.run - call: {}".format(
+                run_mock.call_args
+            ),
+        )
+        self.assertEqual(
+            0,
+            subprocess_run.call_count,
+            "a refused run must execute nothing - call: {}".format(
+                subprocess_run.call_args
+            ),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 12 of plans/pi-phase14-run-command.md -
+# dry-run-names-and-writes-nothing
+#
+# The global ``--dry-run`` stops the command after the profile gate, the
+# token resolve and the ONE read-only host-side ``pigithub.read_issue``
+# - it is read-only, not one of the loop's seams, and it is what lets
+# the announcement name the real derived branch. The announcement (stdout)
+# names the profile, the derived branch, the archive path that WOULD be
+# written and each seam that is not invoked, then exits 0. With zero
+# calls: ``pigithub.run`` and ``subprocess.run`` (the push/git seam) - no
+# archive is written, not even ``~/.anvil/runs`` created. A failed read
+# keeps behaviour 10's outcome: reason reported, ``pigithub.run``
+# uncalled, exit 12. The fixture shape is the behaviour-11 one: an
+# isolated HOME, the store seeded directly, the ``pigithub`` seams
+# booby-trapped at the module; the ``run`` mock returns an opened result
+# so a non-dry-run would proceed fully and exit 10.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunDryRun(CliCase):
+    """``pi run`` under the global ``--dry-run`` (behaviour 12): names the
+    profile, the derived branch, the archive path that would be written
+    and the seams not invoked, invokes none of the loop's seams, writes
+    no archive, exits 0 - and still takes behaviour 10's outcome when the
+    read fails."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    ISSUE = "7"
+
+    # The stem-to-text map the cycle's ``documents`` key carries in the
+    # trapped ``pigithub.run`` result - the opened result a non-dry-run
+    # would have archived fully.
+    DOCS = {"coder": "CODER-DOC-TEXT", "tester": "TESTER-DOC-TEXT"}
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at <home>/.anvil, never
+        # the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: a vanished path fails the profile
+        # gate before the run phase could be reached.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self, read_result, run_result):
+        """Booby-trap both ``pigithub`` seams with scripted results: any
+        call is observable and neither network function ever runs.
+
+        Both results are parameters - the dry-run tests vary the read: the
+        default is the real tuple shape (the issue payload and ``None``
+        reason), the failure pin the ``(None, reason)`` shape.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value=read_result,
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value=run_result,
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _trap_subprocess_run(self, returncode, stdout="", stderr=""):
+        """Script ``subprocess.run`` where the git seam resolves it.
+
+        ``cli`` imported ``subprocess`` as a module global and the
+        ``git`` ``_pirun_git_factory`` returns reads ``subprocess.run``
+        from that module at call time, so the patch target is
+        ``cli.subprocess.run`` - the same stdlib module object. The return
+        is a real ``CompletedProcess`` so the seam sees the true shape."""
+        import subprocess
+
+        patcher = mock.patch.object(
+            cli.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["git"],
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        run_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run_mock
+
+    def _read_payload(self):
+        """The real tuple shape ``read_issue`` returns: the issue payload
+        and ``None`` reason. No ``labels`` entry, so ``kind_for`` yields
+        ``feature`` and the derived branch is ``feature/issue-7``."""
+        return ({"title": "Fix the widget", "body": "B", "labels": []}, None)
+
+    def _opened_result(self):
+        """The ``opened`` shape ``pigithub.run`` returns: no
+        ``push_argv`` so the push phase stays out of scope, plus the
+        cycle's ``documents`` map. A non-dry-run would proceed fully on
+        this result and exit 10."""
+        return {
+            "status": "opened",
+            "issue_number": 7,
+            "pr": {"number": 9, "html_url": "http://x", "head_sha": "abc"},
+            "push_argv": None,
+            "documents": dict(self.DOCS),
+        }
+
+    # -- the announcement names everything, then exits 0 ------------------
+
+    def test_dry_run_names_profile_branch_archive_and_seams_and_exits_zero(
+        self,
+    ):
+        """A ``--dry-run`` run exits 0 and its announcement names the
+        profile, the derived branch, the archive path that would be
+        written and the seams not invoked. The exact wording is the
+        green's choice - these are the four facts it must carry."""
+        self._trap_github_seams(self._read_payload(), self._opened_result())
+        result = self._run(
+            ["--dry-run", "pi", "run", self.PROFILE, self.ISSUE]
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a dry run must exit 0 - output:\n{}".format(result.output),
+        )
+        self.assertIn(
+            self.PROFILE,
+            result.output,
+            "the announcement must name the profile - output:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            "feature/issue-7",
+            result.output,
+            "the announcement must name the derived branch - output:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            ".anvil/runs/prof/",
+            result.output,
+            "the announcement must name the archive path that would be "
+            "written - output:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "push",
+            result.output,
+            "the announcement must name the seams not invoked, the push "
+            "among them - output:\n{}".format(result.output),
+        )
+
+    # -- the loop's seams stay uncalled -----------------------------------
+
+    def test_dry_run_invokes_no_run_or_push_seam(self):
+        """Under ``--dry-run`` neither ``pigithub.run`` nor the push/git
+        subprocess seam is invoked - the announcement is all."""
+        _, run_mock = self._trap_github_seams(
+            self._read_payload(),
+            self._opened_result(),
+        )
+        subprocess_run = self._trap_subprocess_run(0)
+        self._run(["--dry-run", "pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            run_mock.call_count,
+            "a dry run must never call pigithub.run - call: {}".format(
+                run_mock.call_args
+            ),
+        )
+        self.assertEqual(
+            0,
+            subprocess_run.call_count,
+            "a dry run must execute nothing - call: {}".format(
+                subprocess_run.call_args
+            ),
+        )
+
+    # -- no archive is written --------------------------------------------
+
+    def test_dry_run_writes_no_archive(self):
+        """Under ``--dry-run`` no archive is written - ``~/.anvil/runs``
+        is not even created under the isolated home."""
+        self._trap_github_seams(self._read_payload(), self._opened_result())
+        self._run(["--dry-run", "pi", "run", self.PROFILE, self.ISSUE])
+        runs_root = self.home / ".anvil" / "runs"
+        self.assertFalse(
+            runs_root.exists(),
+            "a dry run must not create the archive root {} - home tree: "
+            "{}".format(
+                runs_root, sorted(str(p) for p in self.home.rglob("*"))
+            ),
+        )
+
+    # -- the read-only read survives the dry-run --------------------------
+
+    def test_dry_run_still_performs_the_read_only_issue_read(self):
+        """Boundary pin: the ONE read-only host-side read survives the
+        dry-run - it is not one of the loop's seams, and it is what lets
+        the announcement name the real derived branch. Passes on the
+        red, since production mode reads too."""
+        read_mock, _ = self._trap_github_seams(
+            self._read_payload(),
+            self._opened_result(),
+        )
+        self._run(["--dry-run", "pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            1,
+            read_mock.call_count,
+            "the read-only host-side read must run exactly once under "
+            "dry-run - call: {}".format(read_mock.call_args),
+        )
+
+    # -- the gate and the intake failure precede the announcement ---------
+
+    def test_an_unknown_profile_still_fails_before_anything_under_dry_run(
+        self,
+    ):
+        """Boundary pin: an unknown profile name under ``--dry-run`` still
+        exits 2 with the store's own message before any announcement -
+        the profile gate precedes the dry-run branch. Passes on the red,
+        since the flag is ignored today and the gate already runs first."""
+        read_mock, _ = self._trap_github_seams(
+            self._read_payload(),
+            self._opened_result(),
+        )
+        result = self._run(["--dry-run", "pi", "run", "missing", self.ISSUE])
+        self.assertEqual(
+            2,
+            result.exit_code,
+            "an unknown profile under dry-run must exit the usage code 2 - "
+            "output:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            read_mock.call_count,
+            "an unknown profile must reach no seam, the read among them - "
+            "call: {}".format(read_mock.call_args),
+        )
+
+    def test_a_read_failure_under_dry_run_reports_and_exits_twelve(self):
+        """Boundary pin: a failed host-side read under ``--dry-run`` keeps
+        behaviour 10's outcome - the reason reported, ``pigithub.run``
+        uncalled, exit 12. Passes on the red, since the flag is ignored
+        today and the intake-failure path already exits 12."""
+        _, run_mock = self._trap_github_seams(
+            (None, "404: not readable there"),
+            self._opened_result(),
+        )
+        result = self._run(["--dry-run", "pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            run_mock.call_count,
+            "a failed read under dry-run must not call pigithub.run - "
+            "call: {}".format(run_mock.call_args),
+        )
+        self.assertIn(
+            "404: not readable there",
+            result.output,
+            "the read's reason must be reported - output:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            12,
+            result.exit_code,
+            "a failed read under dry-run must exit 12 - output:\n{}".format(
+                result.output
+            ),
         )

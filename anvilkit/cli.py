@@ -19,6 +19,7 @@ down. Together with ``--yes`` this makes Anvil scriptable.
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -56,7 +57,18 @@ from .cliexit import (
 from .compose import Compose, ComposeError
 from .pi import pibakeoff, piguardgate
 from .config import ConfigError
-from .pi import picodeowners, piguard, pitokenrecipe, piruleset, piprofile
+from .pi import (
+    picodeowners,
+    piguard,
+    pigithub,
+    pilaunch,
+    pirole,
+    pitokenrecipe,
+    piruleset,
+    piprofile,
+    pirun,
+    runlog,
+)
 from .pi import piprofileflow
 from .pi.piprofile import ProfileError
 from .prompts import PromptError
@@ -1051,6 +1063,35 @@ def _pidriver_runner_factory() -> Callable[[Dict[str, Any]], Dict[str, Any]]:
     return pibakeoff.subprocess_runner
 
 
+def _pirun_git_factory() -> Callable[[List[str]], None]:
+    """The production git seam for ``pi run``: one list-form argv in, nothing out.
+
+    Follows :func:`_pidriver_runner_factory`'s factory pattern: a module-level
+    private factory returning the production callable. The argv is executed
+    verbatim through list-form ``subprocess`` - no ``shell=True``, so no
+    argument is ever re-parsed by a shell. On a non-zero exit it raises
+    ``pirun.RunError`` naming the command and the exit code, so the run
+    never believes a git step that failed: the caller's push reports it and
+    exits 1, and the cycle's driver git raises.
+    """
+
+    def git(argv: List[str]) -> None:
+        completed = subprocess.run(
+            argv,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode != 0:
+            raise pirun.RunError(
+                "git exited {}: {}".format(
+                    completed.returncode, " ".join(argv)
+                )
+            )
+
+    return git
+
+
 @app.command(name="smoke-test")
 def smoke_test(
     ctx: typer.Context,
@@ -1198,6 +1239,247 @@ def profile_show(
     project = record.get("project")
     for key, value in (project or {}).items():
         typer.echo("project.{}: {}".format(key, value))
+
+
+# ---------------------------------------------------------------------------
+# pi sub-app
+# ---------------------------------------------------------------------------
+
+# The ``pi`` family grows one verb at a time (``run`` first); like
+# ``profile`` it is standalone: no global callback, no shared Context,
+# because nothing here needs a port or a compose project.
+pi_app = typer.Typer(
+    help="Drive a Pi run for a recorded profile.",
+    no_args_is_help=True,
+    add_completion=False,
+)
+app.add_typer(pi_app, name="pi")
+
+
+@pi_app.command(name="run")
+def pi_run(
+    ctx: typer.Context,
+    profile: str = typer.Argument(..., help="The profile name to run."),
+    issue: int = typer.Argument(..., help="The GitHub issue number to run."),
+) -> None:
+    """Run one Pi cycle for ``profile`` against issue number ``issue``.
+
+    The profile gate runs first: the store is loaded and a record that
+    cannot load - an unknown name, or a held name whose path has vanished
+    - fails on the usage code with the store's own message, before any run
+    seam is touched. After the gate, the run phase resolves the GitHub
+    token (the home ``.env``'s value under the record's ``token_env`` key,
+    falling back to the install ``.env``'s ``GITHUB_TOKEN``), reads the
+    issue host-side with it, and - when the read succeeded - calls
+    ``pigithub.run`` with the plan-pinned parameter mapping. The token
+    reaches only the ``token`` parameter of ``pigithub.read_issue`` and
+    ``pigithub.run`` (behaviour 8): never stdout, the archive, or any
+    other argument. An empty token does not stop the run: a line
+    containing ``unauthenticated`` is printed and the run proceeds. When
+    the host-side read fails, the read's reason is reported and
+    ``pigithub.run`` is called zero times.
+
+    When ``run`` returns, the command executes the result's
+    ``push_argv`` (behaviour 9): only when it is truthy - the
+    ``opened`` shape carries it, while ``halted`` and ``intake_failed``
+    carry ``None`` and a falsy argv is never executed - verbatim, as a
+    list-form subprocess, through the behaviour-8 git seam. A non-zero
+    push exit is reported as ``push failed: <reason>`` and exits
+    ``EXIT_ERROR`` (1), never 0 and never an outcome code.
+
+    The command exits on the run's own outcome code (behaviour 10):
+    ``opened`` is 10, ``halted`` is 11 and the pre-read-failure path
+    (``intake_failed``) is 12 - never 0. A push failure still exits
+    ``EXIT_ERROR`` (1) and precedes the outcome code: the push block
+    raises before the outcome exit is reached.
+
+    The archive (behaviour 11) is opened BEFORE ``pigithub.run`` and
+    lands outside the target repository - under
+    ``~/.anvil/runs/<profile>/<run-id>/``, computed at call time so a
+    test-redirected ``$HOME`` is seen - carrying the ``meta.json``
+    (the intake, one session per ``pirole.ROLES`` and the live
+    ``anvilkit.__version__``) and, after the run, the generated role
+    documents archived verbatim under ``prompts/``. A run id that
+    already has an archive is a reported failure - exit 1 - before
+    anything runs: no ``pigithub.run``, no subprocess. The run is
+    finished on the terminal its status maps to: ``opened`` ships,
+    ``halted`` halts; a failed push (exit 1) and a failed intake read
+    (exit 12) exit before the finish.
+
+    Under ``--dry-run`` (behaviour 12) the command performs the
+    read-only issue read and then stops: it names the profile, the
+    derived branch, the archive path that would be written and the
+    seams it does not invoke, then exits 0. An unknown profile still
+    exits 2 first and a failed read still exits 12.
+    """
+    shared = _context(ctx)
+    root = piprofileflow.profile_root()
+    try:
+        record = piprofile.load_profile(root, profile)
+    except ProfileError as exc:
+        raise fail(str(exc), EXIT_USAGE) from exc
+
+    # The token resolves after the gate (behaviour 8). Both env paths are
+    # computed at call time: the home root is ``profile_root()`` and the
+    # install env is ``REPO_ROOT / .env`` - ``REPO_ROOT`` read from the
+    # module global, never captured at import, so a test-redirected root
+    # is seen.
+    token = piprofile.resolve_token(
+        record,
+        home_env=root / ".env",
+        install_env=REPO_ROOT / ENV_FILENAME,
+    )
+    if not token:
+        typer.echo(
+            "no GitHub token resolved - the run proceeds unauthenticated"
+        )
+
+    # The derivation needs the payload, so the issue is read host-side
+    # first; ``pigithub.run`` re-reads the intake internally by design.
+    # The real seam returns ``(issue, reason)`` - the unpack writes the
+    # real tuple's shape, and the derivation helpers are defensive for
+    # any payload ``read_issue`` can return. The payload is held in
+    # ``payload`` so it does not shadow the CLI's ``issue`` number, which
+    # ``branch_for`` and the ``run`` call below need as an int.
+    payload, reason = pigithub.read_issue(
+        record["owner"], record["repo"], issue, token=token
+    )
+    if payload is None:
+        # The read's reason is the report: stdout for the reason (a human
+        # reads it there), stderr for the failure line, and the
+        # ``intake_failed`` outcome code 12 - the run is never called.
+        typer.echo("intake failed: {}".format(reason))
+        raise fail("intake failed: {}".format(reason), 12)
+
+    kind = pirun.kind_for(payload)
+    branch = pirun.branch_for(kind, issue)
+
+    if shared.dry_run:
+        # The dry-run stop (behaviour 12): the read-only read already
+        # happened, so the announcement names the REAL derived branch;
+        # the run-id dir is generated locally by ``new_run_id`` - no
+        # file is written and ``~/.anvil/runs`` is never created. Every
+        # loop seam below - the run cycle, the push and the archive -
+        # is named, not invoked; a command that returns None exits 0.
+        would_be = Path.home() / ".anvil" / "runs" / profile / runlog.new_run_id()
+        typer.echo(
+            "dry run: profile {prof}, branch {branch}; would write "
+            "archive {archive}; not invoked: the run cycle, the push, "
+            "the archive".format(
+                prof=profile, branch=branch, archive=would_be
+            )
+        )
+        return
+
+    fields = pirun.pr_fields_for(payload)
+    title = fields["title"]
+    # ``example`` is the issue body verbatim, or the literal when the body
+    # is missing, null or blank - the plan's blank-check rule, applied to
+    # the raw body rather than ``pr_fields_for``'s placeholder, so a blank
+    # body is reported as the literal and never as the placeholder text.
+    raw_body = payload.get("body") if isinstance(payload, dict) else None
+    example = (
+        raw_body
+        if isinstance(raw_body, str) and raw_body.strip()
+        else "see the intake issue body"
+    )
+    # The archive (behaviour 11) is opened BEFORE the run, so a run
+    # that dies mid-way leaves a readable record (runlog behaviour 6),
+    # and it lands outside the target: the root is
+    # ``~/.anvil/runs/<profile>`` - ``Path.home()`` consulted at call
+    # time, never the record's path - so the run dir is
+    # ``~/.anvil/runs/<profile>/<run-id>/``. The intake carries the
+    # issue number and the title the host-side read returned (the
+    # same defensive derivation as the ``pr_fields_for`` title above),
+    # one session per ``pirole.ROLES``, and the ``started_at`` an
+    # ISO-8601 UTC string at call time. A run id whose archive
+    # already exists is refused here - the run never reaches
+    # ``pigithub.run`` or the subprocess, and a past run is never
+    # overwritten.
+    archive_root = Path.home() / ".anvil" / "runs" / profile
+    run_id = runlog.new_run_id()
+    try:
+        run_dir = runlog.start_run(
+            archive_root,
+            run_id,
+            intake={"issue": issue, "text": title},
+            sessions={
+                role: runlog.session_id(run_id, role) for role in pirole.ROLES
+            },
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except runlog.RunLogError as exc:
+        raise fail("run archive: {}".format(exc), EXIT_ERROR) from exc
+
+    result = pigithub.run(
+        record["owner"],
+        record["repo"],
+        issue,
+        record["path"],
+        "origin",
+        branch,
+        title,
+        record["base"],
+        title,
+        (),
+        "covered by the repository's existing test suite",
+        example,
+        record["repo"],
+        title,
+        "issue-{}".format(issue),
+        "issue {}: {}".format(issue, title),
+        kind,
+        _pidriver_runner_factory(),
+        _pirun_git_factory(),
+        token=token,
+        profile_name=profile,
+        profile_root=str(root),
+    )
+
+    # The push runs only when the result carries a truthy ``push_argv`` -
+    # the ``opened`` shape does; ``halted`` and ``intake_failed`` carry
+    # ``None`` and a falsy argv is never executed (behaviour 9). It goes
+    # through the behaviour-8 git seam, so the same list-form subprocess
+    # discipline and the same non-zero -> ``RunError`` translation cover
+    # the caller's push as the cycle's driver git.
+    push = result.get("push_argv") if isinstance(result, dict) else None
+    if push:
+        try:
+            _pirun_git_factory()(push)
+        except pirun.RunError as exc:
+            raise fail(
+                "push failed: {}".format(exc), EXIT_ERROR
+            ) from exc
+
+    status = result.get("status") if isinstance(result, dict) else None
+
+    # The archive completion (behaviour 11): the role documents the
+    # cycle generated are archived verbatim under the run dir - the
+    # result's ``documents`` map is the generation seam's return,
+    # surfaced by the cycle seam (behaviour 21) - and the writer
+    # refuses an empty mapping, so it is called only when the map is
+    # non-empty. The run is then finished on the terminal its status
+    # maps to: ``opened`` ships, ``halted`` halts. A failed push has
+    # already exited 1 and a failed intake read already exited 12, so
+    # only the two outcome statuses reach here.
+    documents = result.get("documents") if isinstance(result, dict) else None
+    if isinstance(documents, dict) and documents:
+        runlog.write_prompts(run_dir, documents)
+    runlog.finish_run(
+        run_dir,
+        "shipped" if status == "opened" else "halted",
+        datetime.now(timezone.utc).isoformat(),
+    )
+
+    # The outcome exit (behaviour 10): the command ends on the run's own
+    # outcome code - 10 for ``opened``, 11 for ``halted`` - never 0. The
+    # push phase has already run (or was skipped on a falsy ``push_argv``)
+    # and a push failure has already exited 1, so by here the outcome is
+    # final. The line is the human-readable report of what happened; the
+    # non-zero exit is the designed per-outcome code, not an error.
+    raise fail(
+        "run finished: {}".format(status), pirun.exit_code_for(status)
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -335,8 +335,10 @@ def run_cycle(
     profile_name)`` EXACTLY ONCE, before the red step - before the
     tester delegation and before any git call - so every delegation of
     the cycle, four roles or one, reads documents generated this run;
-    the returned stem-to-text mapping is not archived here (the plan's
-    Assumptions assign that to the ``anvil pi run`` composition). When
+    the returned stem-to-text mapping is carried on the cycle result as
+    the ``"documents"`` key (the green and halted results; ``None``
+    when no profile was named) - the plan's Assumptions assign
+    archiving it to the ``anvil pi run`` composition. When
     ``profile_name`` is ``None`` the seam is invoked zero times and the
     cycle is byte-identical to today's.
 
@@ -350,9 +352,10 @@ def run_cycle(
     no red commit exists to stand or to roll back; a cycle must never
     run agents against stale or missing prompts.
     """
+    documents: Optional[Dict[str, str]] = None
     if profile_name is not None:
         try:
-            generate(repo_path, profile_root, profile_name)
+            documents = generate(repo_path, profile_root, profile_name)
         except pilaunch.LaunchError as exc:
             raise CycleError(
                 "run_cycle could not generate the role documents before "
@@ -407,6 +410,7 @@ def run_cycle(
                 "verdict": "green",
                 "red": red_result,
                 "green": green_result,
+                "documents": documents,
             }
         failure_outputs.append(_failure_text(attempt_result))
     return {
@@ -414,6 +418,7 @@ def run_cycle(
         "behaviour": behaviour,
         "failure_outputs": failure_outputs,
         "escalate_to": "architect",
+        "documents": documents,
     }
 
 
