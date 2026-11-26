@@ -20269,3 +20269,325 @@ class TestPiRunArchive(CliCase):
                 subprocess_run.call_args
             ),
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 12 of plans/pi-phase14-run-command.md -
+# dry-run-names-and-writes-nothing
+#
+# The global ``--dry-run`` stops the command after the profile gate, the
+# token resolve and the ONE read-only host-side ``pigithub.read_issue``
+# - it is read-only, not one of the loop's seams, and it is what lets
+# the announcement name the real derived branch. The announcement (stdout)
+# names the profile, the derived branch, the archive path that WOULD be
+# written and each seam that is not invoked, then exits 0. With zero
+# calls: ``pigithub.run`` and ``subprocess.run`` (the push/git seam) - no
+# archive is written, not even ``~/.anvil/runs`` created. A failed read
+# keeps behaviour 10's outcome: reason reported, ``pigithub.run``
+# uncalled, exit 12. The fixture shape is the behaviour-11 one: an
+# isolated HOME, the store seeded directly, the ``pigithub`` seams
+# booby-trapped at the module; the ``run`` mock returns an opened result
+# so a non-dry-run would proceed fully and exit 10.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunDryRun(CliCase):
+    """``pi run`` under the global ``--dry-run`` (behaviour 12): names the
+    profile, the derived branch, the archive path that would be written
+    and the seams not invoked, invokes none of the loop's seams, writes
+    no archive, exits 0 - and still takes behaviour 10's outcome when the
+    read fails."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    ISSUE = "7"
+
+    # The stem-to-text map the cycle's ``documents`` key carries in the
+    # trapped ``pigithub.run`` result - the opened result a non-dry-run
+    # would have archived fully.
+    DOCS = {"coder": "CODER-DOC-TEXT", "tester": "TESTER-DOC-TEXT"}
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at <home>/.anvil, never
+        # the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: a vanished path fails the profile
+        # gate before the run phase could be reached.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self, read_result, run_result):
+        """Booby-trap both ``pigithub`` seams with scripted results: any
+        call is observable and neither network function ever runs.
+
+        Both results are parameters - the dry-run tests vary the read: the
+        default is the real tuple shape (the issue payload and ``None``
+        reason), the failure pin the ``(None, reason)`` shape.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value=read_result,
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value=run_result,
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _trap_subprocess_run(self, returncode, stdout="", stderr=""):
+        """Script ``subprocess.run`` where the git seam resolves it.
+
+        ``cli`` imported ``subprocess`` as a module global and the
+        ``git`` ``_pirun_git_factory`` returns reads ``subprocess.run``
+        from that module at call time, so the patch target is
+        ``cli.subprocess.run`` - the same stdlib module object. The return
+        is a real ``CompletedProcess`` so the seam sees the true shape."""
+        import subprocess
+
+        patcher = mock.patch.object(
+            cli.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["git"],
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        run_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run_mock
+
+    def _read_payload(self):
+        """The real tuple shape ``read_issue`` returns: the issue payload
+        and ``None`` reason. No ``labels`` entry, so ``kind_for`` yields
+        ``feature`` and the derived branch is ``feature/issue-7``."""
+        return ({"title": "Fix the widget", "body": "B", "labels": []}, None)
+
+    def _opened_result(self):
+        """The ``opened`` shape ``pigithub.run`` returns: no
+        ``push_argv`` so the push phase stays out of scope, plus the
+        cycle's ``documents`` map. A non-dry-run would proceed fully on
+        this result and exit 10."""
+        return {
+            "status": "opened",
+            "issue_number": 7,
+            "pr": {"number": 9, "html_url": "http://x", "head_sha": "abc"},
+            "push_argv": None,
+            "documents": dict(self.DOCS),
+        }
+
+    # -- the announcement names everything, then exits 0 ------------------
+
+    def test_dry_run_names_profile_branch_archive_and_seams_and_exits_zero(
+        self,
+    ):
+        """A ``--dry-run`` run exits 0 and its announcement names the
+        profile, the derived branch, the archive path that would be
+        written and the seams not invoked. The exact wording is the
+        green's choice - these are the four facts it must carry."""
+        self._trap_github_seams(self._read_payload(), self._opened_result())
+        result = self._run(
+            ["--dry-run", "pi", "run", self.PROFILE, self.ISSUE]
+        )
+        self.assertEqual(
+            0,
+            result.exit_code,
+            "a dry run must exit 0 - output:\n{}".format(result.output),
+        )
+        self.assertIn(
+            self.PROFILE,
+            result.output,
+            "the announcement must name the profile - output:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            "feature/issue-7",
+            result.output,
+            "the announcement must name the derived branch - output:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertIn(
+            ".anvil/runs/prof/",
+            result.output,
+            "the announcement must name the archive path that would be "
+            "written - output:\n{}".format(result.output),
+        )
+        self.assertIn(
+            "push",
+            result.output,
+            "the announcement must name the seams not invoked, the push "
+            "among them - output:\n{}".format(result.output),
+        )
+
+    # -- the loop's seams stay uncalled -----------------------------------
+
+    def test_dry_run_invokes_no_run_or_push_seam(self):
+        """Under ``--dry-run`` neither ``pigithub.run`` nor the push/git
+        subprocess seam is invoked - the announcement is all."""
+        _, run_mock = self._trap_github_seams(
+            self._read_payload(),
+            self._opened_result(),
+        )
+        subprocess_run = self._trap_subprocess_run(0)
+        self._run(["--dry-run", "pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            run_mock.call_count,
+            "a dry run must never call pigithub.run - call: {}".format(
+                run_mock.call_args
+            ),
+        )
+        self.assertEqual(
+            0,
+            subprocess_run.call_count,
+            "a dry run must execute nothing - call: {}".format(
+                subprocess_run.call_args
+            ),
+        )
+
+    # -- no archive is written --------------------------------------------
+
+    def test_dry_run_writes_no_archive(self):
+        """Under ``--dry-run`` no archive is written - ``~/.anvil/runs``
+        is not even created under the isolated home."""
+        self._trap_github_seams(self._read_payload(), self._opened_result())
+        self._run(["--dry-run", "pi", "run", self.PROFILE, self.ISSUE])
+        runs_root = self.home / ".anvil" / "runs"
+        self.assertFalse(
+            runs_root.exists(),
+            "a dry run must not create the archive root {} - home tree: "
+            "{}".format(
+                runs_root, sorted(str(p) for p in self.home.rglob("*"))
+            ),
+        )
+
+    # -- the read-only read survives the dry-run --------------------------
+
+    def test_dry_run_still_performs_the_read_only_issue_read(self):
+        """Boundary pin: the ONE read-only host-side read survives the
+        dry-run - it is not one of the loop's seams, and it is what lets
+        the announcement name the real derived branch. Passes on the
+        red, since production mode reads too."""
+        read_mock, _ = self._trap_github_seams(
+            self._read_payload(),
+            self._opened_result(),
+        )
+        self._run(["--dry-run", "pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            1,
+            read_mock.call_count,
+            "the read-only host-side read must run exactly once under "
+            "dry-run - call: {}".format(read_mock.call_args),
+        )
+
+    # -- the gate and the intake failure precede the announcement ---------
+
+    def test_an_unknown_profile_still_fails_before_anything_under_dry_run(
+        self,
+    ):
+        """Boundary pin: an unknown profile name under ``--dry-run`` still
+        exits 2 with the store's own message before any announcement -
+        the profile gate precedes the dry-run branch. Passes on the red,
+        since the flag is ignored today and the gate already runs first."""
+        read_mock, _ = self._trap_github_seams(
+            self._read_payload(),
+            self._opened_result(),
+        )
+        result = self._run(["--dry-run", "pi", "run", "missing", self.ISSUE])
+        self.assertEqual(
+            2,
+            result.exit_code,
+            "an unknown profile under dry-run must exit the usage code 2 - "
+            "output:\n{}".format(result.output),
+        )
+        self.assertEqual(
+            0,
+            read_mock.call_count,
+            "an unknown profile must reach no seam, the read among them - "
+            "call: {}".format(read_mock.call_args),
+        )
+
+    def test_a_read_failure_under_dry_run_reports_and_exits_twelve(self):
+        """Boundary pin: a failed host-side read under ``--dry-run`` keeps
+        behaviour 10's outcome - the reason reported, ``pigithub.run``
+        uncalled, exit 12. Passes on the red, since the flag is ignored
+        today and the intake-failure path already exits 12."""
+        _, run_mock = self._trap_github_seams(
+            (None, "404: not readable there"),
+            self._opened_result(),
+        )
+        result = self._run(["--dry-run", "pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            run_mock.call_count,
+            "a failed read under dry-run must not call pigithub.run - "
+            "call: {}".format(run_mock.call_args),
+        )
+        self.assertIn(
+            "404: not readable there",
+            result.output,
+            "the read's reason must be reported - output:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            12,
+            result.exit_code,
+            "a failed read under dry-run must exit 12 - output:\n{}".format(
+                result.output
+            ),
+        )
