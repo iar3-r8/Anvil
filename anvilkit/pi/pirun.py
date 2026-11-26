@@ -71,6 +71,20 @@ def kind_for(payload: Any) -> str:
     return "feature"
 
 
+def exit_code_for(status: Any) -> int:
+    """The outcome-to-exit-code mapping for `anvil pi run` (behaviour 10 of
+    plans/pi-phase14-run-command.md): ``"opened"`` is 10, ``"halted"`` is 11,
+    ``"intake_failed"`` is 12.
+
+    An unrecognised status raises ``RunError`` naming the offending value
+    rather than exiting 0. This is the not-yet-implemented scaffold: it raises
+    ``RunError`` for every input until the red step lands the mapping.
+    """
+    raise RunError(
+        "exit_code_for: not implemented yet: {!r}".format(status)
+    )
+
+
 def _field(payload: Any, key: str, placeholder: str) -> str:
     """The value at ``key`` as a string, or ``placeholder`` when it is not a
     non-blank string in the payload."""
