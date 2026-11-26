@@ -19,6 +19,7 @@ down. Together with ``--yes`` this makes Anvil scriptable.
 import json
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -60,10 +61,13 @@ from .pi import (
     picodeowners,
     piguard,
     pigithub,
+    pilaunch,
+    pirole,
     pitokenrecipe,
     piruleset,
     piprofile,
     pirun,
+    runlog,
 )
 from .pi import piprofileflow
 from .pi.piprofile import ProfileError
@@ -1287,9 +1291,21 @@ def pi_run(
     ``opened`` is 10, ``halted`` is 11 and the pre-read-failure path
     (``intake_failed``) is 12 - never 0. A push failure still exits
     ``EXIT_ERROR`` (1) and precedes the outcome code: the push block
-    raises before the outcome exit is reached. The archive
-    (behaviour 11) and ``--dry-run`` (behaviour 12) are not built yet
-    either.
+    raises before the outcome exit is reached.
+
+    The archive (behaviour 11) is opened BEFORE ``pigithub.run`` and
+    lands outside the target repository - under
+    ``~/.anvil/runs/<profile>/<run-id>/``, computed at call time so a
+    test-redirected ``$HOME`` is seen - carrying the ``meta.json``
+    (the intake, one session per ``pirole.ROLES`` and the live
+    ``anvilkit.__version__``) and, after the run, the generated role
+    documents archived verbatim under ``prompts/``. A run id that
+    already has an archive is a reported failure - exit 1 - before
+    anything runs: no ``pigithub.run``, no subprocess. The run is
+    finished on the terminal its status maps to: ``opened`` ships,
+    ``halted`` halts; a failed push (exit 1) and a failed intake read
+    (exit 12) exit before the finish. ``--dry-run`` (behaviour 12) is
+    not built yet.
     """
     root = piprofileflow.profile_root()
     try:
@@ -1343,6 +1359,34 @@ def pi_run(
         if isinstance(raw_body, str) and raw_body.strip()
         else "see the intake issue body"
     )
+    # The archive (behaviour 11) is opened BEFORE the run, so a run
+    # that dies mid-way leaves a readable record (runlog behaviour 6),
+    # and it lands outside the target: the root is
+    # ``~/.anvil/runs/<profile>`` - ``Path.home()`` consulted at call
+    # time, never the record's path - so the run dir is
+    # ``~/.anvil/runs/<profile>/<run-id>/``. The intake carries the
+    # issue number and the title the host-side read returned (the
+    # same defensive derivation as the ``pr_fields_for`` title above),
+    # one session per ``pirole.ROLES``, and the ``started_at`` an
+    # ISO-8601 UTC string at call time. A run id whose archive
+    # already exists is refused here - the run never reaches
+    # ``pigithub.run`` or the subprocess, and a past run is never
+    # overwritten.
+    archive_root = Path.home() / ".anvil" / "runs" / profile
+    run_id = runlog.new_run_id()
+    try:
+        run_dir = runlog.start_run(
+            archive_root,
+            run_id,
+            intake={"issue": issue, "text": title},
+            sessions={
+                role: runlog.session_id(run_id, role) for role in pirole.ROLES
+            },
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+    except runlog.RunLogError as exc:
+        raise fail("run archive: {}".format(exc), EXIT_ERROR) from exc
+
     result = pigithub.run(
         record["owner"],
         record["repo"],
@@ -1383,13 +1427,32 @@ def pi_run(
                 "push failed: {}".format(exc), EXIT_ERROR
             ) from exc
 
+    status = result.get("status") if isinstance(result, dict) else None
+
+    # The archive completion (behaviour 11): the role documents the
+    # cycle generated are archived verbatim under the run dir - the
+    # result's ``documents`` map is the generation seam's return,
+    # surfaced by the cycle seam (behaviour 21) - and the writer
+    # refuses an empty mapping, so it is called only when the map is
+    # non-empty. The run is then finished on the terminal its status
+    # maps to: ``opened`` ships, ``halted`` halts. A failed push has
+    # already exited 1 and a failed intake read already exited 12, so
+    # only the two outcome statuses reach here.
+    documents = result.get("documents") if isinstance(result, dict) else None
+    if isinstance(documents, dict) and documents:
+        runlog.write_prompts(run_dir, documents)
+    runlog.finish_run(
+        run_dir,
+        "shipped" if status == "opened" else "halted",
+        datetime.now(timezone.utc).isoformat(),
+    )
+
     # The outcome exit (behaviour 10): the command ends on the run's own
     # outcome code - 10 for ``opened``, 11 for ``halted`` - never 0. The
     # push phase has already run (or was skipped on a falsy ``push_argv``)
     # and a push failure has already exited 1, so by here the outcome is
     # final. The line is the human-readable report of what happened; the
     # non-zero exit is the designed per-outcome code, not an error.
-    status = result.get("status") if isinstance(result, dict) else None
     raise fail(
         "run finished: {}".format(status), pirun.exit_code_for(status)
     )

@@ -1005,17 +1005,23 @@ def run(
       ``pr`` (exactly ``open_pull_request``'s return: ``number``,
       ``html_url``, ``head_sha``), ``push_argv`` (the value
       ``push_argv`` built), ``ci`` (``runs``, ``verdict`` and the
-      ``render_ci`` report) and ``final_comment_url``.
+      ``render_ci`` report), ``final_comment_url`` and ``documents``
+      (the cycle result's ``"documents"`` - the generation seam's
+      stem-to-text map, carried so the ``anvil pi run`` composition can
+      archive it; ``None`` when the cycle generated no profile).
     - ``"halted"``: a ``"halted"`` cycle result pushes nothing and
       opens nothing - no pull request, no CI read - and posts exactly
       one comment naming the halt and the behaviour: ``issue_number``,
       the cycle result ``cycle`` verbatim, ``pr: None``,
-      ``push_argv: None`` and ``halt_comment_url``.
+      ``push_argv: None``, ``halt_comment_url`` and ``documents``
+      (the cycle result's ``"documents"`` key, as the ``"opened"``
+      result carries it).
     - ``"intake_failed"``: an intake read that failed makes exactly one
       request (the intake GET) - no comment (the issue is unreadable,
       so a comment POST would fail for the same reason), the cycle
       never reached: ``issue_number``, the read's ``reason``,
-      ``pr: None``, ``push_argv: None``.
+      ``pr: None``, ``push_argv: None`` (and no ``documents`` - the
+      cycle that would carry them was never run).
 
     Every failure the read functions name as a ``reason`` is translated
     into ``GitHubError`` when it happens on a write the loop cannot
@@ -1098,6 +1104,7 @@ def run(
             "pr": None,
             "push_argv": None,
             "halt_comment_url": halt_url,
+            "documents": cycle_result.get("documents"),
         }
 
     push_argv_list = push_argv(repo_path, remote, branch)
@@ -1151,4 +1158,5 @@ def run(
         "push_argv": push_argv_list,
         "ci": {"runs": runs, "verdict": verdict, "report": report},
         "final_comment_url": final_url,
+        "documents": cycle_result.get("documents"),
     }
