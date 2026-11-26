@@ -76,12 +76,19 @@ def exit_code_for(status: Any) -> int:
     plans/pi-phase14-run-command.md): ``"opened"`` is 10, ``"halted"`` is 11,
     ``"intake_failed"`` is 12.
 
-    An unrecognised status raises ``RunError`` naming the offending value
-    rather than exiting 0. This is the not-yet-implemented scaffold: it raises
-    ``RunError`` for every input until the red step lands the mapping.
+    Any other value — including a missing status, ``None`` or a non-string —
+    raises ``RunError`` naming the offending value, so an unrecognised
+    outcome can never exit 0. The three literals are this command's own
+    vocabulary: no ``cliexit`` constants are added for them.
     """
+    if status == "opened":
+        return 10
+    if status == "halted":
+        return 11
+    if status == "intake_failed":
+        return 12
     raise RunError(
-        "exit_code_for: not implemented yet: {!r}".format(status)
+        "exit_code_for: unrecognised outcome status: {!r}".format(status)
     )
 
 

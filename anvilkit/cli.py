@@ -1283,11 +1283,13 @@ def pi_run(
     push exit is reported as ``push failed: <reason>`` and exits
     ``EXIT_ERROR`` (1), never 0 and never an outcome code.
 
-    Until behaviour 10 lands the outcome is not yet mapped to an exit
-    code, so every path that reaches this far - read failure, a returned
-    ``run`` and a successful push alike - exits 0; that temporary is
-    what the test suite asserts today. The archive (behaviour 11) and
-    ``--dry-run`` (behaviour 12) are not built yet either.
+    The command exits on the run's own outcome code (behaviour 10):
+    ``opened`` is 10, ``halted`` is 11 and the pre-read-failure path
+    (``intake_failed``) is 12 - never 0. A push failure still exits
+    ``EXIT_ERROR`` (1) and precedes the outcome code: the push block
+    raises before the outcome exit is reached. The archive
+    (behaviour 11) and ``--dry-run`` (behaviour 12) are not built yet
+    either.
     """
     root = piprofileflow.profile_root()
     try:
@@ -1321,8 +1323,11 @@ def pi_run(
         record["owner"], record["repo"], issue, token=token
     )
     if payload is None:
+        # The read's reason is the report: stdout for the reason (a human
+        # reads it there), stderr for the failure line, and the
+        # ``intake_failed`` outcome code 12 - the run is never called.
         typer.echo("intake failed: {}".format(reason))
-        return
+        raise fail("intake failed: {}".format(reason), 12)
 
     kind = pirun.kind_for(payload)
     branch = pirun.branch_for(kind, issue)
@@ -1377,6 +1382,17 @@ def pi_run(
             raise fail(
                 "push failed: {}".format(exc), EXIT_ERROR
             ) from exc
+
+    # The outcome exit (behaviour 10): the command ends on the run's own
+    # outcome code - 10 for ``opened``, 11 for ``halted`` - never 0. The
+    # push phase has already run (or was skipped on a falsy ``push_argv``)
+    # and a push failure has already exited 1, so by here the outcome is
+    # final. The line is the human-readable report of what happened; the
+    # non-zero exit is the designed per-outcome code, not an error.
+    status = result.get("status") if isinstance(result, dict) else None
+    raise fail(
+        "run finished: {}".format(status), pirun.exit_code_for(status)
+    )
 
 
 # ---------------------------------------------------------------------------
