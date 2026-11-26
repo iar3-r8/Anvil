@@ -19697,3 +19697,212 @@ class TestPiRunPush(CliCase):
             subprocess_run.call_count,
             "a falsy push_argv must never be executed",
         )
+
+
+# ---------------------------------------------------------------------------
+# Behaviour 10 of plans/pi-phase14-run-command.md -
+# outcome-maps-to-its-own-exit-code
+#
+# The command exits ``pirun.exit_code_for(result["status"])`` at both
+# exits of the run phase: after a successful push with the code for the
+# returned status, and on the pre-read-failure path with the code for
+# ``intake_failed``. ``opened`` is 10, ``halted`` is 11 and
+# ``intake_failed`` is 12 - never 0. The fixture shape is the behaviour-9
+# one: an isolated HOME, the store seeded directly, the ``pigithub``
+# seams booby-trapped at the module, and the outcome results'
+# ``push_argv`` set to ``None`` so the push phase stays out of scope.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunOutcome(CliCase):
+    """``pi run`` exits on the outcome's own code (behaviour 10):
+    ``opened`` 10, ``halted`` 11, ``intake_failed`` 12."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    ISSUE = "7"
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at <home>/.anvil, never
+        # the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: a vanished path fails the profile
+        # gate before the run phase could be reached.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self, read_result, run_result):
+        """Booby-trap both ``pigithub`` seams with scripted results: any
+        call is observable and neither network function ever runs.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value=read_result,
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value=run_result,
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _trap_subprocess_run(self, returncode, stdout="", stderr=""):
+        """Script ``subprocess.run`` where the git seam resolves it.
+
+        ``cli`` imported ``subprocess`` as a module global and the
+        ``git`` ``_pirun_git_factory`` returns reads ``subprocess.run``
+        from that module at call time, so the patch target is
+        ``cli.subprocess.run`` - the same stdlib module object. The return
+        is a real ``CompletedProcess`` so the seam sees the true shape."""
+        import subprocess
+
+        patcher = mock.patch.object(
+            cli.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["git"],
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        run_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run_mock
+
+    # -- the opened result exits 10 --------------------------------------
+
+    def test_opened_result_exits_10(self):
+        """An ``opened`` result exits the outcome code 10 - never 0."""
+        self._trap_github_seams(
+            ({"title": "T", "body": "B"}, None),
+            {
+                "status": "opened",
+                "issue_number": 7,
+                "pr": {"number": 9, "html_url": "http://x", "head_sha": "abc"},
+                "push_argv": None,
+            },
+        )
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            10,
+            result.exit_code,
+            "an opened result must exit 10 - output:\n{}".format(
+                result.output
+            ),
+        )
+
+    # -- the halted result exits 11 and pushes nothing --------------------
+
+    def test_halted_result_exits_11_and_pushes_nothing(self):
+        """A ``halted`` result exits 11 and its ``push_argv`` of
+        ``None`` is never executed - nothing reaches the subprocess."""
+        self._trap_github_seams(
+            ({"title": "T", "body": "B"}, None),
+            {
+                "status": "halted",
+                "issue_number": 7,
+                "cycle": {"verdict": "halted"},
+                "pr": None,
+                "push_argv": None,
+                "halt_comment_url": "http://x",
+            },
+        )
+        subprocess_run = self._trap_subprocess_run(0)
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            subprocess_run.call_count,
+            "a halted result must push nothing - call: {}".format(
+                subprocess_run.call_args
+            ),
+        )
+        self.assertEqual(
+            11,
+            result.exit_code,
+            "a halted result must exit 11 - output:\n{}".format(
+                result.output
+            ),
+        )
+
+    # -- the unreadable issue exits 12 and never reaches run --------------
+
+    def test_an_unreadable_issue_exits_12_and_never_reaches_run(self):
+        """A host-side ``read_issue`` failure exits 12 with the read's
+        reason reported, and ``pigithub.run`` is called zero times."""
+        _, run_mock = self._trap_github_seams(
+            (None, "404: not readable there"),
+            {},
+        )
+        result = self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            run_mock.call_count,
+            "an unreadable issue must not call pigithub.run - call: {}".format(
+                run_mock.call_args
+            ),
+        )
+        self.assertIn(
+            "404: not readable there",
+            result.output,
+            "the read's reason must be reported - output:\n{}".format(
+                result.output
+            ),
+        )
+        self.assertEqual(
+            12,
+            result.exit_code,
+            "an unreadable issue must exit 12 - output:\n{}".format(
+                result.output
+            ),
+        )

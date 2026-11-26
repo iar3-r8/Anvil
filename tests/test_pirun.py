@@ -242,5 +242,61 @@ class KindForTestCase(unittest.TestCase):
         self.assertEqual(pirun.kind_for({"labels": [{"name": "Bug"}]}), "feature")
 
 
+class ExitCodeForTestCase(unittest.TestCase):
+    """Behaviour 10: outcome-maps-to-its-own-exit-code.
+
+    ``exit_code_for(status)`` returns ``10`` for ``"opened"``, ``11`` for
+    ``"halted"`` and ``12`` for ``"intake_failed"``; any other value —
+    including a missing status, ``None`` or a non-string — raises
+    ``RunError`` naming the offending value, so an unrecognised outcome can
+    never exit 0.
+
+    The derivation is pure: no opener, no mock and no fixture is needed.
+    """
+
+    def test_opened_maps_to_10(self):
+        self.assertEqual(pirun.exit_code_for("opened"), 10)
+
+    def test_halted_maps_to_11(self):
+        self.assertEqual(pirun.exit_code_for("halted"), 11)
+
+    def test_intake_failed_maps_to_12(self):
+        self.assertEqual(pirun.exit_code_for("intake_failed"), 12)
+
+    def test_an_unrecognised_status_raises_naming_the_value(self):
+        with self.assertRaises(pirun.RunError) as ctx:
+            pirun.exit_code_for("shipped")
+
+        message = str(ctx.exception)
+        self.assertTrue(
+            message,
+            "the RunError must carry a non-empty message",
+        )
+        self.assertIn(
+            "shipped",
+            message,
+            "the RunError must name the offending status (got: {!r})".format(
+                message
+            ),
+        )
+
+    def test_none_raises(self):
+        with self.assertRaises(pirun.RunError) as ctx:
+            pirun.exit_code_for(None)
+
+        message = str(ctx.exception)
+        self.assertTrue(
+            message,
+            "the RunError must carry a non-empty message",
+        )
+        self.assertIn(
+            "None",
+            message,
+            "the RunError must name the offending status (got: {!r})".format(
+                message
+            ),
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
