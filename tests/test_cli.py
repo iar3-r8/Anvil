@@ -19459,3 +19459,241 @@ class TestPiRunToken(CliCase):
             "an unauthenticated run must be reported as such - "
             "output:\n{}".format(result.output),
         )
+
+
+# ---------------------------------------------------------------------------
+# ``pi run`` executes the ``push_argv`` that ``pigithub.run`` returned
+# (behaviour 9: push-argv-is-executed-as-a-list).
+#
+# The fixture shape is copied from ``TestPiRunToken``: HOME isolated, the
+# store seeded directly, both ``pigithub`` seams booby-trapped - plus
+# ``subprocess.run`` scripted where the command resolves it. The git seam
+# ``_pirun_git_factory``'s ``git`` reads ``subprocess`` from the module
+# global at call time, so the patch target is ``cli.subprocess.run`` -
+# the same stdlib module object. Every cleanup is registered on the
+# PATCHER (never the mock), so no patch leaks suite-wide.
+# ---------------------------------------------------------------------------
+
+
+class TestPiRunPush(CliCase):
+    """``pi run`` executes the ``opened`` result's ``push_argv`` as a
+    list-form subprocess, no ``shell=True``, argv unchanged (behaviour 9)."""
+
+    PROFILE = "prof"
+    OWNER = "o"
+    REPO = "r"
+    BASE = "main"
+    TOKEN_ENV = "GH_TOKEN_P"
+    TOKEN_VALUE = "ghp_secret_123"
+    ISSUE = "7"
+
+    # The exact list ``push_argv()`` builds - the command passes the
+    # trapped result's argv verbatim.
+    PUSH_ARGV = [
+        "git",
+        "-C",
+        "/tmp/target",
+        "push",
+        "--set-upstream",
+        "origin",
+        "feature/issue-7",
+    ]
+
+    def setUp(self):
+        super().setUp()
+        # A fresh, isolated home: the store lands at <home>/.anvil, never
+        # the real one.
+        self._home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._home.cleanup)
+        self.home = Path(self._home.name)
+        self.anvil_home = self.home / ".anvil"
+        self.store_path = self.anvil_home / "profiles.yaml"
+
+        # The record's path must exist: a vanished path fails the profile
+        # gate before the run phase could be reached.
+        profile_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(profile_dir.cleanup)
+        self.profile_path = Path(profile_dir.name)
+
+        self._seed_store()
+
+    def _seed_store(self):
+        """Write the store holding the behaviour-8 record, in the absolute
+        path form ``save_profile`` records."""
+        seed = (
+            "version: 1\n"
+            "prof:\n"
+            "  path: {}\n"
+            "  owner: o\n"
+            "  repo: r\n"
+            "  base: main\n"
+            "  token_env: GH_TOKEN_P\n"
+            "  project: {{}}\n"
+        ).format(os.path.abspath(str(self.profile_path)))
+        self.store_path.parent.mkdir(parents=True)
+        self.store_path.write_text(seed, encoding="utf-8")
+
+    # -- helpers ---------------------------------------------------------
+
+    def _run(self, argv):
+        """One ``pi run`` command under the fresh ``HOME`` override.
+
+        ``invoke_allowing_exception`` (not the re-raising ``invoke``) keeps
+        every red an assertion failure carrying the captured output rather
+        than a re-raised exception."""
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            return self.invoke_allowing_exception(argv)
+
+    def _trap_github_seams(self, run_result):
+        """Booby-trap both ``pigithub`` seams with a scripted ``run``
+        result: any call is observable and neither network function ever
+        runs.
+
+        The cleanup is registered on the PATCHER (never the mock): the
+        patcher's ``start`` returns the MagicMock, and a ``stop`` bound to
+        the mock is a no-op that would leak the patch suite-wide."""
+        from anvilkit.pi import pigithub
+
+        read_patch = mock.patch.object(
+            pigithub,
+            "read_issue",
+            return_value={
+                "title": "Fix the widget",
+                "body": "The widget is broken.\n\nSteps:\ndo x",
+            },
+        )
+        run_patch = mock.patch.object(
+            pigithub,
+            "run",
+            return_value=run_result,
+        )
+        read_mock = read_patch.start()
+        run_mock = run_patch.start()
+        self.addCleanup(read_patch.stop)
+        self.addCleanup(run_patch.stop)
+        return read_mock, run_mock
+
+    def _trap_subprocess_run(self, returncode, stdout="", stderr=""):
+        """Script ``subprocess.run`` where the git seam resolves it.
+
+        ``cli`` imported ``subprocess`` as a module global and the
+        ``git`` ``_pirun_git_factory`` returns reads ``subprocess.run``
+        from that module at call time, so the patch target is
+        ``cli.subprocess.run`` - the same stdlib module object. The return
+        is a real ``CompletedProcess`` so the seam sees the true shape."""
+        import subprocess
+
+        patcher = mock.patch.object(
+            cli.subprocess,
+            "run",
+            return_value=subprocess.CompletedProcess(
+                args=["git"],
+                returncode=returncode,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+        )
+        run_mock = patcher.start()
+        self.addCleanup(patcher.stop)
+        return run_mock
+
+    def _opened_result(self, push_argv):
+        """The ``opened`` shape ``pigithub.run`` returns, carrying the
+        given ``push_argv``."""
+        return {
+            "status": "opened",
+            "issue_number": 7,
+            "pr": {"number": 9, "html_url": "http://x", "head_sha": "abc"},
+            "push_argv": push_argv,
+        }
+
+    # -- the push runs as a list-form subprocess --------------------------
+
+    def test_opened_result_executes_the_push_argv_unchanged(self):
+        """The ``opened`` result's ``push_argv`` is executed exactly once,
+        verbatim as list form, no shell."""
+        self._trap_github_seams(self._opened_result(self.PUSH_ARGV))
+        subprocess_run = self._trap_subprocess_run(0)
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            1,
+            subprocess_run.call_count,
+            "the opened result's push_argv must be executed exactly once - "
+            "the push phase runs after pigithub.run returns",
+        )
+        self.assertEqual(
+            self.PUSH_ARGV,
+            subprocess_run.call_args.args[0],
+            "the argv must reach the subprocess unchanged, element for "
+            "element - call: {}".format(subprocess_run.call_args),
+        )
+        self.assertIsNot(
+            subprocess_run.call_args.kwargs.get("shell"),
+            True,
+            "the push must run as list-form subprocess, never through a "
+            "shell - call: {}".format(subprocess_run.call_args),
+        )
+
+    # -- a failed push is a reported failure, not a success ---------------
+
+    def test_a_nonzero_push_exit_is_reported_and_not_a_success(self):
+        """A non-zero push exit takes the error code and reports
+        ``push failed`` - never 0, never the behaviour-10 outcome codes."""
+        self._trap_github_seams(self._opened_result(self.PUSH_ARGV))
+        self._trap_subprocess_run(128, stderr="fatal: could not read remote")
+        runner = CliRunner(mix_stderr=False)
+        with mock.patch.dict(os.environ, {"HOME": str(self.home)}):
+            result = runner.invoke(
+                cli.app, ["pi", "run", self.PROFILE, self.ISSUE]
+            )
+        self.assertEqual(
+            1,
+            result.exit_code,
+            "a failed push must exit the error code (1), not success and "
+            "not an outcome code - stderr:\n{}".format(result.stderr),
+        )
+        self.assertIn(
+            "push",
+            result.stderr,
+            "a failed push must be reported - stderr:\n{}".format(
+                result.stderr
+            ),
+        )
+        self.assertIn(
+            "128",
+            result.stderr,
+            "the push's exit code must be reported - stderr:\n{}".format(
+                result.stderr
+            ),
+        )
+        self.assertIn(
+            "push failed",
+            result.stderr,
+            "the report must name the failure - stderr:\n{}".format(
+                result.stderr
+            ),
+        )
+
+    # -- a falsy push_argv is never executed ------------------------------
+
+    def test_halted_result_pushes_nothing(self):
+        """Boundary pin: the ``halted`` result's ``push_argv`` is
+        ``None`` - nothing is executed. May pass on the red, since the
+        push phase does not exist yet; it pins the boundary for the
+        green."""
+        self._trap_github_seams(
+            {
+                "status": "halted",
+                "issue_number": 7,
+                "cycle": {},
+                "pr": None,
+                "push_argv": None,
+            }
+        )
+        subprocess_run = self._trap_subprocess_run(0)
+        self._run(["pi", "run", self.PROFILE, self.ISSUE])
+        self.assertEqual(
+            0,
+            subprocess_run.call_count,
+            "a falsy push_argv must never be executed",
+        )
